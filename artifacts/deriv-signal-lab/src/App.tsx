@@ -1,0 +1,333 @@
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ErrorBoundary } from '@/components/error-boundary';
+import { Toaster } from '@/components/ui/toaster';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import NotFound from '@/pages/not-found';
+import {
+  Activity,
+  BarChart3,
+  Bell,
+  Check,
+  ChevronDown,
+  CircleHelp,
+  Clock3,
+  Gauge,
+  GitCompareArrows,
+  LayoutDashboard,
+  LineChart,
+  ListFilter,
+  Menu,
+  Pause,
+  Play,
+  RefreshCw,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Target,
+  TrendingDown,
+  TrendingUp,
+  X,
+  Zap,
+} from 'lucide-react';
+import {
+  Route,
+  Switch,
+  useLocation,
+  Router as WouterRouter,
+} from 'wouter';
+
+const queryClient = new QueryClient();
+
+function Home() {
+  const indices = [
+    { id: 'vol10', name: 'Volatility 10 Index', code: 'V10', quote: '8,742.16', delta: '+0.38%' },
+    { id: 'vol25', name: 'Volatility 25 Index', code: 'V25', quote: '4,218.93', delta: '-0.16%' },
+    { id: 'vol50', name: 'Volatility 50 Index', code: 'V50', quote: '12,085.40', delta: '+0.72%' },
+    { id: 'vol75', name: 'Volatility 75 Index', code: 'V75', quote: '6,903.27', delta: '+0.11%' },
+    { id: 'vol100', name: 'Volatility 100 Index', code: 'V100', quote: '3,119.84', delta: '-0.44%' },
+    { id: 'vol10-1s', name: 'Volatility 10 (1s)', code: '1HZ10V', quote: '2,064.81', delta: '+0.21%' },
+    { id: 'vol25-1s', name: 'Volatility 25 (1s)', code: '1HZ25V', quote: '2,906.44', delta: '-0.32%' },
+    { id: 'vol50-1s', name: 'Volatility 50 (1s)', code: '1HZ50V', quote: '5,817.32', delta: '+0.57%' },
+    { id: 'vol75-1s', name: 'Volatility 75 (1s)', code: '1HZ75V', quote: '7,184.90', delta: '+0.16%' },
+    { id: 'vol100-1s', name: 'Volatility 100 (1s)', code: '1HZ100V', quote: '9,562.08', delta: '-0.48%' },
+    { id: 'boom300', name: 'Boom 300 Index', code: 'BOOM300', quote: '1,453.67', delta: '+0.83%' },
+    { id: 'boom500', name: 'Boom 500 Index', code: 'BOOM500', quote: '2,718.42', delta: '+0.42%' },
+    { id: 'boom600', name: 'Boom 600 Index', code: 'BOOM600', quote: '3,108.55', delta: '-0.15%' },
+    { id: 'boom900', name: 'Boom 900 Index', code: 'BOOM900', quote: '4,826.17', delta: '+0.64%' },
+    { id: 'boom1000', name: 'Boom 1000 Index', code: 'BOOM1000', quote: '6,432.09', delta: '+0.28%' },
+    { id: 'crash300', name: 'Crash 300 Index', code: 'CRASH300', quote: '1,908.24', delta: '-0.58%' },
+    { id: 'crash500', name: 'Crash 500 Index', code: 'CRASH500', quote: '2,364.71', delta: '-0.29%' },
+    { id: 'crash600', name: 'Crash 600 Index', code: 'CRASH600', quote: '3,765.88', delta: '+0.12%' },
+    { id: 'crash900', name: 'Crash 900 Index', code: 'CRASH900', quote: '5,204.36', delta: '-0.41%' },
+    { id: 'crash1000', name: 'Crash 1000 Index', code: 'CRASH1000', quote: '7,116.53', delta: '-0.18%' },
+    { id: 'step', name: 'Step Index', code: 'STEP', quote: '842.63', delta: '+0.09%' },
+    { id: 'jump10', name: 'Jump 10 Index', code: 'JD10', quote: '1,628.46', delta: '+0.37%' },
+    { id: 'jump25', name: 'Jump 25 Index', code: 'JD25', quote: '2,913.70', delta: '-0.22%' },
+    { id: 'jump50', name: 'Jump 50 Index', code: 'JD50', quote: '4,507.18', delta: '+0.54%' },
+    { id: 'jump75', name: 'Jump 75 Index', code: 'JD75', quote: '5,736.91', delta: '+0.13%' },
+    { id: 'jump100', name: 'Jump 100 Index', code: 'JD100', quote: '8,194.27', delta: '-0.36%' },
+    { id: 'range100', name: 'Range Break 100', code: 'RNG100', quote: '1,182.39', delta: '+0.18%' },
+    { id: 'range200', name: 'Range Break 200', code: 'RNG200', quote: '2,466.04', delta: '-0.11%' },
+    { id: 'drift-switch', name: 'Drift Switch Index', code: 'DSI', quote: '916.72', delta: '+0.31%' },
+  ];
+  const families = [
+    { id: 'matches', label: 'Matches', hint: 'Exact digit' },
+    { id: 'even-odd', label: 'Even / Odd', hint: 'Parity' },
+    { id: 'over-under', label: 'Over / Under', hint: 'Barrier' },
+    { id: 'rise-fall', label: 'Rise / Fall', hint: 'Direction' },
+  ];
+  const [selectedIndex, setSelectedIndex] = useState('vol10');
+  const [family, setFamily] = useState('over-under');
+  const [barrier, setBarrier] = useState(5);
+  const [streaming, setStreaming] = useState(true);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [tick, setTick] = useState(8_742.16);
+  const [ticks, setTicks] = useState([8_738.12, 8_739.44, 8_738.98, 8_741.02, 8_740.67, 8_742.16]);
+  const [lastUpdated, setLastUpdated] = useState('08:42:16');
+  const [toast, setToast] = useState('');
+  const selected = indices.find((item) => item.id === selectedIndex) ?? indices[0];
+
+  useEffect(() => {
+    if (!streaming) return;
+    const timer = window.setInterval(() => {
+      setTick((current) => {
+        const next = current + (Math.random() - 0.46) * 2.3;
+        setTicks((items) => [...items.slice(-11), next]);
+        setLastUpdated(new Date().toLocaleTimeString([], { hour12: false }));
+        return next;
+      });
+    }, 2400);
+    return () => window.clearInterval(timer);
+  }, [streaming]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setToast(''), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const triggerRefresh = () => {
+    setRefreshing(true);
+    window.setTimeout(() => {
+      setRefreshing(false);
+      setLastUpdated(new Date().toLocaleTimeString([], { hour12: false }));
+      setToast('Analysis refreshed from simulated tick buffer');
+    }, 650);
+  };
+
+  const chartPoints = useMemo(() => {
+    const source = [...ticks, tick];
+    const min = Math.min(...source) - 1.3;
+    const max = Math.max(...source) + 1.3;
+    return source.map((value, index) => {
+      const x = 12 + (index / (source.length - 1)) * 76;
+      const y = 14 + ((max - value) / (max - min)) * 68;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+  }, [tick, ticks]);
+
+  const signal = family === 'rise-fall'
+    ? { label: 'RISE', direction: 'Upward bias', confidence: 78, tone: 'mint', detail: 'Momentum is holding above the 20-tick mean.' }
+    : family === 'even-odd'
+      ? { label: 'EVEN', direction: 'Parity edge', confidence: 69, tone: 'amber', detail: 'Recent parity is clustering around even digits.' }
+      : family === 'matches'
+        ? { label: 'MATCH 7', direction: 'Digit recurrence', confidence: 64, tone: 'amber', detail: 'Digit 7 is the strongest recurrence in the sample.' }
+        : { label: `OVER ${barrier}`, direction: 'Barrier edge', confidence: 74, tone: 'mint', detail: `Last digit distribution favors outcomes over ${barrier}.` };
+
+  const analysisFactors = [
+    { name: 'Digit momentum', value: 82, note: 'Strong', color: 'mint' },
+    { name: 'Tick frequency', value: 71, note: 'Positive', color: 'mint' },
+    { name: 'Volatility regime', value: 66, note: 'Balanced', color: 'amber' },
+    { name: 'Sequence pressure', value: 54, note: 'Neutral', color: 'muted' },
+  ];
+  const comparison = [
+    { label: 'Matches', value: '64%', sub: '7 is leading', score: 64, accent: 'amber' },
+    { label: 'Even / Odd', value: '69%', sub: 'Even bias', score: 69, accent: 'mint' },
+    { label: 'Over / Under', value: '74%', sub: `Over ${barrier}`, score: 74, accent: 'mint' },
+    { label: 'Rise / Fall', value: '78%', sub: 'Rise bias', score: 78, accent: 'blue' },
+  ];
+  const history = [
+    { time: '08:40:32', contract: 'Over / Under', call: 'OVER 5', result: 'Over 5', confidence: '76%', status: 'Aligned' },
+    { time: '08:38:08', contract: 'Rise / Fall', call: 'RISE', result: 'Rise', confidence: '71%', status: 'Aligned' },
+    { time: '08:35:44', contract: 'Even / Odd', call: 'EVEN', result: 'Odd', confidence: '68%', status: 'Missed' },
+    { time: '08:33:19', contract: 'Matches', call: 'MATCH 7', result: '7', confidence: '62%', status: 'Aligned' },
+  ];
+
+  return (
+    <div className="min-h-[100dvh] bg-background text-foreground">
+      <div className="flex min-h-[100dvh]">
+        <aside className={`${mobileNav ? 'translate-x-0' : '-translate-x-full'} fixed inset-y-0 left-0 z-40 flex w-[254px] flex-col border-r border-sidebar-border bg-sidebar transition-transform duration-300 md:static md:translate-x-0`}>
+          <div className="flex h-[76px] items-center justify-between border-b border-sidebar-border px-5">
+            <div className="flex items-center gap-3">
+              <div className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-[0_0_22px_hsl(158_77%_53%_/_0.18)]">
+                <Activity size={18} strokeWidth={2.5} />
+                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-sidebar bg-accent" />
+              </div>
+              <div>
+                <div className="text-[15px] font-extrabold tracking-[-0.03em]">SIGNAL LAB</div>
+                <div className="mono mt-0.5 text-[9px] font-medium tracking-[0.18em] text-primary">DERIV / ANALYSIS</div>
+              </div>
+            </div>
+            <button onClick={() => setMobileNav(false)} className="rounded p-1 text-muted-foreground hover:bg-sidebar-accent md:hidden" aria-label="Close navigation" data-testid="button-close-navigation"><X size={18} /></button>
+          </div>
+          <nav className="flex-1 px-3 py-5">
+            <div className="eyebrow px-3 pb-2">Workspace</div>
+            <button className="focus-ring mb-1 flex w-full items-center gap-3 rounded-lg bg-sidebar-accent px-3 py-2.5 text-left text-sm font-semibold text-foreground" data-testid="button-dashboard-nav"><LayoutDashboard size={16} className="text-primary" /> Dashboard <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" /></button>
+            <button className="focus-ring mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground" onClick={() => setToast('Signal history is already visible below')} data-testid="button-history-nav"><Clock3 size={16} /> Signal history</button>
+            <button className="focus-ring mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground" onClick={() => setToast('Comparison view is already visible below')} data-testid="button-compare-nav"><GitCompareArrows size={16} /> Compare families</button>
+            <div className="eyebrow px-3 pb-2 pt-7">Tools</div>
+            <button className="focus-ring mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground" onClick={() => setToast('Filters are ready in the contract controls')} data-testid="button-filters-nav"><ListFilter size={16} /> Signal filters</button>
+            <button className="focus-ring mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground" onClick={() => setToast('Preferences saved locally for this session')} data-testid="button-settings-nav"><Settings2 size={16} /> Workspace settings</button>
+          </nav>
+          <div className="border-t border-sidebar-border p-4">
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+              <div className="flex items-center gap-2 text-[11px] font-semibold text-primary"><ShieldCheck size={14} /> SIMULATION MODE</div>
+              <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Signals use local representative data. No trades are placed.</p>
+              <button onClick={() => setToast('Live Deriv connection is not enabled yet')} className="mt-3 text-[11px] font-semibold text-accent hover:underline" data-testid="button-live-connection">Connection details →</button>
+            </div>
+            <div className="mt-4 flex items-center justify-between text-[11px] text-muted-foreground"><span>Engine status</span><span className="flex items-center gap-1.5 text-primary"><span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse-line" /> Healthy</span></div>
+          </div>
+        </aside>
+
+        {mobileNav && <button className="fixed inset-0 z-30 bg-background/75 md:hidden" onClick={() => setMobileNav(false)} aria-label="Close menu overlay" data-testid="button-menu-overlay" />}
+        <main className="min-w-0 flex-1">
+          <header className="sticky top-0 z-20 flex h-[76px] items-center justify-between border-b border-border bg-background/90 px-4 backdrop-blur-md sm:px-6 lg:px-8">
+            <div className="flex items-center gap-3">
+              <button onClick={() => setMobileNav(true)} className="rounded-lg border border-border p-2 text-muted-foreground hover:text-foreground md:hidden" aria-label="Open navigation" data-testid="button-open-navigation"><Menu size={18} /></button>
+              <div>
+                <div className="eyebrow">Decision cockpit <span className="mx-1 text-border">/</span> Overview</div>
+                <h1 className="mt-1 text-base font-bold tracking-[-0.025em] sm:text-lg">Market analysis workspace</h1>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="hidden items-center gap-2 text-[11px] text-muted-foreground sm:flex"><span className={`h-1.5 w-1.5 rounded-full ${streaming ? 'bg-primary animate-pulse-line' : 'bg-muted-foreground'}`} /> {streaming ? 'Streaming simulation' : 'Stream paused'}</div>
+              <button onClick={() => setToast('No unread alerts')} className="focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground" aria-label="View alerts" data-testid="button-alerts"><Bell size={16} /></button>
+              <button onClick={() => setToast('Workspace settings are saved locally')} className="hidden focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground sm:block" aria-label="Open settings" data-testid="button-settings"><SlidersHorizontal size={16} /></button>
+              <div className="flex h-8 w-8 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-xs font-bold text-primary">SL</div>
+            </div>
+          </header>
+
+          <div className="terminal-grid min-h-[calc(100dvh-76px)] px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
+            <div className="mx-auto max-w-[1500px]">
+              <section className="animate-rise-in flex flex-col justify-between gap-5 md:flex-row md:items-end">
+                <div>
+                  <div className="flex items-center gap-2"><span className="eyebrow">Active instrument</span><span className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[9px] font-bold tracking-[0.12em] text-primary">SIMULATED</span></div>
+                  <div className="mt-2 flex flex-wrap items-end gap-x-4 gap-y-1">
+                    <h2 className="text-3xl font-extrabold tracking-[-0.055em] sm:text-4xl">{selected.name}</h2>
+                    <span className="mono mb-1 text-xs text-muted-foreground">{selected.code} · tick stream</span>
+                  </div>
+                  <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">Read the shape of the next contract without hiding the evidence behind the signal.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setStreaming((current) => !current)} className={`focus-ring flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${streaming ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground'}`} data-testid="button-toggle-stream">{streaming ? <Pause size={14} /> : <Play size={14} />} {streaming ? 'Pause stream' : 'Resume stream'}</button>
+                  <button onClick={triggerRefresh} className="focus-ring flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground" data-testid="button-refresh"><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /> Refresh</button>
+                </div>
+              </section>
+
+              <section className="animate-rise-in delay-1 mt-6 rounded-xl border border-card-border bg-card/90 p-3 panel-glow sm:p-4">
+                <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+                  <div>
+                    <div className="mb-2 flex items-center justify-between"><span className="eyebrow">Choose index</span><span className="mono text-[10px] text-muted-foreground">{indices.length} continuous indices available</span></div>
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {indices.map((item) => <button key={item.id} onClick={() => { const nextQuote = Number(item.quote.replaceAll(',', '')); setSelectedIndex(item.id); setTick(nextQuote); setTicks([nextQuote - 3.12, nextQuote - 1.84, nextQuote - 2.3, nextQuote - 1.14, nextQuote - 1.49, nextQuote]); setToast(`${item.name} selected`); }} className={`focus-ring min-w-[150px] rounded-lg border px-3 py-2 text-left transition-all hover:-translate-y-0.5 ${selectedIndex === item.id ? 'border-primary/60 bg-primary/10' : 'border-border bg-background/50 hover:border-primary/35'}`} data-testid={`button-index-${item.id}`}><div className="mono text-[10px] font-medium text-muted-foreground">{item.code}</div><div className="mt-1 truncate text-xs font-semibold">{item.name.replace('Volatility ', '')}</div><div className={`mono mt-1 text-[10px] ${item.delta.startsWith('+') ? 'text-primary' : 'text-destructive'}`}>{item.delta}</div></button>)}
+                    </div>
+                  </div>
+                  <div className="flex min-w-[180px] items-end gap-3 border-t border-border pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+                    <div><div className="eyebrow">Current quote</div><div className="mono mt-1 text-2xl font-medium tracking-[-0.04em] text-foreground" data-testid="text-current-quote">{tick.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>
+                     <div className={`mb-1 flex items-center gap-1 text-xs font-semibold ${selected.delta.startsWith('+') ? 'text-primary' : 'text-destructive'}`}>{selected.delta.startsWith('+') ? <TrendingUp size={14} /> : <TrendingDown size={14} />} {selected.delta}</div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="animate-rise-in delay-2 mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
+                <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
+                  <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                    <div><div className="eyebrow">Contract family</div><div className="mt-1 text-sm font-bold">What should the next tick do?</div></div>
+                    <div className="mono text-[10px] text-muted-foreground">LAST UPDATE {lastUpdated}</div>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {families.map((item) => <button key={item.id} onClick={() => setFamily(item.id)} className={`focus-ring rounded-lg border px-3 py-3 text-left transition-all hover:-translate-y-0.5 ${family === item.id ? 'border-primary/60 bg-primary/10' : 'border-border bg-background/35 hover:border-primary/30'}`} data-testid={`button-family-${item.id}`}><div className={`text-xs font-bold ${family === item.id ? 'text-primary' : 'text-foreground'}`}>{item.label}</div><div className="mt-1 text-[10px] text-muted-foreground">{item.hint}</div></button>)}
+                  </div>
+                  {family === 'over-under' && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/40 px-3 py-2.5"><div className="flex items-center gap-2 text-xs font-semibold"><Target size={14} className="text-accent" /> Barrier threshold</div><div className="flex items-center gap-1.5">{[1, 2, 3, 4, 5, 6, 7, 8].map((item) => <button key={item} onClick={() => setBarrier(item)} className={`focus-ring mono h-7 w-7 rounded-md border text-[11px] transition-colors ${barrier === item ? 'border-accent bg-accent text-accent-foreground' : 'border-border text-muted-foreground hover:border-accent/50 hover:text-foreground'}`} data-testid={`button-barrier-${item}`}>{item}</button>)}</div></div>}
+                  <div className="mt-5 flex items-center justify-between border-t border-border pt-4"><span className="eyebrow">Live tick stream</span><span className="mono text-[10px] text-muted-foreground">12 observations · 2.4s cadence</span></div>
+                  <div className="mt-2 flex flex-wrap gap-2">{[...ticks].reverse().slice(0, 8).map((value, index) => <div key={`${value}-${index}`} className={`mono rounded-md border px-2.5 py-1.5 text-[11px] ${index === 0 ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-background/45 text-muted-foreground'}`} data-testid={`text-tick-${index}`}>{value.toFixed(2)}</div>)}</div>
+                </div>
+
+                <div className="relative overflow-hidden rounded-xl border border-primary/30 bg-[linear-gradient(145deg,hsl(164_24%_12%),hsl(164_24%_9%))] p-5 panel-glow">
+                  <div className="absolute -right-16 -top-16 h-40 w-40 rounded-full bg-primary/10 blur-3xl" />
+                  <div className="relative flex items-start justify-between"><div><div className="eyebrow text-primary/75">Primary signal</div><div className="mt-2 flex items-center gap-3"><span className={`text-3xl font-extrabold tracking-[-0.06em] ${signal.tone === 'mint' ? 'text-primary' : 'text-accent'}`} data-testid="text-primary-signal">{signal.label}</span><Zap size={19} className={signal.tone === 'mint' ? 'text-primary' : 'text-accent'} /></div><div className="mt-1 text-xs text-muted-foreground">{signal.direction}</div></div><div className="text-right"><div className="eyebrow">Confidence</div><div className="mono mt-1 text-2xl font-medium text-foreground" data-testid="text-signal-confidence">{signal.confidence}%</div></div></div>
+                  <div className="mt-6 h-2 overflow-hidden rounded-full bg-background"><div className={`h-full rounded-full transition-all duration-500 ${signal.tone === 'mint' ? 'bg-primary' : 'bg-accent'}`} style={{ width: `${signal.confidence}%` }} /></div>
+                  <div className="mt-4 flex items-start gap-2 border-t border-border/60 pt-3 text-xs leading-relaxed text-muted-foreground"><Sparkles size={14} className="mt-0.5 shrink-0 text-accent" /> {signal.detail}</div>
+                  <button onClick={() => setToast('Signal marked for review')} className="focus-ring mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-primary/35 bg-primary/10 py-2.5 text-xs font-bold text-primary transition-colors hover:bg-primary/20" data-testid="button-review-signal"><Check size={14} /> Mark signal for review</button>
+                </div>
+              </section>
+
+              <section className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
+                <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
+                  <div className="flex items-start justify-between"><div><div className="eyebrow">Price action</div><h3 className="mt-1 text-sm font-bold">Synthetic tick chart</h3></div><div className="flex items-center gap-3 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><span className="h-1.5 w-4 rounded-full bg-primary" /> Tick path</span><span className="mono">1m view</span></div></div>
+                  <div className="mt-4 h-[225px] rounded-lg border border-border bg-background/45 p-2 sm:h-[260px]"><svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" role="img" aria-label="Synthetic tick price chart" data-testid="chart-tick-price"><defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="hsl(158 77% 53% / .22)" /><stop offset="100%" stopColor="hsl(158 77% 53% / 0)" /></linearGradient></defs>{[20, 40, 60, 80].map((y) => <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="hsl(160 17% 21% / .65)" strokeWidth=".25" />)}<polyline points={`12,100 ${chartPoints} 88,100`} fill="url(#area)" stroke="none" /><polyline points={chartPoints} fill="none" stroke="hsl(158 77% 53%)" strokeWidth=".8" vectorEffect="non-scaling-stroke" /><circle cx={chartPoints.split(' ').at(-1)?.split(',')[0]} cy={chartPoints.split(' ').at(-1)?.split(',')[1]} r="1.5" fill="hsl(40 95% 62%)" /></svg></div>
+                  <div className="mt-3 flex justify-between mono text-[9px] text-muted-foreground"><span>08:41:00</span><span>08:41:30</span><span>08:42:00</span><span>08:42:30</span></div>
+                </div>
+
+                <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
+                  <div className="flex items-start justify-between"><div><div className="eyebrow">Signal anatomy</div><h3 className="mt-1 text-sm font-bold">What formed the call</h3></div><button onClick={() => setToast('Factor weights are based on the local simulation model')} className="text-muted-foreground hover:text-foreground" aria-label="Explain signal factors" data-testid="button-explain-factors"><CircleHelp size={16} /></button></div>
+                  <div className="mt-5 space-y-4">{analysisFactors.map((factor) => <div key={factor.name}><div className="mb-1.5 flex justify-between gap-2 text-xs"><span className="text-muted-foreground">{factor.name}</span><span className={factor.color === 'mint' ? 'text-primary' : factor.color === 'amber' ? 'text-accent' : 'text-muted-foreground'}>{factor.note} <span className="mono ml-1 text-[10px]">{factor.value}</span></span></div><div className="h-1.5 rounded-full bg-background"><div className={`h-full rounded-full ${factor.color === 'mint' ? 'bg-primary' : factor.color === 'amber' ? 'bg-accent' : 'bg-muted-foreground/50'}`} style={{ width: `${factor.value}%` }} /></div></div>)}</div>
+                  <div className="mt-6 rounded-lg border border-border bg-background/35 p-3 text-[11px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Method note.</span> Confidence is a weighted read of recent ticks, digit distribution, and directional momentum. It is not a probability of profit.</div>
+                </div>
+              </section>
+
+              <section className="mt-5 rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
+                <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><div className="eyebrow">Cross-family read</div><h3 className="mt-1 text-sm font-bold">Compare all contract families</h3></div><button onClick={() => setToast('Comparison uses the same active tick window')} className="flex items-center gap-2 self-start text-[11px] font-semibold text-primary hover:underline" data-testid="button-comparison-info"><BarChart3 size={14} /> How scores are formed</button></div>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{comparison.map((item) => <button key={item.label} onClick={() => setFamily(item.label === 'Matches' ? 'matches' : item.label === 'Even / Odd' ? 'even-odd' : item.label === 'Over / Under' ? 'over-under' : 'rise-fall')} className="group rounded-lg border border-border bg-background/35 p-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40" data-testid={`button-comparison-${item.label.toLowerCase().replaceAll(' ', '-')}`}><div className="flex items-center justify-between"><span className="text-xs font-semibold">{item.label}</span><span className={`mono text-xs font-medium ${item.accent === 'mint' ? 'text-primary' : item.accent === 'amber' ? 'text-accent' : 'text-[hsl(var(--chart-4))]'}`}>{item.value}</span></div><div className="mt-2 h-1.5 rounded-full bg-muted"><div className={`h-full rounded-full ${item.accent === 'mint' ? 'bg-primary' : item.accent === 'amber' ? 'bg-accent' : 'bg-[hsl(var(--chart-4))]'}`} style={{ width: `${item.score}%` }} /></div><div className="mt-2 text-[10px] text-muted-foreground">{item.sub}</div></button>)}</div>
+              </section>
+
+              <section className="mt-5 grid gap-5 pb-8 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
+                <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
+                  <div className="flex items-start justify-between"><div><div className="eyebrow">Recent calls</div><h3 className="mt-1 text-sm font-bold">Signal history</h3></div><button onClick={() => setToast('History is limited to this simulated session')} className="text-[11px] font-semibold text-primary hover:underline" data-testid="button-view-history">View all</button></div>
+                  <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead><tr className="border-b border-border text-[10px] uppercase tracking-[0.12em] text-muted-foreground"><th className="pb-2 font-semibold">Time</th><th className="pb-2 font-semibold">Family</th><th className="pb-2 font-semibold">Call</th><th className="pb-2 font-semibold">Result</th><th className="pb-2 font-semibold">Confidence</th><th className="pb-2 text-right font-semibold">Status</th></tr></thead><tbody>{history.map((row) => <tr key={row.time} className="border-b border-border/60 text-xs last:border-0"><td className="py-3 mono text-muted-foreground">{row.time}</td><td className="py-3 text-muted-foreground">{row.contract}</td><td className="py-3 font-semibold text-foreground">{row.call}</td><td className="py-3 text-muted-foreground">{row.result}</td><td className="py-3 mono">{row.confidence}</td><td className="py-3 text-right"><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${row.status === 'Aligned' ? 'bg-primary/10 text-primary' : 'bg-destructive/10 text-destructive'}`}>{row.status}</span></td></tr>)}</tbody></table></div>
+                </div>
+                <div className="rounded-xl border border-accent/25 bg-accent/5 p-4 panel-glow sm:p-5"><div className="flex items-center gap-2 text-accent"><ShieldCheck size={16} /><div className="eyebrow text-accent">Educational use only</div></div><h3 className="mt-3 text-sm font-bold">A clear read, not a promise.</h3><p className="mt-2 text-xs leading-relaxed text-muted-foreground">Signal Lab is a decision-support prototype using simulated market data. Connect a live Deriv feed before treating any output as current market information.</p><button onClick={() => setToast('Live data connection requested')} className="focus-ring mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-accent/30 bg-accent/10 py-2.5 text-xs font-bold text-accent transition-colors hover:bg-accent/20" data-testid="button-connect-live"><Activity size={14} /> Explore live connection</button><div className="mt-4 flex items-center gap-2 border-t border-accent/15 pt-3 text-[10px] text-muted-foreground"><Gauge size={13} /> Last model calibration: today, 08:30</div></div>
+              </section>
+            </div>
+          </div>
+        </main>
+      </div>
+      {toast && <div className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-primary/35 bg-card px-4 py-3 text-xs font-semibold text-foreground shadow-lg animate-rise-in" role="status" data-testid="status-toast"><Check size={14} className="text-primary" /> {toast}</div>}
+    </div>
+  );
+}
+
+function Router() {
+  return (
+    // Keep a shared shell (sidebar, navbar) outside the boundary so it
+    // survives a page crash.
+    <RoutedErrorBoundary>
+      <Switch>
+        <Route path="/" component={Home} />
+        <Route component={NotFound} />
+      </Switch>
+    </RoutedErrorBoundary>
+  );
+}
+
+function RoutedErrorBoundary({ children }: { children: ReactNode }) {
+  const [location] = useLocation();
+  return <ErrorBoundary resetKey={location}>{children}</ErrorBoundary>;
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+          <Router />
+        </WouterRouter>
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+}
+
+export default App;
