@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -42,35 +42,47 @@ const queryClient = new QueryClient();
 
 function Home() {
   const indices = [
-    { id: 'vol10', name: 'Volatility 10 Index', code: 'V10', quote: '8,742.16', delta: '+0.38%' },
-    { id: 'vol25', name: 'Volatility 25 Index', code: 'V25', quote: '4,218.93', delta: '-0.16%' },
-    { id: 'vol50', name: 'Volatility 50 Index', code: 'V50', quote: '12,085.40', delta: '+0.72%' },
-    { id: 'vol75', name: 'Volatility 75 Index', code: 'V75', quote: '6,903.27', delta: '+0.11%' },
-    { id: 'vol100', name: 'Volatility 100 Index', code: 'V100', quote: '3,119.84', delta: '-0.44%' },
-    { id: 'vol10-1s', name: 'Volatility 10 (1s)', code: '1HZ10V', quote: '2,064.81', delta: '+0.21%' },
-    { id: 'vol25-1s', name: 'Volatility 25 (1s)', code: '1HZ25V', quote: '2,906.44', delta: '-0.32%' },
-    { id: 'vol50-1s', name: 'Volatility 50 (1s)', code: '1HZ50V', quote: '5,817.32', delta: '+0.57%' },
-    { id: 'vol75-1s', name: 'Volatility 75 (1s)', code: '1HZ75V', quote: '7,184.90', delta: '+0.16%' },
-    { id: 'vol100-1s', name: 'Volatility 100 (1s)', code: '1HZ100V', quote: '9,562.08', delta: '-0.48%' },
-    { id: 'boom300', name: 'Boom 300 Index', code: 'BOOM300', quote: '1,453.67', delta: '+0.83%' },
-    { id: 'boom500', name: 'Boom 500 Index', code: 'BOOM500', quote: '2,718.42', delta: '+0.42%' },
-    { id: 'boom600', name: 'Boom 600 Index', code: 'BOOM600', quote: '3,108.55', delta: '-0.15%' },
-    { id: 'boom900', name: 'Boom 900 Index', code: 'BOOM900', quote: '4,826.17', delta: '+0.64%' },
-    { id: 'boom1000', name: 'Boom 1000 Index', code: 'BOOM1000', quote: '6,432.09', delta: '+0.28%' },
-    { id: 'crash300', name: 'Crash 300 Index', code: 'CRASH300', quote: '1,908.24', delta: '-0.58%' },
-    { id: 'crash500', name: 'Crash 500 Index', code: 'CRASH500', quote: '2,364.71', delta: '-0.29%' },
-    { id: 'crash600', name: 'Crash 600 Index', code: 'CRASH600', quote: '3,765.88', delta: '+0.12%' },
-    { id: 'crash900', name: 'Crash 900 Index', code: 'CRASH900', quote: '5,204.36', delta: '-0.41%' },
-    { id: 'crash1000', name: 'Crash 1000 Index', code: 'CRASH1000', quote: '7,116.53', delta: '-0.18%' },
-    { id: 'step', name: 'Step Index', code: 'STEP', quote: '842.63', delta: '+0.09%' },
-    { id: 'jump10', name: 'Jump 10 Index', code: 'JD10', quote: '1,628.46', delta: '+0.37%' },
-    { id: 'jump25', name: 'Jump 25 Index', code: 'JD25', quote: '2,913.70', delta: '-0.22%' },
-    { id: 'jump50', name: 'Jump 50 Index', code: 'JD50', quote: '4,507.18', delta: '+0.54%' },
-    { id: 'jump75', name: 'Jump 75 Index', code: 'JD75', quote: '5,736.91', delta: '+0.13%' },
-    { id: 'jump100', name: 'Jump 100 Index', code: 'JD100', quote: '8,194.27', delta: '-0.36%' },
-    { id: 'range100', name: 'Range Break 100', code: 'RNG100', quote: '1,182.39', delta: '+0.18%' },
-    { id: 'range200', name: 'Range Break 200', code: 'RNG200', quote: '2,466.04', delta: '-0.11%' },
-    { id: 'drift-switch', name: 'Drift Switch Index', code: 'DSI', quote: '916.72', delta: '+0.31%' },
+    { id: 'vol10', name: 'Volatility 10 Index', symbol: 'R_10', code: 'V10', quote: '8,742.16', delta: '+0.38%' },
+    { id: 'vol25', name: 'Volatility 25 Index', symbol: 'R_25', code: 'V25', quote: '4,218.93', delta: '-0.16%' },
+    { id: 'vol50', name: 'Volatility 50 Index', symbol: 'R_50', code: 'V50', quote: '12,085.40', delta: '+0.72%' },
+    { id: 'vol75', name: 'Volatility 75 Index', symbol: 'R_75', code: 'V75', quote: '6,903.27', delta: '+0.11%' },
+    { id: 'vol100', name: 'Volatility 100 Index', symbol: 'R_100', code: 'V100', quote: '3,119.84', delta: '-0.44%' },
+    { id: 'vol10-1s', name: 'Volatility 10 (1s)', symbol: '1HZ10V', code: '1HZ10V', quote: '2,064.81', delta: '+0.21%' },
+    { id: 'vol15-1s', name: 'Volatility 15 (1s)', symbol: '1HZ15V', code: '1HZ15V', quote: '2,384.22', delta: '-0.08%' },
+    { id: 'vol25-1s', name: 'Volatility 25 (1s)', symbol: '1HZ25V', code: '1HZ25V', quote: '2,906.44', delta: '-0.32%' },
+    { id: 'vol30-1s', name: 'Volatility 30 (1s)', symbol: '1HZ30V', code: '1HZ30V', quote: '3,117.70', delta: '+0.26%' },
+    { id: 'vol50-1s', name: 'Volatility 50 (1s)', symbol: '1HZ50V', code: '1HZ50V', quote: '5,817.32', delta: '+0.57%' },
+    { id: 'vol75-1s', name: 'Volatility 75 (1s)', symbol: '1HZ75V', code: '1HZ75V', quote: '7,184.90', delta: '+0.16%' },
+    { id: 'vol90-1s', name: 'Volatility 90 (1s)', symbol: '1HZ90V', code: '1HZ90V', quote: '8,436.51', delta: '-0.12%' },
+    { id: 'vol100-1s', name: 'Volatility 100 (1s)', symbol: '1HZ100V', code: '1HZ100V', quote: '9,562.08', delta: '-0.48%' },
+    { id: 'boom50', name: 'Boom 50 Index', symbol: 'BOOM50', code: 'BOOM50', quote: '1,184.62', delta: '+0.36%' },
+    { id: 'boom1000', name: 'Boom 1000 Index', symbol: 'BOOM1000', code: 'BOOM1000', quote: '6,432.09', delta: '+0.28%' },
+    { id: 'boom150', name: 'Boom 150 Index', symbol: 'BOOM150N', code: 'BOOM150N', quote: '972.55', delta: '-0.17%' },
+    { id: 'boom300', name: 'Boom 300 Index', symbol: 'BOOM300N', code: 'BOOM300N', quote: '1,453.67', delta: '+0.83%' },
+    { id: 'boom500', name: 'Boom 500 Index', symbol: 'BOOM500', code: 'BOOM500', quote: '2,718.42', delta: '+0.42%' },
+    { id: 'boom600', name: 'Boom 600 Index', symbol: 'BOOM600', code: 'BOOM600', quote: '3,108.55', delta: '-0.15%' },
+    { id: 'boom900', name: 'Boom 900 Index', symbol: 'BOOM900', code: 'BOOM900', quote: '4,826.17', delta: '+0.64%' },
+    { id: 'crash50', name: 'Crash 50 Index', symbol: 'CRASH50', code: 'CRASH50', quote: '1,402.18', delta: '-0.23%' },
+    { id: 'crash1000', name: 'Crash 1000 Index', symbol: 'CRASH1000', code: 'CRASH1000', quote: '7,116.53', delta: '-0.18%' },
+    { id: 'crash150', name: 'Crash 150 Index', symbol: 'CRASH150N', code: 'CRASH150N', quote: '1,108.74', delta: '+0.14%' },
+    { id: 'crash300', name: 'Crash 300 Index', symbol: 'CRASH300N', code: 'CRASH300N', quote: '1,908.24', delta: '-0.58%' },
+    { id: 'crash500', name: 'Crash 500 Index', symbol: 'CRASH500', code: 'CRASH500', quote: '2,364.71', delta: '-0.29%' },
+    { id: 'crash600', name: 'Crash 600 Index', symbol: 'CRASH600', code: 'CRASH600', quote: '3,765.88', delta: '+0.12%' },
+    { id: 'crash900', name: 'Crash 900 Index', symbol: 'CRASH900', code: 'CRASH900', quote: '5,204.36', delta: '-0.41%' },
+    { id: 'jump10', name: 'Jump 10 Index', symbol: 'JD10', code: 'JD10', quote: '1,628.46', delta: '+0.37%' },
+    { id: 'jump25', name: 'Jump 25 Index', symbol: 'JD25', code: 'JD25', quote: '2,913.70', delta: '-0.22%' },
+    { id: 'jump50', name: 'Jump 50 Index', symbol: 'JD50', code: 'JD50', quote: '4,507.18', delta: '+0.54%' },
+    { id: 'jump75', name: 'Jump 75 Index', symbol: 'JD75', code: 'JD75', quote: '5,736.91', delta: '+0.13%' },
+    { id: 'jump100', name: 'Jump 100 Index', symbol: 'JD100', code: 'JD100', quote: '8,194.27', delta: '-0.36%' },
+    { id: 'range100', name: 'Range Break 100', symbol: 'RB100', code: 'RB100', quote: '1,182.39', delta: '+0.18%' },
+    { id: 'range200', name: 'Range Break 200', symbol: 'RB200', code: 'RB200', quote: '2,466.04', delta: '-0.11%' },
+    { id: 'step100', name: 'Step Index 100', symbol: 'stpRNG', code: 'STEP100', quote: '842.63', delta: '+0.09%' },
+    { id: 'step200', name: 'Step Index 200', symbol: 'stpRNG2', code: 'STEP200', quote: '1,416.82', delta: '-0.04%' },
+    { id: 'step300', name: 'Step Index 300', symbol: 'stpRNG3', code: 'STEP300', quote: '2,186.47', delta: '+0.19%' },
+    { id: 'step400', name: 'Step Index 400', symbol: 'stpRNG4', code: 'STEP400', quote: '2,804.33', delta: '+0.06%' },
+    { id: 'step500', name: 'Step Index 500', symbol: 'stpRNG5', code: 'STEP500', quote: '3,715.09', delta: '-0.13%' },
+    { id: 'bull', name: 'Bull Market Index', symbol: 'RDBULL', code: 'RDBULL', quote: '1,903.46', delta: '+0.45%' },
+    { id: 'bear', name: 'Bear Market Index', symbol: 'RDBEAR', code: 'RDBEAR', quote: '1,721.28', delta: '-0.39%' },
   ];
   const families = [
     { id: 'matches', label: 'Matches', hint: 'Exact digit' },
@@ -88,10 +100,73 @@ function Home() {
   const [ticks, setTicks] = useState([8_738.12, 8_739.44, 8_738.98, 8_741.02, 8_740.67, 8_742.16]);
   const [lastUpdated, setLastUpdated] = useState('08:42:16');
   const [toast, setToast] = useState('');
+  const [liveStatus, setLiveStatus] = useState<'connecting' | 'connected' | 'error' | 'offline'>('connecting');
+  const [liveError, setLiveError] = useState('');
+  const socketRef = useRef<WebSocket | null>(null);
   const selected = indices.find((item) => item.id === selectedIndex) ?? indices[0];
+  const appIdConfigured = Boolean(import.meta.env.VITE_DERIV_APP_ID);
+  const isLive = liveStatus === 'connected' && appIdConfigured;
+  const connectionLabel = liveStatus === 'connected'
+    ? 'Live Deriv feed'
+    : liveStatus === 'connecting'
+      ? 'Connecting to Deriv'
+      : liveStatus === 'error'
+        ? 'Deriv feed unavailable'
+        : 'Feed offline';
 
   useEffect(() => {
-    if (!streaming) return;
+    const appId = import.meta.env.VITE_DERIV_APP_ID;
+    const wsUrl = appId
+      ? `wss://api.derivws.com/trading/v1/options/ws/public?app_id=${encodeURIComponent(appId)}`
+      : 'wss://api.derivws.com/trading/v1/options/ws/public';
+    const socket = new WebSocket(wsUrl);
+    socketRef.current = socket;
+    setLiveStatus('connecting');
+
+    socket.onopen = () => {
+      setLiveStatus('connected');
+      setLiveError('');
+      socket.send(JSON.stringify({ active_symbols: 'brief', req_id: 1 }));
+      socket.send(JSON.stringify({ ticks: selected.symbol, subscribe: 1, req_id: 2 }));
+    };
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data) as {
+        msg_type?: string;
+        tick?: { quote?: number; symbol?: string; epoch?: number };
+        error?: { message?: string };
+      };
+      if (data.error) {
+        setLiveStatus('error');
+        setLiveError(data.error.message ?? 'Deriv returned an unknown error');
+        return;
+      }
+      if (data.msg_type === 'tick' && data.tick?.quote && data.tick.symbol === selected.symbol) {
+        const next = Number(data.tick.quote);
+        setTick(next);
+        setTicks((items) => [...items.slice(-11), next]);
+        setLastUpdated(data.tick.epoch ? new Date(data.tick.epoch * 1000).toLocaleTimeString([], { hour12: false }) : new Date().toLocaleTimeString([], { hour12: false }));
+      }
+    };
+    socket.onerror = () => {
+      setLiveStatus('error');
+      setLiveError('Unable to reach Deriv public market data');
+    };
+    socket.onclose = () => setLiveStatus('offline');
+    return () => {
+      socket.close();
+      socketRef.current = null;
+    };
+  }, [selected.symbol]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ forget_all: 'ticks', req_id: 3 }));
+    if (streaming) socket.send(JSON.stringify({ ticks: selected.symbol, subscribe: 1, req_id: 4 }));
+  }, [selected.symbol, streaming]);
+
+  useEffect(() => {
+    if (!streaming || liveStatus === 'connected') return;
     const timer = window.setInterval(() => {
       setTick((current) => {
         const next = current + (Math.random() - 0.46) * 2.3;
@@ -101,7 +176,7 @@ function Home() {
       });
     }, 2400);
     return () => window.clearInterval(timer);
-  }, [streaming]);
+  }, [liveStatus, selectedIndex, streaming]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setToast(''), 2800);
@@ -113,7 +188,7 @@ function Home() {
     window.setTimeout(() => {
       setRefreshing(false);
       setLastUpdated(new Date().toLocaleTimeString([], { hour12: false }));
-      setToast('Analysis refreshed from simulated tick buffer');
+      setToast(isLive ? 'Analysis refreshed from the live Deriv tick stream' : 'Analysis refreshed from the local fallback buffer');
     }, 650);
   };
 
@@ -182,10 +257,10 @@ function Home() {
             <button className="focus-ring mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground" onClick={() => setToast('Preferences saved locally for this session')} data-testid="button-settings-nav"><Settings2 size={16} /> Workspace settings</button>
           </nav>
           <div className="border-t border-sidebar-border p-4">
-            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-              <div className="flex items-center gap-2 text-[11px] font-semibold text-primary"><ShieldCheck size={14} /> SIMULATION MODE</div>
-              <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Signals use local representative data. No trades are placed.</p>
-              <button onClick={() => setToast('Live Deriv connection is not enabled yet')} className="mt-3 text-[11px] font-semibold text-accent hover:underline" data-testid="button-live-connection">Connection details →</button>
+             <div className={`rounded-lg border p-3 ${isLive ? 'border-primary/20 bg-primary/5' : 'border-accent/20 bg-accent/5'}`}>
+               <div className={`flex items-center gap-2 text-[11px] font-semibold ${isLive ? 'text-primary' : 'text-accent'}`}><ShieldCheck size={14} /> {isLive ? 'LIVE MARKET DATA' : 'CONNECTION STATUS'}</div>
+               <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{isLive ? 'Public Deriv ticks are connected. No trades are placed.' : liveError || 'Connecting to the public Deriv tick stream.'}</p>
+               <button onClick={() => setToast(isLive ? 'Public tick feed connected with the configured Deriv App ID' : 'Deriv public feed is reconnecting')} className="mt-3 text-[11px] font-semibold text-accent hover:underline" data-testid="button-live-connection">Connection details →</button>
             </div>
             <div className="mt-4 flex items-center justify-between text-[11px] text-muted-foreground"><span>Engine status</span><span className="flex items-center gap-1.5 text-primary"><span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse-line" /> Healthy</span></div>
           </div>
@@ -202,7 +277,7 @@ function Home() {
               </div>
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="hidden items-center gap-2 text-[11px] text-muted-foreground sm:flex"><span className={`h-1.5 w-1.5 rounded-full ${streaming ? 'bg-primary animate-pulse-line' : 'bg-muted-foreground'}`} /> {streaming ? 'Streaming simulation' : 'Stream paused'}</div>
+              <div className="hidden items-center gap-2 text-[11px] text-muted-foreground sm:flex"><span className={`h-1.5 w-1.5 rounded-full ${isLive && streaming ? 'bg-primary animate-pulse-line' : liveStatus === 'error' ? 'bg-destructive' : 'bg-muted-foreground'}`} /> {streaming ? connectionLabel : 'Stream paused'}</div>
               <button onClick={() => setToast('No unread alerts')} className="focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground" aria-label="View alerts" data-testid="button-alerts"><Bell size={16} /></button>
               <button onClick={() => setToast('Workspace settings are saved locally')} className="hidden focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground sm:block" aria-label="Open settings" data-testid="button-settings"><SlidersHorizontal size={16} /></button>
               <div className="flex h-8 w-8 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-xs font-bold text-primary">SL</div>
@@ -213,7 +288,7 @@ function Home() {
             <div className="mx-auto max-w-[1500px]">
               <section className="animate-rise-in flex flex-col justify-between gap-5 md:flex-row md:items-end">
                 <div>
-                  <div className="flex items-center gap-2"><span className="eyebrow">Active instrument</span><span className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[9px] font-bold tracking-[0.12em] text-primary">SIMULATED</span></div>
+                  <div className="flex items-center gap-2"><span className="eyebrow">Active instrument</span><span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-[0.12em] ${isLive ? 'border-primary/25 bg-primary/10 text-primary' : 'border-accent/25 bg-accent/10 text-accent'}`}>{isLive ? 'LIVE DERIV' : 'FALLBACK DATA'}</span></div>
                   <div className="mt-2 flex flex-wrap items-end gap-x-4 gap-y-1">
                     <h2 className="text-3xl font-extrabold tracking-[-0.055em] sm:text-4xl">{selected.name}</h2>
                     <span className="mono mb-1 text-xs text-muted-foreground">{selected.code} · tick stream</span>
@@ -288,7 +363,7 @@ function Home() {
                   <div className="flex items-start justify-between"><div><div className="eyebrow">Recent calls</div><h3 className="mt-1 text-sm font-bold">Signal history</h3></div><button onClick={() => setToast('History is limited to this simulated session')} className="text-[11px] font-semibold text-primary hover:underline" data-testid="button-view-history">View all</button></div>
                   <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead><tr className="border-b border-border text-[10px] uppercase tracking-[0.12em] text-muted-foreground"><th className="pb-2 font-semibold">Time</th><th className="pb-2 font-semibold">Family</th><th className="pb-2 font-semibold">Call</th><th className="pb-2 font-semibold">Result</th><th className="pb-2 font-semibold">Confidence</th><th className="pb-2 text-right font-semibold">Status</th></tr></thead><tbody>{history.map((row) => <tr key={row.time} className="border-b border-border/60 text-xs last:border-0"><td className="py-3 mono text-muted-foreground">{row.time}</td><td className="py-3 text-muted-foreground">{row.contract}</td><td className="py-3 font-semibold text-foreground">{row.call}</td><td className="py-3 text-muted-foreground">{row.result}</td><td className="py-3 mono">{row.confidence}</td><td className="py-3 text-right"><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${row.status === 'Aligned' ? 'bg-primary/10 text-primary' : 'bg-destructive/10 text-destructive'}`}>{row.status}</span></td></tr>)}</tbody></table></div>
                 </div>
-                <div className="rounded-xl border border-accent/25 bg-accent/5 p-4 panel-glow sm:p-5"><div className="flex items-center gap-2 text-accent"><ShieldCheck size={16} /><div className="eyebrow text-accent">Educational use only</div></div><h3 className="mt-3 text-sm font-bold">A clear read, not a promise.</h3><p className="mt-2 text-xs leading-relaxed text-muted-foreground">Signal Lab is a decision-support prototype using simulated market data. Connect a live Deriv feed before treating any output as current market information.</p><button onClick={() => setToast('Live data connection requested')} className="focus-ring mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-accent/30 bg-accent/10 py-2.5 text-xs font-bold text-accent transition-colors hover:bg-accent/20" data-testid="button-connect-live"><Activity size={14} /> Explore live connection</button><div className="mt-4 flex items-center gap-2 border-t border-accent/15 pt-3 text-[10px] text-muted-foreground"><Gauge size={13} /> Last model calibration: today, 08:30</div></div>
+                <div className="rounded-xl border border-accent/25 bg-accent/5 p-4 panel-glow sm:p-5"><div className="flex items-center gap-2 text-accent"><ShieldCheck size={16} /><div className="eyebrow text-accent">Educational use only</div></div><h3 className="mt-3 text-sm font-bold">A clear read, not a promise.</h3><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{isLive ? 'Live Deriv ticks are connected for market context. Signals remain informational and do not place trades.' : 'Signal Lab is using local representative data while the public Deriv feed reconnects.'}</p><button onClick={() => setToast(isLive ? 'Live public market data is connected; PAT is only needed for account actions' : liveError || 'Waiting for Deriv market data')} className="focus-ring mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-accent/30 bg-accent/10 py-2.5 text-xs font-bold text-accent transition-colors hover:bg-accent/20" data-testid="button-connect-live"><Activity size={14} /> {isLive ? 'Connection details' : 'Check live connection'}</button><div className="mt-4 flex items-center gap-2 border-t border-accent/15 pt-3 text-[10px] text-muted-foreground"><Gauge size={13} /> {isLive ? 'Public tick stream: connected' : 'Public tick stream: connecting'}</div></div>
               </section>
             </div>
           </div>
