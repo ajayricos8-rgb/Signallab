@@ -68,7 +68,7 @@ components:
           type: string
     AnalysisInput:
       type: object
-      required: [ticks, family, barrier]
+      required: [ticks, family]
       properties:
         symbol:
           type: string
@@ -85,8 +85,9 @@ components:
           enum: [matches, even-odd, over-under, rise-fall, all]
         barrier:
           type: integer
-          minimum: 0
+          minimum: 1
           maximum: 8
+          description: Optional legacy override. The dashboard leaves this unset so the analysis selects the barrier.
     AnalysisEngineSummary:
       type: object
       required: [name, description, score, signal, detail]
