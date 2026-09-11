@@ -25,11 +25,13 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Sun,
   Target,
   TrendingDown,
   TrendingUp,
   X,
   Zap,
+  Moon,
 } from 'lucide-react';
 import {
   Route,
@@ -102,6 +104,10 @@ function Home() {
   const [toast, setToast] = useState('');
   const [liveStatus, setLiveStatus] = useState<'connecting' | 'connected' | 'error' | 'offline'>('connecting');
   const [liveError, setLiveError] = useState('');
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const savedTheme = window.localStorage.getItem('signal-lab-theme');
+    return savedTheme === 'light' ? 'light' : 'dark';
+  });
   const socketRef = useRef<WebSocket | null>(null);
   const selected = indices.find((item) => item.id === selectedIndex) ?? indices[0];
   const appIdConfigured = Boolean(import.meta.env.VITE_DERIV_APP_ID);
@@ -113,6 +119,11 @@ function Home() {
       : liveStatus === 'error'
         ? 'Deriv feed unavailable'
         : 'Feed offline';
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    window.localStorage.setItem('signal-lab-theme', theme);
+  }, [theme]);
 
   useEffect(() => {
     const appId = import.meta.env.VITE_DERIV_APP_ID;
@@ -278,6 +289,7 @@ function Home() {
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
               <div className="hidden items-center gap-2 text-[11px] text-muted-foreground sm:flex"><span className={`h-1.5 w-1.5 rounded-full ${isLive && streaming ? 'bg-primary animate-pulse-line' : liveStatus === 'error' ? 'bg-destructive' : 'bg-muted-foreground'}`} /> {streaming ? connectionLabel : 'Stream paused'}</div>
+              <button onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground" aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-pressed={theme === 'dark'} title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} data-testid="button-theme-toggle">{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button>
               <button onClick={() => setToast('No unread alerts')} className="focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground" aria-label="View alerts" data-testid="button-alerts"><Bell size={16} /></button>
               <button onClick={() => setToast('Workspace settings are saved locally')} className="hidden focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground sm:block" aria-label="Open settings" data-testid="button-settings"><SlidersHorizontal size={16} /></button>
               <div className="flex h-8 w-8 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-xs font-bold text-primary">SL</div>

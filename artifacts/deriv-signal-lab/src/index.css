@@ -44,35 +44,36 @@
 }
 
 :root {
-  --background: 165 28% 7%;
-  --foreground: 154 24% 92%;
-  --border: 160 17% 18%;
-  --input: 160 17% 16%;
-  --ring: 158 77% 53%;
-  --card: 164 24% 10%;
-  --card-foreground: 154 24% 92%;
-  --card-border: 160 17% 18%;
-  --popover: 164 24% 11%;
-  --popover-foreground: 154 24% 92%;
-  --popover-border: 160 17% 21%;
-  --primary: 158 77% 53%;
-  --primary-foreground: 165 28% 7%;
-  --secondary: 163 22% 15%;
-  --secondary-foreground: 154 24% 84%;
-  --muted: 163 19% 13%;
-  --muted-foreground: 158 11% 58%;
-  --accent: 40 95% 62%;
-  --accent-foreground: 165 28% 7%;
-  --destructive: 4 77% 63%;
+  color-scheme: light;
+  --background: 160 24% 96%;
+  --foreground: 165 28% 12%;
+  --border: 160 16% 82%;
+  --input: 160 16% 88%;
+  --ring: 158 70% 36%;
+  --card: 0 0% 100%;
+  --card-foreground: 165 28% 12%;
+  --card-border: 160 16% 82%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 165 28% 12%;
+  --popover-border: 160 16% 80%;
+  --primary: 158 70% 36%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 163 22% 90%;
+  --secondary-foreground: 165 28% 20%;
+  --muted: 163 19% 91%;
+  --muted-foreground: 158 12% 40%;
+  --accent: 40 88% 43%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 4 70% 47%;
   --destructive-foreground: 0 0% 100%;
-  --sidebar: 166 31% 6%;
-  --sidebar-foreground: 154 24% 86%;
-  --sidebar-border: 160 18% 14%;
-  --sidebar-primary: 158 77% 53%;
-  --sidebar-primary-foreground: 165 28% 7%;
-  --sidebar-accent: 163 22% 12%;
-  --sidebar-accent-foreground: 154 24% 92%;
-  --sidebar-ring: 158 77% 53%;
+  --sidebar: 166 24% 92%;
+  --sidebar-foreground: 165 28% 18%;
+  --sidebar-border: 160 18% 82%;
+  --sidebar-primary: 158 70% 36%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 163 22% 86%;
+  --sidebar-accent-foreground: 165 28% 12%;
+  --sidebar-ring: 158 70% 36%;
   --chart-1: 158 77% 53%;
   --chart-2: 40 95% 62%;
   --chart-3: 4 77% 63%;
@@ -82,11 +83,12 @@
   --app-font-mono: 'DM Mono', monospace;
   --radius: 0.7rem;
   --spacing: 0.25rem;
-  --shadow-sm: 0 7px 22px hsl(165 40% 3% / 0.22);
-  --shadow-md: 0 14px 44px hsl(165 40% 3% / 0.32);
+  --shadow-sm: 0 7px 22px hsl(165 40% 3% / 0.08);
+  --shadow-md: 0 14px 44px hsl(165 40% 3% / 0.14);
 }
 
 .dark {
+  color-scheme: dark;
   --background: 165 28% 7%;
   --foreground: 154 24% 92%;
   --border: 160 17% 18%;
