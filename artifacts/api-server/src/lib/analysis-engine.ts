@@ -10,6 +10,9 @@ export interface TickAnalysisInput {
 export interface AnalysisEngineSummary {
   name: string;
   description: string;
+  score: number;
+  signal: string;
+  detail: string;
 }
 
 export interface AnalysisFactor {
@@ -83,35 +86,35 @@ export interface AnalysisResult {
   methodNote: string;
 }
 
-const ENGINE_SUMMARIES: AnalysisEngineSummary[] = [
-  {
-    name: "Descriptive statistics",
-    description: "Mean, median, dispersion, z-score, skewness, kurtosis, and range of the tick window.",
-  },
-  {
-    name: "Digit distribution",
-    description: "Smoothed last-digit frequencies, parity balance, barrier mass, entropy, and chi-square uniformity.",
-  },
-  {
-    name: "Markov transitions",
-    description: "First-order last-digit transition matrix blended with the unconditional digit distribution.",
-  },
-  {
-    name: "Runs and autocorrelation",
-    description: "Direction runs, longest streak, return autocorrelation, and positive-return rate.",
-  },
-  {
-    name: "Momentum and mean reversion",
-    description: "Fast and slow EMA gap, regression slope, RSI, Bollinger position, and directional pressure.",
-  },
-  {
-    name: "Volatility regime",
-    description: "Absolute return scale and dispersion classify the current window as compressed, balanced, or expanded.",
-  },
-  {
-    name: "Ensemble scorer",
-    description: "Combines independent feature groups and reports a probability with a conservative sample-size confidence.",
-  },
+const ENGINE_DEFINITIONS: Array<Pick<AnalysisEngineSummary, "name" | "description">> = [
+  { name: "Tick Frequency Engine", description: "Measures observation density in the supplied tick window." },
+  { name: "Digit Frequency Engine", description: "Measures smoothed frequency of each observed last digit." },
+  { name: "Rolling Frequency Engine", description: "Compares recent digit frequencies with the full analysis window." },
+  { name: "Weighted Frequency Engine", description: "Uses linearly increasing weights so later observations matter more." },
+  { name: "Recency-Weighted Frequency Engine", description: "Uses exponential decay to emphasize the newest observations." },
+  { name: "Digit Distribution Engine", description: "Evaluates concentration, balance, and deviation from uniform digit mass." },
+  { name: "Digit Transition Engine", description: "Models first-order digit-to-digit transition probabilities." },
+  { name: "Sequential Pattern Engine", description: "Scores recurring two-digit sequences and local pattern concentration." },
+  { name: "Repetition Engine", description: "Measures consecutive digit repetition and repeated directional outcomes." },
+  { name: "Alternation Engine", description: "Measures parity and direction alternation in adjacent observations." },
+  { name: "Streak Engine", description: "Measures current and longest directional streaks." },
+  { name: "Streak Break Engine", description: "Estimates pressure for a sign change after the current streak." },
+  { name: "Momentum Engine", description: "Combines EMA spread, regression slope, RSI, and return pressure." },
+  { name: "Mean Reversion Engine", description: "Scores distance from rolling mean and oscillator extremes." },
+  { name: "Exhaustion Engine", description: "Detects extended runs and extreme RSI or band positions." },
+  { name: "Reversal Engine", description: "Detects opposing recent movement, negative autocorrelation, and oscillator reversal." },
+  { name: "Persistence Engine", description: "Measures whether recent direction and digit states persist." },
+  { name: "Continuation Engine", description: "Checks whether the latest move agrees with the prevailing trend." },
+  { name: "Anomaly Detection Engine", description: "Scores unusual latest returns relative to the recent return distribution." },
+  { name: "Outlier Detection Engine", description: "Uses robust median absolute deviation to identify price outliers." },
+  { name: "Regime Detection Engine", description: "Classifies trend and volatility conditions into a current regime." },
+  { name: "Market State Engine", description: "Summarizes the window as bullish, bearish, range-bound, or high-volatility." },
+  { name: "Volatility Regime Engine", description: "Classifies the return scale as compressed, balanced, or expanded." },
+  { name: "Randomness Detection Engine", description: "Combines entropy and uniformity evidence for randomness pressure." },
+  { name: "Entropy Engine", description: "Measures information entropy in the observed digit distribution." },
+  { name: "Pattern Stability Engine", description: "Compares early and recent distributions for structural stability." },
+  { name: "Pattern Persistence Engine", description: "Measures repeated digit states and directional autocorrelation." },
+  { name: "Signal Stability Engine", description: "Measures agreement across the independent engine scores." },
 ];
 
 const clamp = (value: number, minimum: number, maximum: number): number =>
@@ -261,6 +264,75 @@ const probabilityTone = (probability: number): "mint" | "amber" | "blue" =>
 const normalizedFeature = (value: number, scale: number): number =>
   clamp(Math.abs(value) / Math.max(scale, Number.EPSILON), 0, 1);
 
+const weightedDigitDistribution = (values: number[], mode: "linear" | "exponential"): number[] => {
+  const counts = Array.from({ length: 10 }, () => 0.25);
+  let totalWeight = 2.5;
+  const decayWindow = Math.max(3, values.length / 4);
+  values.forEach((value, index) => {
+    const weight = mode === "linear"
+      ? index + 1
+      : Math.exp((index - values.length + 1) / decayWindow);
+    counts[lastDigit(value)] += weight;
+    totalWeight += weight;
+  });
+  return counts.map((count) => count / totalWeight);
+};
+
+const distributionSimilarity = (left: number[], right: number[]): number =>
+  clamp(1 - left.reduce((distance, probability, index) => (
+    distance + Math.abs(probability - (right[index] ?? 0))
+  ), 0) / 2, 0, 1);
+
+const adjacentRate = (values: number[], predicate: (current: number, previous: number) => boolean): number => {
+  if (values.length < 2) return 0;
+  let matches = 0;
+  for (let index = 1; index < values.length; index += 1) {
+    if (predicate(values[index], values[index - 1])) matches += 1;
+  }
+  return matches / (values.length - 1);
+};
+
+const longestDigitRun = (values: number[]): number => {
+  const digits = values.map(lastDigit);
+  if (digits.length === 0) return 0;
+  let current = 1;
+  let longest = 1;
+  for (let index = 1; index < digits.length; index += 1) {
+    current = digits[index] === digits[index - 1] ? current + 1 : 1;
+    longest = Math.max(longest, current);
+  }
+  return longest;
+};
+
+const currentDirectionRun = (returns: number[]): number => {
+  if (returns.length === 0) return 0;
+  const lastSign = Math.sign(returns[returns.length - 1]);
+  if (lastSign === 0) return 0;
+  let length = 1;
+  for (let index = returns.length - 2; index >= 0 && Math.sign(returns[index]) === lastSign; index -= 1) {
+    length += 1;
+  }
+  return length;
+};
+
+const robustZScore = (values: number[], value: number): number => {
+  const center = median(values);
+  const mad = median(values.map((candidate) => Math.abs(candidate - center)));
+  return mad === 0 ? 0 : (value - center) / (1.4826 * mad);
+};
+
+const createEngine = (
+  definition: Pick<AnalysisEngineSummary, "name" | "description">,
+  score: number,
+  signal: string,
+  detail: string,
+): AnalysisEngineSummary => ({
+  ...definition,
+  score: Math.round(clamp(score, 0, 100)),
+  signal,
+  detail,
+});
+
 export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
   const values = input.ticks.filter((value) => Number.isFinite(value) && value > 0).slice(-500);
   if (values.length < 5) {
@@ -297,6 +369,32 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
   const volatilityRatio = atrProxy / Math.max(Math.abs(averageReturn) + returnDeviation, Number.EPSILON);
   const volatilityRegime: AnalysisMetrics["volatilityRegime"] =
     volatilityRatio < 0.65 ? "compressed" : volatilityRatio > 1.35 ? "expanded" : "balanced";
+  const digitValues = values.map(lastDigit);
+  const rollingLength = Math.max(5, Math.floor(values.length / 3));
+  const recentValues = values.slice(-rollingLength);
+  const earlyValues = values.slice(0, Math.max(5, values.length - rollingLength));
+  const recentDigits = digitDistribution(recentValues);
+  const earlyDigits = digitDistribution(earlyValues);
+  const weightedDigits = weightedDigitDistribution(values, "linear");
+  const recencyWeightedDigits = weightedDigitDistribution(values, "exponential");
+  const rollingStability = distributionSimilarity(earlyDigits, recentDigits);
+  const repeatedDigitRate = adjacentRate(digitValues, (current, previous) => current === previous);
+  const alternatingDigitRate = adjacentRate(
+    digitValues,
+    (current, previous) => current % 2 !== previous % 2,
+  );
+  const repeatingDirectionRate = adjacentRate(
+    returns,
+    (current, previous) => Math.sign(current) === Math.sign(previous) && Math.sign(current) !== 0,
+  );
+  const alternatingDirectionRate = adjacentRate(
+    returns,
+    (current, previous) => Math.sign(current) !== Math.sign(previous),
+  );
+  const currentRun = currentDirectionRun(returns);
+  const lastReturn = returns[returns.length - 1] ?? 0;
+  const lastReturnZ = returnDeviation === 0 ? 0 : (lastReturn - averageReturn) / returnDeviation;
+  const robustLastZ = robustZScore(values, last);
 
   const trendScore = clamp(
     0.36 * clamp((emaFast - emaSlow) / Math.max(deviation, Number.EPSILON), -1, 1)
@@ -353,6 +451,240 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
     },
   ];
 
+  const pairCounts = new Map<string, number>();
+  for (let index = 1; index < digitValues.length; index += 1) {
+    const key = `${digitValues[index - 1]}→${digitValues[index]}`;
+    pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+  }
+  const dominantPair = [...pairCounts.entries()].sort((left, right) => right[1] - left[1])[0];
+  const dominantPairRate = dominantPair ? dominantPair[1] / Math.max(digitValues.length - 1, 1) : 0;
+  const meanReversionPressure = clamp(
+    0.55 * normalizedFeature(zScore, 2)
+      + 0.45 * normalizedFeature(rsiValue - 50, 35),
+    0,
+    1,
+  );
+  const exhaustionPressure = clamp(
+    Math.max(
+      normalizedFeature(rsiValue - 50, 45),
+      normalizedFeature(currentRun, Math.max(5, values.length / 4)),
+      normalizedFeature(bollingerPosition - 0.5, 0.5),
+    ),
+    0,
+    1,
+  );
+  const reversalPressure = clamp(
+    0.4 * ((1 - autocorrelation) / 2)
+      + 0.3 * (1 - repeatingDirectionRate)
+      + 0.3 * (lastReturn * trendScore < 0 ? 1 : 0),
+    0,
+    1,
+  );
+  const persistenceStrength = clamp(
+    0.5 * ((autocorrelation + 1) / 2) + 0.5 * repeatingDirectionRate,
+    0,
+    1,
+  );
+  const continuationStrength = clamp(
+    0.5 * (lastReturn === 0 || trendScore === 0 ? 0.5 : Math.sign(lastReturn) === Math.sign(trendScore) ? 1 : 0)
+      + 0.5 * ((autocorrelation + 1) / 2),
+    0,
+    1,
+  );
+  const anomalyPressure = clamp(Math.abs(lastReturnZ) / 3, 0, 1);
+  const outlierPressure = clamp(Math.abs(robustLastZ) / 3, 0, 1);
+  const normalizedChiSquare = clamp(chiSquareUniformity(values) / 18, 0, 1);
+  const randomnessPressure = clamp(0.7 * (entropy / Math.log2(10)) + 0.3 * (1 - normalizedChiSquare), 0, 1);
+  const patternPersistence = clamp(
+    0.5 * repeatedDigitRate + 0.5 * ((autocorrelation + 1) / 2),
+    0,
+    1,
+  );
+  const marketState = volatilityRegime === "expanded" && Math.abs(trendScore) < 0.3
+    ? "High volatility"
+    : trendScore > 0.25
+      ? "Bullish pressure"
+      : trendScore < -0.25
+        ? "Bearish pressure"
+        : "Range-bound";
+
+  const engineResults = [
+    createEngine(
+      ENGINE_DEFINITIONS[0],
+      clamp(35 + values.length / 2, 0, 100),
+      values.length >= 30 ? "Dense window" : "Short window",
+      `${values.length} observations supplied; timestamps are not included, so this measures window density rather than wall-clock ticks per second.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[1],
+      Math.max(...digits) * 100,
+      `Digit ${digits.indexOf(Math.max(...digits))} lead`,
+      `The most frequent smoothed digit has ${(Math.max(...digits) * 100).toFixed(1)}% mass.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[2],
+      (1 - rollingStability) * 100,
+      rollingStability < 0.7 ? "Recent shift" : "Stable rolling profile",
+      `The recent window is ${(rollingStability * 100).toFixed(1)}% similar to the earlier distribution.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[3],
+      Math.max(...weightedDigits) * 100,
+      `Weighted digit ${weightedDigits.indexOf(Math.max(...weightedDigits))} lead`,
+      "Linear recency weights emphasize later observations without fully discarding older ticks.",
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[4],
+      Math.max(...recencyWeightedDigits) * 100,
+      `Recent digit ${recencyWeightedDigits.indexOf(Math.max(...recencyWeightedDigits))} lead`,
+      "Exponential recency weighting gives the newest observations the strongest influence.",
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[5],
+      (1 - entropy / Math.log2(10)) * 100,
+      entropy / Math.log2(10) < 0.8 ? "Concentrated" : "Diffuse",
+      `Normalized digit entropy is ${(entropy / Math.log2(10)).toFixed(3)}; lower values indicate more concentration.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[6],
+      Math.max(...transitions.fromLast) * 100,
+      `Next digit ${transitions.fromLast.indexOf(Math.max(...transitions.fromLast))} lead`,
+      `The strongest transition from the latest digit has ${(Math.max(...transitions.fromLast) * 100).toFixed(1)}% smoothed probability.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[7],
+      dominantPairRate * 100,
+      dominantPair ? `Pair ${dominantPair[0]}` : "No repeated pair",
+      dominantPair ? `The most common adjacent digit pair occurs ${(dominantPairRate * 100).toFixed(1)}% of the time.` : "There are not enough adjacent observations for a repeated pair.",
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[8],
+      100 * (0.65 * repeatedDigitRate + 0.35 * repeatingDirectionRate),
+      repeatedDigitRate > 0.2 ? "Repetition present" : "Low repetition",
+      `Adjacent digit repetition is ${(repeatedDigitRate * 100).toFixed(1)}%; same-direction return repetition is ${(repeatingDirectionRate * 100).toFixed(1)}%.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[9],
+      100 * (0.65 * alternatingDigitRate + 0.35 * alternatingDirectionRate),
+      alternatingDigitRate > 0.55 ? "Alternating digits" : "Low alternation",
+      `Digit parity alternates ${(alternatingDigitRate * 100).toFixed(1)}% of the time; directional signs alternate ${(alternatingDirectionRate * 100).toFixed(1)}%.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[10],
+      clamp((run.longestRun / Math.max(returns.length, 1)) * 100, 0, 100),
+      `${run.longestRun}-tick longest run`,
+      `The window contains ${run.runCount} directional runs; the longest run is ${run.longestRun} ticks.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[11],
+      clamp(50 + (currentRun - 1) * 12, 0, 100),
+      currentRun >= 3 ? "Break pressure" : "No extended streak",
+      `The current directional streak is ${currentRun} tick${currentRun === 1 ? "" : "s"} long.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[12],
+      50 + Math.abs(trendScore) * 50,
+      trendScore > 0.15 ? "Upward momentum" : trendScore < -0.15 ? "Downward momentum" : "Neutral momentum",
+      `Trend score is ${trendScore.toFixed(3)} from EMA spread, slope, RSI, and autocorrelation.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[13],
+      meanReversionPressure * 100,
+      meanReversionPressure > 0.55 ? "Reversion pressure" : "Trend-compatible",
+      `Mean distance, RSI, and Bollinger position produce ${(meanReversionPressure * 100).toFixed(1)}% reversion pressure.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[14],
+      exhaustionPressure * 100,
+      exhaustionPressure > 0.6 ? "Exhaustion risk" : "No exhaustion signal",
+      `Run length, RSI extremes, and band position produce ${(exhaustionPressure * 100).toFixed(1)}% exhaustion pressure.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[15],
+      reversalPressure * 100,
+      reversalPressure > 0.55 ? "Reversal pressure" : "Continuation favored",
+      `Autocorrelation, direction changes, and latest-move disagreement produce ${(reversalPressure * 100).toFixed(1)}% reversal pressure.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[16],
+      persistenceStrength * 100,
+      persistenceStrength > 0.55 ? "Persistent direction" : "Weak persistence",
+      `Return autocorrelation and same-direction repetition produce ${(persistenceStrength * 100).toFixed(1)}% persistence.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[17],
+      continuationStrength * 100,
+      continuationStrength > 0.55 ? "Continuation aligned" : "Continuation weak",
+      `The latest move agrees with the broader trend and lag-one return structure at ${(continuationStrength * 100).toFixed(1)}%.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[18],
+      anomalyPressure * 100,
+      anomalyPressure > 0.65 ? "Latest return is unusual" : "No return anomaly",
+      `The latest return has a standardized magnitude of ${Math.abs(lastReturnZ).toFixed(2)}.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[19],
+      outlierPressure * 100,
+      outlierPressure > 0.65 ? "Robust price outlier" : "No robust outlier",
+      `The latest price has a robust MAD z-score of ${Math.abs(robustLastZ).toFixed(2)}.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[20],
+      50 + Math.abs(trendScore) * 30 + (volatilityRegime === "expanded" ? 20 : volatilityRegime === "compressed" ? 10 : 0),
+      marketState,
+      `Current regime combines ${volatilityRegime} volatility with a ${trendScore >= 0 ? "positive" : "negative"} trend score.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[21],
+      50 + Math.abs(trendScore) * 50,
+      marketState,
+      `Market state is ${marketState.toLowerCase()} based on directional pressure and volatility.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[22],
+      volatilityRegime === "expanded" ? 85 : volatilityRegime === "compressed" ? 35 : 60,
+      `${volatilityRegime[0].toUpperCase()}${volatilityRegime.slice(1)} volatility`,
+      `Absolute return scale is ${(atrProxy / Math.max(Math.abs(average), Number.EPSILON) * 100).toFixed(4)}% of the mean quote.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[23],
+      randomnessPressure * 100,
+      randomnessPressure > 0.65 ? "Randomness pressure" : "Structure detected",
+      `Entropy and chi-square evidence produce ${(randomnessPressure * 100).toFixed(1)}% randomness pressure.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[24],
+      (entropy / Math.log2(10)) * 100,
+      entropy / Math.log2(10) > 0.8 ? "High entropy" : "Lower entropy",
+      `The digit distribution contains ${entropy.toFixed(3)} bits of Shannon entropy.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[25],
+      rollingStability * 100,
+      rollingStability > 0.7 ? "Stable pattern" : "Pattern shift",
+      `Early and recent digit distributions are ${(rollingStability * 100).toFixed(1)}% similar.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[26],
+      patternPersistence * 100,
+      patternPersistence > 0.55 ? "Pattern persists" : "Pattern weak",
+      `Digit repetition and return autocorrelation produce ${(patternPersistence * 100).toFixed(1)}% pattern persistence.`,
+    ),
+  ];
+  const engineScoreAverage = mean(engineResults.map((engine) => engine.score));
+  const engineScoreDeviation = standardDeviation(engineResults.map((engine) => engine.score), engineScoreAverage);
+  const signalStability = clamp(100 - engineScoreDeviation * 2, 0, 100);
+  const engines: AnalysisEngineSummary[] = [
+    ...engineResults,
+    createEngine(
+      ENGINE_DEFINITIONS[27],
+      signalStability,
+      signalStability > 70 ? "Stable agreement" : signalStability > 45 ? "Mixed agreement" : "Conflicting engines",
+      `The independent engine scores have a ${engineScoreDeviation.toFixed(1)} point standard deviation.`,
+    ),
+  ];
+
   const chosenPrediction = input.family === "all"
     ? predictions.reduce((best, prediction) => prediction.confidence > best.confidence ? prediction : best, predictions[0])
     : predictions.find((prediction) => prediction.family === input.family) ?? predictions[0];
@@ -399,7 +731,7 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
     version: "ensemble-v1",
     symbol: input.symbol ?? "unknown",
     sampleSize: values.length,
-    engines: ENGINE_SUMMARIES,
+    engines,
     signal: {
       label: chosenPrediction.label,
       direction: chosenPrediction.direction,

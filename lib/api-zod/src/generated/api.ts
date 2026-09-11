@@ -67,7 +67,10 @@ export const AnalyzeTicksResponse = zod.object({
   "sampleSize": zod.number().int(),
   "engines": zod.array(zod.object({
   "name": zod.string(),
-  "description": zod.string()
+  "description": zod.string(),
+  "score": zod.number(),
+  "signal": zod.string(),
+  "detail": zod.string()
 })),
   "signal": zod.object({
   "label": zod.string(),

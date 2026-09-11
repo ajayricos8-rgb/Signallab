@@ -9,4 +9,7 @@
 export interface AnalysisEngineSummary {
   name: string;
   description: string;
+  score: number;
+  signal: string;
+  detail: string;
 }

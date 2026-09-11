@@ -44,6 +44,9 @@ export interface AnalysisInput {
 export interface AnalysisEngineSummary {
   name: string;
   description: string;
+  score: number;
+  signal: string;
+  detail: string;
 }
 
 export interface AnalysisFactor {

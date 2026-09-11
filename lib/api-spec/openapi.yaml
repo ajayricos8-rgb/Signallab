@@ -89,11 +89,17 @@ components:
           maximum: 8
     AnalysisEngineSummary:
       type: object
-      required: [name, description]
+      required: [name, description, score, signal, detail]
       properties:
         name:
           type: string
         description:
+          type: string
+        score:
+          type: number
+        signal:
+          type: string
+        detail:
           type: string
     AnalysisFactor:
       type: object
