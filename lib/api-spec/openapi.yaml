@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: analysis
+    description: Tick analysis and prediction engines
 paths:
   /healthz:
     get:
@@ -24,6 +26,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /analysis:
+    post:
+      operationId: analyzeTicks
+      tags: [analysis]
+      summary: Analyze a tick window
+      description: Runs statistical, transition, digit, momentum, and volatility engines over a tick window.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalysisInput"
+      responses:
+        "200":
+          description: Analysis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
+        "400":
+          description: Invalid tick window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +60,203 @@ components:
           type: string
       required:
         - status
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    AnalysisInput:
+      type: object
+      required: [ticks, family, barrier]
+      properties:
+        symbol:
+          type: string
+          maxLength: 64
+        ticks:
+          type: array
+          minItems: 5
+          maxItems: 500
+          items:
+            type: number
+            exclusiveMinimum: 0
+        family:
+          type: string
+          enum: [matches, even-odd, over-under, rise-fall, all]
+        barrier:
+          type: integer
+          minimum: 0
+          maximum: 8
+    AnalysisEngineSummary:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+    AnalysisFactor:
+      type: object
+      required: [name, value, note, engine]
+      properties:
+        name:
+          type: string
+        value:
+          type: number
+        note:
+          type: string
+        engine:
+          type: string
+    AnalysisPrediction:
+      type: object
+      required: [family, label, probability, confidence, direction, detail, tone]
+      properties:
+        family:
+          type: string
+        label:
+          type: string
+        probability:
+          type: number
+        confidence:
+          type: number
+        direction:
+          type: string
+        detail:
+          type: string
+        tone:
+          type: string
+          enum: [mint, amber, blue]
+    AnalysisSignal:
+      type: object
+      required: [label, direction, probability, confidence, detail, tone]
+      properties:
+        label:
+          type: string
+        direction:
+          type: string
+        probability:
+          type: number
+        confidence:
+          type: number
+        detail:
+          type: string
+        tone:
+          type: string
+          enum: [mint, amber, blue]
+    AnalysisMetrics:
+      type: object
+      required:
+        - mean
+        - median
+        - stdDev
+        - coefficientVariation
+        - min
+        - max
+        - range
+        - skewness
+        - kurtosis
+        - zScore
+        - slope
+        - returnMean
+        - returnStdDev
+        - emaFast
+        - emaSlow
+        - rsi
+        - atrProxy
+        - bollingerPosition
+        - lag1Autocorrelation
+        - shannonEntropy
+        - normalizedEntropy
+        - chiSquare
+        - runCount
+        - longestRun
+        - positiveRate
+        - lastDigitDistribution
+        - transitionMatrix
+        - transitionFromLast
+        - nextDigitProbabilities
+        - volatilityRegime
+      properties:
+        mean: { type: number }
+        median: { type: number }
+        stdDev: { type: number }
+        coefficientVariation: { type: number }
+        min: { type: number }
+        max: { type: number }
+        range: { type: number }
+        skewness: { type: number }
+        kurtosis: { type: number }
+        zScore: { type: number }
+        slope: { type: number }
+        returnMean: { type: number }
+        returnStdDev: { type: number }
+        emaFast: { type: number }
+        emaSlow: { type: number }
+        rsi: { type: number }
+        atrProxy: { type: number }
+        bollingerPosition: { type: number }
+        lag1Autocorrelation: { type: number }
+        shannonEntropy: { type: number }
+        normalizedEntropy: { type: number }
+        chiSquare: { type: number }
+        runCount: { type: integer }
+        longestRun: { type: integer }
+        positiveRate: { type: number }
+        lastDigitDistribution:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items: { type: number }
+        transitionMatrix:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: array
+            minItems: 10
+            maxItems: 10
+            items: { type: number }
+        transitionFromLast:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items: { type: number }
+        nextDigitProbabilities:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items: { type: number }
+        volatilityRegime:
+          type: string
+          enum: [compressed, balanced, expanded]
+    AnalysisResponse:
+      type: object
+      required: [version, symbol, sampleSize, engines, signal, predictions, factors, metrics, methodNote]
+      properties:
+        version:
+          type: string
+        symbol:
+          type: string
+        sampleSize:
+          type: integer
+        engines:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnalysisEngineSummary"
+        signal:
+          $ref: "#/components/schemas/AnalysisSignal"
+        predictions:
+          type: array
+          minItems: 4
+          items:
+            $ref: "#/components/schemas/AnalysisPrediction"
+        factors:
+          type: array
+          minItems: 4
+          items:
+            $ref: "#/components/schemas/AnalysisFactor"
+        metrics:
+          $ref: "#/components/schemas/AnalysisMetrics"
+        methodNote:
+          type: string
 

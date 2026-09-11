@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useAnalyzeTicks, type AnalysisInput } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -108,6 +109,7 @@ function Home() {
     const savedTheme = window.localStorage.getItem('signal-lab-theme');
     return savedTheme === 'light' ? 'light' : 'dark';
   });
+  const { mutate: runAnalysis, data: analysis, isPending: analysisPending, error: analysisError } = useAnalyzeTicks();
   const socketRef = useRef<WebSocket | null>(null);
   const selected = indices.find((item) => item.id === selectedIndex) ?? indices[0];
   const appIdConfigured = Boolean(import.meta.env.VITE_DERIV_APP_ID);
@@ -194,6 +196,21 @@ function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    const analysisTicks = [...ticks.slice(-119), tick];
+    if (analysisTicks.length < 5) return;
+    const timer = window.setTimeout(() => {
+      const input: AnalysisInput = {
+        symbol: selected.symbol,
+        ticks: analysisTicks,
+        family: family as AnalysisInput['family'],
+        barrier,
+      };
+      runAnalysis({ data: input });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [barrier, family, runAnalysis, selected.symbol, tick, ticks]);
+
   const triggerRefresh = () => {
     setRefreshing(true);
     window.setTimeout(() => {
@@ -214,26 +231,38 @@ function Home() {
     }).join(' ');
   }, [tick, ticks]);
 
-  const signal = family === 'rise-fall'
+  const fallbackSignal = family === 'rise-fall'
     ? { label: 'RISE', direction: 'Upward bias', confidence: 78, tone: 'mint', detail: 'Momentum is holding above the 20-tick mean.' }
     : family === 'even-odd'
       ? { label: 'EVEN', direction: 'Parity edge', confidence: 69, tone: 'amber', detail: 'Recent parity is clustering around even digits.' }
       : family === 'matches'
         ? { label: 'MATCH 7', direction: 'Digit recurrence', confidence: 64, tone: 'amber', detail: 'Digit 7 is the strongest recurrence in the sample.' }
         : { label: `OVER ${barrier}`, direction: 'Barrier edge', confidence: 74, tone: 'mint', detail: `Last digit distribution favors outcomes over ${barrier}.` };
+  const signal = analysis?.signal ?? fallbackSignal;
 
-  const analysisFactors = [
+  const fallbackFactors = [
     { name: 'Digit momentum', value: 82, note: 'Strong', color: 'mint' },
     { name: 'Tick frequency', value: 71, note: 'Positive', color: 'mint' },
     { name: 'Volatility regime', value: 66, note: 'Balanced', color: 'amber' },
     { name: 'Sequence pressure', value: 54, note: 'Neutral', color: 'muted' },
   ];
-  const comparison = [
+  const analysisFactors = analysis?.factors ?? fallbackFactors;
+  const fallbackComparison = [
     { label: 'Matches', value: '64%', sub: '7 is leading', score: 64, accent: 'amber' },
     { label: 'Even / Odd', value: '69%', sub: 'Even bias', score: 69, accent: 'mint' },
     { label: 'Over / Under', value: '74%', sub: `Over ${barrier}`, score: 74, accent: 'mint' },
     { label: 'Rise / Fall', value: '78%', sub: 'Rise bias', score: 78, accent: 'blue' },
   ];
+  const comparison = analysis
+    ? analysis.predictions.map((prediction) => ({
+      label: prediction.family === 'matches' ? 'Matches' : prediction.family === 'even-odd' ? 'Even / Odd' : prediction.family === 'over-under' ? 'Over / Under' : 'Rise / Fall',
+      value: `${Math.round(prediction.probability * 100)}%`,
+      sub: prediction.label,
+      score: prediction.confidence,
+      accent: prediction.tone,
+    }))
+    : fallbackComparison;
+  const factorTone = (value: number) => value >= 65 ? 'mint' : value >= 45 ? 'amber' : 'muted';
   const history = [
     { time: '08:40:32', contract: 'Over / Under', call: 'OVER 5', result: 'Over 5', confidence: '76%', status: 'Aligned' },
     { time: '08:38:08', contract: 'Rise / Fall', call: 'RISE', result: 'Rise', confidence: '71%', status: 'Aligned' },
@@ -330,15 +359,15 @@ function Home() {
 
               <section className="animate-rise-in delay-2 mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-                  <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-                    <div><div className="eyebrow">Contract family</div><div className="mt-1 text-sm font-bold">What should the next tick do?</div></div>
-                    <div className="mono text-[10px] text-muted-foreground">LAST UPDATE {lastUpdated}</div>
+                   <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                     <div><div className="eyebrow">Contract family</div><div className="mt-1 text-sm font-bold">What should the next tick do?</div></div>
+                     <div className="flex items-center gap-3"><div className={`mono text-[10px] ${analysisPending ? 'text-accent' : analysisError ? 'text-destructive' : 'text-primary'}`}>{analysisPending ? 'ENGINE RUNNING' : analysisError ? 'ENGINE FALLBACK' : analysis ? `${analysis.engines.length} ENGINES ACTIVE` : 'ENGINE STARTING'}</div><div className="mono text-[10px] text-muted-foreground">LAST UPDATE {lastUpdated}</div></div>
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {families.map((item) => <button key={item.id} onClick={() => setFamily(item.id)} className={`focus-ring rounded-lg border px-3 py-3 text-left transition-all hover:-translate-y-0.5 ${family === item.id ? 'border-primary/60 bg-primary/10' : 'border-border bg-background/35 hover:border-primary/30'}`} data-testid={`button-family-${item.id}`}><div className={`text-xs font-bold ${family === item.id ? 'text-primary' : 'text-foreground'}`}>{item.label}</div><div className="mt-1 text-[10px] text-muted-foreground">{item.hint}</div></button>)}
                   </div>
                   {family === 'over-under' && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/40 px-3 py-2.5"><div className="flex items-center gap-2 text-xs font-semibold"><Target size={14} className="text-accent" /> Barrier threshold</div><div className="flex items-center gap-1.5">{[1, 2, 3, 4, 5, 6, 7, 8].map((item) => <button key={item} onClick={() => setBarrier(item)} className={`focus-ring mono h-7 w-7 rounded-md border text-[11px] transition-colors ${barrier === item ? 'border-accent bg-accent text-accent-foreground' : 'border-border text-muted-foreground hover:border-accent/50 hover:text-foreground'}`} data-testid={`button-barrier-${item}`}>{item}</button>)}</div></div>}
-                  <div className="mt-5 flex items-center justify-between border-t border-border pt-4"><span className="eyebrow">Live tick stream</span><span className="mono text-[10px] text-muted-foreground">12 observations · 2.4s cadence</span></div>
+                   <div className="mt-5 flex items-center justify-between border-t border-border pt-4"><span className="eyebrow">Live tick stream</span><span className="mono text-[10px] text-muted-foreground">{analysis?.sampleSize ?? [...ticks, tick].length} observations · 2.4s cadence</span></div>
                   <div className="mt-2 flex flex-wrap gap-2">{[...ticks].reverse().slice(0, 8).map((value, index) => <div key={`${value}-${index}`} className={`mono rounded-md border px-2.5 py-1.5 text-[11px] ${index === 0 ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-background/45 text-muted-foreground'}`} data-testid={`text-tick-${index}`}>{value.toFixed(2)}</div>)}</div>
                 </div>
 
@@ -360,8 +389,8 @@ function Home() {
 
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
                   <div className="flex items-start justify-between"><div><div className="eyebrow">Signal anatomy</div><h3 className="mt-1 text-sm font-bold">What formed the call</h3></div><button onClick={() => setToast('Factor weights are based on the local simulation model')} className="text-muted-foreground hover:text-foreground" aria-label="Explain signal factors" data-testid="button-explain-factors"><CircleHelp size={16} /></button></div>
-                  <div className="mt-5 space-y-4">{analysisFactors.map((factor) => <div key={factor.name}><div className="mb-1.5 flex justify-between gap-2 text-xs"><span className="text-muted-foreground">{factor.name}</span><span className={factor.color === 'mint' ? 'text-primary' : factor.color === 'amber' ? 'text-accent' : 'text-muted-foreground'}>{factor.note} <span className="mono ml-1 text-[10px]">{factor.value}</span></span></div><div className="h-1.5 rounded-full bg-background"><div className={`h-full rounded-full ${factor.color === 'mint' ? 'bg-primary' : factor.color === 'amber' ? 'bg-accent' : 'bg-muted-foreground/50'}`} style={{ width: `${factor.value}%` }} /></div></div>)}</div>
-                  <div className="mt-6 rounded-lg border border-border bg-background/35 p-3 text-[11px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Method note.</span> Confidence is a weighted read of recent ticks, digit distribution, and directional momentum. It is not a probability of profit.</div>
+                   <div className="mt-5 space-y-4">{analysisFactors.map((factor) => <div key={factor.name}><div className="mb-1.5 flex justify-between gap-2 text-xs"><span className="text-muted-foreground">{factor.name}</span><span className={factorTone(factor.value) === 'mint' ? 'text-primary' : factorTone(factor.value) === 'amber' ? 'text-accent' : 'text-muted-foreground'}>{factor.note} <span className="mono ml-1 text-[10px]">{factor.value}</span></span></div><div className="h-1.5 rounded-full bg-background"><div className={`h-full rounded-full ${factorTone(factor.value) === 'mint' ? 'bg-primary' : factorTone(factor.value) === 'amber' ? 'bg-accent' : 'bg-muted-foreground/50'}`} style={{ width: `${factor.value}%` }} /></div></div>)}</div>
+                   <div className="mt-6 rounded-lg border border-border bg-background/35 p-3 text-[11px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Method note.</span> {analysis?.methodNote ?? 'The backend ensemble combines recent ticks, digit distribution, transitions, and directional momentum. It is not a probability of profit.'}</div>
                 </div>
               </section>
 
