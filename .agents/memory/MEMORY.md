@@ -1,0 +1,1 @@
+- [Artifact build environment](artifact-build-environment.md) — workspace builds of Vite artifacts require `PORT` and `BASE_PATH` to be set.

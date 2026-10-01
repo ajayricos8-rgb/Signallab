@@ -1,3 +1,5 @@
+import { analyzeReturnDiagnostics } from "./statistical-analysis";
+
 export type AnalysisFamily = "matches" | "even-odd" | "over-under" | "rise-fall" | "all";
 
 export interface TickAnalysisInput {
@@ -64,6 +66,7 @@ export interface AnalysisMetrics {
   shannonEntropy: number;
   normalizedEntropy: number;
   chiSquare: number;
+  chiSquarePValue: number;
   runCount: number;
   longestRun: number;
   positiveRate: number;
@@ -72,6 +75,22 @@ export interface AnalysisMetrics {
   transitionFromLast: number[];
   nextDigitProbabilities: number[];
   volatilityRegime: "compressed" | "balanced" | "expanded";
+  digitCounts: number[];
+  transitionCounts: number[][];
+  autocorrelationByLag: number[];
+  ljungBoxQ: number;
+  ljungBoxPValue: number;
+  jarqueBera: number;
+  normalityPValue: number;
+  runsZScore: number;
+  runsPValue: number;
+  trendTStatistic: number;
+  volatilityAutocorrelation: number;
+  structuralShiftZScore: number;
+  valueAtRisk95: number;
+  expectedShortfall95: number;
+  maxDrawdown: number;
+  effectiveSampleSize: number;
 }
 
 export interface AnalysisResult {
@@ -115,6 +134,16 @@ const ENGINE_DEFINITIONS: Array<Pick<AnalysisEngineSummary, "name" | "descriptio
   { name: "Pattern Stability Engine", description: "Compares early and recent distributions for structural stability." },
   { name: "Pattern Persistence Engine", description: "Measures repeated digit states and directional autocorrelation." },
   { name: "Signal Stability Engine", description: "Measures agreement across the independent engine scores." },
+  { name: "Serial Dependence Engine", description: "Uses a Ljung–Box portmanteau statistic over short return lags." },
+  { name: "Return Normality Engine", description: "Uses Jarque–Bera skew and tail diagnostics; normality is only a reference model." },
+  { name: "Runs Randomness Engine", description: "Tests whether positive and negative returns cluster more than a random sign sequence." },
+  { name: "Trend Significance Engine", description: "Measures the statistical strength of a linear trend in the return sequence." },
+  { name: "Volatility Clustering Engine", description: "Measures serial dependence in squared returns as a volatility-clustering proxy." },
+  { name: "Change-Point Engine", description: "Compares early and late return means for possible local structural shifts." },
+  { name: "Tail-Risk Engine", description: "Reports empirical 95% downside quantile and expected shortfall." },
+  { name: "Drawdown Engine", description: "Measures peak-to-trough percentage drawdown within the observed window." },
+  { name: "Effective Sample Engine", description: "Discounts nominal sample size for observed positive serial dependence." },
+  { name: "Digit Uniformity Test Engine", description: "Reports a chi-square goodness-of-fit diagnostic against equal digit frequencies." },
 ];
 
 const clamp = (value: number, minimum: number, maximum: number): number =>
@@ -205,17 +234,24 @@ const digitDistribution = (values: number[]): number[] => {
   return counts.map((count) => count / total);
 };
 
-const transitionDistribution = (values: number[]): { matrix: number[][]; fromLast: number[] } => {
-  const counts = Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => 1));
+const transitionDistribution = (values: number[]): { matrix: number[][]; fromLast: number[]; counts: number[][] } => {
+  const counts = Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => 0));
   const digits = values.map(lastDigit);
   for (let index = 1; index < digits.length; index += 1) {
     counts[digits[index - 1]][digits[index]] += 1;
   }
   const matrix = counts.map((row) => {
-    const total = row.reduce((sum, count) => sum + count, 0);
-    return row.map((count) => count / total);
+    const smoothed = row.map((count) => count + 1);
+    const total = smoothed.reduce((sum, count) => sum + count, 0);
+    return smoothed.map((count) => count / total);
   });
-  return { matrix, fromLast: matrix[digits[digits.length - 1] ?? 0] };
+  return { matrix, fromLast: matrix[digits[digits.length - 1] ?? 0], counts };
+};
+
+const digitCounts = (values: number[]): number[] => {
+  const counts = Array.from({ length: 10 }, () => 0);
+  values.forEach((value) => { counts[lastDigit(value)] += 1; });
+  return counts;
 };
 
 const shannonEntropy = (distribution: number[]): number =>
@@ -334,7 +370,7 @@ const createEngine = (
 });
 
 export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
-  const values = input.ticks.filter((value) => Number.isFinite(value) && value > 0).slice(-500);
+  const values = input.ticks.filter((value) => Number.isFinite(value) && value > 0).slice(-2000);
   if (values.length < 5) {
     throw new Error("At least 5 positive finite ticks are required");
   }
@@ -361,7 +397,10 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
   const autocorrelation = lagOneAutocorrelation(returns);
   const digits = digitDistribution(values);
   const transitions = transitionDistribution(values);
+  const observedDigitCounts = digitCounts(values);
   const entropy = shannonEntropy(digits);
+  const chiSquare = chiSquareUniformity(values);
+  const diagnostics = analyzeReturnDiagnostics(returns, values, chiSquare);
   const run = runStats(returns);
   const positiveRate = returns.length === 0
     ? 0.5
@@ -377,6 +416,9 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
   const earlyDigits = digitDistribution(earlyValues);
   const weightedDigits = weightedDigitDistribution(values, "linear");
   const recencyWeightedDigits = weightedDigitDistribution(values, "exponential");
+  const ensembleDigits = digits.map((probability, digit) => (
+    0.5 * probability + 0.25 * weightedDigits[digit] + 0.25 * recencyWeightedDigits[digit]
+  ));
   const rollingStability = distributionSimilarity(earlyDigits, recentDigits);
   const repeatedDigitRate = adjacentRate(digitValues, (current, previous) => current === previous);
   const alternatingDigitRate = adjacentRate(
@@ -396,7 +438,7 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
   const lastReturnZ = returnDeviation === 0 ? 0 : (lastReturn - averageReturn) / returnDeviation;
   const robustLastZ = robustZScore(values, last);
 
-  const trendScore = clamp(
+  const technicalTrendScore = clamp(
     0.36 * clamp((emaFast - emaSlow) / Math.max(deviation, Number.EPSILON), -1, 1)
       + 0.24 * clamp(slope / Math.max(atrProxy, Number.EPSILON), -1, 1)
       + 0.22 * ((rsiValue - 50) / 50)
@@ -404,11 +446,24 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
     -1,
     1,
   );
-  const riseProbability = clamp(0.5 + 0.3 * trendScore + 0.2 * (positiveRate - 0.5), 0.05, 0.95);
-  const parityProbability = [0, 2, 4, 6, 8].reduce((sum, digit) => sum + digits[digit], 0);
+  const statisticalTrendScore = clamp(diagnostics.trendTStatistic / 4, -1, 1);
+  const serialTrendScore = mean(diagnostics.autocorrelationByLag.slice(0, 3));
+  const trendScore = clamp(
+    0.62 * technicalTrendScore + 0.23 * statisticalTrendScore + 0.15 * serialTrendScore,
+    -1,
+    1,
+  );
+  const effectiveSample = diagnostics.effectiveSampleSize;
+  const forecastSupport = clamp(Math.sqrt(effectiveSample / (effectiveSample + 24)), 0.2, 0.95);
+  const riseProbability = clamp(
+    0.5 + forecastSupport * (0.29 * trendScore + 0.21 * (positiveRate - 0.5)),
+    0.05,
+    0.95,
+  );
+  const parityProbability = [0, 2, 4, 6, 8].reduce((sum, digit) => sum + ensembleDigits[digit], 0);
   const barrierOptions = Array.from({ length: 8 }, (_, index) => index + 1).map((barrier) => {
-    const overMass = digits.slice(barrier + 1).reduce((sum, probability) => sum + probability, 0);
-    const underMass = digits.slice(0, barrier).reduce((sum, probability) => sum + probability, 0);
+    const overMass = ensembleDigits.slice(barrier + 1).reduce((sum, probability) => sum + probability, 0);
+    const underMass = ensembleDigits.slice(0, barrier).reduce((sum, probability) => sum + probability, 0);
     const side = overMass >= underMass ? "OVER" : "UNDER";
     return {
       barrier,
@@ -422,7 +477,10 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
     ? barrierOptions.reduce((best, option) => option.probability > best.probability ? option : best, barrierOptions[0])
     : barrierOptions[input.barrier - 1];
   const nextDigitProbabilities = transitions.fromLast.map((probability, digit) =>
-    0.7 * probability + 0.3 * digits[digit]);
+    0.5 * probability
+      + 0.2 * digits[digit]
+      + 0.15 * weightedDigits[digit]
+      + 0.15 * recencyWeightedDigits[digit]);
   const strongestDigit = nextDigitProbabilities.indexOf(Math.max(...nextDigitProbabilities));
   const matchProbability = nextDigitProbabilities[strongestDigit];
 
@@ -431,7 +489,7 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
       family: "matches",
       label: `MATCH ${strongestDigit}`,
       probability: round(matchProbability),
-      confidence: confidenceFor(matchProbability, 0.1, values.length),
+      confidence: confidenceFor(matchProbability, 0.1, effectiveSample),
       direction: "Digit recurrence",
       detail: `Digit ${strongestDigit} leads the smoothed transition distribution from the latest digit.`,
       tone: probabilityTone(matchProbability),
@@ -440,7 +498,7 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
       family: "even-odd",
       label: parityProbability >= 0.5 ? "EVEN" : "ODD",
       probability: round(Math.max(parityProbability, 1 - parityProbability)),
-      confidence: confidenceFor(Math.max(parityProbability, 1 - parityProbability), 0.5, values.length),
+      confidence: confidenceFor(Math.max(parityProbability, 1 - parityProbability), 0.5, effectiveSample),
       direction: "Parity balance",
       detail: `${parityProbability >= 0.5 ? "Even" : "Odd"} digits have the stronger smoothed mass in the current window.`,
       tone: probabilityTone(Math.max(parityProbability, 1 - parityProbability)),
@@ -449,7 +507,7 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
       family: "over-under",
       label: selectedBarrier.label,
       probability: round(selectedBarrier.probability),
-      confidence: confidenceFor(selectedBarrier.probability, 0.5, values.length),
+      confidence: confidenceFor(selectedBarrier.probability, 0.5, effectiveSample),
       direction: "Barrier distribution",
       detail: input.barrier === undefined
         ? `The analysis selected barrier ${selectedBarrier.barrier}, which gives the strongest estimated winning-side probability across barriers 1–8. Digits equal to the barrier count as neither side.`
@@ -460,7 +518,7 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
       family: "rise-fall",
       label: riseProbability >= 0.5 ? "RISE" : "FALL",
       probability: round(Math.max(riseProbability, 1 - riseProbability)),
-      confidence: confidenceFor(Math.max(riseProbability, 1 - riseProbability), 0.5, values.length),
+      confidence: confidenceFor(Math.max(riseProbability, 1 - riseProbability), 0.5, effectiveSample),
       direction: "Directional pressure",
       detail: `EMA spread, regression slope, RSI, return runs, and autocorrelation produce a ${riseProbability >= 0.5 ? "positive" : "negative"} directional bias.`,
       tone: probabilityTone(Math.max(riseProbability, 1 - riseProbability)),
@@ -687,17 +745,89 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
       patternPersistence > 0.55 ? "Pattern persists" : "Pattern weak",
       `Digit repetition and return autocorrelation produce ${(patternPersistence * 100).toFixed(1)}% pattern persistence.`,
     ),
+    createEngine(
+      ENGINE_DEFINITIONS[28],
+      (1 - diagnostics.ljungBoxPValue) * 100,
+      diagnostics.ljungBoxPValue < 0.05 ? "Serial dependence detected" : "No strong serial dependence",
+      `Ljung–Box Q=${diagnostics.ljungBoxQ.toFixed(2)}, p=${diagnostics.ljungBoxPValue.toFixed(4)} across up to five return lags.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[29],
+      (1 - diagnostics.normalityPValue) * 100,
+      diagnostics.normalityPValue < 0.05 ? "Non-normal returns" : "Normality not rejected",
+      `Jarque–Bera=${diagnostics.jarqueBera.toFixed(2)}, p=${diagnostics.normalityPValue.toFixed(4)}; this is a distribution diagnostic, not a forecast.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[30],
+      (1 - diagnostics.runsPValue) * 100,
+      diagnostics.runsPValue < 0.05
+        ? (diagnostics.runsZScore < 0 ? "Sign clustering" : "Sign alternation")
+        : "Runs compatible with randomness",
+      `Runs-test z=${diagnostics.runsZScore.toFixed(2)}, p=${diagnostics.runsPValue.toFixed(4)}.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[31],
+      normalizedFeature(diagnostics.trendTStatistic, 3) * 100,
+      Math.abs(diagnostics.trendTStatistic) >= 2 ? "Trend evidence" : "Weak trend evidence",
+      `Return-time regression t-statistic is ${diagnostics.trendTStatistic.toFixed(2)}.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[32],
+      normalizedFeature(diagnostics.volatilityAutocorrelation, 0.5) * 100,
+      diagnostics.volatilityAutocorrelation > 0.2 ? "Volatility clusters" : "Weak volatility clustering",
+      `Lag-one autocorrelation of squared returns is ${diagnostics.volatilityAutocorrelation.toFixed(3)}.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[33],
+      normalizedFeature(diagnostics.structuralShiftZScore, 3) * 100,
+      Math.abs(diagnostics.structuralShiftZScore) >= 2 ? "Possible local shift" : "No strong shift",
+      `Difference between early and late mean returns has z=${diagnostics.structuralShiftZScore.toFixed(2)}.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[34],
+      normalizedFeature(diagnostics.valueAtRisk95, Math.max(returnDeviation * 2, Number.EPSILON)) * 100,
+      "Empirical downside tail",
+      `Historical 95% one-step return quantile is ${diagnostics.valueAtRisk95.toPrecision(5)}; expected shortfall is ${diagnostics.expectedShortfall95.toPrecision(5)}.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[35],
+      normalizedFeature(diagnostics.maxDrawdown, 0.1) * 100,
+      diagnostics.maxDrawdown > 0.05 ? "Elevated window drawdown" : "Limited window drawdown",
+      `Peak-to-trough drawdown in the sampled price path is ${(diagnostics.maxDrawdown * 100).toFixed(2)}%.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[36],
+      values.length > 0 ? (effectiveSample / values.length) * 100 : 0,
+      `${effectiveSample.toFixed(1)} effective observations`,
+      `Nominal sample size ${values.length}; adjusted for positive autocorrelation across five lags.`,
+    ),
+    createEngine(
+      ENGINE_DEFINITIONS[37],
+      (1 - diagnostics.chiSquarePValue) * 100,
+      diagnostics.chiSquarePValue < 0.05 ? "Digit imbalance detected" : "Uniformity not rejected",
+      `Digit chi-square=${chiSquare.toFixed(2)}, p=${diagnostics.chiSquarePValue.toFixed(4)} against a uniform 10-digit null.`,
+    ),
   ];
-  const engineScoreAverage = mean(engineResults.map((engine) => engine.score));
-  const engineScoreDeviation = standardDeviation(engineResults.map((engine) => engine.score), engineScoreAverage);
-  const signalStability = clamp(100 - engineScoreDeviation * 2, 0, 100);
+  const directionalVotes = [
+    technicalTrendScore,
+    statisticalTrendScore,
+    serialTrendScore,
+    (rsiValue - 50) / 50,
+    slope / Math.max(atrProxy, Number.EPSILON),
+    (positiveRate - 0.5) * 2,
+  ].filter((value) => Math.abs(value) > 0.05);
+  const positiveVotes = directionalVotes.filter((value) => value > 0).length;
+  const negativeVotes = directionalVotes.length - positiveVotes;
+  const signalStability = directionalVotes.length
+    ? (Math.max(positiveVotes, negativeVotes) / directionalVotes.length) * 100
+    : 50;
   const engines: AnalysisEngineSummary[] = [
     ...engineResults,
     createEngine(
       ENGINE_DEFINITIONS[27],
       signalStability,
       signalStability > 70 ? "Stable agreement" : signalStability > 45 ? "Mixed agreement" : "Conflicting engines",
-      `The independent engine scores have a ${engineScoreDeviation.toFixed(1)} point standard deviation.`,
+      `${Math.max(positiveVotes, negativeVotes)} of ${directionalVotes.length} non-neutral directional diagnostics agree.`,
     ),
   ];
 
@@ -732,7 +862,8 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
     lag1Autocorrelation: round(autocorrelation),
     shannonEntropy: round(entropy),
     normalizedEntropy: round(entropy / Math.log2(10)),
-    chiSquare: round(chiSquareUniformity(values)),
+    chiSquare: round(chiSquare),
+    chiSquarePValue: round(diagnostics.chiSquarePValue, 6),
     runCount: run.runCount,
     longestRun: run.longestRun,
     positiveRate: round(positiveRate),
@@ -741,10 +872,26 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
     transitionFromLast: transitions.fromLast.map((probability) => round(probability)),
     nextDigitProbabilities: nextDigitProbabilities.map((probability) => round(probability)),
     volatilityRegime,
+    digitCounts: observedDigitCounts,
+    transitionCounts: transitions.counts,
+    autocorrelationByLag: diagnostics.autocorrelationByLag.map((value) => round(value)),
+    ljungBoxQ: round(diagnostics.ljungBoxQ),
+    ljungBoxPValue: round(diagnostics.ljungBoxPValue, 6),
+    jarqueBera: round(diagnostics.jarqueBera),
+    normalityPValue: round(diagnostics.normalityPValue, 6),
+    runsZScore: round(diagnostics.runsZScore),
+    runsPValue: round(diagnostics.runsPValue, 6),
+    trendTStatistic: round(diagnostics.trendTStatistic),
+    volatilityAutocorrelation: round(diagnostics.volatilityAutocorrelation),
+    structuralShiftZScore: round(diagnostics.structuralShiftZScore),
+    valueAtRisk95: round(diagnostics.valueAtRisk95),
+    expectedShortfall95: round(diagnostics.expectedShortfall95),
+    maxDrawdown: round(diagnostics.maxDrawdown, 6),
+    effectiveSampleSize: round(diagnostics.effectiveSampleSize),
   };
 
   return {
-    version: "ensemble-v1",
+    version: "statistical-ensemble-v2",
     symbol: input.symbol ?? "unknown",
     sampleSize: values.length,
     engines,
@@ -784,6 +931,6 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
       },
     ],
     metrics,
-    methodNote: "Probabilities are smoothed estimates from the supplied tick window. Confidence reflects signal edge and sample size; it is not a probability of profit. Validate with walk-forward history and Brier/log-loss scores before relying on any engine.",
+    methodNote: "Signals combine smoothed empirical digit frequencies, recency weighting, conditional transitions, robust return diagnostics, and sample-size-adjusted directional estimates. Chi-square, Ljung–Box, runs, and Jarque–Bera p-values are diagnostics under their stated assumptions, not proof of exploitable predictability. Probabilities are not calibrated win rates or guarantees; validate out of sample with walk-forward tests, Brier score, log loss, and calibration.",
   };
 }

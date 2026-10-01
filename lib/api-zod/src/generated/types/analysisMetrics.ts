@@ -30,6 +30,11 @@ export interface AnalysisMetrics {
   shannonEntropy: number;
   normalizedEntropy: number;
   chiSquare: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  chiSquarePValue: number;
   runCount: number;
   longestRun: number;
   positiveRate: number;
@@ -56,4 +61,58 @@ export interface AnalysisMetrics {
      */
   nextDigitProbabilities: number[];
   volatilityRegime: AnalysisMetricsVolatilityRegime;
+  /**
+     * @minItems 10
+     * @maxItems 10
+     * @items.minimum 0
+     */
+  digitCounts: number[];
+  /**
+     * @minItems 10
+     * @maxItems 10
+     * @items.minItems 10
+     * @items.maxItems 10
+     * @items.items.minimum 0
+     */
+  transitionCounts: number[][];
+  /**
+     * @minItems 5
+     * @maxItems 5
+     * @items.minimum -1
+     * @items.maximum 1
+     */
+  autocorrelationByLag: number[];
+  /** @minimum 0 */
+  ljungBoxQ: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  ljungBoxPValue: number;
+  /** @minimum 0 */
+  jarqueBera: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  normalityPValue: number;
+  runsZScore: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  runsPValue: number;
+  trendTStatistic: number;
+  /**
+     * @minimum -1
+     * @maximum 1
+     */
+  volatilityAutocorrelation: number;
+  structuralShiftZScore: number;
+  valueAtRisk95: number;
+  expectedShortfall95: number;
+  /** @minimum 0 */
+  maxDrawdown: number;
+  /** @minimum 0 */
+  effectiveSampleSize: number;
 }

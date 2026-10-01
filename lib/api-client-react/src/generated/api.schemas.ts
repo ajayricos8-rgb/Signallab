@@ -29,7 +29,7 @@ export interface AnalysisInput {
   symbol?: string;
   /**
      * @minItems 5
-     * @maxItems 500
+     * @maxItems 2000
      * @items.exclusiveMinimum 0
      */
   ticks: number[];
@@ -42,12 +42,92 @@ export interface AnalysisInput {
   barrier?: number;
 }
 
+export interface CandleBar {
+  /** @minimum 0 */
+  epoch: number;
+  /** @exclusiveMinimum 0 */
+  open: number;
+  /** @exclusiveMinimum 0 */
+  high: number;
+  /** @exclusiveMinimum 0 */
+  low: number;
+  /** @exclusiveMinimum 0 */
+  close: number;
+}
+
+export interface CandleOpenAnalysisInput {
+  /**
+     * @minLength 2
+     * @maxLength 30
+     */
+  symbol: string;
+  intervalSeconds: 60;
+  /** @minimum 0 */
+  candleEpoch: number;
+  /** @exclusiveMinimum 0 */
+  openPrice: number;
+  /**
+     * @minItems 30
+     * @maxItems 500
+     */
+  completedCandles: CandleBar[];
+}
+
+export interface CandleOpenFeatures {
+  emaSpreadAtr: number;
+  rsi: number;
+  adx: number;
+  plusDi: number;
+  minusDi: number;
+  atr: number;
+  bollingerPosition: number;
+  returnAutocorrelation: number;
+  volatilityClustering: number;
+  efficiencyRatio: number;
+  openingGapAtr: number;
+  upCandleRate: number;
+  trendTStatistic: number;
+}
+
+export type CandleOpenForecastResponseLabel = typeof CandleOpenForecastResponseLabel[keyof typeof CandleOpenForecastResponseLabel];
+
+
+export const CandleOpenForecastResponseLabel = {
+  RISE: 'RISE',
+  FALL: 'FALL',
+} as const;
+
 export interface AnalysisEngineSummary {
   name: string;
   description: string;
   score: number;
   signal: string;
   detail: string;
+}
+
+export interface CandleOpenForecastResponse {
+  symbol: string;
+  intervalSeconds: number;
+  candleEpoch: number;
+  openPrice: number;
+  label: CandleOpenForecastResponseLabel;
+  /**
+     * @minimum 0.5
+     * @maximum 0.99
+     */
+  probability: number;
+  /**
+     * @minimum 50
+     * @maximum 94
+     */
+  confidence: number;
+  sampleSize: number;
+  effectiveSampleSize: number;
+  detail: string;
+  /** @minItems 1 */
+  engines: AnalysisEngineSummary[];
+  features: CandleOpenFeatures;
+  methodNote: string;
 }
 
 export interface AnalysisFactor {
@@ -126,6 +206,11 @@ export interface AnalysisMetrics {
   shannonEntropy: number;
   normalizedEntropy: number;
   chiSquare: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  chiSquarePValue: number;
   runCount: number;
   longestRun: number;
   positiveRate: number;
@@ -152,6 +237,60 @@ export interface AnalysisMetrics {
      */
   nextDigitProbabilities: number[];
   volatilityRegime: AnalysisMetricsVolatilityRegime;
+  /**
+     * @minItems 10
+     * @maxItems 10
+     * @items.minimum 0
+     */
+  digitCounts: number[];
+  /**
+     * @minItems 10
+     * @maxItems 10
+     * @items.minItems 10
+     * @items.maxItems 10
+     * @items.items.minimum 0
+     */
+  transitionCounts: number[][];
+  /**
+     * @minItems 5
+     * @maxItems 5
+     * @items.minimum -1
+     * @items.maximum 1
+     */
+  autocorrelationByLag: number[];
+  /** @minimum 0 */
+  ljungBoxQ: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  ljungBoxPValue: number;
+  /** @minimum 0 */
+  jarqueBera: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  normalityPValue: number;
+  runsZScore: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  runsPValue: number;
+  trendTStatistic: number;
+  /**
+     * @minimum -1
+     * @maximum 1
+     */
+  volatilityAutocorrelation: number;
+  structuralShiftZScore: number;
+  valueAtRisk95: number;
+  expectedShortfall95: number;
+  /** @minimum 0 */
+  maxDrawdown: number;
+  /** @minimum 0 */
+  effectiveSampleSize: number;
 }
 
 export interface AnalysisResponse {

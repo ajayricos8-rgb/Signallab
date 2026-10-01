@@ -12,7 +12,7 @@ export interface AnalysisInput {
   symbol?: string;
   /**
      * @minItems 5
-     * @maxItems 500
+     * @maxItems 2000
      * @items.exclusiveMinimum 0
      */
   ticks: number[];

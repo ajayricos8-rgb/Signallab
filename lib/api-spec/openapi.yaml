@@ -51,6 +51,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /analysis/candle-open:
+    post:
+      operationId: analyzeCandleOpen
+      tags: [analysis]
+      summary: Predict direction at the open of a one-minute candle
+      description: Uses completed one-minute candles and the current candle open to estimate whether the current candle will close higher or lower. The current candle's later prices are never included.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandleOpenAnalysisInput"
+      responses:
+        "200":
+          description: Candle-open forecast
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandleOpenForecastResponse"
+        "400":
+          description: Invalid candle history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -76,7 +101,7 @@ components:
         ticks:
           type: array
           minItems: 5
-          maxItems: 500
+          maxItems: 2000
           items:
             type: number
             exclusiveMinimum: 0
@@ -88,6 +113,85 @@ components:
           minimum: 1
           maximum: 8
           description: Optional legacy override. The dashboard leaves this unset so the analysis selects the barrier.
+    CandleBar:
+      type: object
+      required: [epoch, open, high, low, close]
+      properties:
+        epoch: { type: integer, minimum: 0 }
+        open: { type: number, exclusiveMinimum: 0 }
+        high: { type: number, exclusiveMinimum: 0 }
+        low: { type: number, exclusiveMinimum: 0 }
+        close: { type: number, exclusiveMinimum: 0 }
+    CandleOpenAnalysisInput:
+      type: object
+      required: [symbol, intervalSeconds, candleEpoch, openPrice, completedCandles]
+      properties:
+        symbol:
+          type: string
+          minLength: 2
+          maxLength: 30
+        intervalSeconds:
+          type: integer
+          const: 60
+        candleEpoch:
+          type: integer
+          minimum: 0
+        openPrice:
+          type: number
+          exclusiveMinimum: 0
+        completedCandles:
+          type: array
+          minItems: 30
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/CandleBar"
+    CandleOpenFeatures:
+      type: object
+      required: [emaSpreadAtr, rsi, adx, plusDi, minusDi, atr, bollingerPosition, returnAutocorrelation, volatilityClustering, efficiencyRatio, openingGapAtr, upCandleRate, trendTStatistic]
+      properties:
+        emaSpreadAtr: { type: number }
+        rsi: { type: number }
+        adx: { type: number }
+        plusDi: { type: number }
+        minusDi: { type: number }
+        atr: { type: number }
+        bollingerPosition: { type: number }
+        returnAutocorrelation: { type: number }
+        volatilityClustering: { type: number }
+        efficiencyRatio: { type: number }
+        openingGapAtr: { type: number }
+        upCandleRate: { type: number }
+        trendTStatistic: { type: number }
+    CandleOpenForecastResponse:
+      type: object
+      required: [symbol, intervalSeconds, candleEpoch, openPrice, label, probability, confidence, sampleSize, effectiveSampleSize, detail, engines, features, methodNote]
+      properties:
+        symbol: { type: string }
+        intervalSeconds: { type: integer }
+        candleEpoch: { type: integer }
+        openPrice: { type: number }
+        label:
+          type: string
+          enum: [RISE, FALL]
+        probability:
+          type: number
+          minimum: 0.5
+          maximum: 0.99
+        confidence:
+          type: integer
+          minimum: 50
+          maximum: 94
+        sampleSize: { type: integer }
+        effectiveSampleSize: { type: number }
+        detail: { type: string }
+        engines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/AnalysisEngineSummary"
+        features:
+          $ref: "#/components/schemas/CandleOpenFeatures"
+        methodNote: { type: string }
     AnalysisEngineSummary:
       type: object
       required: [name, description, score, signal, detail]
@@ -175,6 +279,7 @@ components:
         - shannonEntropy
         - normalizedEntropy
         - chiSquare
+        - chiSquarePValue
         - runCount
         - longestRun
         - positiveRate
@@ -183,6 +288,22 @@ components:
         - transitionFromLast
         - nextDigitProbabilities
         - volatilityRegime
+        - digitCounts
+        - transitionCounts
+        - autocorrelationByLag
+        - ljungBoxQ
+        - ljungBoxPValue
+        - jarqueBera
+        - normalityPValue
+        - runsZScore
+        - runsPValue
+        - trendTStatistic
+        - volatilityAutocorrelation
+        - structuralShiftZScore
+        - valueAtRisk95
+        - expectedShortfall95
+        - maxDrawdown
+        - effectiveSampleSize
       properties:
         mean: { type: number }
         median: { type: number }
@@ -206,6 +327,7 @@ components:
         shannonEntropy: { type: number }
         normalizedEntropy: { type: number }
         chiSquare: { type: number }
+        chiSquarePValue: { type: number, minimum: 0, maximum: 1 }
         runCount: { type: integer }
         longestRun: { type: integer }
         positiveRate: { type: number }
@@ -236,6 +358,38 @@ components:
         volatilityRegime:
           type: string
           enum: [compressed, balanced, expanded]
+        digitCounts:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items: { type: integer, minimum: 0 }
+        transitionCounts:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: array
+            minItems: 10
+            maxItems: 10
+            items: { type: integer, minimum: 0 }
+        autocorrelationByLag:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items: { type: number, minimum: -1, maximum: 1 }
+        ljungBoxQ: { type: number, minimum: 0 }
+        ljungBoxPValue: { type: number, minimum: 0, maximum: 1 }
+        jarqueBera: { type: number, minimum: 0 }
+        normalityPValue: { type: number, minimum: 0, maximum: 1 }
+        runsZScore: { type: number }
+        runsPValue: { type: number, minimum: 0, maximum: 1 }
+        trendTStatistic: { type: number }
+        volatilityAutocorrelation: { type: number, minimum: -1, maximum: 1 }
+        structuralShiftZScore: { type: number }
+        valueAtRisk95: { type: number }
+        expectedShortfall95: { type: number }
+        maxDrawdown: { type: number, minimum: 0 }
+        effectiveSampleSize: { type: number, minimum: 0 }
     AnalysisResponse:
       type: object
       required: [version, symbol, sampleSize, engines, signal, predictions, factors, metrics, methodNote]

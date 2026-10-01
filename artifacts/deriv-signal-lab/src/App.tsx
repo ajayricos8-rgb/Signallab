@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useAnalyzeTicks, type AnalysisInput } from '@workspace/api-client-react';
+import {
+  useAnalyzeCandleOpen,
+  useAnalyzeTicks,
+  type AnalysisInput,
+  type CandleOpenAnalysisInput,
+  type CandleOpenForecastResponse,
+} from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
+import { CandleForecastCard, type CandleForecastHistoryItem } from '@/components/candle-forecast-card';
+import { DigitHeatmap } from '@/components/digit-heatmap';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
@@ -40,6 +48,45 @@ import {
 } from 'wouter';
 
 const queryClient = new QueryClient();
+
+type CandleBar = CandleOpenAnalysisInput['completedCandles'][number];
+type CandleOutcome = NonNullable<CandleForecastHistoryItem['actualOutcome']>;
+
+type DerivCandlePayload = {
+  epoch?: number | string;
+  open?: number | string;
+  high?: number | string;
+  low?: number | string;
+  close?: number | string;
+};
+
+type DerivMessage = {
+  msg_type?: string;
+  req_id?: number;
+  tick?: { quote?: number | string; symbol?: string; epoch?: number | string };
+  history?: { prices?: Array<number | string>; times?: Array<number | string> };
+  candles?: DerivCandlePayload[];
+  ohlc?: DerivCandlePayload;
+  error?: { message?: string };
+};
+
+const parseCandle = (payload: DerivCandlePayload): CandleBar | null => {
+  const epoch = Number(payload.epoch);
+  const open = Number(payload.open);
+  const high = Number(payload.high);
+  const low = Number(payload.low);
+  const close = Number(payload.close);
+  if (![epoch, open, high, low, close].every(Number.isFinite) || open <= 0 || high <= 0 || low <= 0 || close <= 0) {
+    return null;
+  }
+  return { epoch, open, high, low, close };
+};
+
+const mergeCandles = (current: CandleBar[], additions: CandleBar[]): CandleBar[] => {
+  const byEpoch = new Map<number, CandleBar>();
+  [...current, ...additions].forEach((candle) => byEpoch.set(candle.epoch, candle));
+  return [...byEpoch.values()].sort((left, right) => left.epoch - right.epoch).slice(-500);
+};
 
 function Home() {
   const indices = [
@@ -99,6 +146,13 @@ function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [tick, setTick] = useState(8_742.16);
   const [ticks, setTicks] = useState([8_738.12, 8_739.44, 8_738.98, 8_741.02, 8_740.67, 8_742.16]);
+  const [tickHistoryLoaded, setTickHistoryLoaded] = useState(false);
+  const [completedCandles, setCompletedCandles] = useState<CandleBar[]>([]);
+  const [activeCandle, setActiveCandle] = useState<CandleBar | null>(null);
+  const [candleStatus, setCandleStatus] = useState('connecting');
+  const [candleForecast, setCandleForecast] = useState<CandleOpenForecastResponse | null>(null);
+  const [candleForecastHistory, setCandleForecastHistory] = useState<CandleForecastHistoryItem[]>([]);
+  const [candleForecastError, setCandleForecastError] = useState('');
   const [lastUpdated, setLastUpdated] = useState('08:42:16');
   const [toast, setToast] = useState('');
   const [liveStatus, setLiveStatus] = useState<'connecting' | 'connected' | 'error' | 'offline'>('connecting');
@@ -108,8 +162,21 @@ function Home() {
     return savedTheme === 'light' ? 'light' : 'dark';
   });
   const { mutate: runAnalysis, data: analysis, isPending: analysisPending, error: analysisError } = useAnalyzeTicks();
+  const {
+    mutate: runCandleAnalysis,
+    isPending: candleForecastPending,
+  } = useAnalyzeCandleOpen();
   const socketRef = useRef<WebSocket | null>(null);
+  const candleBufferRef = useRef<CandleBar[]>([]);
+  const activeCandleRef = useRef<CandleBar | null>(null);
+  const settledOutcomesRef = useRef(new Map<number, CandleOutcome>());
+  const attemptedCandleEpochsRef = useRef(new Set<number>());
+  const tickHistoryArrivalsRef = useRef<number[]>([]);
+  const runCandleAnalysisRef = useRef(runCandleAnalysis);
+  runCandleAnalysisRef.current = runCandleAnalysis;
   const selected = indices.find((item) => item.id === selectedIndex) ?? indices[0];
+  const selectedSymbolRef = useRef(selected.symbol);
+  selectedSymbolRef.current = selected.symbol;
   const hasCurrentAnalysis = Boolean(
     analysis
       && generatedFor?.symbol === selected.symbol
@@ -136,50 +203,243 @@ function Home() {
     const wsUrl = appId
       ? `wss://api.derivws.com/trading/v1/options/ws/public?app_id=${encodeURIComponent(appId)}`
       : 'wss://api.derivws.com/trading/v1/options/ws/public';
-    const socket = new WebSocket(wsUrl);
-    socketRef.current = socket;
+    let disposed = false;
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+    tickHistoryArrivalsRef.current = [];
+    candleBufferRef.current = [];
+    activeCandleRef.current = null;
+    settledOutcomesRef.current.clear();
+    attemptedCandleEpochsRef.current.clear();
+    setTickHistoryLoaded(false);
+    setCompletedCandles([]);
+    setActiveCandle(null);
+    setCandleForecast(null);
+    setCandleForecastHistory([]);
+    setCandleForecastError('');
     setLiveStatus('connecting');
+    setCandleStatus('connecting');
 
-    socket.onopen = () => {
-      setLiveStatus('connected');
-      setLiveError('');
-      socket.send(JSON.stringify({ active_symbols: 'brief', req_id: 1 }));
-      socket.send(JSON.stringify({ ticks: selected.symbol, subscribe: 1, req_id: 2 }));
+    const settleCandle = (candle: CandleBar) => {
+      const outcome: CandleOutcome = candle.close > candle.open
+        ? 'RISE'
+        : candle.close < candle.open
+          ? 'FALL'
+          : 'FLAT';
+      settledOutcomesRef.current.set(candle.epoch, outcome);
+      setCandleForecastHistory((history) => history.map((item) => (
+        item.forecast.candleEpoch === candle.epoch
+          ? { ...item, actualOutcome: outcome }
+          : item
+      )));
     };
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data) as {
-        msg_type?: string;
-        tick?: { quote?: number; symbol?: string; epoch?: number };
-        error?: { message?: string };
-      };
-      if (data.error) {
-        setLiveStatus('error');
-        setLiveError(data.error.message ?? 'Deriv returned an unknown error');
+
+    const requestForecastAtOpen = (epoch: number, openPrice: number, completed: CandleBar[]) => {
+      if (completed.length < 30) {
+        setCandleStatus(`warming up · ${completed.length}/30 completed candles`);
         return;
       }
-      if (data.msg_type === 'tick' && data.tick?.quote && data.tick.symbol === selected.symbol) {
-        const next = Number(data.tick.quote);
-        setTick(next);
-        setTicks((items) => [...items.slice(-11), next]);
-        setLastUpdated(data.tick.epoch ? new Date(data.tick.epoch * 1000).toLocaleTimeString([], { hour12: false }) : new Date().toLocaleTimeString([], { hour12: false }));
+      if (attemptedCandleEpochsRef.current.has(epoch)) return;
+      attemptedCandleEpochsRef.current.add(epoch);
+      setCandleForecast(null);
+      setCandleForecastError('');
+      setCandleStatus('forecasting at candle open');
+      const requestSymbol = selected.symbol;
+      const request: CandleOpenAnalysisInput = {
+        symbol: requestSymbol,
+        intervalSeconds: 60,
+        candleEpoch: epoch,
+        openPrice,
+        completedCandles: completed.slice(-500),
+      };
+      runCandleAnalysisRef.current({ data: request }, {
+        onSuccess: (result) => {
+          if (selectedSymbolRef.current !== requestSymbol) return;
+          const actualOutcome = settledOutcomesRef.current.get(result.candleEpoch);
+          const historyItem: CandleForecastHistoryItem = {
+            forecast: result,
+            ...(actualOutcome ? { actualOutcome } : {}),
+          };
+          setCandleForecast(result);
+          setCandleForecastHistory((history) => [
+            historyItem,
+            ...history.filter((item) => item.forecast.candleEpoch !== result.candleEpoch),
+          ].slice(0, 8));
+          setCandleStatus('live · forecast issued at open');
+        },
+        onError: (error) => {
+          if (selectedSymbolRef.current !== requestSymbol) return;
+          setCandleForecastError(error instanceof Error ? error.message : 'Candle forecast request failed');
+          setCandleStatus('forecast error');
+        },
+      });
+    };
+
+    const updateActiveCandle = (next: CandleBar) => {
+      const previous = activeCandleRef.current;
+      if (previous && next.epoch < previous.epoch) return;
+      if (previous && next.epoch > previous.epoch) {
+        const completed = mergeCandles(candleBufferRef.current, [previous]);
+        candleBufferRef.current = completed;
+        setCompletedCandles(completed);
+        settleCandle(previous);
+      }
+      const isNewEpoch = !previous || next.epoch > previous.epoch;
+      activeCandleRef.current = next;
+      setActiveCandle(next);
+      if (isNewEpoch) {
+        requestForecastAtOpen(next.epoch, next.open, candleBufferRef.current);
       }
     };
-    socket.onerror = () => {
-      setLiveStatus('error');
-      setLiveError('Unable to reach Deriv public market data');
+
+    const loadCandleHistory = (payloads: DerivCandlePayload[]) => {
+      const bars = payloads.map(parseCandle).filter((bar): bar is CandleBar => bar !== null);
+      if (!bars.length) {
+        setCandleStatus('waiting for candle history');
+        return;
+      }
+      const currentMinuteEpoch = Math.floor(Date.now() / 60_000) * 60;
+      const latest = bars[bars.length - 1];
+      const historyActive = latest.epoch >= currentMinuteEpoch ? latest : null;
+      const existingActive = activeCandleRef.current;
+      const active = existingActive && (!historyActive || existingActive.epoch >= historyActive.epoch)
+        ? existingActive
+        : historyActive;
+      const completedFromHistory = bars.filter((bar) => bar.epoch < (active?.epoch ?? currentMinuteEpoch));
+      const completed = mergeCandles(candleBufferRef.current, completedFromHistory);
+      candleBufferRef.current = completed;
+      setCompletedCandles(completed);
+      if (active) {
+        activeCandleRef.current = active;
+        setActiveCandle(active);
+        requestForecastAtOpen(active.epoch, active.open, completed);
+      } else {
+        setCandleStatus(completed.length >= 30 ? 'waiting for next candle open' : `warming up · ${completed.length}/30 completed candles`);
+      }
     };
-    socket.onclose = () => setLiveStatus('offline');
+
+    const connect = () => {
+      if (disposed) return;
+      setLiveStatus('connecting');
+      setCandleStatus('connecting');
+      socket = new WebSocket(wsUrl);
+      socketRef.current = socket;
+
+      socket.onopen = () => {
+        if (disposed) return;
+        setLiveStatus('connected');
+        setLiveError('');
+        socket?.send(JSON.stringify({ active_symbols: 'brief', req_id: 1 }));
+        socket?.send(JSON.stringify({
+          ticks_history: selected.symbol,
+          end: 'latest',
+          count: 2000,
+          style: 'ticks',
+          req_id: 2,
+        }));
+        socket?.send(JSON.stringify({ ticks: selected.symbol, subscribe: 1, req_id: 3 }));
+        socket?.send(JSON.stringify({
+          ticks_history: selected.symbol,
+          end: 'latest',
+          count: 500,
+          style: 'candles',
+          granularity: 60,
+          subscribe: 1,
+          req_id: 4,
+        }));
+      };
+
+      socket.onmessage = (event) => {
+        if (disposed) return;
+        let data: DerivMessage;
+        try {
+          data = JSON.parse(event.data) as DerivMessage;
+        } catch {
+          setLiveError('Deriv sent an unreadable market-data message');
+          return;
+        }
+        if (data.error) {
+          const message = data.error.message ?? 'Deriv returned an unknown error';
+          if (data.req_id === 4) {
+            setCandleStatus('candle feed error');
+            setCandleForecastError(message);
+          } else {
+            setLiveStatus('error');
+            setLiveError(message);
+          }
+          return;
+        }
+
+        if (data.msg_type === 'history' && data.history?.prices) {
+          const historicPrices = data.history.prices.map(Number).filter((price) => Number.isFinite(price) && price > 0);
+          const merged = [...historicPrices, ...tickHistoryArrivalsRef.current].slice(-2000);
+          tickHistoryArrivalsRef.current = [];
+          if (merged.length) {
+            setTicks(merged);
+            setTick(merged[merged.length - 1]);
+            setTickHistoryLoaded(merged.length >= 5);
+            const latestEpoch = data.history.times?.at(-1);
+            setLastUpdated(latestEpoch
+              ? new Date(Number(latestEpoch) * 1000).toLocaleTimeString([], { hour12: false })
+              : new Date().toLocaleTimeString([], { hour12: false }));
+          } else {
+            setTickHistoryLoaded(false);
+          }
+        }
+
+        if (data.msg_type === 'candles' && data.candles) {
+          loadCandleHistory(data.candles);
+        }
+
+        if (data.msg_type === 'ohlc' && data.ohlc) {
+          const candle = parseCandle(data.ohlc);
+          if (candle) updateActiveCandle(candle);
+        }
+
+        if (
+          data.msg_type === 'tick'
+          && data.tick?.quote !== undefined
+          && (!data.tick.symbol || data.tick.symbol === selected.symbol)
+        ) {
+          const next = Number(data.tick.quote);
+          if (Number.isFinite(next) && next > 0) {
+            tickHistoryArrivalsRef.current = [...tickHistoryArrivalsRef.current, next].slice(-2000);
+            setTick(next);
+            setTicks((items) => [...items, next].slice(-2000));
+            const epoch = data.tick.epoch ? Number(data.tick.epoch) : Math.floor(Date.now() / 1000);
+            setLastUpdated(new Date(epoch * 1000).toLocaleTimeString([], { hour12: false }));
+          }
+        }
+      };
+
+      socket.onerror = () => {
+        if (disposed) return;
+        setLiveStatus('error');
+        setLiveError('Unable to reach Deriv public market data');
+      };
+      socket.onclose = () => {
+        if (socketRef.current === socket) socketRef.current = null;
+        if (disposed) return;
+        setLiveStatus('offline');
+        setCandleStatus('reconnecting');
+        reconnectTimer = window.setTimeout(connect, 3000);
+      };
+    };
+
+    connect();
     return () => {
-      socket.close();
-      socketRef.current = null;
+      disposed = true;
+      window.clearTimeout(reconnectTimer);
+      socket?.close();
+      if (socketRef.current === socket) socketRef.current = null;
     };
   }, [selected.symbol]);
 
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ forget_all: 'ticks', req_id: 3 }));
-    if (streaming) socket.send(JSON.stringify({ ticks: selected.symbol, subscribe: 1, req_id: 4 }));
+    socket.send(JSON.stringify({ forget_all: 'ticks', req_id: 5 }));
+    if (streaming) socket.send(JSON.stringify({ ticks: selected.symbol, subscribe: 1, req_id: 6 }));
   }, [selected.symbol, streaming]);
 
   useEffect(() => {
@@ -210,11 +470,11 @@ function Home() {
   };
 
   const chartPoints = useMemo(() => {
-    const source = [...ticks, tick];
+    const source = ticks.length > 1 ? ticks.slice(-120) : [...ticks, tick];
     const min = Math.min(...source) - 1.3;
     const max = Math.max(...source) + 1.3;
     return source.map((value, index) => {
-      const x = 12 + (index / (source.length - 1)) * 76;
+      const x = 12 + (index / Math.max(source.length - 1, 1)) * 76;
       const y = 14 + ((max - value) / (max - min)) * 68;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     }).join(' ');
@@ -227,7 +487,9 @@ function Home() {
     tone: 'blue',
     detail: analysisPending
       ? 'The signal will appear when the analysis completes.'
-      : 'Press Generate signal to analyze the current tick window.',
+      : tickHistoryLoaded
+        ? 'Press Generate signal to analyze the current Deriv tick window.'
+        : 'Waiting for a real Deriv tick-history response before enabling analysis.',
   };
   const signal = hasCurrentAnalysis && analysis ? analysis.signal : waitingSignal;
 
@@ -345,6 +607,7 @@ function Home() {
                         if (!item) return;
                         const nextQuote = Number(item.quote.replaceAll(',', ''));
                         setSelectedIndex(item.id);
+                        setTickHistoryLoaded(false);
                         setTick(nextQuote);
                         setTicks([nextQuote - 3.12, nextQuote - 1.84, nextQuote - 2.3, nextQuote - 1.14, nextQuote - 1.49, nextQuote]);
                         setGeneratedFor(null);
@@ -361,6 +624,20 @@ function Home() {
                   </div>
                 </div>
               </section>
+
+              <div className="mt-5">
+                <CandleForecastCard
+                  symbol={selected.symbol}
+                  status={candleStatus}
+                  completedCandleCount={completedCandles.length}
+                  currentCandleEpoch={activeCandle?.epoch}
+                  currentCandleOpen={activeCandle?.open}
+                  isPending={candleForecastPending}
+                  error={candleForecastError || undefined}
+                  forecast={candleForecast}
+                  history={candleForecastHistory}
+                />
+              </div>
 
               <section className="animate-rise-in delay-2 mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
@@ -382,7 +659,7 @@ function Home() {
                     onClick={() => {
                       const input: AnalysisInput = {
                         symbol: selected.symbol,
-                        ticks: [...ticks.slice(-119), tick],
+                        ticks: ticks.slice(-2000),
                         family: family as AnalysisInput['family'],
                       };
                       setGeneratedFor(null);
@@ -395,15 +672,15 @@ function Home() {
                         },
                       });
                     }}
-                    disabled={analysisPending}
+                    disabled={analysisPending || !tickHistoryLoaded || ticks.length < 5}
                     className="focus-ring mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-3 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-65"
                     data-testid="button-generate-signal"
                   >
                     <Sparkles size={16} className={analysisPending ? 'animate-pulse' : ''} />
-                    {analysisPending ? 'Analyzing tick window…' : 'Generate signal'}
+                    {analysisPending ? 'Analyzing tick window…' : !tickHistoryLoaded ? 'Waiting for Deriv history…' : 'Generate signal'}
                   </button>
                   {analysisError && <p className="mt-2 text-xs text-destructive" role="alert">Analysis failed. Check the tick window and try again.</p>}
-                    <div className="mt-5 flex items-center justify-between border-t border-border pt-4"><span className="eyebrow">Live tick stream</span><span className="mono text-[10px] text-muted-foreground">{hasCurrentAnalysis && analysis ? analysis.sampleSize : [...ticks, tick].length} observations · 2.4s cadence</span></div>
+                    <div className="mt-5 flex items-center justify-between border-t border-border pt-4"><span className="eyebrow">Live tick stream</span><span className="mono text-[10px] text-muted-foreground">{tickHistoryLoaded ? `${ticks.length} real observations · history buffer` : 'Waiting for real Deriv history'}</span></div>
                   <div className="mt-2 flex flex-wrap gap-2">{[...ticks].reverse().slice(0, 8).map((value, index) => <div key={`${value}-${index}`} className={`mono rounded-md border px-2.5 py-1.5 text-[11px] ${index === 0 ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-background/45 text-muted-foreground'}`} data-testid={`text-tick-${index}`}>{value.toFixed(2)}</div>)}</div>
                 </div>
 
@@ -418,9 +695,9 @@ function Home() {
 
               <section className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-                  <div className="flex items-start justify-between"><div><div className="eyebrow">Price action</div><h3 className="mt-1 text-sm font-bold">Synthetic tick chart</h3></div><div className="flex items-center gap-3 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><span className="h-1.5 w-4 rounded-full bg-primary" /> Tick path</span><span className="mono">1m view</span></div></div>
-                  <div className="mt-4 h-[225px] rounded-lg border border-border bg-background/45 p-2 sm:h-[260px]"><svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" role="img" aria-label="Synthetic tick price chart" data-testid="chart-tick-price"><defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="hsl(158 77% 53% / .22)" /><stop offset="100%" stopColor="hsl(158 77% 53% / 0)" /></linearGradient></defs>{[20, 40, 60, 80].map((y) => <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="hsl(160 17% 21% / .65)" strokeWidth=".25" />)}<polyline points={`12,100 ${chartPoints} 88,100`} fill="url(#area)" stroke="none" /><polyline points={chartPoints} fill="none" stroke="hsl(158 77% 53%)" strokeWidth=".8" vectorEffect="non-scaling-stroke" /><circle cx={chartPoints.split(' ').at(-1)?.split(',')[0]} cy={chartPoints.split(' ').at(-1)?.split(',')[1]} r="1.5" fill="hsl(40 95% 62%)" /></svg></div>
-                  <div className="mt-3 flex justify-between mono text-[9px] text-muted-foreground"><span>08:41:00</span><span>08:41:30</span><span>08:42:00</span><span>08:42:30</span></div>
+                  <div className="flex items-start justify-between"><div><div className="eyebrow">Price action</div><h3 className="mt-1 text-sm font-bold">Deriv tick history</h3></div><div className="flex items-center gap-3 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><span className="h-1.5 w-4 rounded-full bg-primary" /> Tick path</span><span className="mono">recent view</span></div></div>
+                  <div className="mt-4 h-[225px] rounded-lg border border-border bg-background/45 p-2 sm:h-[260px]"><svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" role="img" aria-label="Deriv historical and live tick prices" data-testid="chart-tick-price"><defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="hsl(158 77% 53% / .22)" /><stop offset="100%" stopColor="hsl(158 77% 53% / 0)" /></linearGradient></defs>{[20, 40, 60, 80].map((y) => <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="hsl(160 17% 21% / .65)" strokeWidth=".25" />)}<polyline points={`12,100 ${chartPoints} 88,100`} fill="url(#area)" stroke="none" /><polyline points={chartPoints} fill="none" stroke="hsl(158 77% 53%)" strokeWidth=".8" vectorEffect="non-scaling-stroke" /><circle cx={chartPoints.split(' ').at(-1)?.split(',')[0]} cy={chartPoints.split(' ').at(-1)?.split(',')[1]} r="1.5" fill="hsl(40 95% 62%)" /></svg></div>
+                  <div className="mt-3 flex justify-between mono text-[9px] text-muted-foreground"><span>Older observations</span><span>Last update {lastUpdated}</span></div>
                 </div>
 
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
@@ -434,6 +711,105 @@ function Home() {
                 <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><div className="eyebrow">Cross-family read</div><h3 className="mt-1 text-sm font-bold">Compare all contract families</h3></div><button onClick={() => setToast('Comparison uses the same active tick window')} className="flex items-center gap-2 self-start text-[11px] font-semibold text-primary hover:underline" data-testid="button-comparison-info"><BarChart3 size={14} /> How scores are formed</button></div>
                 <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{comparison.map((item) => <button key={item.label} onClick={() => { setFamily(item.label === 'Matches' ? 'matches' : item.label === 'Even / Odd' ? 'even-odd' : item.label === 'Over / Under' ? 'over-under' : 'rise-fall'); setGeneratedFor(null); }} className="group rounded-lg border border-border bg-background/35 p-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40" data-testid={`button-comparison-${item.label.toLowerCase().replaceAll(' ', '-')}`}><div className="flex items-center justify-between"><span className="text-xs font-semibold">{item.label}</span><span className={`mono text-xs font-medium ${item.accent === 'mint' ? 'text-primary' : item.accent === 'amber' ? 'text-accent' : 'text-[hsl(var(--chart-4))]'}`}>{item.value}</span></div><div className="mt-2 h-1.5 rounded-full bg-muted"><div className={`h-full rounded-full ${item.accent === 'mint' ? 'bg-primary' : item.accent === 'amber' ? 'bg-accent' : 'bg-[hsl(var(--chart-4))]'}`} style={{ width: `${item.score}%` }} /></div><div className="mt-2 text-[10px] text-muted-foreground">{item.sub}</div></button>)}</div>
               </section>
+
+              <div className="mt-5 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,.9fr)]">
+                <DigitHeatmap
+                  analysis={hasCurrentAnalysis && analysis ? analysis : null}
+                  contractFamily={family}
+                  isLoading={analysisPending}
+                />
+                <section className="min-w-0 rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" aria-labelledby="tick-diagnostics-title">
+                  <div className="eyebrow">Statistical diagnostics</div>
+                  <h2 id="tick-diagnostics-title" className="mt-1 text-sm font-bold">Expanded engine results</h2>
+                  {hasCurrentAnalysis && analysis ? (
+                    <>
+                      <p className="mt-1 text-xs text-muted-foreground">{analysis.sampleSize} observed ticks · {analysis.engines.length} analysis engines · latest calculated {lastUpdated}</p>
+                      <details className="group mt-4 rounded-lg border border-border bg-background/25">
+                        <summary className="focus-ring cursor-pointer list-none px-3 py-2.5 text-xs font-semibold [&::-webkit-details-marker]:hidden">
+                          <span className="flex items-center justify-between gap-3">
+                            <span>All statistical measures and engine details</span>
+                            <span className="mono text-[9px] font-normal text-muted-foreground">{analysis.engines.length} engines <span className="inline-block transition-transform group-open:rotate-180">⌄</span></span>
+                          </span>
+                        </summary>
+                        <div className="space-y-5 border-t border-border px-3 py-3">
+                          <div>
+                            <h3 className="mb-2 eyebrow">Distribution &amp; price state</h3>
+                            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                              {[
+                                ['Mean', analysis.metrics.mean],
+                                ['Median', analysis.metrics.median],
+                                ['Std. deviation', analysis.metrics.stdDev],
+                                ['Coefficient of variation', analysis.metrics.coefficientVariation],
+                                ['Range', analysis.metrics.range],
+                                ['Skewness', analysis.metrics.skewness],
+                                ['Excess kurtosis', analysis.metrics.kurtosis],
+                                ['Latest quote z-score', analysis.metrics.zScore],
+                                ['EMA fast', analysis.metrics.emaFast],
+                                ['EMA slow', analysis.metrics.emaSlow],
+                                ['RSI', analysis.metrics.rsi],
+                                ['ATR proxy', analysis.metrics.atrProxy],
+                                ['Bollinger position', analysis.metrics.bollingerPosition],
+                                ['Positive return rate', analysis.metrics.positiveRate],
+                                ['Volatility regime', analysis.metrics.volatilityRegime],
+                                ['Max drawdown', `${(analysis.metrics.maxDrawdown * 100).toFixed(2)}%`],
+                              ].map(([label, value]) => (
+                                <div key={String(label)} className="rounded-md border border-border/80 bg-card/70 px-2.5 py-2">
+                                  <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{label}</div>
+                                  <div className="mono mt-1 break-words text-[11px] font-medium">{typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 5 }) : value}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <h3 className="mb-2 eyebrow">Dependence, randomness &amp; risk</h3>
+                            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                              {[
+                                ['Lag-1 autocorrelation', analysis.metrics.lag1Autocorrelation],
+                                ['Autocorrelation by lag', analysis.metrics.autocorrelationByLag.map((value) => value.toFixed(3)).join(' · ')],
+                                ['Ljung–Box Q / p', `${analysis.metrics.ljungBoxQ.toFixed(3)} / ${analysis.metrics.ljungBoxPValue.toFixed(4)}`],
+                                ['Jarque–Bera / p', `${analysis.metrics.jarqueBera.toFixed(3)} / ${analysis.metrics.normalityPValue.toFixed(4)}`],
+                                ['Runs z / p', `${analysis.metrics.runsZScore.toFixed(3)} / ${analysis.metrics.runsPValue.toFixed(4)}`],
+                                ['Trend t-statistic', analysis.metrics.trendTStatistic],
+                                ['Volatility autocorrelation', analysis.metrics.volatilityAutocorrelation],
+                                ['Structural-shift z-score', analysis.metrics.structuralShiftZScore],
+                                ['95% VaR / expected shortfall', `${analysis.metrics.valueAtRisk95.toPrecision(5)} / ${analysis.metrics.expectedShortfall95.toPrecision(5)}`],
+                                ['Run count / longest', `${analysis.metrics.runCount} / ${analysis.metrics.longestRun}`],
+                                ['Digit chi-square / p', `${analysis.metrics.chiSquare.toFixed(3)} / ${analysis.metrics.chiSquarePValue.toFixed(4)}`],
+                                ['Effective sample size', analysis.metrics.effectiveSampleSize],
+                              ].map(([label, value]) => (
+                                <div key={String(label)} className="rounded-md border border-border/80 bg-card/70 px-2.5 py-2">
+                                  <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{label}</div>
+                                  <div className="mono mt-1 break-words text-[11px] font-medium">{typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 5 }) : value}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <h3 className="mb-2 eyebrow">Individual engines</h3>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              {analysis.engines.map((engine, index) => (
+                                <article key={`${engine.name}-${index}`} className="rounded-md border border-border/80 bg-card/70 p-2.5" data-testid={`tick-engine-${index}`}>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <h4 className="text-[11px] font-bold">{engine.name}</h4>
+                                    <span className="mono shrink-0 text-[9px] text-primary">{engine.score}</span>
+                                  </div>
+                                  <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{engine.description}</p>
+                                  <p className="mt-1 text-[10px] leading-relaxed">{engine.signal} · {engine.detail}</p>
+                                </article>
+                              ))}
+                            </div>
+                          </div>
+                          <p className="border-t border-border pt-3 text-[10px] leading-relaxed text-muted-foreground">{analysis.methodNote}</p>
+                        </div>
+                      </details>
+                    </>
+                  ) : (
+                    <div className="mt-4 rounded-lg border border-dashed border-border bg-background/30 px-3 py-6 text-xs leading-relaxed text-muted-foreground">
+                      Run an analysis on a real Deriv tick-history window to inspect the diagnostic tests and all engine outputs.
+                    </div>
+                  )}
+                </section>
+              </div>
 
               <section className="mt-5 grid gap-5 pb-8 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">

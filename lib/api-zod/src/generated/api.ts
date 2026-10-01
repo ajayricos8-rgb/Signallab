@@ -26,7 +26,7 @@ export const analyzeTicksBodySymbolMax = 64;
 export const analyzeTicksBodyTicksItemExclusiveMin = 0;
 
 export const analyzeTicksBodyTicksMin = 5;
-export const analyzeTicksBodyTicksMax = 500;
+export const analyzeTicksBodyTicksMax = 2000;
 
 export const analyzeTicksBodyBarrierMax = 8;
 
@@ -43,6 +43,9 @@ export const analyzeTicksResponsePredictionsMin = 4;
 
 export const analyzeTicksResponseFactorsMin = 4;
 
+export const analyzeTicksResponseMetricsChiSquarePValueMin = 0;
+export const analyzeTicksResponseMetricsChiSquarePValueMax = 1;
+
 export const analyzeTicksResponseMetricsLastDigitDistributionMin = 10;
 export const analyzeTicksResponseMetricsLastDigitDistributionMax = 10;
 
@@ -57,6 +60,45 @@ export const analyzeTicksResponseMetricsTransitionFromLastMax = 10;
 
 export const analyzeTicksResponseMetricsNextDigitProbabilitiesMin = 10;
 export const analyzeTicksResponseMetricsNextDigitProbabilitiesMax = 10;
+
+export const analyzeTicksResponseMetricsDigitCountsItemMin = 0;
+
+export const analyzeTicksResponseMetricsDigitCountsMin = 10;
+export const analyzeTicksResponseMetricsDigitCountsMax = 10;
+
+export const analyzeTicksResponseMetricsTransitionCountsItemItemMin = 0;
+
+export const analyzeTicksResponseMetricsTransitionCountsItemMin = 10;
+export const analyzeTicksResponseMetricsTransitionCountsItemMax = 10;
+
+export const analyzeTicksResponseMetricsTransitionCountsMin = 10;
+export const analyzeTicksResponseMetricsTransitionCountsMax = 10;
+
+export const analyzeTicksResponseMetricsAutocorrelationByLagItemMin = -1;
+export const analyzeTicksResponseMetricsAutocorrelationByLagItemMax = 1;
+
+export const analyzeTicksResponseMetricsAutocorrelationByLagMin = 5;
+export const analyzeTicksResponseMetricsAutocorrelationByLagMax = 5;
+
+export const analyzeTicksResponseMetricsLjungBoxQMin = 0;
+
+export const analyzeTicksResponseMetricsLjungBoxPValueMin = 0;
+export const analyzeTicksResponseMetricsLjungBoxPValueMax = 1;
+
+export const analyzeTicksResponseMetricsJarqueBeraMin = 0;
+
+export const analyzeTicksResponseMetricsNormalityPValueMin = 0;
+export const analyzeTicksResponseMetricsNormalityPValueMax = 1;
+
+export const analyzeTicksResponseMetricsRunsPValueMin = 0;
+export const analyzeTicksResponseMetricsRunsPValueMax = 1;
+
+export const analyzeTicksResponseMetricsVolatilityAutocorrelationMin = -1;
+export const analyzeTicksResponseMetricsVolatilityAutocorrelationMax = 1;
+
+export const analyzeTicksResponseMetricsMaxDrawdownMin = 0;
+
+export const analyzeTicksResponseMetricsEffectiveSampleSizeMin = 0;
 
 
 
@@ -117,6 +159,7 @@ export const AnalyzeTicksResponse = zod.object({
   "shannonEntropy": zod.number(),
   "normalizedEntropy": zod.number(),
   "chiSquare": zod.number(),
+  "chiSquarePValue": zod.number().min(analyzeTicksResponseMetricsChiSquarePValueMin).max(analyzeTicksResponseMetricsChiSquarePValueMax),
   "runCount": zod.number().int(),
   "longestRun": zod.number().int(),
   "positiveRate": zod.number(),
@@ -124,7 +167,109 @@ export const AnalyzeTicksResponse = zod.object({
   "transitionMatrix": zod.array(zod.array(zod.number()).min(analyzeTicksResponseMetricsTransitionMatrixItemMin).max(analyzeTicksResponseMetricsTransitionMatrixItemMax)).min(analyzeTicksResponseMetricsTransitionMatrixMin).max(analyzeTicksResponseMetricsTransitionMatrixMax),
   "transitionFromLast": zod.array(zod.number()).min(analyzeTicksResponseMetricsTransitionFromLastMin).max(analyzeTicksResponseMetricsTransitionFromLastMax),
   "nextDigitProbabilities": zod.array(zod.number()).min(analyzeTicksResponseMetricsNextDigitProbabilitiesMin).max(analyzeTicksResponseMetricsNextDigitProbabilitiesMax),
-  "volatilityRegime": zod.enum(['compressed', 'balanced', 'expanded'])
+  "volatilityRegime": zod.enum(['compressed', 'balanced', 'expanded']),
+  "digitCounts": zod.array(zod.number().int().min(analyzeTicksResponseMetricsDigitCountsItemMin)).min(analyzeTicksResponseMetricsDigitCountsMin).max(analyzeTicksResponseMetricsDigitCountsMax),
+  "transitionCounts": zod.array(zod.array(zod.number().int().min(analyzeTicksResponseMetricsTransitionCountsItemItemMin)).min(analyzeTicksResponseMetricsTransitionCountsItemMin).max(analyzeTicksResponseMetricsTransitionCountsItemMax)).min(analyzeTicksResponseMetricsTransitionCountsMin).max(analyzeTicksResponseMetricsTransitionCountsMax),
+  "autocorrelationByLag": zod.array(zod.number().min(analyzeTicksResponseMetricsAutocorrelationByLagItemMin).max(analyzeTicksResponseMetricsAutocorrelationByLagItemMax)).min(analyzeTicksResponseMetricsAutocorrelationByLagMin).max(analyzeTicksResponseMetricsAutocorrelationByLagMax),
+  "ljungBoxQ": zod.number().min(analyzeTicksResponseMetricsLjungBoxQMin),
+  "ljungBoxPValue": zod.number().min(analyzeTicksResponseMetricsLjungBoxPValueMin).max(analyzeTicksResponseMetricsLjungBoxPValueMax),
+  "jarqueBera": zod.number().min(analyzeTicksResponseMetricsJarqueBeraMin),
+  "normalityPValue": zod.number().min(analyzeTicksResponseMetricsNormalityPValueMin).max(analyzeTicksResponseMetricsNormalityPValueMax),
+  "runsZScore": zod.number(),
+  "runsPValue": zod.number().min(analyzeTicksResponseMetricsRunsPValueMin).max(analyzeTicksResponseMetricsRunsPValueMax),
+  "trendTStatistic": zod.number(),
+  "volatilityAutocorrelation": zod.number().min(analyzeTicksResponseMetricsVolatilityAutocorrelationMin).max(analyzeTicksResponseMetricsVolatilityAutocorrelationMax),
+  "structuralShiftZScore": zod.number(),
+  "valueAtRisk95": zod.number(),
+  "expectedShortfall95": zod.number(),
+  "maxDrawdown": zod.number().min(analyzeTicksResponseMetricsMaxDrawdownMin),
+  "effectiveSampleSize": zod.number().min(analyzeTicksResponseMetricsEffectiveSampleSizeMin)
+}),
+  "methodNote": zod.string()
+})
+
+
+/**
+ * Uses completed one-minute candles and the current candle open to estimate whether the current candle will close higher or lower. The current candle's later prices are never included.
+ * @summary Predict direction at the open of a one-minute candle
+ */
+export const analyzeCandleOpenBodySymbolMin = 2;
+export const analyzeCandleOpenBodySymbolMax = 30;
+
+export const analyzeCandleOpenBodyCandleEpochMin = 0;
+
+export const analyzeCandleOpenBodyOpenPriceExclusiveMin = 0;
+
+export const analyzeCandleOpenBodyCompletedCandlesItemEpochMin = 0;
+
+export const analyzeCandleOpenBodyCompletedCandlesItemOpenExclusiveMin = 0;
+
+export const analyzeCandleOpenBodyCompletedCandlesItemHighExclusiveMin = 0;
+
+export const analyzeCandleOpenBodyCompletedCandlesItemLowExclusiveMin = 0;
+
+export const analyzeCandleOpenBodyCompletedCandlesItemCloseExclusiveMin = 0;
+
+export const analyzeCandleOpenBodyCompletedCandlesMin = 30;
+export const analyzeCandleOpenBodyCompletedCandlesMax = 500;
+
+
+
+export const AnalyzeCandleOpenBody = zod.object({
+  "symbol": zod.string().min(analyzeCandleOpenBodySymbolMin).max(analyzeCandleOpenBodySymbolMax),
+  "intervalSeconds": zod.literal(60),
+  "candleEpoch": zod.number().int().min(analyzeCandleOpenBodyCandleEpochMin),
+  "openPrice": zod.number().gt(analyzeCandleOpenBodyOpenPriceExclusiveMin),
+  "completedCandles": zod.array(zod.object({
+  "epoch": zod.number().int().min(analyzeCandleOpenBodyCompletedCandlesItemEpochMin),
+  "open": zod.number().gt(analyzeCandleOpenBodyCompletedCandlesItemOpenExclusiveMin),
+  "high": zod.number().gt(analyzeCandleOpenBodyCompletedCandlesItemHighExclusiveMin),
+  "low": zod.number().gt(analyzeCandleOpenBodyCompletedCandlesItemLowExclusiveMin),
+  "close": zod.number().gt(analyzeCandleOpenBodyCompletedCandlesItemCloseExclusiveMin)
+})).min(analyzeCandleOpenBodyCompletedCandlesMin).max(analyzeCandleOpenBodyCompletedCandlesMax)
+})
+
+export const analyzeCandleOpenResponseProbabilityMin = 0.5;
+export const analyzeCandleOpenResponseProbabilityMax = 0.99;
+
+export const analyzeCandleOpenResponseConfidenceMin = 50;
+export const analyzeCandleOpenResponseConfidenceMax = 94;
+
+
+
+
+export const AnalyzeCandleOpenResponse = zod.object({
+  "symbol": zod.string(),
+  "intervalSeconds": zod.number().int(),
+  "candleEpoch": zod.number().int(),
+  "openPrice": zod.number(),
+  "label": zod.enum(['RISE', 'FALL']),
+  "probability": zod.number().min(analyzeCandleOpenResponseProbabilityMin).max(analyzeCandleOpenResponseProbabilityMax),
+  "confidence": zod.number().int().min(analyzeCandleOpenResponseConfidenceMin).max(analyzeCandleOpenResponseConfidenceMax),
+  "sampleSize": zod.number().int(),
+  "effectiveSampleSize": zod.number(),
+  "detail": zod.string(),
+  "engines": zod.array(zod.object({
+  "name": zod.string(),
+  "description": zod.string(),
+  "score": zod.number(),
+  "signal": zod.string(),
+  "detail": zod.string()
+})).min(1),
+  "features": zod.object({
+  "emaSpreadAtr": zod.number(),
+  "rsi": zod.number(),
+  "adx": zod.number(),
+  "plusDi": zod.number(),
+  "minusDi": zod.number(),
+  "atr": zod.number(),
+  "bollingerPosition": zod.number(),
+  "returnAutocorrelation": zod.number(),
+  "volatilityClustering": zod.number(),
+  "efficiencyRatio": zod.number(),
+  "openingGapAtr": zod.number(),
+  "upCandleRate": zod.number(),
+  "trendTStatistic": zod.number()
 }),
   "methodNote": zod.string()
 })

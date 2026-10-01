@@ -22,6 +22,8 @@ import type {
 import type {
   AnalysisInput,
   AnalysisResponse,
+  CandleOpenAnalysisInput,
+  CandleOpenForecastResponse,
   ErrorResponse,
   HealthStatus
 } from './api.schemas';
@@ -201,5 +203,77 @@ export const useAnalyzeTicks = <TError = ErrorType<ErrorResponse>,
         TContext
       > => {
       return useMutation(getAnalyzeTicksMutationOptions(options));
+    }
+
+export const getAnalyzeCandleOpenUrl = () => {
+
+
+
+
+  return `/api/analysis/candle-open`
+}
+
+/**
+ * Uses completed one-minute candles and the current candle open to estimate whether the current candle will close higher or lower. The current candle's later prices are never included.
+ * @summary Predict direction at the open of a one-minute candle
+ */
+export const analyzeCandleOpen = async (candleOpenAnalysisInput: CandleOpenAnalysisInput, options?: Parameters<typeof customFetch>[1]): Promise<CandleOpenForecastResponse> => {
+
+  return customFetch<CandleOpenForecastResponse>(getAnalyzeCandleOpenUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(candleOpenAnalysisInput)
+  }
+);}
+
+
+
+
+
+export const getAnalyzeCandleOpenMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeCandleOpen>>, TError,{data: BodyType<CandleOpenAnalysisInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof analyzeCandleOpen>>, TError,{data: BodyType<CandleOpenAnalysisInput>}, TContext> => {
+
+const mutationKey = ['analyzeCandleOpen'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof analyzeCandleOpen>>, {data: BodyType<CandleOpenAnalysisInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  analyzeCandleOpen(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AnalyzeCandleOpenMutationResult = NonNullable<Awaited<ReturnType<typeof analyzeCandleOpen>>>
+    export type AnalyzeCandleOpenMutationBody = BodyType<CandleOpenAnalysisInput>
+    export type AnalyzeCandleOpenMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Predict direction at the open of a one-minute candle
+ */
+export const useAnalyzeCandleOpen = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeCandleOpen>>, TError,{data: BodyType<CandleOpenAnalysisInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof analyzeCandleOpen>>,
+        TError,
+        {data: BodyType<CandleOpenAnalysisInput>},
+        TContext
+      > => {
+      return useMutation(getAnalyzeCandleOpenMutationOptions(options));
     }
 
