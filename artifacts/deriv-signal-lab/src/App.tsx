@@ -54,6 +54,7 @@ type CandleOutcome = NonNullable<CandleForecastHistoryItem['actualOutcome']>;
 
 type DerivCandlePayload = {
   epoch?: number | string;
+  open_time?: number | string;
   open?: number | string;
   high?: number | string;
   low?: number | string;
@@ -71,7 +72,13 @@ type DerivMessage = {
 };
 
 const parseCandle = (payload: DerivCandlePayload): CandleBar | null => {
-  const epoch = Number(payload.epoch);
+  const rawOpenTime = Number(payload.open_time);
+  const rawEpoch = Number(payload.epoch);
+  // Deriv OHLC updates may advance `epoch` with each tick; `open_time` is the
+  // candle's stable identity. Bucket the fallback to this app's 60s interval.
+  const epoch = Number.isFinite(rawOpenTime)
+    ? rawOpenTime
+    : Math.floor(rawEpoch / 60) * 60;
   const open = Number(payload.open);
   const high = Number(payload.high);
   const low = Number(payload.low);
