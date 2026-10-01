@@ -4,7 +4,7 @@ export interface TickAnalysisInput {
   symbol?: string;
   ticks: number[];
   family: AnalysisFamily;
-  barrier: number;
+  barrier?: number;
 }
 
 export interface AnalysisEngineSummary {
@@ -406,7 +406,21 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
   );
   const riseProbability = clamp(0.5 + 0.3 * trendScore + 0.2 * (positiveRate - 0.5), 0.05, 0.95);
   const parityProbability = [0, 2, 4, 6, 8].reduce((sum, digit) => sum + digits[digit], 0);
-  const overProbability = digits.slice(input.barrier + 1).reduce((sum, probability) => sum + probability, 0);
+  const barrierOptions = Array.from({ length: 8 }, (_, index) => index + 1).map((barrier) => {
+    const overMass = digits.slice(barrier + 1).reduce((sum, probability) => sum + probability, 0);
+    const underMass = digits.slice(0, barrier).reduce((sum, probability) => sum + probability, 0);
+    const side = overMass >= underMass ? "OVER" : "UNDER";
+    return {
+      barrier,
+      overProbability: overMass,
+      underProbability: underMass,
+      probability: Math.max(overMass, underMass),
+      label: `${side} ${barrier}`,
+    };
+  });
+  const selectedBarrier = input.barrier === undefined
+    ? barrierOptions.reduce((best, option) => option.probability > best.probability ? option : best, barrierOptions[0])
+    : barrierOptions[input.barrier - 1];
   const nextDigitProbabilities = transitions.fromLast.map((probability, digit) =>
     0.7 * probability + 0.3 * digits[digit]);
   const strongestDigit = nextDigitProbabilities.indexOf(Math.max(...nextDigitProbabilities));
@@ -433,12 +447,14 @@ export function analyzeTicks(input: TickAnalysisInput): AnalysisResult {
     },
     {
       family: "over-under",
-      label: overProbability >= 0.5 ? `OVER ${input.barrier}` : `UNDER ${input.barrier}`,
-      probability: round(Math.max(overProbability, 1 - overProbability)),
-      confidence: confidenceFor(Math.max(overProbability, 1 - overProbability), 0.5, values.length),
+      label: selectedBarrier.label,
+      probability: round(selectedBarrier.probability),
+      confidence: confidenceFor(selectedBarrier.probability, 0.5, values.length),
       direction: "Barrier distribution",
-      detail: `Last-digit mass is ${overProbability >= 0.5 ? "above" : "at or below"} the selected barrier.`,
-      tone: probabilityTone(Math.max(overProbability, 1 - overProbability)),
+      detail: input.barrier === undefined
+        ? `The analysis selected barrier ${selectedBarrier.barrier}, which gives the strongest estimated winning-side probability across barriers 1–8. Digits equal to the barrier count as neither side.`
+        : `The selected side has ${(selectedBarrier.probability * 100).toFixed(1)}% estimated digit mass; a digit equal to the barrier counts as neither side.`,
+      tone: probabilityTone(selectedBarrier.probability),
     },
     {
       family: "rise-fall",

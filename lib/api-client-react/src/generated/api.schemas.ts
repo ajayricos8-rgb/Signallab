@@ -35,10 +35,11 @@ export interface AnalysisInput {
   ticks: number[];
   family: AnalysisInputFamily;
   /**
-     * @minimum 0
+     * Optional legacy override. The dashboard leaves this unset so the analysis selects the barrier.
+     * @minimum 1
      * @maximum 8
      */
-  barrier: number;
+  barrier?: number;
 }
 
 export interface AnalysisEngineSummary {

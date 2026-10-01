@@ -28,7 +28,6 @@ export const analyzeTicksBodyTicksItemExclusiveMin = 0;
 export const analyzeTicksBodyTicksMin = 5;
 export const analyzeTicksBodyTicksMax = 500;
 
-export const analyzeTicksBodyBarrierMin = 0;
 export const analyzeTicksBodyBarrierMax = 8;
 
 
@@ -37,7 +36,7 @@ export const AnalyzeTicksBody = zod.object({
   "symbol": zod.string().max(analyzeTicksBodySymbolMax).optional(),
   "ticks": zod.array(zod.number().gt(analyzeTicksBodyTicksItemExclusiveMin)).min(analyzeTicksBodyTicksMin).max(analyzeTicksBodyTicksMax),
   "family": zod.enum(['matches', 'even-odd', 'over-under', 'rise-fall', 'all']),
-  "barrier": zod.number().int().min(analyzeTicksBodyBarrierMin).max(analyzeTicksBodyBarrierMax)
+  "barrier": zod.number().int().min(1).max(analyzeTicksBodyBarrierMax).optional().describe('Optional legacy override. The dashboard leaves this unset so the analysis selects the barrier.')
 })
 
 export const analyzeTicksResponsePredictionsMin = 4;

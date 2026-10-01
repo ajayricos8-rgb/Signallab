@@ -10,7 +10,6 @@ import {
   BarChart3,
   Bell,
   Check,
-  ChevronDown,
   CircleHelp,
   Clock3,
   Gauge,
@@ -27,7 +26,6 @@ import {
   SlidersHorizontal,
   Sparkles,
   Sun,
-  Target,
   TrendingDown,
   TrendingUp,
   X,
@@ -95,7 +93,7 @@ function Home() {
   ];
   const [selectedIndex, setSelectedIndex] = useState('vol10');
   const [family, setFamily] = useState('over-under');
-  const [barrier, setBarrier] = useState(5);
+  const [generatedFor, setGeneratedFor] = useState<{ symbol: string; family: string } | null>(null);
   const [streaming, setStreaming] = useState(true);
   const [mobileNav, setMobileNav] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -112,6 +110,12 @@ function Home() {
   const { mutate: runAnalysis, data: analysis, isPending: analysisPending, error: analysisError } = useAnalyzeTicks();
   const socketRef = useRef<WebSocket | null>(null);
   const selected = indices.find((item) => item.id === selectedIndex) ?? indices[0];
+  const hasCurrentAnalysis = Boolean(
+    analysis
+      && generatedFor?.symbol === selected.symbol
+      && generatedFor.family === family
+      && !analysisPending,
+  );
   const appIdConfigured = Boolean(import.meta.env.VITE_DERIV_APP_ID);
   const isLive = liveStatus === 'connected' && appIdConfigured;
   const connectionLabel = liveStatus === 'connected'
@@ -196,27 +200,12 @@ function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  useEffect(() => {
-    const analysisTicks = [...ticks.slice(-119), tick];
-    if (analysisTicks.length < 5) return;
-    const timer = window.setTimeout(() => {
-      const input: AnalysisInput = {
-        symbol: selected.symbol,
-        ticks: analysisTicks,
-        family: family as AnalysisInput['family'],
-        barrier,
-      };
-      runAnalysis({ data: input });
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [barrier, family, runAnalysis, selected.symbol, tick, ticks]);
-
   const triggerRefresh = () => {
     setRefreshing(true);
     window.setTimeout(() => {
       setRefreshing(false);
       setLastUpdated(new Date().toLocaleTimeString([], { hour12: false }));
-      setToast(isLive ? 'Analysis refreshed from the live Deriv tick stream' : 'Analysis refreshed from the local fallback buffer');
+      setToast(isLive ? 'Live Deriv tick stream refreshed' : 'Tick buffer refreshed');
     }, 650);
   };
 
@@ -231,29 +220,31 @@ function Home() {
     }).join(' ');
   }, [tick, ticks]);
 
-  const fallbackSignal = family === 'rise-fall'
-    ? { label: 'RISE', direction: 'Upward bias', confidence: 78, tone: 'mint', detail: 'Momentum is holding above the 20-tick mean.' }
-    : family === 'even-odd'
-      ? { label: 'EVEN', direction: 'Parity edge', confidence: 69, tone: 'amber', detail: 'Recent parity is clustering around even digits.' }
-      : family === 'matches'
-        ? { label: 'MATCH 7', direction: 'Digit recurrence', confidence: 64, tone: 'amber', detail: 'Digit 7 is the strongest recurrence in the sample.' }
-        : { label: `OVER ${barrier}`, direction: 'Barrier edge', confidence: 74, tone: 'mint', detail: `Last digit distribution favors outcomes over ${barrier}.` };
-  const signal = analysis?.signal ?? fallbackSignal;
+  const waitingSignal = {
+    label: analysisPending ? 'ANALYZING' : 'READY',
+    direction: analysisPending ? 'Running selected engines' : 'Waiting for signal generation',
+    confidence: 0,
+    tone: 'blue',
+    detail: analysisPending
+      ? 'The signal will appear when the analysis completes.'
+      : 'Press Generate signal to analyze the current tick window.',
+  };
+  const signal = hasCurrentAnalysis && analysis ? analysis.signal : waitingSignal;
 
   const fallbackFactors = [
-    { name: 'Digit momentum', value: 82, note: 'Strong', color: 'mint' },
-    { name: 'Tick frequency', value: 71, note: 'Positive', color: 'mint' },
-    { name: 'Volatility regime', value: 66, note: 'Balanced', color: 'amber' },
-    { name: 'Sequence pressure', value: 54, note: 'Neutral', color: 'muted' },
+    { name: 'Digit distribution', value: 0, note: 'Waiting', color: 'muted' },
+    { name: 'Transition signal', value: 0, note: 'Waiting', color: 'muted' },
+    { name: 'Momentum pressure', value: 0, note: 'Waiting', color: 'muted' },
+    { name: 'Volatility regime', value: 0, note: 'Waiting', color: 'muted' },
   ];
-  const analysisFactors = analysis?.factors ?? fallbackFactors;
+  const analysisFactors = hasCurrentAnalysis && analysis ? analysis.factors : fallbackFactors;
   const fallbackComparison = [
-    { label: 'Matches', value: '64%', sub: '7 is leading', score: 64, accent: 'amber' },
-    { label: 'Even / Odd', value: '69%', sub: 'Even bias', score: 69, accent: 'mint' },
-    { label: 'Over / Under', value: '74%', sub: `Over ${barrier}`, score: 74, accent: 'mint' },
-    { label: 'Rise / Fall', value: '78%', sub: 'Rise bias', score: 78, accent: 'blue' },
+    { label: 'Matches', value: '—', sub: 'Generate a signal', score: 0, accent: 'blue' },
+    { label: 'Even / Odd', value: '—', sub: 'Generate a signal', score: 0, accent: 'blue' },
+    { label: 'Over / Under', value: '—', sub: 'Generate a signal', score: 0, accent: 'blue' },
+    { label: 'Rise / Fall', value: '—', sub: 'Generate a signal', score: 0, accent: 'blue' },
   ];
-  const comparison = analysis
+  const comparison = hasCurrentAnalysis && analysis
     ? analysis.predictions.map((prediction) => ({
       label: prediction.family === 'matches' ? 'Matches' : prediction.family === 'even-odd' ? 'Even / Odd' : prediction.family === 'over-under' ? 'Over / Under' : 'Rise / Fall',
       value: `${Math.round(prediction.probability * 100)}%`,
@@ -345,10 +336,24 @@ function Home() {
               <section className="animate-rise-in delay-1 mt-6 rounded-xl border border-card-border bg-card/90 p-3 panel-glow sm:p-4">
                 <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
                   <div>
-                    <div className="mb-2 flex items-center justify-between"><span className="eyebrow">Choose index</span><span className="mono text-[10px] text-muted-foreground">{indices.length} continuous indices available</span></div>
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                      {indices.map((item) => <button key={item.id} onClick={() => { const nextQuote = Number(item.quote.replaceAll(',', '')); setSelectedIndex(item.id); setTick(nextQuote); setTicks([nextQuote - 3.12, nextQuote - 1.84, nextQuote - 2.3, nextQuote - 1.14, nextQuote - 1.49, nextQuote]); setToast(`${item.name} selected`); }} className={`focus-ring min-w-[150px] rounded-lg border px-3 py-2 text-left transition-all hover:-translate-y-0.5 ${selectedIndex === item.id ? 'border-primary/60 bg-primary/10' : 'border-border bg-background/50 hover:border-primary/35'}`} data-testid={`button-index-${item.id}`}><div className="mono text-[10px] font-medium text-muted-foreground">{item.code}</div><div className="mt-1 truncate text-xs font-semibold">{item.name.replace('Volatility ', '')}</div><div className={`mono mt-1 text-[10px] ${item.delta.startsWith('+') ? 'text-primary' : 'text-destructive'}`}>{item.delta}</div></button>)}
-                    </div>
+                    <label htmlFor="index-select" className="mb-2 flex items-center justify-between"><span className="eyebrow">Choose index</span><span className="mono text-[10px] text-muted-foreground">{indices.length} continuous indices available</span></label>
+                    <select
+                      id="index-select"
+                      value={selectedIndex}
+                      onChange={(event) => {
+                        const item = indices.find((option) => option.id === event.target.value);
+                        if (!item) return;
+                        const nextQuote = Number(item.quote.replaceAll(',', ''));
+                        setSelectedIndex(item.id);
+                        setTick(nextQuote);
+                        setTicks([nextQuote - 3.12, nextQuote - 1.84, nextQuote - 2.3, nextQuote - 1.14, nextQuote - 1.49, nextQuote]);
+                        setGeneratedFor(null);
+                      }}
+                      className="focus-ring h-11 w-full rounded-lg border border-border bg-background px-3 text-sm font-semibold text-foreground outline-none transition-colors hover:border-primary/50 focus:border-primary sm:max-w-xl"
+                      data-testid="select-index"
+                    >
+                      {indices.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.code} · {item.delta}</option>)}
+                    </select>
                   </div>
                   <div className="flex min-w-[180px] items-end gap-3 border-t border-border pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
                     <div><div className="eyebrow">Current quote</div><div className="mono mt-1 text-2xl font-medium tracking-[-0.04em] text-foreground" data-testid="text-current-quote">{tick.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>
@@ -361,13 +366,44 @@ function Home() {
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
                    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
                      <div><div className="eyebrow">Contract family</div><div className="mt-1 text-sm font-bold">What should the next tick do?</div></div>
-                     <div className="flex items-center gap-3"><div className={`mono text-[10px] ${analysisPending ? 'text-accent' : analysisError ? 'text-destructive' : 'text-primary'}`}>{analysisPending ? 'ENGINE RUNNING' : analysisError ? 'ENGINE FALLBACK' : analysis ? `${analysis.engines.length} ENGINES ACTIVE` : 'ENGINE STARTING'}</div><div className="mono text-[10px] text-muted-foreground">LAST UPDATE {lastUpdated}</div></div>
+                      <div className="flex items-center gap-3"><div className={`mono text-[10px] ${analysisPending ? 'text-accent' : analysisError ? 'text-destructive' : 'text-primary'}`}>{analysisPending ? 'ENGINE RUNNING' : analysisError ? 'ANALYSIS FAILED' : hasCurrentAnalysis && analysis ? `${analysis.engines.length} ENGINES READY` : 'READY TO GENERATE'}</div><div className="mono text-[10px] text-muted-foreground">TICK UPDATE {lastUpdated}</div></div>
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {families.map((item) => <button key={item.id} onClick={() => setFamily(item.id)} className={`focus-ring rounded-lg border px-3 py-3 text-left transition-all hover:-translate-y-0.5 ${family === item.id ? 'border-primary/60 bg-primary/10' : 'border-border bg-background/35 hover:border-primary/30'}`} data-testid={`button-family-${item.id}`}><div className={`text-xs font-bold ${family === item.id ? 'text-primary' : 'text-foreground'}`}>{item.label}</div><div className="mt-1 text-[10px] text-muted-foreground">{item.hint}</div></button>)}
+                    {families.map((item) => <button key={item.id} onClick={() => { setFamily(item.id); setGeneratedFor(null); }} className={`focus-ring rounded-lg border px-3 py-3 text-left transition-all hover:-translate-y-0.5 ${family === item.id ? 'border-primary/60 bg-primary/10' : 'border-border bg-background/35 hover:border-primary/30'}`} data-testid={`button-family-${item.id}`}><div className={`text-xs font-bold ${family === item.id ? 'text-primary' : 'text-foreground'}`}>{item.label}</div><div className="mt-1 text-[10px] text-muted-foreground">{item.hint}</div></button>)}
                   </div>
-                  {family === 'over-under' && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/40 px-3 py-2.5"><div className="flex items-center gap-2 text-xs font-semibold"><Target size={14} className="text-accent" /> Barrier threshold</div><div className="flex items-center gap-1.5">{[1, 2, 3, 4, 5, 6, 7, 8].map((item) => <button key={item} onClick={() => setBarrier(item)} className={`focus-ring mono h-7 w-7 rounded-md border text-[11px] transition-colors ${barrier === item ? 'border-accent bg-accent text-accent-foreground' : 'border-border text-muted-foreground hover:border-accent/50 hover:text-foreground'}`} data-testid={`button-barrier-${item}`}>{item}</button>)}</div></div>}
-                   <div className="mt-5 flex items-center justify-between border-t border-border pt-4"><span className="eyebrow">Live tick stream</span><span className="mono text-[10px] text-muted-foreground">{analysis?.sampleSize ?? [...ticks, tick].length} observations · 2.4s cadence</span></div>
+                  <div className="mt-3 rounded-lg border border-border bg-background/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="text-analysis-selection-hint">
+                    {family === 'over-under'
+                      ? `The analysis will choose the strongest barrier from 1–8${hasCurrentAnalysis && analysis ? ` · selected ${analysis.predictions.find((prediction) => prediction.family === 'over-under')?.label}` : ''}.`
+                      : family === 'matches'
+                        ? `The analysis will select the most likely matching digit${hasCurrentAnalysis && analysis ? ` · selected ${analysis.predictions.find((prediction) => prediction.family === 'matches')?.label.replace('MATCH ', '')}` : ''}.`
+                        : 'Generate a signal to analyze the selected family against the current tick window.'}
+                  </div>
+                  <button
+                    onClick={() => {
+                      const input: AnalysisInput = {
+                        symbol: selected.symbol,
+                        ticks: [...ticks.slice(-119), tick],
+                        family: family as AnalysisInput['family'],
+                      };
+                      setGeneratedFor(null);
+                      runAnalysis({
+                        data: input,
+                      }, {
+                        onSuccess: () => {
+                          setGeneratedFor({ symbol: selected.symbol, family });
+                          setLastUpdated(new Date().toLocaleTimeString([], { hour12: false }));
+                        },
+                      });
+                    }}
+                    disabled={analysisPending}
+                    className="focus-ring mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-3 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-65"
+                    data-testid="button-generate-signal"
+                  >
+                    <Sparkles size={16} className={analysisPending ? 'animate-pulse' : ''} />
+                    {analysisPending ? 'Analyzing tick window…' : 'Generate signal'}
+                  </button>
+                  {analysisError && <p className="mt-2 text-xs text-destructive" role="alert">Analysis failed. Check the tick window and try again.</p>}
+                    <div className="mt-5 flex items-center justify-between border-t border-border pt-4"><span className="eyebrow">Live tick stream</span><span className="mono text-[10px] text-muted-foreground">{hasCurrentAnalysis && analysis ? analysis.sampleSize : [...ticks, tick].length} observations · 2.4s cadence</span></div>
                   <div className="mt-2 flex flex-wrap gap-2">{[...ticks].reverse().slice(0, 8).map((value, index) => <div key={`${value}-${index}`} className={`mono rounded-md border px-2.5 py-1.5 text-[11px] ${index === 0 ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-background/45 text-muted-foreground'}`} data-testid={`text-tick-${index}`}>{value.toFixed(2)}</div>)}</div>
                 </div>
 
@@ -376,7 +412,7 @@ function Home() {
                   <div className="relative flex items-start justify-between"><div><div className="eyebrow text-primary/75">Primary signal</div><div className="mt-2 flex items-center gap-3"><span className={`text-3xl font-extrabold tracking-[-0.06em] ${signal.tone === 'mint' ? 'text-primary' : 'text-accent'}`} data-testid="text-primary-signal">{signal.label}</span><Zap size={19} className={signal.tone === 'mint' ? 'text-primary' : 'text-accent'} /></div><div className="mt-1 text-xs text-muted-foreground">{signal.direction}</div></div><div className="text-right"><div className="eyebrow">Confidence</div><div className="mono mt-1 text-2xl font-medium text-foreground" data-testid="text-signal-confidence">{signal.confidence}%</div></div></div>
                   <div className="mt-6 h-2 overflow-hidden rounded-full bg-background"><div className={`h-full rounded-full transition-all duration-500 ${signal.tone === 'mint' ? 'bg-primary' : 'bg-accent'}`} style={{ width: `${signal.confidence}%` }} /></div>
                   <div className="mt-4 flex items-start gap-2 border-t border-border/60 pt-3 text-xs leading-relaxed text-muted-foreground"><Sparkles size={14} className="mt-0.5 shrink-0 text-accent" /> {signal.detail}</div>
-                  <button onClick={() => setToast('Signal marked for review')} className="focus-ring mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-primary/35 bg-primary/10 py-2.5 text-xs font-bold text-primary transition-colors hover:bg-primary/20" data-testid="button-review-signal"><Check size={14} /> Mark signal for review</button>
+                   <button onClick={() => setToast('Signal marked for review')} disabled={!hasCurrentAnalysis} className="focus-ring mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-primary/35 bg-primary/10 py-2.5 text-xs font-bold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-45" data-testid="button-review-signal"><Check size={14} /> Mark signal for review</button>
                 </div>
               </section>
 
@@ -390,13 +426,13 @@ function Home() {
                 <div className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
                   <div className="flex items-start justify-between"><div><div className="eyebrow">Signal anatomy</div><h3 className="mt-1 text-sm font-bold">What formed the call</h3></div><button onClick={() => setToast('Factor weights are based on the local simulation model')} className="text-muted-foreground hover:text-foreground" aria-label="Explain signal factors" data-testid="button-explain-factors"><CircleHelp size={16} /></button></div>
                    <div className="mt-5 space-y-4">{analysisFactors.map((factor) => <div key={factor.name}><div className="mb-1.5 flex justify-between gap-2 text-xs"><span className="text-muted-foreground">{factor.name}</span><span className={factorTone(factor.value) === 'mint' ? 'text-primary' : factorTone(factor.value) === 'amber' ? 'text-accent' : 'text-muted-foreground'}>{factor.note} <span className="mono ml-1 text-[10px]">{factor.value}</span></span></div><div className="h-1.5 rounded-full bg-background"><div className={`h-full rounded-full ${factorTone(factor.value) === 'mint' ? 'bg-primary' : factorTone(factor.value) === 'amber' ? 'bg-accent' : 'bg-muted-foreground/50'}`} style={{ width: `${factor.value}%` }} /></div></div>)}</div>
-                   <div className="mt-6 rounded-lg border border-border bg-background/35 p-3 text-[11px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Method note.</span> {analysis?.methodNote ?? 'The backend ensemble combines recent ticks, digit distribution, transitions, and directional momentum. It is not a probability of profit.'}</div>
+                    <div className="mt-6 rounded-lg border border-border bg-background/35 p-3 text-[11px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Method note.</span> {hasCurrentAnalysis && analysis ? analysis.methodNote : 'Generate a signal to run the backend analysis on the current tick window. Probabilities are estimates, not a probability of profit.'}</div>
                 </div>
               </section>
 
               <section className="mt-5 rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
                 <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><div className="eyebrow">Cross-family read</div><h3 className="mt-1 text-sm font-bold">Compare all contract families</h3></div><button onClick={() => setToast('Comparison uses the same active tick window')} className="flex items-center gap-2 self-start text-[11px] font-semibold text-primary hover:underline" data-testid="button-comparison-info"><BarChart3 size={14} /> How scores are formed</button></div>
-                <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{comparison.map((item) => <button key={item.label} onClick={() => setFamily(item.label === 'Matches' ? 'matches' : item.label === 'Even / Odd' ? 'even-odd' : item.label === 'Over / Under' ? 'over-under' : 'rise-fall')} className="group rounded-lg border border-border bg-background/35 p-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40" data-testid={`button-comparison-${item.label.toLowerCase().replaceAll(' ', '-')}`}><div className="flex items-center justify-between"><span className="text-xs font-semibold">{item.label}</span><span className={`mono text-xs font-medium ${item.accent === 'mint' ? 'text-primary' : item.accent === 'amber' ? 'text-accent' : 'text-[hsl(var(--chart-4))]'}`}>{item.value}</span></div><div className="mt-2 h-1.5 rounded-full bg-muted"><div className={`h-full rounded-full ${item.accent === 'mint' ? 'bg-primary' : item.accent === 'amber' ? 'bg-accent' : 'bg-[hsl(var(--chart-4))]'}`} style={{ width: `${item.score}%` }} /></div><div className="mt-2 text-[10px] text-muted-foreground">{item.sub}</div></button>)}</div>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{comparison.map((item) => <button key={item.label} onClick={() => { setFamily(item.label === 'Matches' ? 'matches' : item.label === 'Even / Odd' ? 'even-odd' : item.label === 'Over / Under' ? 'over-under' : 'rise-fall'); setGeneratedFor(null); }} className="group rounded-lg border border-border bg-background/35 p-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40" data-testid={`button-comparison-${item.label.toLowerCase().replaceAll(' ', '-')}`}><div className="flex items-center justify-between"><span className="text-xs font-semibold">{item.label}</span><span className={`mono text-xs font-medium ${item.accent === 'mint' ? 'text-primary' : item.accent === 'amber' ? 'text-accent' : 'text-[hsl(var(--chart-4))]'}`}>{item.value}</span></div><div className="mt-2 h-1.5 rounded-full bg-muted"><div className={`h-full rounded-full ${item.accent === 'mint' ? 'bg-primary' : item.accent === 'amber' ? 'bg-accent' : 'bg-[hsl(var(--chart-4))]'}`} style={{ width: `${item.score}%` }} /></div><div className="mt-2 text-[10px] text-muted-foreground">{item.sub}</div></button>)}</div>
               </section>
 
               <section className="mt-5 grid gap-5 pb-8 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
