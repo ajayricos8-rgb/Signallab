@@ -18,6 +18,499 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
+ * @summary Check Hedgers access and demo configuration
+ */
+export const GetHedgersAccessResponse = zod.object({
+  "authorized": zod.boolean(),
+  "accessCodeConfigured": zod.boolean(),
+  "demoTokenConfigured": zod.boolean(),
+  "derivAppIdConfigured": zod.boolean(),
+  "message": zod.string()
+})
+
+
+/**
+ * @summary Unlock demo trading controls
+ */
+export const unlockHedgersBodyAccessCodeMax = 256;
+
+
+
+export const UnlockHedgersBody = zod.object({
+  "accessCode": zod.string().min(1).max(unlockHedgersBodyAccessCodeMax)
+})
+
+export const UnlockHedgersResponse = zod.object({
+  "authorized": zod.boolean(),
+  "accessCodeConfigured": zod.boolean(),
+  "demoTokenConfigured": zod.boolean(),
+  "derivAppIdConfigured": zod.boolean(),
+  "message": zod.string()
+})
+
+
+/**
+ * @summary Lock demo trading controls
+ */
+export const LockHedgersResponse = zod.object({
+  "authorized": zod.boolean(),
+  "accessCodeConfigured": zod.boolean(),
+  "demoTokenConfigured": zod.boolean(),
+  "derivAppIdConfigured": zod.boolean(),
+  "message": zod.string()
+})
+
+
+/**
+ * @summary Read demo bot state, forecast, and recent paired contracts
+ */
+export const getHedgersStatusResponseForecastOneHighSampleCountMin = 0;
+
+export const getHedgersStatusResponseForecastOneLowSampleCountMin = 0;
+
+export const getHedgersStatusResponseForecastOneMinimumSamplesMin = 0;
+
+export const getHedgersStatusResponseForecastOneHighTicksItemTickMax = 5;
+
+export const getHedgersStatusResponseForecastOneHighTicksItemCountMin = 0;
+
+export const getHedgersStatusResponseForecastOneHighTicksItemProbabilityMin = 0;
+export const getHedgersStatusResponseForecastOneHighTicksItemProbabilityMax = 1;
+
+export const getHedgersStatusResponseForecastOneHighTicksMin = 5;
+export const getHedgersStatusResponseForecastOneHighTicksMax = 5;
+
+export const getHedgersStatusResponseForecastOneLowTicksItemTickMax = 5;
+
+export const getHedgersStatusResponseForecastOneLowTicksItemCountMin = 0;
+
+export const getHedgersStatusResponseForecastOneLowTicksItemProbabilityMin = 0;
+export const getHedgersStatusResponseForecastOneLowTicksItemProbabilityMax = 1;
+
+export const getHedgersStatusResponseForecastOneLowTicksMin = 5;
+export const getHedgersStatusResponseForecastOneLowTicksMax = 5;
+
+export const getHedgersStatusResponseForecastOneHighSelectedTickMax = 5;
+
+export const getHedgersStatusResponseForecastOneHighProbabilityMin = 0;
+export const getHedgersStatusResponseForecastOneHighProbabilityMax = 1;
+
+export const getHedgersStatusResponseForecastOneLowSelectedTickMax = 5;
+
+export const getHedgersStatusResponseForecastOneLowProbabilityMin = 0;
+export const getHedgersStatusResponseForecastOneLowProbabilityMax = 1;
+
+export const getHedgersStatusResponseForecastOneNextWindowTicksMin = 0;
+export const getHedgersStatusResponseForecastOneNextWindowTicksMax = 5;
+
+export const getHedgersStatusResponsePairsStartedMin = 0;
+
+export const getHedgersStatusResponseCompletedPairsMin = 0;
+
+export const getHedgersStatusResponseRealizedLossMin = 0;
+
+export const getHedgersStatusResponseOpenExposureMin = 0;
+
+export const getHedgersStatusResponsePairsItemHighSelectedTickMax = 5;
+
+export const getHedgersStatusResponsePairsItemHighHistoricalProbabilityMin = 0;
+export const getHedgersStatusResponsePairsItemHighHistoricalProbabilityMax = 1;
+
+export const getHedgersStatusResponsePairsItemHighSampleCountMin = 0;
+
+export const getHedgersStatusResponsePairsItemLowSelectedTickMax = 5;
+
+export const getHedgersStatusResponsePairsItemLowHistoricalProbabilityMin = 0;
+export const getHedgersStatusResponsePairsItemLowHistoricalProbabilityMax = 1;
+
+export const getHedgersStatusResponsePairsItemLowSampleCountMin = 0;
+
+
+
+export const GetHedgersStatusResponse = zod.object({
+  "running": zod.boolean(),
+  "connectionState": zod.enum(['unconfigured', 'connecting', 'connected', 'disconnected', 'stopped', 'error']),
+  "accountType": zod.union([zod.literal('demo'),zod.literal(null)]).nullable(),
+  "accountLabel": zod.string().nullable(),
+  "currency": zod.string().nullable(),
+  "balance": zod.number().nullable(),
+  "config": zod.union([zod.object({
+  "symbol": zod.string(),
+  "stakePerLeg": zod.number(),
+  "maxPairs": zod.number().int(),
+  "sessionLossLimit": zod.number(),
+  "minimumWinRate": zod.number(),
+  "minimumSamples": zod.number().int()
+}),zod.null()]),
+  "forecast": zod.union([zod.object({
+  "symbol": zod.string(),
+  "highSampleCount": zod.number().int().min(getHedgersStatusResponseForecastOneHighSampleCountMin),
+  "lowSampleCount": zod.number().int().min(getHedgersStatusResponseForecastOneLowSampleCountMin),
+  "minimumSamples": zod.number().int().min(getHedgersStatusResponseForecastOneMinimumSamplesMin),
+  "highTicks": zod.array(zod.object({
+  "tick": zod.number().int().min(1).max(getHedgersStatusResponseForecastOneHighTicksItemTickMax),
+  "count": zod.number().int().min(getHedgersStatusResponseForecastOneHighTicksItemCountMin),
+  "probability": zod.number().min(getHedgersStatusResponseForecastOneHighTicksItemProbabilityMin).max(getHedgersStatusResponseForecastOneHighTicksItemProbabilityMax)
+})).min(getHedgersStatusResponseForecastOneHighTicksMin).max(getHedgersStatusResponseForecastOneHighTicksMax),
+  "lowTicks": zod.array(zod.object({
+  "tick": zod.number().int().min(1).max(getHedgersStatusResponseForecastOneLowTicksItemTickMax),
+  "count": zod.number().int().min(getHedgersStatusResponseForecastOneLowTicksItemCountMin),
+  "probability": zod.number().min(getHedgersStatusResponseForecastOneLowTicksItemProbabilityMin).max(getHedgersStatusResponseForecastOneLowTicksItemProbabilityMax)
+})).min(getHedgersStatusResponseForecastOneLowTicksMin).max(getHedgersStatusResponseForecastOneLowTicksMax),
+  "highSelectedTick": zod.number().int().min(1).max(getHedgersStatusResponseForecastOneHighSelectedTickMax).nullable(),
+  "highProbability": zod.number().min(getHedgersStatusResponseForecastOneHighProbabilityMin).max(getHedgersStatusResponseForecastOneHighProbabilityMax).nullable(),
+  "lowSelectedTick": zod.number().int().min(1).max(getHedgersStatusResponseForecastOneLowSelectedTickMax).nullable(),
+  "lowProbability": zod.number().min(getHedgersStatusResponseForecastOneLowProbabilityMin).max(getHedgersStatusResponseForecastOneLowProbabilityMax).nullable(),
+  "nextWindowTicks": zod.number().int().min(getHedgersStatusResponseForecastOneNextWindowTicksMin).max(getHedgersStatusResponseForecastOneNextWindowTicksMax),
+  "updatedAt": zod.number().int().nullable()
+}),zod.null()]),
+  "pairsStarted": zod.number().int().min(getHedgersStatusResponsePairsStartedMin),
+  "completedPairs": zod.number().int().min(getHedgersStatusResponseCompletedPairsMin),
+  "netProfit": zod.number(),
+  "realizedLoss": zod.number().min(getHedgersStatusResponseRealizedLossMin),
+  "openExposure": zod.number().min(getHedgersStatusResponseOpenExposureMin),
+  "message": zod.string(),
+  "pairs": zod.array(zod.object({
+  "id": zod.string(),
+  "startedAt": zod.number().int(),
+  "status": zod.enum(['waiting', 'open', 'settled', 'partial', 'skipped', 'failed']),
+  "high": zod.object({
+  "side": zod.enum(['high', 'low']),
+  "selectedTick": zod.number().int().min(1).max(getHedgersStatusResponsePairsItemHighSelectedTickMax).nullable(),
+  "historicalProbability": zod.number().min(getHedgersStatusResponsePairsItemHighHistoricalProbabilityMin).max(getHedgersStatusResponsePairsItemHighHistoricalProbabilityMax).nullable(),
+  "sampleCount": zod.number().int().min(getHedgersStatusResponsePairsItemHighSampleCountMin),
+  "stake": zod.number().nullable(),
+  "payout": zod.number().nullable(),
+  "contractId": zod.string().nullable(),
+  "status": zod.enum(['waiting', 'proposed', 'open', 'won', 'lost', 'sold', 'skipped', 'error']),
+  "profit": zod.number().nullable()
+}),
+  "low": zod.object({
+  "side": zod.enum(['high', 'low']),
+  "selectedTick": zod.number().int().min(1).max(getHedgersStatusResponsePairsItemLowSelectedTickMax).nullable(),
+  "historicalProbability": zod.number().min(getHedgersStatusResponsePairsItemLowHistoricalProbabilityMin).max(getHedgersStatusResponsePairsItemLowHistoricalProbabilityMax).nullable(),
+  "sampleCount": zod.number().int().min(getHedgersStatusResponsePairsItemLowSampleCountMin),
+  "stake": zod.number().nullable(),
+  "payout": zod.number().nullable(),
+  "contractId": zod.string().nullable(),
+  "status": zod.enum(['waiting', 'proposed', 'open', 'won', 'lost', 'sold', 'skipped', 'error']),
+  "profit": zod.number().nullable()
+}),
+  "netProfit": zod.number().nullable(),
+  "message": zod.string().nullable()
+})),
+  "updatedAt": zod.number().int().nullable()
+})
+
+
+/**
+ * @summary Start the demo-only paired High/Low bot
+ */
+export const startHedgersBodyStakePerLegExclusiveMin = 0;
+
+export const startHedgersBodyMaxPairsMax = 100;
+
+export const startHedgersBodySessionLossLimitExclusiveMin = 0;
+
+export const startHedgersBodyMinimumWinRateMin = 0.2;
+export const startHedgersBodyMinimumWinRateMax = 0.9;
+
+export const startHedgersBodyMinimumSamplesMin = 20;
+export const startHedgersBodyMinimumSamplesMax = 2000;
+
+
+
+export const StartHedgersBody = zod.object({
+  "symbol": zod.enum(['R_10', 'R_25', 'R_50', 'R_75', 'R_100', '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V']),
+  "stakePerLeg": zod.number().gt(startHedgersBodyStakePerLegExclusiveMin),
+  "maxPairs": zod.number().int().min(1).max(startHedgersBodyMaxPairsMax),
+  "sessionLossLimit": zod.number().gt(startHedgersBodySessionLossLimitExclusiveMin),
+  "minimumWinRate": zod.number().min(startHedgersBodyMinimumWinRateMin).max(startHedgersBodyMinimumWinRateMax),
+  "minimumSamples": zod.number().int().min(startHedgersBodyMinimumSamplesMin).max(startHedgersBodyMinimumSamplesMax)
+})
+
+export const startHedgersResponseForecastOneHighSampleCountMin = 0;
+
+export const startHedgersResponseForecastOneLowSampleCountMin = 0;
+
+export const startHedgersResponseForecastOneMinimumSamplesMin = 0;
+
+export const startHedgersResponseForecastOneHighTicksItemTickMax = 5;
+
+export const startHedgersResponseForecastOneHighTicksItemCountMin = 0;
+
+export const startHedgersResponseForecastOneHighTicksItemProbabilityMin = 0;
+export const startHedgersResponseForecastOneHighTicksItemProbabilityMax = 1;
+
+export const startHedgersResponseForecastOneHighTicksMin = 5;
+export const startHedgersResponseForecastOneHighTicksMax = 5;
+
+export const startHedgersResponseForecastOneLowTicksItemTickMax = 5;
+
+export const startHedgersResponseForecastOneLowTicksItemCountMin = 0;
+
+export const startHedgersResponseForecastOneLowTicksItemProbabilityMin = 0;
+export const startHedgersResponseForecastOneLowTicksItemProbabilityMax = 1;
+
+export const startHedgersResponseForecastOneLowTicksMin = 5;
+export const startHedgersResponseForecastOneLowTicksMax = 5;
+
+export const startHedgersResponseForecastOneHighSelectedTickMax = 5;
+
+export const startHedgersResponseForecastOneHighProbabilityMin = 0;
+export const startHedgersResponseForecastOneHighProbabilityMax = 1;
+
+export const startHedgersResponseForecastOneLowSelectedTickMax = 5;
+
+export const startHedgersResponseForecastOneLowProbabilityMin = 0;
+export const startHedgersResponseForecastOneLowProbabilityMax = 1;
+
+export const startHedgersResponseForecastOneNextWindowTicksMin = 0;
+export const startHedgersResponseForecastOneNextWindowTicksMax = 5;
+
+export const startHedgersResponsePairsStartedMin = 0;
+
+export const startHedgersResponseCompletedPairsMin = 0;
+
+export const startHedgersResponseRealizedLossMin = 0;
+
+export const startHedgersResponseOpenExposureMin = 0;
+
+export const startHedgersResponsePairsItemHighSelectedTickMax = 5;
+
+export const startHedgersResponsePairsItemHighHistoricalProbabilityMin = 0;
+export const startHedgersResponsePairsItemHighHistoricalProbabilityMax = 1;
+
+export const startHedgersResponsePairsItemHighSampleCountMin = 0;
+
+export const startHedgersResponsePairsItemLowSelectedTickMax = 5;
+
+export const startHedgersResponsePairsItemLowHistoricalProbabilityMin = 0;
+export const startHedgersResponsePairsItemLowHistoricalProbabilityMax = 1;
+
+export const startHedgersResponsePairsItemLowSampleCountMin = 0;
+
+
+
+export const StartHedgersResponse = zod.object({
+  "running": zod.boolean(),
+  "connectionState": zod.enum(['unconfigured', 'connecting', 'connected', 'disconnected', 'stopped', 'error']),
+  "accountType": zod.union([zod.literal('demo'),zod.literal(null)]).nullable(),
+  "accountLabel": zod.string().nullable(),
+  "currency": zod.string().nullable(),
+  "balance": zod.number().nullable(),
+  "config": zod.union([zod.object({
+  "symbol": zod.string(),
+  "stakePerLeg": zod.number(),
+  "maxPairs": zod.number().int(),
+  "sessionLossLimit": zod.number(),
+  "minimumWinRate": zod.number(),
+  "minimumSamples": zod.number().int()
+}),zod.null()]),
+  "forecast": zod.union([zod.object({
+  "symbol": zod.string(),
+  "highSampleCount": zod.number().int().min(startHedgersResponseForecastOneHighSampleCountMin),
+  "lowSampleCount": zod.number().int().min(startHedgersResponseForecastOneLowSampleCountMin),
+  "minimumSamples": zod.number().int().min(startHedgersResponseForecastOneMinimumSamplesMin),
+  "highTicks": zod.array(zod.object({
+  "tick": zod.number().int().min(1).max(startHedgersResponseForecastOneHighTicksItemTickMax),
+  "count": zod.number().int().min(startHedgersResponseForecastOneHighTicksItemCountMin),
+  "probability": zod.number().min(startHedgersResponseForecastOneHighTicksItemProbabilityMin).max(startHedgersResponseForecastOneHighTicksItemProbabilityMax)
+})).min(startHedgersResponseForecastOneHighTicksMin).max(startHedgersResponseForecastOneHighTicksMax),
+  "lowTicks": zod.array(zod.object({
+  "tick": zod.number().int().min(1).max(startHedgersResponseForecastOneLowTicksItemTickMax),
+  "count": zod.number().int().min(startHedgersResponseForecastOneLowTicksItemCountMin),
+  "probability": zod.number().min(startHedgersResponseForecastOneLowTicksItemProbabilityMin).max(startHedgersResponseForecastOneLowTicksItemProbabilityMax)
+})).min(startHedgersResponseForecastOneLowTicksMin).max(startHedgersResponseForecastOneLowTicksMax),
+  "highSelectedTick": zod.number().int().min(1).max(startHedgersResponseForecastOneHighSelectedTickMax).nullable(),
+  "highProbability": zod.number().min(startHedgersResponseForecastOneHighProbabilityMin).max(startHedgersResponseForecastOneHighProbabilityMax).nullable(),
+  "lowSelectedTick": zod.number().int().min(1).max(startHedgersResponseForecastOneLowSelectedTickMax).nullable(),
+  "lowProbability": zod.number().min(startHedgersResponseForecastOneLowProbabilityMin).max(startHedgersResponseForecastOneLowProbabilityMax).nullable(),
+  "nextWindowTicks": zod.number().int().min(startHedgersResponseForecastOneNextWindowTicksMin).max(startHedgersResponseForecastOneNextWindowTicksMax),
+  "updatedAt": zod.number().int().nullable()
+}),zod.null()]),
+  "pairsStarted": zod.number().int().min(startHedgersResponsePairsStartedMin),
+  "completedPairs": zod.number().int().min(startHedgersResponseCompletedPairsMin),
+  "netProfit": zod.number(),
+  "realizedLoss": zod.number().min(startHedgersResponseRealizedLossMin),
+  "openExposure": zod.number().min(startHedgersResponseOpenExposureMin),
+  "message": zod.string(),
+  "pairs": zod.array(zod.object({
+  "id": zod.string(),
+  "startedAt": zod.number().int(),
+  "status": zod.enum(['waiting', 'open', 'settled', 'partial', 'skipped', 'failed']),
+  "high": zod.object({
+  "side": zod.enum(['high', 'low']),
+  "selectedTick": zod.number().int().min(1).max(startHedgersResponsePairsItemHighSelectedTickMax).nullable(),
+  "historicalProbability": zod.number().min(startHedgersResponsePairsItemHighHistoricalProbabilityMin).max(startHedgersResponsePairsItemHighHistoricalProbabilityMax).nullable(),
+  "sampleCount": zod.number().int().min(startHedgersResponsePairsItemHighSampleCountMin),
+  "stake": zod.number().nullable(),
+  "payout": zod.number().nullable(),
+  "contractId": zod.string().nullable(),
+  "status": zod.enum(['waiting', 'proposed', 'open', 'won', 'lost', 'sold', 'skipped', 'error']),
+  "profit": zod.number().nullable()
+}),
+  "low": zod.object({
+  "side": zod.enum(['high', 'low']),
+  "selectedTick": zod.number().int().min(1).max(startHedgersResponsePairsItemLowSelectedTickMax).nullable(),
+  "historicalProbability": zod.number().min(startHedgersResponsePairsItemLowHistoricalProbabilityMin).max(startHedgersResponsePairsItemLowHistoricalProbabilityMax).nullable(),
+  "sampleCount": zod.number().int().min(startHedgersResponsePairsItemLowSampleCountMin),
+  "stake": zod.number().nullable(),
+  "payout": zod.number().nullable(),
+  "contractId": zod.string().nullable(),
+  "status": zod.enum(['waiting', 'proposed', 'open', 'won', 'lost', 'sold', 'skipped', 'error']),
+  "profit": zod.number().nullable()
+}),
+  "netProfit": zod.number().nullable(),
+  "message": zod.string().nullable()
+})),
+  "updatedAt": zod.number().int().nullable()
+})
+
+
+/**
+ * @summary Stop new pairs and settle any open demo contracts
+ */
+export const stopHedgersResponseForecastOneHighSampleCountMin = 0;
+
+export const stopHedgersResponseForecastOneLowSampleCountMin = 0;
+
+export const stopHedgersResponseForecastOneMinimumSamplesMin = 0;
+
+export const stopHedgersResponseForecastOneHighTicksItemTickMax = 5;
+
+export const stopHedgersResponseForecastOneHighTicksItemCountMin = 0;
+
+export const stopHedgersResponseForecastOneHighTicksItemProbabilityMin = 0;
+export const stopHedgersResponseForecastOneHighTicksItemProbabilityMax = 1;
+
+export const stopHedgersResponseForecastOneHighTicksMin = 5;
+export const stopHedgersResponseForecastOneHighTicksMax = 5;
+
+export const stopHedgersResponseForecastOneLowTicksItemTickMax = 5;
+
+export const stopHedgersResponseForecastOneLowTicksItemCountMin = 0;
+
+export const stopHedgersResponseForecastOneLowTicksItemProbabilityMin = 0;
+export const stopHedgersResponseForecastOneLowTicksItemProbabilityMax = 1;
+
+export const stopHedgersResponseForecastOneLowTicksMin = 5;
+export const stopHedgersResponseForecastOneLowTicksMax = 5;
+
+export const stopHedgersResponseForecastOneHighSelectedTickMax = 5;
+
+export const stopHedgersResponseForecastOneHighProbabilityMin = 0;
+export const stopHedgersResponseForecastOneHighProbabilityMax = 1;
+
+export const stopHedgersResponseForecastOneLowSelectedTickMax = 5;
+
+export const stopHedgersResponseForecastOneLowProbabilityMin = 0;
+export const stopHedgersResponseForecastOneLowProbabilityMax = 1;
+
+export const stopHedgersResponseForecastOneNextWindowTicksMin = 0;
+export const stopHedgersResponseForecastOneNextWindowTicksMax = 5;
+
+export const stopHedgersResponsePairsStartedMin = 0;
+
+export const stopHedgersResponseCompletedPairsMin = 0;
+
+export const stopHedgersResponseRealizedLossMin = 0;
+
+export const stopHedgersResponseOpenExposureMin = 0;
+
+export const stopHedgersResponsePairsItemHighSelectedTickMax = 5;
+
+export const stopHedgersResponsePairsItemHighHistoricalProbabilityMin = 0;
+export const stopHedgersResponsePairsItemHighHistoricalProbabilityMax = 1;
+
+export const stopHedgersResponsePairsItemHighSampleCountMin = 0;
+
+export const stopHedgersResponsePairsItemLowSelectedTickMax = 5;
+
+export const stopHedgersResponsePairsItemLowHistoricalProbabilityMin = 0;
+export const stopHedgersResponsePairsItemLowHistoricalProbabilityMax = 1;
+
+export const stopHedgersResponsePairsItemLowSampleCountMin = 0;
+
+
+
+export const StopHedgersResponse = zod.object({
+  "running": zod.boolean(),
+  "connectionState": zod.enum(['unconfigured', 'connecting', 'connected', 'disconnected', 'stopped', 'error']),
+  "accountType": zod.union([zod.literal('demo'),zod.literal(null)]).nullable(),
+  "accountLabel": zod.string().nullable(),
+  "currency": zod.string().nullable(),
+  "balance": zod.number().nullable(),
+  "config": zod.union([zod.object({
+  "symbol": zod.string(),
+  "stakePerLeg": zod.number(),
+  "maxPairs": zod.number().int(),
+  "sessionLossLimit": zod.number(),
+  "minimumWinRate": zod.number(),
+  "minimumSamples": zod.number().int()
+}),zod.null()]),
+  "forecast": zod.union([zod.object({
+  "symbol": zod.string(),
+  "highSampleCount": zod.number().int().min(stopHedgersResponseForecastOneHighSampleCountMin),
+  "lowSampleCount": zod.number().int().min(stopHedgersResponseForecastOneLowSampleCountMin),
+  "minimumSamples": zod.number().int().min(stopHedgersResponseForecastOneMinimumSamplesMin),
+  "highTicks": zod.array(zod.object({
+  "tick": zod.number().int().min(1).max(stopHedgersResponseForecastOneHighTicksItemTickMax),
+  "count": zod.number().int().min(stopHedgersResponseForecastOneHighTicksItemCountMin),
+  "probability": zod.number().min(stopHedgersResponseForecastOneHighTicksItemProbabilityMin).max(stopHedgersResponseForecastOneHighTicksItemProbabilityMax)
+})).min(stopHedgersResponseForecastOneHighTicksMin).max(stopHedgersResponseForecastOneHighTicksMax),
+  "lowTicks": zod.array(zod.object({
+  "tick": zod.number().int().min(1).max(stopHedgersResponseForecastOneLowTicksItemTickMax),
+  "count": zod.number().int().min(stopHedgersResponseForecastOneLowTicksItemCountMin),
+  "probability": zod.number().min(stopHedgersResponseForecastOneLowTicksItemProbabilityMin).max(stopHedgersResponseForecastOneLowTicksItemProbabilityMax)
+})).min(stopHedgersResponseForecastOneLowTicksMin).max(stopHedgersResponseForecastOneLowTicksMax),
+  "highSelectedTick": zod.number().int().min(1).max(stopHedgersResponseForecastOneHighSelectedTickMax).nullable(),
+  "highProbability": zod.number().min(stopHedgersResponseForecastOneHighProbabilityMin).max(stopHedgersResponseForecastOneHighProbabilityMax).nullable(),
+  "lowSelectedTick": zod.number().int().min(1).max(stopHedgersResponseForecastOneLowSelectedTickMax).nullable(),
+  "lowProbability": zod.number().min(stopHedgersResponseForecastOneLowProbabilityMin).max(stopHedgersResponseForecastOneLowProbabilityMax).nullable(),
+  "nextWindowTicks": zod.number().int().min(stopHedgersResponseForecastOneNextWindowTicksMin).max(stopHedgersResponseForecastOneNextWindowTicksMax),
+  "updatedAt": zod.number().int().nullable()
+}),zod.null()]),
+  "pairsStarted": zod.number().int().min(stopHedgersResponsePairsStartedMin),
+  "completedPairs": zod.number().int().min(stopHedgersResponseCompletedPairsMin),
+  "netProfit": zod.number(),
+  "realizedLoss": zod.number().min(stopHedgersResponseRealizedLossMin),
+  "openExposure": zod.number().min(stopHedgersResponseOpenExposureMin),
+  "message": zod.string(),
+  "pairs": zod.array(zod.object({
+  "id": zod.string(),
+  "startedAt": zod.number().int(),
+  "status": zod.enum(['waiting', 'open', 'settled', 'partial', 'skipped', 'failed']),
+  "high": zod.object({
+  "side": zod.enum(['high', 'low']),
+  "selectedTick": zod.number().int().min(1).max(stopHedgersResponsePairsItemHighSelectedTickMax).nullable(),
+  "historicalProbability": zod.number().min(stopHedgersResponsePairsItemHighHistoricalProbabilityMin).max(stopHedgersResponsePairsItemHighHistoricalProbabilityMax).nullable(),
+  "sampleCount": zod.number().int().min(stopHedgersResponsePairsItemHighSampleCountMin),
+  "stake": zod.number().nullable(),
+  "payout": zod.number().nullable(),
+  "contractId": zod.string().nullable(),
+  "status": zod.enum(['waiting', 'proposed', 'open', 'won', 'lost', 'sold', 'skipped', 'error']),
+  "profit": zod.number().nullable()
+}),
+  "low": zod.object({
+  "side": zod.enum(['high', 'low']),
+  "selectedTick": zod.number().int().min(1).max(stopHedgersResponsePairsItemLowSelectedTickMax).nullable(),
+  "historicalProbability": zod.number().min(stopHedgersResponsePairsItemLowHistoricalProbabilityMin).max(stopHedgersResponsePairsItemLowHistoricalProbabilityMax).nullable(),
+  "sampleCount": zod.number().int().min(stopHedgersResponsePairsItemLowSampleCountMin),
+  "stake": zod.number().nullable(),
+  "payout": zod.number().nullable(),
+  "contractId": zod.string().nullable(),
+  "status": zod.enum(['waiting', 'proposed', 'open', 'won', 'lost', 'sold', 'skipped', 'error']),
+  "profit": zod.number().nullable()
+}),
+  "netProfit": zod.number().nullable(),
+  "message": zod.string().nullable()
+})),
+  "updatedAt": zod.number().int().nullable()
+})
+
+
+/**
  * Runs statistical, transition, digit, momentum, and volatility engines over a tick window.
  * @summary Analyze a tick window
  */

@@ -25,7 +25,11 @@ import type {
   CandleOpenAnalysisInput,
   CandleOpenForecastResponse,
   ErrorResponse,
-  HealthStatus
+  HealthStatus,
+  HedgersAccessStatus,
+  HedgersStartInput,
+  HedgersStatus,
+  HedgersUnlockInput
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -132,6 +136,444 @@ export function useHealthCheck<TData = Awaited<ReturnType<typeof healthCheck>>, 
 
 
 
+
+export const getGetHedgersAccessUrl = () => {
+
+
+
+
+  return `/api/hedgers/access`
+}
+
+/**
+ * @summary Check Hedgers access and demo configuration
+ */
+export const getHedgersAccess = async ( options?: Parameters<typeof customFetch>[1]): Promise<HedgersAccessStatus> => {
+
+  return customFetch<HedgersAccessStatus>(getGetHedgersAccessUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetHedgersAccessQueryKey = () => {
+    return [
+    `/api/hedgers/access`
+    ] as const;
+    }
+
+
+export const getGetHedgersAccessQueryOptions = <TData = Awaited<ReturnType<typeof getHedgersAccess>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getHedgersAccess>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetHedgersAccessQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getHedgersAccess>>> = ({ signal }) => getHedgersAccess({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getHedgersAccess>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetHedgersAccessQueryResult = NonNullable<Awaited<ReturnType<typeof getHedgersAccess>>>
+export type GetHedgersAccessQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Check Hedgers access and demo configuration
+ */
+
+export function useGetHedgersAccess<TData = Awaited<ReturnType<typeof getHedgersAccess>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getHedgersAccess>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetHedgersAccessQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getUnlockHedgersUrl = () => {
+
+
+
+
+  return `/api/hedgers/unlock`
+}
+
+/**
+ * @summary Unlock demo trading controls
+ */
+export const unlockHedgers = async (hedgersUnlockInput: HedgersUnlockInput, options?: Parameters<typeof customFetch>[1]): Promise<HedgersAccessStatus> => {
+
+  return customFetch<HedgersAccessStatus>(getUnlockHedgersUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(hedgersUnlockInput)
+  }
+);}
+
+
+
+
+
+export const getUnlockHedgersMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof unlockHedgers>>, TError,{data: BodyType<HedgersUnlockInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof unlockHedgers>>, TError,{data: BodyType<HedgersUnlockInput>}, TContext> => {
+
+const mutationKey = ['unlockHedgers'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof unlockHedgers>>, {data: BodyType<HedgersUnlockInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  unlockHedgers(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UnlockHedgersMutationResult = NonNullable<Awaited<ReturnType<typeof unlockHedgers>>>
+    export type UnlockHedgersMutationBody = BodyType<HedgersUnlockInput>
+    export type UnlockHedgersMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Unlock demo trading controls
+ */
+export const useUnlockHedgers = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof unlockHedgers>>, TError,{data: BodyType<HedgersUnlockInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof unlockHedgers>>,
+        TError,
+        {data: BodyType<HedgersUnlockInput>},
+        TContext
+      > => {
+      return useMutation(getUnlockHedgersMutationOptions(options));
+    }
+
+export const getLockHedgersUrl = () => {
+
+
+
+
+  return `/api/hedgers/lock`
+}
+
+/**
+ * @summary Lock demo trading controls
+ */
+export const lockHedgers = async ( options?: Parameters<typeof customFetch>[1]): Promise<HedgersAccessStatus> => {
+
+  return customFetch<HedgersAccessStatus>(getLockHedgersUrl(),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getLockHedgersMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof lockHedgers>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof lockHedgers>>, TError,void, TContext> => {
+
+const mutationKey = ['lockHedgers'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof lockHedgers>>, void> = () => {
+
+
+          return  lockHedgers(requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type LockHedgersMutationResult = NonNullable<Awaited<ReturnType<typeof lockHedgers>>>
+
+    export type LockHedgersMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Lock demo trading controls
+ */
+export const useLockHedgers = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof lockHedgers>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof lockHedgers>>,
+        TError,
+        void,
+        TContext
+      > => {
+      return useMutation(getLockHedgersMutationOptions(options));
+    }
+
+export const getGetHedgersStatusUrl = () => {
+
+
+
+
+  return `/api/hedgers/status`
+}
+
+/**
+ * @summary Read demo bot state, forecast, and recent paired contracts
+ */
+export const getHedgersStatus = async ( options?: Parameters<typeof customFetch>[1]): Promise<HedgersStatus> => {
+
+  return customFetch<HedgersStatus>(getGetHedgersStatusUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetHedgersStatusQueryKey = () => {
+    return [
+    `/api/hedgers/status`
+    ] as const;
+    }
+
+
+export const getGetHedgersStatusQueryOptions = <TData = Awaited<ReturnType<typeof getHedgersStatus>>, TError = ErrorType<ErrorResponse>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getHedgersStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetHedgersStatusQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getHedgersStatus>>> = ({ signal }) => getHedgersStatus({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getHedgersStatus>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetHedgersStatusQueryResult = NonNullable<Awaited<ReturnType<typeof getHedgersStatus>>>
+export type GetHedgersStatusQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Read demo bot state, forecast, and recent paired contracts
+ */
+
+export function useGetHedgersStatus<TData = Awaited<ReturnType<typeof getHedgersStatus>>, TError = ErrorType<ErrorResponse>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getHedgersStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetHedgersStatusQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getStartHedgersUrl = () => {
+
+
+
+
+  return `/api/hedgers/start`
+}
+
+/**
+ * @summary Start the demo-only paired High/Low bot
+ */
+export const startHedgers = async (hedgersStartInput: HedgersStartInput, options?: Parameters<typeof customFetch>[1]): Promise<HedgersStatus> => {
+
+  return customFetch<HedgersStatus>(getStartHedgersUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(hedgersStartInput)
+  }
+);}
+
+
+
+
+
+export const getStartHedgersMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startHedgers>>, TError,{data: BodyType<HedgersStartInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof startHedgers>>, TError,{data: BodyType<HedgersStartInput>}, TContext> => {
+
+const mutationKey = ['startHedgers'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startHedgers>>, {data: BodyType<HedgersStartInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  startHedgers(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StartHedgersMutationResult = NonNullable<Awaited<ReturnType<typeof startHedgers>>>
+    export type StartHedgersMutationBody = BodyType<HedgersStartInput>
+    export type StartHedgersMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Start the demo-only paired High/Low bot
+ */
+export const useStartHedgers = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startHedgers>>, TError,{data: BodyType<HedgersStartInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof startHedgers>>,
+        TError,
+        {data: BodyType<HedgersStartInput>},
+        TContext
+      > => {
+      return useMutation(getStartHedgersMutationOptions(options));
+    }
+
+export const getStopHedgersUrl = () => {
+
+
+
+
+  return `/api/hedgers/stop`
+}
+
+/**
+ * @summary Stop new pairs and settle any open demo contracts
+ */
+export const stopHedgers = async ( options?: Parameters<typeof customFetch>[1]): Promise<HedgersStatus> => {
+
+  return customFetch<HedgersStatus>(getStopHedgersUrl(),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getStopHedgersMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof stopHedgers>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof stopHedgers>>, TError,void, TContext> => {
+
+const mutationKey = ['stopHedgers'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof stopHedgers>>, void> = () => {
+
+
+          return  stopHedgers(requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StopHedgersMutationResult = NonNullable<Awaited<ReturnType<typeof stopHedgers>>>
+
+    export type StopHedgersMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Stop new pairs and settle any open demo contracts
+ */
+export const useStopHedgers = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof stopHedgers>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof stopHedgers>>,
+        TError,
+        void,
+        TContext
+      > => {
+      return useMutation(getStopHedgersMutationOptions(options));
+    }
 
 export const getAnalyzeTicksUrl = () => {
 

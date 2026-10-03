@@ -13,6 +13,259 @@ export interface ErrorResponse {
   error: string;
 }
 
+export interface HedgersAccessStatus {
+  authorized: boolean;
+  accessCodeConfigured: boolean;
+  demoTokenConfigured: boolean;
+  derivAppIdConfigured: boolean;
+  message: string;
+}
+
+export interface HedgersUnlockInput {
+  /**
+     * @minLength 1
+     * @maxLength 256
+     */
+  accessCode: string;
+}
+
+export type HedgersStartInputSymbol = typeof HedgersStartInputSymbol[keyof typeof HedgersStartInputSymbol];
+
+
+export const HedgersStartInputSymbol = {
+  R_10: 'R_10',
+  R_25: 'R_25',
+  R_50: 'R_50',
+  R_75: 'R_75',
+  R_100: 'R_100',
+  '1HZ10V': '1HZ10V',
+  '1HZ25V': '1HZ25V',
+  '1HZ50V': '1HZ50V',
+  '1HZ75V': '1HZ75V',
+  '1HZ100V': '1HZ100V',
+} as const;
+
+export interface HedgersStartInput {
+  symbol: HedgersStartInputSymbol;
+  /** @exclusiveMinimum 0 */
+  stakePerLeg: number;
+  /**
+     * @minimum 1
+     * @maximum 100
+     */
+  maxPairs: number;
+  /** @exclusiveMinimum 0 */
+  sessionLossLimit: number;
+  /**
+     * @minimum 0.2
+     * @maximum 0.9
+     */
+  minimumWinRate: number;
+  /**
+     * @minimum 20
+     * @maximum 2000
+     */
+  minimumSamples: number;
+}
+
+export interface HedgersTickProbability {
+  /**
+     * @minimum 1
+     * @maximum 5
+     */
+  tick: number;
+  /** @minimum 0 */
+  count: number;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  probability: number;
+}
+
+export interface HedgersForecast {
+  symbol: string;
+  /** @minimum 0 */
+  highSampleCount: number;
+  /** @minimum 0 */
+  lowSampleCount: number;
+  /** @minimum 0 */
+  minimumSamples: number;
+  /**
+     * @minItems 5
+     * @maxItems 5
+     */
+  highTicks: HedgersTickProbability[];
+  /**
+     * @minItems 5
+     * @maxItems 5
+     */
+  lowTicks: HedgersTickProbability[];
+  /**
+     * @minimum 1
+     * @maximum 5
+     * @nullable
+     */
+  highSelectedTick: number | null;
+  /**
+     * @minimum 0
+     * @maximum 1
+     * @nullable
+     */
+  highProbability: number | null;
+  /**
+     * @minimum 1
+     * @maximum 5
+     * @nullable
+     */
+  lowSelectedTick: number | null;
+  /**
+     * @minimum 0
+     * @maximum 1
+     * @nullable
+     */
+  lowProbability: number | null;
+  /**
+     * @minimum 0
+     * @maximum 5
+     */
+  nextWindowTicks: number;
+  /** @nullable */
+  updatedAt: number | null;
+}
+
+export type HedgersLegSide = typeof HedgersLegSide[keyof typeof HedgersLegSide];
+
+
+export const HedgersLegSide = {
+  high: 'high',
+  low: 'low',
+} as const;
+
+export type HedgersLegStatus = typeof HedgersLegStatus[keyof typeof HedgersLegStatus];
+
+
+export const HedgersLegStatus = {
+  waiting: 'waiting',
+  proposed: 'proposed',
+  open: 'open',
+  won: 'won',
+  lost: 'lost',
+  sold: 'sold',
+  skipped: 'skipped',
+  error: 'error',
+} as const;
+
+export interface HedgersLeg {
+  side: HedgersLegSide;
+  /**
+     * @minimum 1
+     * @maximum 5
+     * @nullable
+     */
+  selectedTick: number | null;
+  /**
+     * @minimum 0
+     * @maximum 1
+     * @nullable
+     */
+  historicalProbability: number | null;
+  /** @minimum 0 */
+  sampleCount: number;
+  /** @nullable */
+  stake: number | null;
+  /** @nullable */
+  payout: number | null;
+  /** @nullable */
+  contractId: string | null;
+  status: HedgersLegStatus;
+  /** @nullable */
+  profit: number | null;
+}
+
+export type HedgersPairStatus = typeof HedgersPairStatus[keyof typeof HedgersPairStatus];
+
+
+export const HedgersPairStatus = {
+  waiting: 'waiting',
+  open: 'open',
+  settled: 'settled',
+  partial: 'partial',
+  skipped: 'skipped',
+  failed: 'failed',
+} as const;
+
+export interface HedgersPair {
+  id: string;
+  startedAt: number;
+  status: HedgersPairStatus;
+  high: HedgersLeg;
+  low: HedgersLeg;
+  /** @nullable */
+  netProfit: number | null;
+  /** @nullable */
+  message: string | null;
+}
+
+export interface HedgersBotConfig {
+  symbol: string;
+  stakePerLeg: number;
+  maxPairs: number;
+  sessionLossLimit: number;
+  minimumWinRate: number;
+  minimumSamples: number;
+}
+
+export type HedgersStatusConnectionState = typeof HedgersStatusConnectionState[keyof typeof HedgersStatusConnectionState];
+
+
+export const HedgersStatusConnectionState = {
+  unconfigured: 'unconfigured',
+  connecting: 'connecting',
+  connected: 'connected',
+  disconnected: 'disconnected',
+  stopped: 'stopped',
+  error: 'error',
+} as const;
+
+/**
+ * @nullable
+ */
+export type HedgersStatusAccountType = typeof HedgersStatusAccountType[keyof typeof HedgersStatusAccountType] | null;
+
+
+export const HedgersStatusAccountType = {
+  demo: 'demo',
+} as const;
+
+export interface HedgersStatus {
+  running: boolean;
+  connectionState: HedgersStatusConnectionState;
+  /** @nullable */
+  accountType: HedgersStatusAccountType;
+  /** @nullable */
+  accountLabel: string | null;
+  /** @nullable */
+  currency: string | null;
+  /** @nullable */
+  balance: number | null;
+  config: HedgersBotConfig | null;
+  forecast: HedgersForecast | null;
+  /** @minimum 0 */
+  pairsStarted: number;
+  /** @minimum 0 */
+  completedPairs: number;
+  netProfit: number;
+  /** @minimum 0 */
+  realizedLoss: number;
+  /** @minimum 0 */
+  openExposure: number;
+  message: string;
+  pairs: HedgersPair[];
+  /** @nullable */
+  updatedAt: number | null;
+}
+
 export type AnalysisInputFamily = typeof AnalysisInputFamily[keyof typeof AnalysisInputFamily];
 
 

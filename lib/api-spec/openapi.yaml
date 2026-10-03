@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: analysis
     description: Tick analysis and prediction engines
+  - name: hedgers
+    description: Demo-only paired High/Low tick bot
 paths:
   /healthz:
     get:
@@ -26,6 +28,132 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /hedgers/access:
+    get:
+      operationId: getHedgersAccess
+      tags: [hedgers]
+      summary: Check Hedgers access and demo configuration
+      responses:
+        "200":
+          description: Access and setup status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HedgersAccessStatus"
+  /hedgers/unlock:
+    post:
+      operationId: unlockHedgers
+      tags: [hedgers]
+      summary: Unlock demo trading controls
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HedgersUnlockInput"
+      responses:
+        "200":
+          description: Session established
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HedgersAccessStatus"
+        "401":
+          description: Incorrect or unavailable access code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Too many failed unlock attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /hedgers/lock:
+    post:
+      operationId: lockHedgers
+      tags: [hedgers]
+      summary: Lock demo trading controls
+      responses:
+        "200":
+          description: Session cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HedgersAccessStatus"
+  /hedgers/status:
+    get:
+      operationId: getHedgersStatus
+      tags: [hedgers]
+      summary: Read demo bot state, forecast, and recent paired contracts
+      responses:
+        "200":
+          description: Current bot state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HedgersStatus"
+        "401":
+          description: Hedgers is locked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /hedgers/start:
+    post:
+      operationId: startHedgers
+      tags: [hedgers]
+      summary: Start the demo-only paired High/Low bot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HedgersStartInput"
+      responses:
+        "200":
+          description: Bot started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HedgersStatus"
+        "400":
+          description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Hedgers is locked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Bot cannot be started in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /hedgers/stop:
+    post:
+      operationId: stopHedgers
+      tags: [hedgers]
+      summary: Stop new pairs and settle any open demo contracts
+      responses:
+        "200":
+          description: Bot stopped or stopping
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HedgersStatus"
+        "401":
+          description: Hedgers is locked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /analysis:
     post:
       operationId: analyzeTicks
@@ -91,6 +219,119 @@ components:
       properties:
         error:
           type: string
+    HedgersAccessStatus:
+      type: object
+      required: [authorized, accessCodeConfigured, demoTokenConfigured, derivAppIdConfigured, message]
+      properties:
+        authorized: { type: boolean }
+        accessCodeConfigured: { type: boolean }
+        demoTokenConfigured: { type: boolean }
+        derivAppIdConfigured: { type: boolean }
+        message: { type: string }
+    HedgersUnlockInput:
+      type: object
+      required: [accessCode]
+      properties:
+        accessCode: { type: string, minLength: 1, maxLength: 256 }
+    HedgersStartInput:
+      type: object
+      required: [symbol, stakePerLeg, maxPairs, sessionLossLimit, minimumWinRate, minimumSamples]
+      properties:
+        symbol:
+          type: string
+          enum: [R_10, R_25, R_50, R_75, R_100, 1HZ10V, 1HZ25V, 1HZ50V, 1HZ75V, 1HZ100V]
+        stakePerLeg: { type: number, exclusiveMinimum: 0 }
+        maxPairs: { type: integer, minimum: 1, maximum: 100 }
+        sessionLossLimit: { type: number, exclusiveMinimum: 0 }
+        minimumWinRate: { type: number, minimum: 0.2, maximum: 0.9 }
+        minimumSamples: { type: integer, minimum: 20, maximum: 2000 }
+    HedgersTickProbability:
+      type: object
+      required: [tick, count, probability]
+      properties:
+        tick: { type: integer, minimum: 1, maximum: 5 }
+        count: { type: integer, minimum: 0 }
+        probability: { type: number, minimum: 0, maximum: 1 }
+    HedgersForecast:
+      type: object
+      required: [symbol, highSampleCount, lowSampleCount, minimumSamples, highTicks, lowTicks, highSelectedTick, highProbability, lowSelectedTick, lowProbability, nextWindowTicks, updatedAt]
+      properties:
+        symbol: { type: string }
+        highSampleCount: { type: integer, minimum: 0 }
+        lowSampleCount: { type: integer, minimum: 0 }
+        minimumSamples: { type: integer, minimum: 0 }
+        highTicks:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items: { $ref: "#/components/schemas/HedgersTickProbability" }
+        lowTicks:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items: { $ref: "#/components/schemas/HedgersTickProbability" }
+        highSelectedTick: { type: ["integer", "null"], minimum: 1, maximum: 5 }
+        highProbability: { type: ["number", "null"], minimum: 0, maximum: 1 }
+        lowSelectedTick: { type: ["integer", "null"], minimum: 1, maximum: 5 }
+        lowProbability: { type: ["number", "null"], minimum: 0, maximum: 1 }
+        nextWindowTicks: { type: integer, minimum: 0, maximum: 5 }
+        updatedAt: { type: ["integer", "null"] }
+    HedgersLeg:
+      type: object
+      required: [side, selectedTick, historicalProbability, sampleCount, stake, payout, contractId, status, profit]
+      properties:
+        side: { type: string, enum: [high, low] }
+        selectedTick: { type: ["integer", "null"], minimum: 1, maximum: 5 }
+        historicalProbability: { type: ["number", "null"], minimum: 0, maximum: 1 }
+        sampleCount: { type: integer, minimum: 0 }
+        stake: { type: ["number", "null"] }
+        payout: { type: ["number", "null"] }
+        contractId: { type: ["string", "null"] }
+        status: { type: string, enum: [waiting, proposed, open, won, lost, sold, skipped, error] }
+        profit: { type: ["number", "null"] }
+    HedgersPair:
+      type: object
+      required: [id, startedAt, status, high, low, netProfit, message]
+      properties:
+        id: { type: string }
+        startedAt: { type: integer }
+        status: { type: string, enum: [waiting, open, settled, partial, skipped, failed] }
+        high: { $ref: "#/components/schemas/HedgersLeg" }
+        low: { $ref: "#/components/schemas/HedgersLeg" }
+        netProfit: { type: ["number", "null"] }
+        message: { type: ["string", "null"] }
+    HedgersBotConfig:
+      type: object
+      required: [symbol, stakePerLeg, maxPairs, sessionLossLimit, minimumWinRate, minimumSamples]
+      properties:
+        symbol: { type: string }
+        stakePerLeg: { type: number }
+        maxPairs: { type: integer }
+        sessionLossLimit: { type: number }
+        minimumWinRate: { type: number }
+        minimumSamples: { type: integer }
+    HedgersStatus:
+      type: object
+      required: [running, connectionState, accountType, accountLabel, currency, balance, config, forecast, pairsStarted, completedPairs, netProfit, realizedLoss, openExposure, message, pairs, updatedAt]
+      properties:
+        running: { type: boolean }
+        connectionState: { type: string, enum: [unconfigured, connecting, connected, disconnected, stopped, error] }
+        accountType: { type: ["string", "null"], enum: [demo, null] }
+        accountLabel: { type: ["string", "null"] }
+        currency: { type: ["string", "null"] }
+        balance: { type: ["number", "null"] }
+        config: { oneOf: [{ $ref: "#/components/schemas/HedgersBotConfig" }, { type: "null" }] }
+        forecast: { oneOf: [{ $ref: "#/components/schemas/HedgersForecast" }, { type: "null" }] }
+        pairsStarted: { type: integer, minimum: 0 }
+        completedPairs: { type: integer, minimum: 0 }
+        netProfit: { type: number }
+        realizedLoss: { type: number, minimum: 0 }
+        openExposure: { type: number, minimum: 0 }
+        message: { type: string }
+        pairs:
+          type: array
+          items: { $ref: "#/components/schemas/HedgersPair" }
+        updatedAt: { type: ["integer", "null"] }
     AnalysisInput:
       type: object
       required: [ticks, family]
