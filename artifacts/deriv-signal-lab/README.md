@@ -20,7 +20,7 @@ The development script starts the workspace services and binds Vite to `0.0.0.0`
 ```sh
 pnpm --filter @workspace/deriv-signal-lab typecheck
 pnpm --filter @workspace/deriv-signal-lab test:digit-analysis
-PORT=18781 BASE_PATH=/ pnpm --filter @workspace/deriv-signal-lab build
+pnpm --filter @workspace/deriv-signal-lab build
 ```
 
 The build config requires both `PORT` and `BASE_PATH`, including for production builds.
