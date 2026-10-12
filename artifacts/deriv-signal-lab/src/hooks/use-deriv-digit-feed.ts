@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { extractFinalDigit, precisionFromPipSize, type DigitObservation } from '@/lib/digit-analysis';
+import { DERIV_APP_ID, DERIV_PUBLIC_WS_URL } from '@/lib/deriv-config';
 
 type WireMessage = {
   msg_type?: string;
@@ -42,8 +43,6 @@ type PendingRequest = { kind: 'history' | 'contracts'; symbol: string };
 
 const HISTORY_LIMIT = 2_000;
 const STALE_AFTER_MS = 15_000;
-const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim() || '1089';
-const USING_TEST_APP_ID = !import.meta.env.VITE_DERIV_APP_ID?.trim();
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -219,7 +218,7 @@ export function useDerivDigitFeed() {
       if (disposed) return;
       setStatus(reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
       try {
-        socket = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`);
+        socket = new WebSocket(DERIV_PUBLIC_WS_URL);
         socketRef.current = socket;
         socket.onopen = () => {
           if (disposed || !socket) return;
@@ -468,6 +467,6 @@ export function useDerivDigitFeed() {
     fresh,
     sourceAgeMs,
     receiveAgeMs,
-    usingTestAppId: USING_TEST_APP_ID,
+    appId: DERIV_APP_ID,
   };
 }
