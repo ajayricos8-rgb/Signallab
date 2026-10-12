@@ -489,7 +489,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
           <span>{feed.selectedMarket?.tradingSuspended ? 'Trading suspended' : feed.selectedMarket ? 'Suspension check passed' : 'Suspension unknown'}</span>
           <span>{feed.contractsLoaded ? `${relevantContracts.length} Deriv-supported contract types` : 'Checking contract support'}</span>
           <span>{supportedDurationCount} unique Deriv-supported tick expiries · choose one</span>
-          <span>{feed.usingTestAppId ? 'Test app ID 1089' : 'Configured Deriv app ID'}</span>
+          <span>Deriv App ID {feed.appId}</span>
           <span>Digit count is not traded volume</span>
         </div>
         {feed.feedError && <div className="mt-3 flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive" role="alert"><AlertTriangle size={15} className="mt-0.5 shrink-0" /><span>{feed.feedError}</span></div>}

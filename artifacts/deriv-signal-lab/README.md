@@ -13,14 +13,14 @@ pnpm install
 pnpm dev
 ```
 
-The development script starts the workspace services and binds Vite to `0.0.0.0`. Copy `artifacts/deriv-signal-lab/.env.example` to `.env.local` in that app directory and configure `VITE_DERIV_APP_ID` if using your own Deriv application ID; when unset, the market-data hook falls back to app ID `1089`. The app ID is not an account token, and no account token is used by these panels.
+The development script starts the workspace services and binds Vite to `0.0.0.0`. Copy `artifacts/deriv-signal-lab/.env.example` to `.env.local` in that app directory and optionally set `VITE_DERIV_APP_ID` to override the Deriv App ID; when unset, the app uses its registered App ID `34mtC7NMdqSHTg3tn2WIu`. Market data streams from Deriv's public Options API channel (`wss://api.derivws.com/trading/v1/options/ws/public`), which needs no account token or OTP. The App ID is not an account token, and no account token is used by these panels.
 
 ## Validate
 
 ```sh
 pnpm --filter @workspace/deriv-signal-lab typecheck
 pnpm --filter @workspace/deriv-signal-lab test:digit-analysis
-PORT=18781 BASE_PATH=/ pnpm --filter @workspace/deriv-signal-lab build
+pnpm --filter @workspace/deriv-signal-lab build
 ```
 
 The build config requires both `PORT` and `BASE_PATH`, including for production builds.

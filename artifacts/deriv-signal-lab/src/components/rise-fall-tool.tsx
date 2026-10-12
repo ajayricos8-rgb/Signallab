@@ -18,6 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { analyzeRiseFall, type Bias, type HistoricalOutcomes, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
+import { DERIV_APP_ID, DERIV_PUBLIC_WS_URL } from '@/lib/deriv-config';
 
 type DerivWireMessage = {
   msg_type?: string;
@@ -68,8 +69,6 @@ const REQUIRED_HISTORICAL_SAMPLES = 100;
 const REQUIRED_DIRECTIONAL_OUTCOMES = 50;
 const STALE_AFTER_MS = 15_000;
 const HISTORY_COUNT = 2_000;
-const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim() || '1089';
-const USING_TEST_APP_ID = !import.meta.env.VITE_DERIV_APP_ID?.trim();
 const SYMBOLS = [
   { code: 'R_10', name: 'Volatility 10 Index' },
   { code: 'R_25', name: 'Volatility 25 Index' },
@@ -246,7 +245,7 @@ function useDerivMarkets(symbols: typeof SYMBOLS) {
       if (disposed) return;
       setFeedStatus(reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
       try {
-        socket = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`);
+        socket = new WebSocket(DERIV_PUBLIC_WS_URL);
         socket.onopen = () => {
           if (disposed || !socket) return;
           reconnectAttempt = 0;
@@ -707,7 +706,7 @@ export function RiseFallTool() {
           <span>{SYMBOLS.length} configured synthetic markets</span>
           <span>{freshCount} currently fresh</span>
           <span>{HORIZONS.length} durations per market</span>
-          <span>{USING_TEST_APP_ID ? 'Deriv test app ID 1089' : 'Configured Deriv app ID'}</span>
+          <span>Deriv App ID {DERIV_APP_ID}</span>
           <span>{serverClockOffsetMs === null ? 'Server clock unverified' : 'Deriv server time synced'}</span>
           <span>Synthetic tick count is not traded volume</span>
         </div>
