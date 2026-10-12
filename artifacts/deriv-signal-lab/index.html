@@ -2,6 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      try {
+        document.documentElement.classList.toggle(
+          'dark',
+          localStorage.getItem('signal-lab-theme') !== 'light',
+        );
+      } catch {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
     <title>Deriv Signal Lab</title>
     <meta name="description" content="Deriv Signal Lab — built on Replit. Update this description to reflect the app." />

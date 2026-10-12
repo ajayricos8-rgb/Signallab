@@ -22,7 +22,8 @@ function familyName(value: string) {
 
 function intensity(value: number, maximum: number) {
   if (!Number.isFinite(value) || maximum <= 0) return 'transparent';
-  return `hsl(158 62% ${Math.round(49 - (value / maximum) * 18)}% / ${0.10 + (value / maximum) * 0.48})`;
+  const opacity = 0.10 + (value / maximum) * 0.48;
+  return `hsl(var(--chart-1) / ${opacity})`;
 }
 
 function HeatmapSkeleton() {
