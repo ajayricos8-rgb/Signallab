@@ -17,7 +17,7 @@ run = "pnpm --filter @workspace/deriv-signal-lab run dev"
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/deriv-signal-lab", "run", "build" ]
 serve = "static"
-publicDir = "artifacts/deriv-signal-lab/dist/public"
+publicDir = "artifacts/deriv-signal-lab/dist"
 
 [[services.production.rewrites]]
 from = "/*"
