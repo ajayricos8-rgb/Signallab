@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { RiseFallTool } from '@/components/rise-fall-tool';
+import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
@@ -122,7 +123,7 @@ function Home() {
                 <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
                   <div className="eyebrow">Workspace records</div>
                   <h2 className="mt-1 text-xl font-bold tracking-tight">Trade history</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">No verified records have been stored. The current Rise/Fall tool does not yet persist signals or run a walk-forward trade backtest.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">No verified records have been stored. The analysis tools do not yet persist signals or run a walk-forward contract backtest.</p>
                   <div className="mt-4 rounded-lg border border-dashed border-border bg-background/40 px-4 py-8 text-center text-sm text-muted-foreground">Signal history will remain empty until real, gated outputs are recorded.</div>
                 </section>
               </div>
@@ -193,7 +194,7 @@ function ToolsWorkspace({
         })}
       </div>
       <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
-        {activeTab === 'rise-fall' ? <RiseFallTool /> : null}
+        {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
       </div>
     </section>
   );
