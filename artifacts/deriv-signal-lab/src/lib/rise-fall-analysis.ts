@@ -27,6 +27,9 @@ export type RiseFallAnalysis = {
   dowScore: number;
   dowStructure: string;
   momentumScore: number;
+  breadthScore: number;
+  rocScore: number;
+  ema50Score: number;
   biasScore: number;
   bias: Bias;
   entryState: string;
@@ -267,7 +270,22 @@ export function analyzeRiseFall(ticks: MarketTick[], expiryTicks: number): RiseF
     else unchanged += 1;
   }
   const directionalCount = up + down + unchanged;
-  const biasScore = clamp(0.4 * dowScore + 0.35 * trendScore + 0.25 * momentumScore);
+  const movingCount = up + down;
+  const breadthScore = movingCount ? clamp((up - down) / movingCount) : 0;
+  const rocScore = roc20 !== null && longVolatility !== null && longVolatility > 0
+    ? clamp(Math.tanh(roc20 / (longVolatility * Math.sqrt(20))))
+    : 0;
+  const ema50Score = ema50 !== null && averageTickMove14 !== null && averageTickMove14 > 0 && prices.length
+    ? clamp(Math.tanh((prices.at(-1)! - ema50) / (averageTickMove14 * 10)))
+    : 0;
+  const biasScore = clamp(
+    0.28 * dowScore
+    + 0.24 * trendScore
+    + 0.22 * momentumScore
+    + 0.1 * breadthScore
+    + 0.08 * rocScore
+    + 0.08 * ema50Score,
+  );
   const bias: Bias = biasScore >= 0.18 ? 'RISE' : biasScore <= -0.18 ? 'FALL' : 'WAIT';
   const expiry = Math.max(1, Math.min(50, Math.floor(expiryTicks) || 1));
 
@@ -279,6 +297,9 @@ export function analyzeRiseFall(ticks: MarketTick[], expiryTicks: number): RiseF
     dowScore,
     dowStructure: swing.label,
     momentumScore,
+    breadthScore,
+    rocScore,
+    ema50Score,
     biasScore,
     bias,
     entryState,

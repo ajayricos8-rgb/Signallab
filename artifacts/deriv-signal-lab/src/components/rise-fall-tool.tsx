@@ -38,26 +38,34 @@ type MarketInfo = {
   rejectedTicks: number;
   error: string;
 };
+type HorizonEvaluation = {
+  horizon: Horizon;
+  historical: HistoricalOutcomes;
+  directionalSupport: number | null;
+  qualified: boolean;
+  reasons: string[];
+};
 type MarketRow = {
   market: (typeof SYMBOLS)[number];
   ticks: FeedTick[];
   info: MarketInfo;
   analysis: RiseFallAnalysis;
-  historical: HistoricalOutcomes;
   fresh: boolean;
   sourceAgeMs: number | null;
-  technicalCandidate: boolean;
+  technicalEligible: boolean;
   reasons: string[];
+  horizonEvaluations: HorizonEvaluation[];
+  bestHorizon: HorizonEvaluation | null;
 };
 type ScanSnapshot = {
   ranAt: number;
-  horizon: Horizon;
   rows: MarketRow[];
-  bestCandidateCode: string | null;
+  bestCandidate: { marketCode: string; horizon: Horizon } | null;
 };
 
 const REQUIRED_TICKS = 500;
 const REQUIRED_HISTORICAL_SAMPLES = 100;
+const REQUIRED_DIRECTIONAL_OUTCOMES = 50;
 const STALE_AFTER_MS = 15_000;
 const HISTORY_COUNT = 2_000;
 const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim() || '1089';
@@ -77,6 +85,10 @@ const SYMBOLS = [
   { code: '1HZ90V', name: 'Volatility 90 (1s) Index' },
   { code: '1HZ100V', name: 'Volatility 100 (1s) Index' },
 ] as const;
+const HORIZONS: Horizon[] = [
+  ...Array.from({ length: 10 }, (_, index) => ({ unit: 'ticks' as const, value: index + 1 })),
+  ...Array.from({ length: 15 }, (_, index) => ({ unit: 'minutes' as const, value: index + 1 })),
+];
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -106,6 +118,26 @@ function deduplicateAndSort(ticks: FeedTick[]): FeedTick[] {
     unique.set(`${tick.epoch}:${tick.quote}`, tick);
   }
   return [...unique.values()].sort((left, right) => left.epoch - right.epoch).slice(-HISTORY_COUNT);
+}
+
+function historicalOutcomesByTicks(ticks: FeedTick[], horizonTicks: number): HistoricalOutcomes {
+  const prices = ticks.map(({ quote }) => quote);
+  const expiry = Math.max(1, Math.floor(horizonTicks));
+  const sampleEnd = prices.length - expiry;
+  const sampleStart = Math.max(0, prices.length - 500);
+  let rise = 0;
+  let fall = 0;
+  let unchanged = 0;
+
+  for (let index = sampleStart; index < sampleEnd; index += 1) {
+    const entry = prices[index];
+    const exit = prices[index + expiry];
+    if (exit > entry) rise += 1;
+    else if (exit < entry) fall += 1;
+    else unchanged += 1;
+  }
+
+  return { horizon: expiry, sample: rise + fall + unchanged, rise, fall, unchanged };
 }
 
 function historicalOutcomesByMinutes(ticks: FeedTick[], minutes: number): HistoricalOutcomes {
@@ -162,13 +194,8 @@ function formatHorizon(horizon: Horizon): string {
   return `${horizon.value} ${horizon.unit === 'ticks' ? (horizon.value === 1 ? 'tick' : 'ticks') : (horizon.value === 1 ? 'minute' : 'minutes')}`;
 }
 
-function durationKey(horizon: Horizon): string {
-  return `${horizon.unit}:${horizon.value}`;
-}
-
-function parseDurationKey(key: string): Horizon {
-  const [unit, rawValue] = key.split(':');
-  return { unit: unit === 'minutes' ? 'minutes' : 'ticks', value: Math.max(1, Number(rawValue) || 1) };
+function sameHorizon(left: Horizon, right: Horizon): boolean {
+  return left.unit === right.unit && left.value === right.value;
 }
 
 function biasTone(bias: Bias): string {
@@ -387,22 +414,18 @@ function createMarketRow(
   market: (typeof SYMBOLS)[number],
   ticks: FeedTick[],
   info: MarketInfo,
-  horizon: Horizon,
   now: number,
   feedStatus: FeedStatus,
   serverClockOffsetMs: number | null,
 ): MarketRow {
-  const analysis = analyzeRiseFall(ticks, horizon.unit === 'ticks' ? horizon.value : 5);
-  const historical = horizon.unit === 'ticks'
-    ? analysis.historical
-    : historicalOutcomesByMinutes(ticks, horizon.value);
+  const analysis = analyzeRiseFall(ticks, 5);
   const receiveAgeMs = info.lastLiveTickAt === null ? null : now - info.lastLiveTickAt;
   const sourceAgeMs = analysis.lastEpoch === null || serverClockOffsetMs === null
     ? null
     : now + serverClockOffsetMs - analysis.lastEpoch * 1000;
   const fresh = feedStatus === 'live'
     && receiveAgeMs !== null
-    && receiveAgeMs <= STALE_AFTER_MS
+    && Math.abs(receiveAgeMs) <= STALE_AFTER_MS
     && sourceAgeMs !== null
     && Math.abs(sourceAgeMs) <= STALE_AFTER_MS;
 
@@ -411,7 +434,6 @@ function createMarketRow(
   if (!info.historyLoaded) reasons.push('Waiting for validated history.');
   if (ticks.length < REQUIRED_TICKS) reasons.push(`Need ${REQUIRED_TICKS - ticks.length} more valid ticks.`);
   if (!fresh) reasons.push('Live tick or server-time freshness is not confirmed.');
-  if (historical.sample < REQUIRED_HISTORICAL_SAMPLES) reasons.push(`Only ${historical.sample} completed horizon samples; ${REQUIRED_HISTORICAL_SAMPLES} required.`);
   if (analysis.bias === 'WAIT') reasons.push('Composite directional evidence is mixed or below threshold.');
 
   const directionSign = analysis.bias === 'RISE' ? 1 : analysis.bias === 'FALL' ? -1 : 0;
@@ -424,15 +446,62 @@ function createMarketRow(
   if (directionSign && analysis.trendScore * directionSign < 0.12) reasons.push('Rolling-window trend does not align strongly enough.');
   if (directionSign && analysis.momentumScore * directionSign < 0.1) reasons.push('Momentum does not align with the directional bias.');
   if (directionSign && analysis.entryState !== 'Directional alignment (unconfirmed)') reasons.push(`Entry alignment is ${analysis.entryState.toLowerCase()}.`);
+  if (directionSign && (analysis.volatilityRatio === null || analysis.volatilityRegime === 'Insufficient history')) reasons.push('Volatility context is unavailable.');
 
-  const technicalCandidate = reasons.length === 0 && directionSign !== 0;
-  return { market, ticks, info, analysis, historical, fresh, sourceAgeMs, technicalCandidate, reasons };
+  const technicalEligible = reasons.length === 0 && directionSign !== 0;
+  return { market, ticks, info, analysis, fresh, sourceAgeMs, technicalEligible, reasons, horizonEvaluations: [], bestHorizon: null };
 }
 
-function bestCandidate(rows: MarketRow[]): MarketRow | null {
+function evaluateHorizon(row: MarketRow, horizon: Horizon): HorizonEvaluation {
+  const historical = horizon.unit === 'ticks'
+    ? historicalOutcomesByTicks(row.ticks, horizon.value)
+    : historicalOutcomesByMinutes(row.ticks, horizon.value);
+  const reasons = [...row.reasons];
+  if (historical.sample < REQUIRED_HISTORICAL_SAMPLES) {
+    reasons.push(`Only ${historical.sample} completed outcomes at this duration; ${REQUIRED_HISTORICAL_SAMPLES} required.`);
+  }
+
+  const isRise = row.analysis.bias === 'RISE';
+  const isFall = row.analysis.bias === 'FALL';
+  const alignedCount = isRise ? historical.rise : isFall ? historical.fall : 0;
+  const oppositeCount = isRise ? historical.fall : isFall ? historical.rise : 0;
+  const directionalCount = alignedCount + oppositeCount;
+  const directionalSupport = directionalCount > 0 ? (alignedCount - oppositeCount) / directionalCount : null;
+  if (row.analysis.bias !== 'WAIT' && directionalCount < REQUIRED_DIRECTIONAL_OUTCOMES) {
+    reasons.push(`Only ${directionalCount} non-equal outcomes; ${REQUIRED_DIRECTIONAL_OUTCOMES} required for duration comparison.`);
+  }
+  if (row.analysis.bias !== 'WAIT' && directionalSupport !== null && directionalSupport <= 0) {
+    reasons.push('Observed Rise/Fall outcomes at this duration do not align with the composite direction.');
+  }
+  if (row.analysis.bias !== 'WAIT' && directionalSupport === null) {
+    reasons.push('No non-equal outcomes are available to compare this duration.');
+  }
+
+  return {
+    horizon,
+    historical,
+    directionalSupport,
+    qualified: row.technicalEligible && reasons.length === 0 && directionalSupport !== null && directionalSupport > 0,
+    reasons,
+  };
+}
+
+function evaluateMarketDurations(row: MarketRow): MarketRow {
+  const horizonEvaluations = HORIZONS.map((horizon) => evaluateHorizon(row, horizon));
+  const bestHorizon = horizonEvaluations
+    .filter((evaluation) => evaluation.qualified)
+    .sort((left, right) => (right.directionalSupport ?? -Infinity) - (left.directionalSupport ?? -Infinity))[0] ?? null;
+  return { ...row, horizonEvaluations, bestHorizon };
+}
+
+function bestCandidate(rows: MarketRow[]): { row: MarketRow; evaluation: HorizonEvaluation } | null {
   return rows
-    .filter((row) => row.technicalCandidate)
-    .sort((left, right) => Math.abs(right.analysis.biasScore) - Math.abs(left.analysis.biasScore))[0] ?? null;
+    .filter((row) => row.bestHorizon !== null)
+    .map((row) => ({ row, evaluation: row.bestHorizon! }))
+    .sort((left, right) => {
+      const supportDifference = (right.evaluation.directionalSupport ?? -Infinity) - (left.evaluation.directionalSupport ?? -Infinity);
+      return supportDifference || Math.abs(right.row.analysis.biasScore) - Math.abs(left.row.analysis.biasScore);
+    })[0] ?? null;
 }
 
 function PricePath({ ticks, marketName }: { ticks: FeedTick[]; marketName: string }) {
@@ -504,25 +573,25 @@ function WindowTable({ analysis }: { analysis: RiseFallAnalysis }) {
   );
 }
 
-function HistoricalOutcomeCard({ row, horizon }: { row: MarketRow; horizon: Horizon }) {
-  const sample = row.historical.sample;
+function HistoricalOutcomeCard({ row, historical, horizon }: { row: MarketRow; historical: HistoricalOutcomes | null; horizon: Horizon | null }) {
+  const sample = historical?.sample ?? 0;
   const items = [
-    { name: 'Rise', count: row.historical.rise, tone: 'bg-emerald-500' },
-    { name: 'Fall', count: row.historical.fall, tone: 'bg-rose-500' },
-    { name: 'Unchanged', count: row.historical.unchanged, tone: 'bg-muted-foreground/50' },
+    { name: 'Rise', count: historical?.rise ?? 0, tone: 'bg-emerald-500' },
+    { name: 'Fall', count: historical?.fall ?? 0, tone: 'bg-rose-500' },
+    { name: 'Unchanged', count: historical?.unchanged ?? 0, tone: 'bg-muted-foreground/50' },
   ];
   return (
     <article className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="expiry-baseline">
       <div className="flex items-center justify-between gap-3">
-        <div><div className="eyebrow">Observed outcomes · {formatHorizon(horizon)}</div><h3 className="mt-1 text-base font-bold">{row.market.name}</h3></div>
+        <div><div className="eyebrow">{horizon ? `Observed outcomes · ${formatHorizon(horizon)}` : 'Observed outcomes · no selected duration'}</div><h3 className="mt-1 text-base font-bold">{row.market.name}</h3></div>
         <BarChart3 size={17} className="text-primary" />
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{sample} completed historical comparisons. Rise is final &gt; entry; Fall is final &lt; entry; equality is separate.</p>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{historical ? `${sample} completed historical comparisons. Rise is final > entry; Fall is final < entry; equality is separate.` : 'No duration has been selected by the engines. Run Analysis to test all supported horizons; no duration is implied here.'}</p>
       <div className="mt-4 space-y-3">
         {items.map((item) => {
           const share = sample ? (item.count / sample) * 100 : 0;
           return <div key={item.name}>
-            <div className="mb-1 flex justify-between text-xs"><span className="text-muted-foreground">{item.name}</span><span className="mono font-semibold">{item.count} · {sample ? `${share.toFixed(1)}%` : '—'}</span></div>
+            <div className="mb-1 flex justify-between text-xs"><span className="text-muted-foreground">{item.name}</span><span className="mono font-semibold">{historical ? `${item.count} · ${share.toFixed(1)}%` : '—'}</span></div>
             <div className="h-1.5 overflow-hidden rounded-full bg-secondary"><div className={`h-full rounded-full ${item.tone}`} style={{ width: `${share}%` }} /></div>
           </div>;
         })}
@@ -532,31 +601,32 @@ function HistoricalOutcomeCard({ row, horizon }: { row: MarketRow; horizon: Hori
   );
 }
 
-function MarketScanTable({ rows, horizon }: { rows: MarketRow[]; horizon: Horizon }) {
+function MarketScanTable({ rows, hasScan }: { rows: MarketRow[]; hasScan: boolean }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-card-border bg-card/80" data-testid="market-scan-table">
-      <table className="w-full min-w-[860px] text-left text-xs">
+      <table className="w-full min-w-[980px] text-left text-xs">
         <thead><tr className="border-b border-border text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-          <th className="px-3 py-3">Market</th><th className="px-3 py-3">Feed</th><th className="px-3 py-3">Bias</th><th className="px-3 py-3">Swing structure</th><th className="px-3 py-3">Trend / momentum</th><th className="px-3 py-3">Samples · {formatHorizon(horizon)}</th><th className="px-3 py-3 text-right">Technical gate</th>
+          <th className="px-3 py-3">Market</th><th className="px-3 py-3">Feed</th><th className="px-3 py-3">Composite bias</th><th className="px-3 py-3">Swing structure</th><th className="px-3 py-3">Trend / momentum</th><th className="px-3 py-3">Auto duration</th><th className="px-3 py-3">Outcomes</th><th className="px-3 py-3 text-right">Engine decision</th>
         </tr></thead>
-        <tbody>{rows.map((row) => (
-          <tr key={row.market.code} className="border-b border-border/60 align-top last:border-0">
+        <tbody>{rows.map((row) => {
+          const firstReason = row.bestHorizon ? '' : row.horizonEvaluations.find((evaluation) => evaluation.reasons.length > 0)?.reasons[0] ?? row.reasons[0];
+          return <tr key={row.market.code} className="border-b border-border/60 align-top last:border-0">
             <td className="px-3 py-3"><div className="font-semibold">{row.market.name}</div><div className="mt-0.5 text-[10px] text-muted-foreground mono">{row.market.code}</div></td>
             <td className="px-3 py-3">{row.info.error ? <span className="text-destructive">Unavailable</span> : row.fresh ? <span className="text-emerald-500">Fresh</span> : <span className="text-amber-500">Waiting / stale</span>}<div className="mt-1 text-[10px] text-muted-foreground">{row.ticks.length} ticks</div></td>
             <td className="px-3 py-3"><span className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${biasTone(row.analysis.bias)}`}>{row.analysis.bias}</span><div className="mt-1 text-[10px] text-muted-foreground mono">{formatSigned(row.analysis.biasScore)} evidence</div></td>
             <td className="px-3 py-3 text-muted-foreground">{row.analysis.dowStructure}</td>
             <td className="px-3 py-3 text-muted-foreground mono">{formatSigned(row.analysis.trendScore)} / {formatSigned(row.analysis.momentumScore)}</td>
-            <td className="px-3 py-3 text-muted-foreground mono">{row.historical.sample}</td>
-            <td className="px-3 py-3 text-right">{row.technicalCandidate ? <span className="inline-flex items-center gap-1 text-emerald-500"><CheckCircle2 size={13} /> Candidate</span> : <span className="text-muted-foreground">Not qualified</span>}{!row.technicalCandidate && row.reasons[0] && <div className="mt-1 max-w-52 text-left text-[10px] leading-relaxed text-muted-foreground">{row.reasons[0]}</div>}</td>
-          </tr>
-        ))}</tbody>
+            <td className="px-3 py-3 font-semibold">{row.bestHorizon ? formatHorizon(row.bestHorizon.horizon) : '—'}</td>
+            <td className="px-3 py-3 text-muted-foreground mono">{row.bestHorizon ? row.bestHorizon.historical.sample : '—'}</td>
+            <td className="px-3 py-3 text-right">{row.bestHorizon ? <span className="inline-flex items-center gap-1 text-emerald-500"><CheckCircle2 size={13} /> Candidate</span> : <span className="text-muted-foreground">{hasScan ? 'No qualifying duration' : 'Run Analysis to scan'}</span>}{row.bestHorizon === null && hasScan && firstReason && <div className="mt-1 max-w-52 text-left text-[10px] leading-relaxed text-muted-foreground">{firstReason}</div>}</td>
+          </tr>;
+        })}</tbody>
       </table>
     </div>
   );
 }
 
 export function RiseFallTool() {
-  const [horizon, setHorizon] = useState<Horizon>({ unit: 'ticks', value: 5 });
   const [now, setNow] = useState(Date.now());
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null);
   const [isScanning, setIsScanning] = useState(false);
@@ -571,42 +641,45 @@ export function RiseFallTool() {
     market,
     ticksBySymbol[market.code] ?? [],
     marketInfo[market.code] ?? emptyMarketInfo(),
-    horizon,
     now,
     feedStatus,
     serverClockOffsetMs,
-  )), [ticksBySymbol, marketInfo, horizon, now, feedStatus, serverClockOffsetMs]);
+  )), [ticksBySymbol, marketInfo, now, feedStatus, serverClockOffsetMs]);
   const freshCount = liveRows.filter((row) => row.fresh).length;
-  const technicalCount = liveRows.filter((row) => row.technicalCandidate).length;
   const resultRows = scanSnapshot?.rows ?? liveRows;
-  const scanCandidate = scanSnapshot ? scanSnapshot.rows.find((row) => row.market.code === scanSnapshot.bestCandidateCode) ?? null : null;
-  const chartRow = scanCandidate ?? resultRows.find((row) => row.ticks.length > 1) ?? resultRows[0];
-  const durationOptions = [
-    ...Array.from({ length: 10 }, (_, index) => ({ unit: 'ticks' as const, value: index + 1 })),
-    ...Array.from({ length: 15 }, (_, index) => ({ unit: 'minutes' as const, value: index + 1 })),
-  ];
+  const candidateRef = scanSnapshot?.bestCandidate;
+  const candidateRow = candidateRef ? scanSnapshot?.rows.find((row) => row.market.code === candidateRef.marketCode) ?? null : null;
+  const candidateEvaluation = candidateRow?.horizonEvaluations.find((evaluation) => candidateRef && sameHorizon(evaluation.horizon, candidateRef.horizon)) ?? null;
+  const scanCandidate = candidateRow && candidateEvaluation?.qualified ? { row: candidateRow, evaluation: candidateEvaluation } : null;
+  const chartRow = scanCandidate?.row ?? resultRows.find((row) => row.ticks.length > 1) ?? resultRows[0];
+  const chartHorizon = scanCandidate?.evaluation.horizon ?? null;
+  const chartHistorical = scanCandidate?.evaluation.historical ?? null;
 
   function handleRunAnalysis() {
     if (isScanning) return;
     setIsScanning(true);
     window.setTimeout(() => {
-      const rows = liveRows.map((row) => ({ ...row, ticks: [...row.ticks], reasons: [...row.reasons] }));
+      const rows = liveRows.map((row) => evaluateMarketDurations({
+        ...row,
+        info: { ...row.info },
+        ticks: [...row.ticks],
+        reasons: [...row.reasons],
+      }));
       const candidate = bestCandidate(rows);
       setScanSnapshot({
         ranAt: Date.now(),
-        horizon: { ...horizon },
         rows,
-        bestCandidateCode: candidate?.market.code ?? null,
+        bestCandidate: candidate ? { marketCode: candidate.row.market.code, horizon: candidate.evaluation.horizon } : null,
       });
       setIsScanning(false);
     }, 80);
   }
 
   const scanSummary = !scanSnapshot
-    ? 'Press Run Analysis to snapshot all connected markets and apply the combined technical gates.'
+    ? 'Run Analysis checks every configured market against all 25 durations. It chooses a duration only when the data, combined engines and that duration’s observed outcomes pass the gates.'
     : scanCandidate
-      ? `${scanCandidate.market.name} passed the technical research gates for ${formatHorizon(scanSnapshot.horizon)}. Contract calibration and actual payout economics are not loaded, so this is not a trade-ready signal.`
-      : 'No market passed every technical gate for this horizon. The system returns WAIT rather than forcing a market or direction.';
+      ? `${scanCandidate.row.market.name} is the highest-ranked qualifying research candidate at ${formatHorizon(scanCandidate.evaluation.horizon)}. Duration is selected automatically; this remains unvalidated and is not a trade-ready signal.`
+      : 'No market-and-duration pair passed every gate. The system returns WAIT rather than forcing a direction or expiry.';
 
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid="rise-fall-analysis">
@@ -614,29 +687,26 @@ export function RiseFallTool() {
         <div>
           <div className="eyebrow">Rise/Fall · multi-market research</div>
           <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">Market scan and analysis</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">The scanner requests Deriv tick history and live updates for the supported volatility markets below; unavailable or stale feeds stay unqualified. Run Analysis snapshots trend, swing structure, momentum, volatility, data quality and horizon outcomes together.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">The scanner requests Deriv tick history and live updates for the supported volatility markets. Run Analysis combines trend, swing structure, momentum, volatility, data quality and expiry-specific historical outcomes; unavailable or stale feeds stay unqualified.</p>
         </div>
         <FeedBadge status={feedStatus} freshMarkets={freshCount} />
       </div>
 
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
         <div className="grid gap-4 sm:grid-cols-[minmax(220px,1fr)_auto] sm:items-end">
-          <label className="block">
-            <span className="eyebrow">Requested trade duration</span>
-            <select value={durationKey(horizon)} onChange={(event) => setHorizon(parseDurationKey(event.target.value))} className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary" aria-label="Select trade duration" data-testid="rise-fall-duration-select">
-              <optgroup label="Tick horizons">{durationOptions.filter(({ unit }) => unit === 'ticks').map((option) => <option key={durationKey(option)} value={durationKey(option)}>{formatHorizon(option)}</option>)}</optgroup>
-              <optgroup label="Minute horizons">{durationOptions.filter(({ unit }) => unit === 'minutes').map((option) => <option key={durationKey(option)} value={durationKey(option)}>{formatHorizon(option)}</option>)}</optgroup>
-            </select>
-            <span className="mt-1 block text-[10px] leading-relaxed text-muted-foreground">Tick horizons or 1–15 minutes. Historical time horizons use observed timestamps; actual contract availability and payout are not queried.</span>
-          </label>
+          <div>
+            <div className="eyebrow">Automatic duration selection</div>
+            <div className="mt-2 text-sm font-semibold">1–10 ticks · 1–15 minutes</div>
+            <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground">No manual duration choice. The engines test all 25 horizons per market and select the top qualifying horizon only when technical alignment and expiry-specific historical checks agree; otherwise the output is WAIT.</p>
+          </div>
           <button type="button" onClick={handleRunAnalysis} disabled={isScanning} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60" data-testid="button-run-analysis">
-            <Play size={16} fill="currentColor" />{isScanning ? 'Analyzing markets…' : 'Run Analysis'}
+            <Play size={16} fill="currentColor" />{isScanning ? 'Analyzing markets and durations…' : 'Run Analysis'}
           </button>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
           <span>{SYMBOLS.length} configured synthetic markets</span>
           <span>{freshCount} currently fresh</span>
-          <span>{technicalCount} passing technical gates</span>
+          <span>{HORIZONS.length} durations per market</span>
           <span>{USING_TEST_APP_ID ? 'Deriv test app ID 1089' : 'Configured Deriv app ID'}</span>
           <span>{serverClockOffsetMs === null ? 'Server clock unverified' : 'Deriv server time synced'}</span>
           <span>Synthetic tick count is not traded volume</span>
@@ -655,39 +725,39 @@ export function RiseFallTool() {
               <div className="text-5xl font-extrabold tracking-[-0.06em] text-amber-500">WAIT</div>
               <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{scanSummary}</p>
             </div>
-            {scanCandidate && scanSnapshot ? (
-              <div className={`w-full max-w-sm rounded-xl border px-4 py-3 ${biasTone(scanCandidate.analysis.bias)}`}>
-                <div className="text-[10px] font-bold uppercase tracking-[0.1em] opacity-80">Best technical candidate · unvalidated</div>
-                <div className="mt-2 text-base font-extrabold">{scanCandidate.market.name}</div>
-                <div className="mt-0.5 text-[10px] mono opacity-80">{scanCandidate.market.code}</div>
+            {scanCandidate ? (
+              <div className={`w-full max-w-sm rounded-xl border px-4 py-3 ${biasTone(scanCandidate.row.analysis.bias)}`}>
+                <div className="text-[10px] font-bold uppercase tracking-[0.1em] opacity-80">Auto-selected research candidate · unvalidated</div>
+                <div className="mt-2 text-base font-extrabold">{scanCandidate.row.market.name}</div>
+                <div className="mt-0.5 text-[10px] mono opacity-80">{scanCandidate.row.market.code}</div>
                 <div className="mt-3 flex flex-wrap items-center gap-3 text-sm font-bold">
-                  <span className="inline-flex items-center gap-1.5">{scanCandidate.analysis.bias === 'RISE' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}{scanCandidate.analysis.bias}</span>
-                  <span className="rounded-full border border-current/20 px-2 py-1 text-xs">{formatHorizon(scanSnapshot.horizon)}</span>
+                  <span className="inline-flex items-center gap-1.5">{scanCandidate.row.analysis.bias === 'RISE' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}{scanCandidate.row.analysis.bias}</span>
+                  <span className="rounded-full border border-current/20 px-2 py-1 text-xs">{formatHorizon(scanCandidate.evaluation.horizon)}</span>
                 </div>
-                <div className="mt-2 text-[10px] opacity-80">Evidence score {formatSigned(scanCandidate.analysis.biasScore)} · not a probability</div>
+                <div className="mt-2 text-[10px] opacity-80">Observed direction aligns at this expiry · not a probability or forecast.</div>
               </div>
             ) : (
               <div className="w-full max-w-sm rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-                {scanSnapshot ? 'No market passed all technical data, structure, momentum and history gates.' : 'No scan has been run yet.'}
+                {scanSnapshot ? 'No market and duration passed all data, technical and expiry-specific gates.' : 'No analysis has been run yet; no duration is selected.'}
               </div>
             )}
           </div>
           <div className="mt-5 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground">
             <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
-            <span>Even a technical candidate is not a verified trade instruction. No out-of-sample calibration, live Deriv proposal, payout, break-even or expected-value check is connected; the actionable signal therefore remains WAIT.</span>
+            <span>The automatic horizon is a research heuristic based on current engine alignment and historical outcomes, not a calibrated forecast. No out-of-sample calibration, live Deriv proposal, payout, break-even or expected-value check is connected; actionable output therefore remains WAIT.</span>
           </div>
-          {scanSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Last scan: {new Date(scanSnapshot.ranAt).toLocaleTimeString()} · horizon: {formatHorizon(scanSnapshot.horizon)}</div>}
+          {scanSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Last scan: {new Date(scanSnapshot.ranAt).toLocaleTimeString()} · every supported horizon evaluated automatically</div>}
         </article>
 
         <article className="rounded-xl border border-card-border bg-card/90 p-5 panel-glow">
-          <div className="flex items-center justify-between gap-3"><div><div className="eyebrow">Selected analysis market</div><h3 className="mt-1 text-base font-bold">{chartRow.market.name}</h3></div><Activity size={18} className={chartRow.fresh ? 'text-emerald-500' : 'text-muted-foreground'} /></div>
+          <div className="flex items-center justify-between gap-3"><div><div className="eyebrow">{scanCandidate ? 'Auto-selected candidate market' : 'Live diagnostics · not a candidate'}</div><h3 className="mt-1 text-base font-bold">{chartRow.market.name}</h3></div><Activity size={18} className={chartRow.fresh ? 'text-emerald-500' : 'text-muted-foreground'} /></div>
           <div className="mt-5 text-3xl font-extrabold tracking-[-0.04em] mono">{formatQuote(chartRow.analysis.currentQuote)}</div>
           <div className="mt-1 text-xs text-muted-foreground">Validated quote · {formatEpoch(chartRow.analysis.lastEpoch)} · source {formatAge(chartRow.sourceAgeMs)}</div>
           <div className="mt-5 grid grid-cols-2 gap-3 border-t border-border pt-4">
             <div><div className="eyebrow">Feed sample</div><div className="mt-1 text-sm font-bold">{chartRow.ticks.length} ticks</div></div>
-            <div><div className="eyebrow">Horizon sample</div><div className="mt-1 text-sm font-bold">{chartRow.historical.sample} outcomes</div></div>
+            <div><div className="eyebrow">Auto duration</div><div className="mt-1 text-sm font-bold">{chartHorizon ? formatHorizon(chartHorizon) : '—'}</div></div>
+            <div><div className="eyebrow">Expiry outcomes</div><div className="mt-1 text-sm font-bold">{chartHistorical ? `${chartHistorical.sample} observed` : 'No duration selected'}</div></div>
             <div><div className="eyebrow">Swing structure</div><div className="mt-1 text-sm font-bold">{chartRow.analysis.dowStructure}</div></div>
-            <div><div className="eyebrow">Entry alignment</div><div className="mt-1 text-sm font-bold">{chartRow.analysis.entryState}</div></div>
           </div>
         </article>
       </section>
@@ -697,18 +767,18 @@ export function RiseFallTool() {
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow">Validated tick price path</div><h3 className="mt-1 text-base font-bold">{chartRow.market.name}</h3></div><div className="text-xs text-muted-foreground">Price only · no synthetic volume</div></div>
           <PricePath ticks={chartRow.ticks} marketName={chartRow.market.name} />
         </article>
-        <HistoricalOutcomeCard row={chartRow} horizon={scanSnapshot?.horizon ?? horizon} />
+        <HistoricalOutcomeCard row={chartRow} historical={chartHistorical} horizon={chartHorizon} />
       </section>
 
       <section className="grid gap-3 md:grid-cols-3">
         <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Database size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Data validation</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Requests up to 2,000 historical ticks and a live subscription per market. Invalid, duplicate and out-of-order ticks are excluded; stale markets do not qualify.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><TrendingUp size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Combined technical gates</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Requires fresh data, 500 valid ticks, 100 completed horizon comparisons, aligned rolling windows, matching momentum, confirmed swing structure and entry alignment.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Duration limitations</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Minute horizons use timestamped tick comparisons, not a Deriv contract replay. Equality is separate; contract availability and settlement proposal are not queried.</p></div></div>
+        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><TrendingUp size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Engines that must agree</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Requires fresh data, 500 valid ticks, aligned rolling windows, RSI/EMA/MACD momentum, Dow-style swings, 100-tick breadth, volatility-normalized ROC20, EMA50 position, entry alignment and expiry-specific historical direction.</p></div></div>
+        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Automatic duration limits</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">All 1–10 tick and 1–15 minute horizons are compared automatically. Minute horizons use observed timestamps, not a Deriv contract replay; equality is separate and contract terms are not queried.</p></div></div>
       </section>
 
       <section className="space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow">Cross-market scan</div><h3 className="mt-1 text-base font-bold">Engine outputs by symbol</h3></div><span className="text-[10px] text-muted-foreground">{scanSnapshot ? 'Frozen at last Run Analysis' : 'Live rolling view'}</span></div>
-        <MarketScanTable rows={resultRows} horizon={scanSnapshot?.horizon ?? horizon} />
+        <div className="flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow">Cross-market scan</div><h3 className="mt-1 text-base font-bold">Automatic duration by symbol</h3></div><span className="text-[10px] text-muted-foreground">{scanSnapshot ? 'Frozen at last Run Analysis' : 'Duration not selected until analysis runs'}</span></div>
+        <MarketScanTable rows={resultRows} hasScan={Boolean(scanSnapshot)} />
       </section>
 
       <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
@@ -721,14 +791,14 @@ export function RiseFallTool() {
             <div><div className="eyebrow">MACD histogram</div><div className="mt-1 font-bold mono">{formatQuote(chartRow.analysis.macdHistogram)}</div></div>
             <div><div className="eyebrow">Mean absolute tick move</div><div className="mt-1 font-bold mono">{formatQuote(chartRow.analysis.averageTickMove14)}</div></div>
             <div><div className="eyebrow">100-tick breadth</div><div className="mt-1 font-bold mono">{formatPct(chartRow.analysis.upPercent100)} up / {formatPct(chartRow.analysis.downPercent100)} down</div></div>
-            <div className="col-span-2 flex items-center gap-2 border-t border-border pt-3 text-muted-foreground"><Zap size={14} className="text-primary" /> Trend {formatSigned(chartRow.analysis.trendScore)} · momentum {formatSigned(chartRow.analysis.momentumScore)} · Dow-style structure {formatSigned(chartRow.analysis.dowScore)}</div>
+            <div className="col-span-2 flex items-center gap-2 border-t border-border pt-3 text-muted-foreground"><Zap size={14} className="shrink-0 text-primary" />Composite inputs · trend {formatSigned(chartRow.analysis.trendScore)} · momentum {formatSigned(chartRow.analysis.momentumScore)} · swing {formatSigned(chartRow.analysis.dowScore)} · breadth {formatSigned(chartRow.analysis.breadthScore)} · ROC20 {formatSigned(chartRow.analysis.rocScore)} · EMA50 {formatSigned(chartRow.analysis.ema50Score)}</div>
           </div>
         </article>
         <div className="space-y-3"><div className="flex items-center gap-2"><TrendingDown size={16} className="text-primary" /><h3 className="text-sm font-bold">Rolling-window consensus</h3></div><WindowTable analysis={chartRow.analysis} /></div>
       </section>
 
       <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite">
-        {scanSnapshot ? `Run Analysis examined ${scanSnapshot.rows.length} configured markets at ${new Date(scanSnapshot.ranAt).toLocaleTimeString()}.` : 'Run Analysis to freeze a comparable all-market snapshot. Live data continues updating in the background.'} No automatic order placement is available.
+        {scanSnapshot ? `Run Analysis examined ${scanSnapshot.rows.length} configured markets across all ${HORIZONS.length} durations at ${new Date(scanSnapshot.ranAt).toLocaleTimeString()}.` : 'Run Analysis to evaluate all markets and durations together. Live feed diagnostics continue updating in the background.'} No automatic order placement is available.
       </div>
     </div>
   );
