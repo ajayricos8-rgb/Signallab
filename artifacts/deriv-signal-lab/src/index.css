@@ -153,6 +153,29 @@
 .delay-2 { animation-delay: 150ms; }
 .delay-3 { animation-delay: 220ms; }
 
+@keyframes coming-soon-letter {
+  0%, 60%, 100% { transform: translateY(0); opacity: .55; }
+  30% { transform: translateY(-6px); opacity: 1; }
+}
+@keyframes coming-soon-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes coming-soon-bar {
+  0%, 100% { transform: scaleX(.25); opacity: .4; }
+  50% { transform: scaleX(1); opacity: 1; }
+}
+.coming-soon-letter { display: inline-block; animation: coming-soon-letter 1.8s ease-in-out infinite; }
+.coming-soon-text {
+  background: linear-gradient(90deg, hsl(var(--foreground)) 35%, hsl(var(--primary)) 50%, hsl(var(--foreground)) 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: coming-soon-sweep 3s linear infinite;
+}
+.coming-soon-bar { animation: coming-soon-bar 2.2s ease-in-out infinite; transform-origin: left center; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }

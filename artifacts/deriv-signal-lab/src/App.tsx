@@ -6,13 +6,13 @@ import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-cont
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Activity, Bot, Clock3, Menu, Moon, Sun, Wrench, X } from 'lucide-react';
+import { Activity, Bot, Clock3, Menu, Moon, Settings, Sun, Wrench, X } from 'lucide-react';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 
 const queryClient = new QueryClient();
 
 type Theme = 'light' | 'dark';
-type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots';
+type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots' | 'settings';
 type ToolsMiniTab = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
 
 const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
@@ -26,6 +26,7 @@ const workspaceTabs = [
   { id: 'tools', label: 'Tools', icon: Wrench },
   { id: 'trade-history', label: 'Signal history', icon: Clock3 },
   { id: 'premium-bots', label: 'Premium bots', icon: Bot },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
 function readSavedTheme(): Theme {
@@ -85,7 +86,7 @@ function Home() {
             <div className="eyebrow px-3 pb-2">Workspace</div>
             {workspaceTabs.map(({ id, label, icon: Icon }) => {
               const active = activeTab === id;
-              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'trade-history' ? 'button-history-nav' : 'button-premium-bots-nav';
+              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'trade-history' ? 'button-history-nav' : id === 'settings' ? 'button-settings-nav' : 'button-premium-bots-nav';
               return (
                 <button
                   key={id}
@@ -133,6 +134,8 @@ function Home() {
                 <h2 className="mt-1 text-xl font-bold tracking-tight">Premium bots</h2>
                 <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Premium bots will be listed here when they are configured for this workspace.</p>
               </div>
+            ) : activeTab === 'settings' ? (
+              <SettingsComingSoon />
             ) : (
               <ToolsWorkspace activeTab={activeToolsMiniTab} onTabChange={setActiveToolsMiniTab} />
             )}
@@ -164,6 +167,36 @@ function Home() {
         </div>
       </nav>
     </div>
+  );
+}
+
+function SettingsComingSoon() {
+  const letters = 'Coming soon'.split('');
+  return (
+    <section className="mx-auto flex w-full max-w-3xl flex-col items-center rounded-xl border border-card-border bg-card/90 px-6 py-16 text-center panel-glow animate-rise-in sm:py-20" data-testid="settings-coming-soon">
+      <div className="eyebrow">Configuration</div>
+      <h2 className="mt-1 text-xl font-bold tracking-tight">Settings</h2>
+      <div className="mt-8 flex h-14 items-center justify-center text-2xl font-extrabold tracking-[-0.03em] sm:text-3xl" aria-label="Coming soon" role="status">
+        <span className="coming-soon-text">
+          {letters.map((char, i) => (
+            <span
+              key={i}
+              aria-hidden="true"
+              className="coming-soon-letter"
+              style={{ animationDelay: `${i * 90}ms` }}
+            >
+              {char === ' ' ? '\u00A0' : char}
+            </span>
+          ))}
+        </span>
+      </div>
+      <div className="mt-6 flex items-center gap-1.5" aria-hidden="true">
+        {[0, 1, 2].map((i) => (
+          <span key={i} className="h-1.5 w-8 origin-left rounded-full bg-primary coming-soon-bar" style={{ animationDelay: `${i * 200}ms` }} />
+        ))}
+      </div>
+      <p className="mt-6 max-w-md text-sm leading-relaxed text-muted-foreground">Workspace settings are on the way. This section will hold your preferences once they are available.</p>
+    </section>
   );
 }
 
