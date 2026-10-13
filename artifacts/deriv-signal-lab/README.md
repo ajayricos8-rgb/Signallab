@@ -1,6 +1,6 @@
 # Signal Lab — Deriv digit tools
 
-This workspace contains the Rise/Fall tool and the Over/Under, Even/Odd, and Matches research panels. The digit panels use Deriv market-data WebSockets and do not authorize accounts, request or place trades, or auto-trade.
+This workspace contains the Rise/Fall tool and the Over/Under, Even/Odd, and Matches research panels. A compact dark-blue trade configuration dock is shown above the workspace navigation on each tool. Its red Trade button only opens a draft summary explaining why trading is unavailable: the panels use public Deriv market data and do not authorize accounts, request proposals, place trades, or auto-trade.
 
 ## Run locally
 
@@ -27,6 +27,7 @@ The build config requires both `PORT` and `BASE_PATH`, including for production 
 
 ## Digit-panel behavior and limits
 
+- The trade dock offers contract direction, a draft stake, tick expiry and (where applicable) barrier or target digit. Its digit-panel expiry and market reflect the analysis panel's selections; the contract direction remains a separate manual draft, not the research ranking. Rise/Fall's draft market and 1–10 tick expiry are separate from its automatic research scan and have **not** been checked against Deriv contract terms. No account currency or payout is available, and clicking Trade never submits an order.
 - Choose a market from Deriv active-symbol metadata and explicitly choose a tick expiry reported by Deriv. Expiry is not inferred by the analysis.
 - Over/Under barriers are ranked automatically from Deriv-reported metadata. When Deriv reports `DIGITMATCH` support, Matches ranks the full valid final-digit domain from 0 through 9, including zero; zero is even for parity contracts.
 - Final-digit extraction requires matching power-of-ten `pip_size` metadata from active symbols, history, and live ticks. A precision mismatch or missing history precision blocks analysis.

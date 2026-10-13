@@ -17,6 +17,7 @@ import {
   WifiOff,
   Zap,
 } from 'lucide-react';
+import { TradeDock } from '@/components/trade-dock';
 import { analyzeRiseFall, type Bias, type HistoricalOutcomes, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
 
 type DerivWireMessage = {
@@ -93,6 +94,9 @@ const HORIZONS: Horizon[] = [
   ...Array.from({ length: 10 }, (_, index) => ({ unit: 'ticks' as const, value: index + 1 })),
   ...Array.from({ length: 15 }, (_, index) => ({ unit: 'minutes' as const, value: index + 1 })),
 ];
+// The manual draft ticket is separate from the scanner's automatic horizons.
+// Rise/Fall contract availability is not checked by this research-only feed.
+const DRAFT_TICK_EXPIRIES = Array.from({ length: 10 }, (_, index) => index + 1);
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -634,6 +638,8 @@ export function RiseFallTool() {
   const [now, setNow] = useState(Date.now());
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [draftMarketCode, setDraftMarketCode] = useState<string>(SYMBOLS[0].code);
+  const [draftExpiry, setDraftExpiry] = useState<number | null>(1);
   const { ticksBySymbol, marketInfo, feedStatus, feedError, serverClockOffsetMs } = useDerivMarkets(SYMBOLS);
 
   useEffect(() => {
@@ -804,6 +810,18 @@ export function RiseFallTool() {
       <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite">
         {scanSnapshot ? `Run Analysis examined ${scanSnapshot.rows.length} configured markets across all ${HORIZONS.length} durations at ${new Date(scanSnapshot.ranAt).toLocaleTimeString()}.` : 'Run Analysis to evaluate all markets and durations together. Live feed diagnostics continue updating in the background.'} No automatic order placement is available.
       </div>
+
+      <TradeDock
+        family="rise-fall"
+        marketCode={draftMarketCode}
+        marketName={SYMBOLS.find(({ code }) => code === draftMarketCode)?.name ?? null}
+        marketChoices={SYMBOLS}
+        onMarketChange={setDraftMarketCode}
+        expiry={draftExpiry}
+        expiryOptions={DRAFT_TICK_EXPIRIES}
+        onExpiryChange={setDraftExpiry}
+        expiryVerified={false}
+      />
     </div>
   );
 }

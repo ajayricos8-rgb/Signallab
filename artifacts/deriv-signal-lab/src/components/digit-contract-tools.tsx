@@ -21,6 +21,7 @@ import {
 } from '@/lib/digit-analysis';
 import { analyzePriceContext } from '@/lib/price-context';
 import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
+import { TradeDock } from '@/components/trade-dock';
 
 import { runResearchRanking, contractDisplayLabel, FAMILY_CONTRACTS, MINIMUM_DIGIT_TICKS, type DigitFamily, type RankedCandidate } from '@/lib/digit-signals';
 type Feed = ReturnType<typeof useDerivDigitFeed>;
@@ -452,6 +453,16 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
       </section>
 
       <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite"><Zap size={12} className="mr-1 inline text-primary" />{shownSnapshot ? `${shownSnapshot.analysis.sampleSize} real validated digits were analyzed for ${shownSnapshot.symbol}.` : isReady ? `Choose one of ${supportedDurationCount} Deriv-supported tick expiries, then run analysis.` : 'Waiting for live data, pip precision, contract metadata and sufficient history.'} No simulated digits, fabricated probabilities or order placement are used.</div>
+
+      <TradeDock
+        family={family}
+        marketCode={feed.selectedSymbol || null}
+        marketName={feed.selectedMarket?.name ?? null}
+        expiry={selectedDuration}
+        expiryOptions={availableDurations}
+        onExpiryChange={setSelectedDuration}
+        expiryVerified={feed.contractsLoaded}
+      />
     </div>
   );
 }
