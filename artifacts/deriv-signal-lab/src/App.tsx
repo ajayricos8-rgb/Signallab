@@ -118,7 +118,7 @@ function Home() {
             </button>
           </header>
 
-          <div className="min-h-[calc(100dvh-76px)] px-4 py-5 pb-24 sm:px-6 sm:py-7 lg:px-8">
+          <div className={`min-h-[calc(100dvh-76px)] px-4 pt-5 sm:px-6 sm:pt-7 lg:px-8 ${activeTab === 'tools' ? 'pb-[340px] lg:pb-[230px]' : 'pb-24'}`}>
             {activeTab === 'trade-history' ? (
               <div className="mx-auto w-full max-w-[1500px]">
                 <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
