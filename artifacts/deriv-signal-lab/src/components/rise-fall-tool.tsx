@@ -68,6 +68,10 @@ const REQUIRED_HISTORICAL_SAMPLES = 100;
 const REQUIRED_DIRECTIONAL_OUTCOMES = 50;
 const STALE_AFTER_MS = 15_000;
 const HISTORY_COUNT = 2_000;
+// Deriv market-data WebSocket. The app ID identifies this client to Deriv; live
+// ticks and history are public data and need no account token. The identifier
+// travels in the query string because browsers cannot set custom headers on
+// WebSocket connections. Unset falls back to Deriv's public test ID 1089.
 const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim() || '1089';
 const USING_TEST_APP_ID = !import.meta.env.VITE_DERIV_APP_ID?.trim();
 const SYMBOLS = [
@@ -246,7 +250,7 @@ function useDerivMarkets(symbols: typeof SYMBOLS) {
       if (disposed) return;
       setFeedStatus(reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
       try {
-        socket = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`);
+        socket = new WebSocket(`wss://api.derivws.com/trading/v1/options/ws/public?app_id=${encodeURIComponent(DERIV_APP_ID)}`);
         socket.onopen = () => {
           if (disposed || !socket) return;
           reconnectAttempt = 0;
