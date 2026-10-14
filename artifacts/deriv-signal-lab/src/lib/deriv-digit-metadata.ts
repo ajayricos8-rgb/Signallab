@@ -1,4 +1,5 @@
 import { precisionFromPipSize } from './digit-analysis.ts';
+import { parseContractDuration, type DurationBounds } from './trade-duration.ts';
 
 export type DigitMarketSymbol = {
   symbol: string;
@@ -19,6 +20,8 @@ export type DigitContractSupport = {
   barriers: number[];
   targets: number[];
   digitRangeKnown: boolean;
+  /** Raw Deriv-reported duration bounds, preserved before tick normalization. */
+  durationBounds: DurationBounds;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -88,6 +91,10 @@ export function normalizeContractSupport(rawContracts: unknown[]): DigitContract
       barriers,
       targets,
       digitRangeKnown: item.contract_type === 'DIGITMATCH' || barriers.length > 0 || lastDigitRange.length > 0,
+      durationBounds: {
+        min: parseContractDuration(item.min_contract_duration),
+        max: parseContractDuration(item.max_contract_duration),
+      },
     });
   }
   return output;

@@ -4,6 +4,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, Di
 import { DerivConnectionCard } from '@/components/deriv-connection-card';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { formatAmount, formatEpochDateTime, type DerivBuyReceipt, type DerivQuote, type DerivTradeRequest } from '@/lib/deriv-trading';
+import { formatTradeDuration } from '@/lib/trade-duration';
 
 type Phase = 'review' | 'quoting' | 'quoted' | 'buying' | 'bought';
 
@@ -68,7 +69,7 @@ export function TradeConfirmationDialog({
     if (!request || !connected) return;
     void requestQuote();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, connected, request?.contractType, request?.symbol, request?.stake, request?.duration, request?.barrier]);
+  }, [open, connected, request?.contractType, request?.symbol, request?.stake, request?.duration, request?.durationUnit, request?.barrier]);
 
   async function handleBuy() {
     if (!request || !quote) return;
@@ -132,7 +133,7 @@ export function TradeConfirmationDialog({
               <dd className="text-right font-semibold">{contractLabel}</dd>
               <dt className="text-muted-foreground">Duration</dt>
               <dd className="text-right font-semibold">
-                {request ? `${request.duration} ${request.duration === 1 ? 'tick' : 'ticks'}` : '—'}
+                {request ? formatTradeDuration(request.duration, request.durationUnit) : '—'}
               </dd>
               <dt className="text-muted-foreground">Stake</dt>
               <dd className="mono text-right font-semibold" data-testid="trade-ticket-stake">
