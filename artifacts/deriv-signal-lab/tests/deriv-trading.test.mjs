@@ -420,3 +420,22 @@ test('closed history deduplicates a contract across the stream and the profit ta
     [3, 4],
   );
 });
+
+test('selected_tick is sent only for High/Low Tick proposals', () => {
+  const base = { ...riseRequest, duration: 5, durationUnit: 't' };
+  const high = buildProposalRequest({ ...base, contractType: 'TICKHIGH', selectedTick: 3 }, 50);
+  assert.equal(high.selected_tick, 3);
+  assert.equal(high.contract_type, 'TICKHIGH');
+  assert.equal(high.duration, 5);
+  assert.equal(high.duration_unit, 't');
+  assert.equal('barrier' in high, false);
+
+  const low = buildProposalRequest({ ...base, contractType: 'TICKLOW', selectedTick: 5 }, 51);
+  assert.equal(low.selected_tick, 5);
+  assert.equal(low.contract_type, 'TICKLOW');
+
+  const unset = buildProposalRequest({ ...base, contractType: 'TICKHIGH', selectedTick: null }, 52);
+  assert.equal('selected_tick' in unset, false);
+  const omitted = buildProposalRequest({ ...base, contractType: 'CALL' }, 53);
+  assert.equal('selected_tick' in omitted, false);
+});
