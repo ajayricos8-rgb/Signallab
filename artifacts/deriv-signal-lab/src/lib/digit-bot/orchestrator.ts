@@ -344,8 +344,9 @@ export async function completeCycle(plan: CyclePlan, input: CycleCompletionInput
     }
   }
 
-  // ENGINE I — validation. `dryRun` keeps analysis/paper decisions inspectable
-  // while making it structurally impossible to send an order from them.
+  // ENGINE I — validation. `dryRun` keeps analysis decisions inspectable
+  // while making it structurally impossible to send an order from analysis
+  // mode: only live mode can produce an executable intent.
   const dryRun = plan.mode !== 'live';
   if (action === 'TRADE' && selection) {
     const expectation = {
@@ -412,9 +413,6 @@ export async function completeCycle(plan: CyclePlan, input: CycleCompletionInput
   if (plan.mode === 'analysis' && action === 'TRADE' && selection) {
     reasons.push('Analysis-only mode: the contract above is displayed as a recommendation and no order is sent.');
   }
-  if (plan.mode === 'paper' && intent) {
-    reasons.push('Paper-trading mode: this entry is recorded and scored against real ticks; no order is sent to Deriv.');
-  }
 
   // ENGINE N — safety interlocks are reported last so nothing is hidden.
   const safety = plan.safety;
@@ -431,7 +429,7 @@ export async function completeCycle(plan: CyclePlan, input: CycleCompletionInput
     mode: plan.mode,
     action,
     actionLabel: action === 'TRADE'
-      ? `${selection?.winningCondition ?? 'Trade'} · ${plan.mode === 'live' ? 'live order prepared' : plan.mode === 'paper' ? 'simulated entry' : 'recommendation only'}`
+      ? `${selection?.winningCondition ?? 'Trade'} · ${plan.mode === 'live' ? 'live order prepared' : 'recommendation only'}`
       : action === 'BLOCKED'
         ? 'Blocked'
         : 'No trade',
@@ -450,7 +448,7 @@ export async function completeCycle(plan: CyclePlan, input: CycleCompletionInput
   };
 }
 
-/** Convenience helper for tests and the paper/analysis paths. */
+/** Convenience helper for tests and the analysis path. */
 export async function runDecisionCycle(input: DecisionCycleInput, quotes: Record<string, ProposalSnapshot>, completion: Omit<CycleCompletionInput, 'quotes'>): Promise<DecisionCycleResult> {
   const plan = planCycle(input);
   return completeCycle(plan, { ...completion, quotes });

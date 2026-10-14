@@ -1,7 +1,7 @@
 // ENGINE M — Performance and learning engine.
 //
 // Records every decision, including the ones that did not trade, and scores the
-// probability estimates that were actually made. Real money, paper trading and
+// probability estimates that were actually made. Live results and analysis
 // analysis-only records are stored and reported separately; they are never
 // merged into a single "result" without an explicit label.
 import { clamp, mean, sum } from '../over-under/math.ts';
@@ -242,18 +242,16 @@ export function performanceByModelSet(records: readonly PredictionRecord[]): Gro
 
 export type ModeSeparation = {
   live: PredictionRecord[];
-  paper: PredictionRecord[];
   analysis: PredictionRecord[];
   /** True when at least two datasets exist and must be labelled separately. */
   requiresLabel: boolean;
 };
 
-/** Splits records by operating mode so simulated results are never mixed in. */
+/** Splits records by operating mode so live results are never mixed in. */
 export function separateByMode(records: readonly PredictionRecord[]): ModeSeparation {
   const live = records.filter((record) => record.mode === 'live');
-  const paper = records.filter((record) => record.mode === 'paper');
   const analysis = records.filter((record) => record.mode === 'analysis');
-  return { live, paper, analysis, requiresLabel: [live, paper, analysis].filter((rows) => rows.length > 0).length > 1 };
+  return { live, analysis, requiresLabel: [live, analysis].filter((rows) => rows.length > 0).length > 1 };
 }
 
 export type WalkForwardReport = {

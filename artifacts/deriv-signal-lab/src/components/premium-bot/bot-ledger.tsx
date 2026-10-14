@@ -1,5 +1,5 @@
 // Dashboard sections F–H of the AI Digit Bot panel, plus the engine-status and
-// performance ledgers. Nothing here merges live, paper and analysis results.
+// performance ledgers. Nothing here merges live and analysis results.
 import {
   Activity,
   AlertTriangle,
@@ -40,7 +40,7 @@ export function BotAccountRiskPanel({ bot }: { bot: DigitBotController }) {
         <StatTile label="Deriv balance" value={formatMoney(account.currentBalance, currency)} hint={account.lastReconciledAt ? `Reconciled ${formatClock(account.lastReconciledAt)}` : 'Not yet reconciled with Deriv'} tone={account.balanceDiscrepancy ? 'bad' : 'default'} testId="bot-balance" />
         <StatTile label="Session P/L" value={formatSignedMoney(account.sessionPnl, currency)} hint={`Session started ${account.sessionStartedAt ? formatClock(account.sessionStartedAt) : '—'}`} tone={account.sessionPnl > 0 ? 'good' : account.sessionPnl < 0 ? 'bad' : 'default'} />
         <StatTile label="Realised daily P/L" value={formatSignedMoney(account.dailyPnl, currency)} hint={`Day ${account.dayKey ?? '—'}`} tone={account.dailyPnl > 0 ? 'good' : account.dailyPnl < 0 ? 'bad' : 'default'} />
-        <StatTile label="Open-contract exposure" value={formatMoney(account.openExposure, currency)} hint={`${bot.contracts.filter((contract) => !contract.isSold && contract.mode !== 'paper').length} open live contract(s)`} />
+        <StatTile label="Open-contract exposure" value={formatMoney(account.openExposure, currency)} hint={`${bot.contracts.filter((contract) => !contract.isSold).length} open live contract(s)`} />
         <StatTile label="Stake" value={formatMoney(risk?.stake ?? null, currency)} hint={bot.riskConfig.stakeMode === 'fixed' ? 'Fixed stake — never increased after a loss' : `${bot.riskConfig.percentOfBalance}% of balance, capped`} />
         <StatTile label="Daily loss limit" value={formatMoney(bot.riskConfig.maxDailyLoss, currency)} hint={`Used ${formatMoney(dailyLossUsed, currency)}`} tone={dailyLossUsed >= bot.riskConfig.maxDailyLoss ? 'bad' : 'default'} />
         <StatTile label="Session loss limit" value={formatMoney(bot.riskConfig.maxSessionLoss, currency)} hint={`Used ${formatMoney(sessionLossUsed, currency)}`} />
@@ -87,14 +87,14 @@ export function BotTradeMonitor({ bot }: { bot: DigitBotController }) {
     >
       {!contracts.length ? (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          No contract has been purchased or simulated yet. In paper mode entries are labelled as simulated and are scored against real ticks only.
+          No contract has been purchased yet. Live entries appear here the moment Deriv confirms them and stay until settlement.
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border" role="region" aria-label="Live trade monitor table">
-          <table className="w-full min-w-[880px] border-collapse text-[10px]">
+          <table className="w-full min-w-[820px] border-collapse text-[10px]">
             <thead>
               <tr className="bg-background/60">
-                {['Contract id', 'Type', 'Barrier', 'Purchase price', 'Entry time', 'Mode', 'Status', 'Final digit', 'Result', 'Realised P/L'].map((heading) => (
+                {['Contract id', 'Type', 'Barrier', 'Purchase price', 'Entry time', 'Status', 'Final digit', 'Result', 'Realised P/L'].map((heading) => (
                   <th key={heading} scope="col" className="border-b border-border px-2 py-2 text-left text-[9px] uppercase tracking-wider text-muted-foreground">{heading}</th>
                 ))}
               </tr>
@@ -104,16 +104,11 @@ export function BotTradeMonitor({ bot }: { bot: DigitBotController }) {
                 const settled = contract.settledProfit !== null;
                 return (
                   <tr key={contract.contractId} data-testid={`bot-contract-${contract.contractId}`}>
-                    <td className="mono border-b border-border px-2 py-1.5">{contract.mode === 'paper' ? `SIM-${Math.abs(contract.contractId)}` : contract.contractId}</td>
+                    <td className="mono border-b border-border px-2 py-1.5">{contract.contractId}</td>
                     <td className="border-b border-border px-2 py-1.5">{contract.contractType ? CONTRACT_LABELS[contract.contractType as keyof typeof CONTRACT_LABELS] ?? contract.contractType : '—'}</td>
                     <td className="mono border-b border-border px-2 py-1.5">{contract.barrierDigit ?? '—'}</td>
                     <td className="mono border-b border-border px-2 py-1.5">{formatMoney(contract.stake, bot.account.currency || bot.accountCurrency)}</td>
                     <td className="mono border-b border-border px-2 py-1.5">{contract.purchaseTime ? formatClock(contract.purchaseTime * 1_000) : '—'}</td>
-                    <td className="border-b border-border px-2 py-1.5">
-                      <span className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${contract.mode === 'paper' ? 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'}`}>
-                        {contract.mode === 'paper' ? 'SIMULATED' : 'LIVE'}
-                      </span>
-                    </td>
                     <td className="border-b border-border px-2 py-1.5 text-muted-foreground">{contract.status ?? '—'}</td>
                     <td className="mono border-b border-border px-2 py-1.5">{contract.exitDigit ?? '—'}</td>
                     <td className="border-b border-border px-2 py-1.5">
@@ -171,7 +166,7 @@ export function BotDecisionLog({ bot }: { bot: DigitBotController }) {
                 </span>
                 <span className="mono text-[10px] text-muted-foreground">{formatClock(entry.cycleAt)}</span>
                 <span className="text-[10px] font-semibold">{entry.mode} mode</span>
-                {entry.executed ? <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400">{entry.mode === 'paper' ? 'SIMULATED ENTRY' : 'ORDER SENT'}</span> : null}
+                {entry.executed ? <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400">ORDER SENT</span> : null}
                 <span className="mono ml-auto text-[9px] text-muted-foreground">{entry.durationMs} ms</span>
               </div>
               <div className="mt-1.5 text-[11px] font-semibold">{entry.contract ?? 'No qualifying contract'}</div>
@@ -238,8 +233,7 @@ export function BotPerformancePanel({ bot }: { bot: DigitBotController }) {
       }
     >
       <div className="space-y-3">
-        <MetricsGrid metrics={bot.metrics} currency={currency} label="Live trading (real Deriv purchases)" />
-        <MetricsGrid metrics={bot.paperMetrics} currency={currency} label="Paper trading (simulated execution, real ticks, no orders sent)" />
+        <MetricsGrid metrics={bot.metrics} currency={currency} label="Live trading (real Deriv purchases on the connected account)" />
         <MetricsGrid metrics={bot.analysisMetrics} currency={currency} label="Analysis only (predictions scored, never traded)" />
 
         {bot.walkForward ? (

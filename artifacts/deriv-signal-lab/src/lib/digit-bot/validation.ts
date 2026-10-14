@@ -48,9 +48,9 @@ export type TradeValidationInput = {
   maxProposalAgeMs: number;
   minProbabilityEdge: number;
   /**
-   * Analysis and paper modes validate everything except the execution gate, so
-   * the dashboard can show what a live order *would* have required without
-   * ever being allowed to send one.
+   * Analysis mode validates everything except the execution gate, so the
+   * dashboard can show what a live order *would* have required without ever
+   * being allowed to send one.
    */
   dryRun?: boolean;
 };
@@ -76,7 +76,7 @@ export function validateTrade(input: TradeValidationInput): TradeValidation {
     : 'Live purchases require the live-trading mode to be activated by the user.', 'MODE_NOT_EXECUTABLE');
   record('authorization', 'Account authorization', input.accountAuthorized, input.accountAuthorized ? 'A Deriv account is authorized for this session.' : 'No Deriv account is authorized, so no purchase can be sent.', 'ACCOUNT_UNAUTHORIZED');
   record('connection', 'Deriv connection', input.connectionHealthy, input.connectionHealthy ? 'The authenticated Deriv socket is open.' : 'The authenticated Deriv socket is not open.', 'CONNECTION_INTERRUPTED');
-  record('safety', 'Safety interlocks', input.safety.canPurchase, input.safety.canPurchase ? 'No safety interlock is active.' : input.safety.autoPauseReasons.join(' ') || 'The bot is stopped or paused.', input.safety.emergencyStop ? 'EMERGENCY_STOP' : 'MANUAL_PAUSE');
+  record('safety', 'Safety interlocks', input.safety.canPurchase, input.safety.canPurchase ? 'No safety interlock is active.' : input.safety.autoPauseReasons.join(' ') || 'The bot is stopped or paused.', 'MANUAL_PAUSE');
   record('data', 'Live tick data', input.dataQuality.fresh && input.dataQuality.precisionVerified, input.dataQuality.fresh && input.dataQuality.precisionVerified ? `${input.dataQuality.validTickCount} live ticks with verified precision.` : input.dataQuality.precisionVerified ? 'The tick stream is stale or interrupted; new trades are disabled until it recovers.' : 'Decimal precision is unverified, so the final digit cannot be trusted.', input.dataQuality.fresh ? 'PRECISION_UNVERIFIED' : 'DATA_STALE');
   record('model', 'Model validation', input.modelValidated, input.modelValidated ? 'The ensemble beat the rolling baseline out of sample.' : input.modelValidationReason || 'No model currently qualifies for execution.', 'MODEL_UNVALIDATED');
   record('candidate', 'Candidate evidence', Boolean(input.candidate), input.candidate ? `${input.candidate.winningCondition}.` : 'No contract candidate had enough evidence to qualify.', 'NO_ELIGIBLE_CANDIDATE');
