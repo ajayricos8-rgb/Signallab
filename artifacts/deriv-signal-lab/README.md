@@ -43,6 +43,25 @@ The build config requires both `PORT` and `BASE_PATH`, including for production 
 - The separate price-context panel reports tick-indexed EMA(9/21/50), RSI(14), MACD(12/26/9), ROC(14), 50-tick log-return volatility and a confirmed 3-tick swing summary. It is not used to rank digit outcomes. Formal multi-horizon Dow analysis, candle-based ATR/ADX and OHLC studies are not implemented.
 - Every panel remains `WAIT` until its own data gates pass. Live proposal quotes and order placement exist only in the trade dock, and only for a connected account; payout/EV gating, probability calibration, persistent signals, external/pretrained ML services (the LSTM and boosting models are small local implementations, not XGBoost/LightGBM downloads) and automatic execution are not implemented. Engine probabilities are research estimates, not calibrated win probabilities or a promise of profit.
 
+## Premium bots
+
+The **Premium bots** tab hosts the autonomous engines. One bot is mounted at a time (the choice is remembered per browser), each with its own decision cycle, its own minimize/expand state, and its own configuration stored in `localStorage`. Neither bot has a simulated execution mode: an order is either a real Deriv purchase on the authorized demo or real account, or it is not sent at all.
+
+- **Digit AI engine** (`src/components/premium-bot/digit-ai-bot.tsx`, engine modules in `src/lib/digit-bot/`, controller `src/hooks/use-digit-bot.ts`) — Even/Odd, Over/Under and Matches candidates ranked by walk-forward-validated models against live Deriv proposals. It never martingales.
+- **Rise/Fall AI** (`src/components/premium-bot/rise-fall-ai-bot.tsx`, engine modules in `src/lib/rise-fall-bot/`, controller `src/hooks/use-rise-fall-bot.ts`) — a port of the reference "Deriv Rise/Fall AI Bot" script. Live ticks feed a feature window (up/down ratios, momentum, mean tick move, last move, streak), two rules name a direction (strong momentum, then continuation of the last move), the risk manager sizes and gates the order, and Deriv settles the CALL or PUT contract.
+
+Rise/Fall bot specifics:
+
+- **Modes.** *Analysis only* reads live ticks, names the direction, writes the signal down and scores it against the ticks that follow; it never sends an order. *Live trading* buys real contracts, and switching to it requires an explicit confirmation dialog that restates the account, stake model and limits.
+- **Configuration.** Market, expiry and unit, stake model (fixed / martingale ladder / percentage of balance) with minimum, maximum and balance-share caps, consecutive-loss stop, daily loss limit, daily take profit, session trade and time limits, cooldown, feature-window sizes, momentum and volatility thresholds in verified pips, the adaptive-threshold switch, both ratio thresholds, and the expected-value gate. Every input is clamped by `sanitizeRiseFallConfig`, so a stored or pasted value cannot produce an unbounded stake or a zero window.
+- **Thresholds in pips.** The reference script's constants (0.0008 momentum, 0.0003 volatility) only mean something at one price level, so the port expresses both in verified pips of the selected symbol and can additionally scale the momentum edge with measured volatility.
+- **Martingale is opt-in.** The stake model defaults to fixed. Enabling the ladder shows the stake it can reach before resetting, and the consecutive-loss limit remains the only thing that stops a run.
+- **Expected value.** The rule is replayed over the ticks this browser already collected to count how often the same signal was right at the chosen horizon; that historical rate is then priced against the live Deriv proposal (`proposal` → break-even → EV). A thin sample is reported as *withheld* rather than assumed profitable, and an order whose EV falls below the configured minimum is refused with the reason logged.
+- **Live positions.** The bot's own contracts are listed with stake, payout, entry/current/exit spot, tick progress, running and settled P/L, and a two-step *Sell now* that sends Deriv's `sell`. Open positions the bot did not open are listed separately, and the Trade history tab still shows every position on the account. A running payout is never booked as profit: only Deriv settlements move the ledger.
+- **Order safety.** Purchases are single-flight; a receipt that never arrives leaves the order *unreconciled*, is matched against the account's portfolio, and blocks further orders until the account says what happened (or 20 seconds pass with no matching open contract).
+- **Trade log.** Every attempt — bought, refused or settled — is logged in the browser and exportable as CSV with the same columns the reference script wrote to `trades_log.csv`.
+- **Shared connections.** Both bots reuse the frozen public market-data feed and the authenticated trading session; neither opens its own socket, stores a token, or sends account data anywhere.
+
 ## Derived trading protocol (used by the dock and history tab)
 
 - `GET /trading/v1/options/accounts` — accounts the PAT can trade (`account_id`, `balance`, `currency`, `account_type`).

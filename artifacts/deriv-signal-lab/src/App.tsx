@@ -5,6 +5,7 @@ import { RiseFallTool } from '@/components/rise-fall-tool';
 import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
 import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
 import { DigitAiBot } from '@/components/premium-bot/digit-ai-bot';
+import { RiseFallAiBot } from '@/components/premium-bot/rise-fall-ai-bot';
 import { SettingsPanel } from '@/components/settings-panel';
 import { TradeHistoryPanel } from '@/components/trade-history-panel';
 import { Toaster } from '@/components/ui/toaster';
@@ -18,12 +19,18 @@ const queryClient = new QueryClient();
 type Theme = 'light' | 'dark';
 type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots' | 'settings';
 type ToolsMiniTab = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
+type PremiumBotTab = 'digit-ai' | 'rise-fall';
 
 const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
   { id: 'rise-fall', label: 'Rise/Fall' },
   { id: 'over-under', label: 'Over/Under' },
   { id: 'even-odd', label: 'Even/Odd' },
   { id: 'matches', label: 'Matches' },
+];
+
+const premiumBotTabs: { id: PremiumBotTab; label: string; blurb: string }[] = [
+  { id: 'digit-ai', label: 'Digit AI engine', blurb: 'Even/Odd, Over/Under and Matches, ranked by walk-forward-validated models.' },
+  { id: 'rise-fall', label: 'Rise/Fall AI', blurb: 'Tick momentum and continuation signals that buy real CALL and PUT contracts.' },
 ];
 
 const workspaceTabs = [
@@ -41,9 +48,18 @@ function readSavedTheme(): Theme {
   }
 }
 
+function readSavedBotTab(): PremiumBotTab {
+  try {
+    return window.localStorage.getItem('signal-lab-premium-bot-tab') === 'rise-fall' ? 'rise-fall' : 'digit-ai';
+  } catch {
+    return 'digit-ai';
+  }
+}
+
 function Home() {
   const [mobileNav, setMobileNav] = useState(false);
   const [activeToolsMiniTab, setActiveToolsMiniTab] = useState<ToolsMiniTab>('rise-fall');
+  const [activeBotTab, setActiveBotTab] = useState<PremiumBotTab>(readSavedBotTab);
   const [theme, setTheme] = useState<Theme>(readSavedTheme);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('tools');
   const trading = useDerivTrading();
@@ -133,7 +149,7 @@ function Home() {
             {activeTab === 'trade-history' ? (
               <TradeHistoryPanel />
             ) : activeTab === 'premium-bots' ? (
-              <DigitAiBot />
+              <PremiumBotsWorkspace activeTab={activeBotTab} onTabChange={setActiveBotTab} />
             ) : activeTab === 'settings' ? (
               <SettingsPanel />
             ) : (
@@ -201,6 +217,56 @@ function ToolsWorkspace({
       </div>
       <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
         {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Premium bots workspace.
+ *
+ * One bot is mounted at a time: each keeps its own public market-data socket
+ * and its own decision cycle, and the choice is remembered per browser. A
+ * minimized bot stays minimized when its tab is reopened.
+ */
+function PremiumBotsWorkspace({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: PremiumBotTab;
+  onTabChange: (tab: PremiumBotTab) => void;
+}) {
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('signal-lab-premium-bot-tab', activeTab);
+    } catch {
+      // Storage is optional; the selection is still held in memory.
+    }
+  }, [activeTab]);
+
+  const selected = premiumBotTabs.find(({ id }) => id === activeTab);
+  return (
+    <section className="mx-auto w-full max-w-[1500px]" data-testid="premium-bots-workspace">
+      <div role="group" aria-label="Premium bots" className="flex w-full items-center gap-1 overflow-x-auto border-b border-border">
+        {premiumBotTabs.map(({ id, label }) => {
+          const active = activeTab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onTabChange(id)}
+              aria-pressed={active}
+              className={`focus-ring -mb-px shrink-0 border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${active ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'}`}
+              data-testid={`premium-bot-tab-${id}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {selected ? <p className="pt-3 text-[11px] leading-relaxed text-muted-foreground" data-testid="premium-bot-blurb">{selected.blurb}</p> : null}
+      <div className="min-h-[45vh] pt-4" data-testid={`premium-bot-panel-${activeTab}`}>
+        {activeTab === 'rise-fall' ? <RiseFallAiBot /> : <DigitAiBot />}
       </div>
     </section>
   );
