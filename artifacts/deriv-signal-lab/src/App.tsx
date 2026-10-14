@@ -4,6 +4,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { RiseFallTool } from '@/components/rise-fall-tool';
 import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
 import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
+import { DigitAiBot } from '@/components/premium-bot/digit-ai-bot';
 import { SettingsPanel } from '@/components/settings-panel';
 import { TradeHistoryPanel } from '@/components/trade-history-panel';
 import { Toaster } from '@/components/ui/toaster';
@@ -132,11 +133,7 @@ function Home() {
             {activeTab === 'trade-history' ? (
               <TradeHistoryPanel />
             ) : activeTab === 'premium-bots' ? (
-              <div className="mx-auto w-full max-w-3xl rounded-xl border border-card-border bg-card/90 p-6 panel-glow sm:p-8">
-                <div className="eyebrow">Premium tools</div>
-                <h2 className="mt-1 text-xl font-bold tracking-tight">Premium bots</h2>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Premium bots will be listed here when they are configured for this workspace.</p>
-              </div>
+              <DigitAiBot />
             ) : activeTab === 'settings' ? (
               <SettingsPanel />
             ) : (
