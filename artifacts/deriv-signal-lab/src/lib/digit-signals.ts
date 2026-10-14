@@ -1,5 +1,6 @@
 import { evaluateHistoricalContract, supportedTickDurations, type DigitAnalysis, type DigitContractCandidate, type DigitObservation, type HistoricalContractOutcomes } from './digit-analysis.ts';
 import type { DigitContractSupport, DigitMarketSymbol } from './deriv-digit-metadata.ts';
+import { runOverUnderEnsemble, type OverUnderCandidateScore, type OverUnderReport } from './over-under/ensemble.ts';
 
 export type DigitFamily = 'over-under' | 'even-odd' | 'matches';
 export type RankedCandidate = {
@@ -7,7 +8,10 @@ export type RankedCandidate = {
   outcomes: HistoricalContractOutcomes;
   baseline: HistoricalContractOutcomes;
   label: string;
+  ensemble?: OverUnderCandidateScore;
 };
+
+export type DigitRankingResult = { candidates: RankedCandidate[]; reason: string; overUnder?: OverUnderReport };
 
 export const MINIMUM_DIGIT_TICKS = 500;
 const MINIMUM_CONDITIONAL_OUTCOMES = 100;
@@ -17,7 +21,7 @@ export const FAMILY_CONTRACTS: Record<DigitFamily, string[]> = {
   matches: ['DIGITMATCH'],
 };
 
-type DigitRankingFeed = {
+export type DigitRankingFeed = {
   selectedMarket: DigitMarketSymbol | null;
   contractsLoaded: boolean;
   historyLoaded: boolean;
@@ -52,7 +56,7 @@ export function runResearchRanking(
   feed: DigitRankingFeed,
   analysis: DigitAnalysis,
   selectedDuration: number | null,
-): { candidates: RankedCandidate[]; reason: string } {
+): DigitRankingResult {
   const latestDigit = analysis.lastDigit;
   if (!feed.selectedMarket) return { candidates: [], reason: 'No selected symbol metadata is available.' };
   if (!feed.contractsLoaded) return { candidates: [], reason: 'Waiting for Deriv to verify the selected symbol’s available contracts.' };
@@ -87,7 +91,7 @@ export function runResearchRanking(
     if (!supportedTickDurations(support.minDuration, support.maxDuration).includes(selectedDuration)) return;
     const outcomes = evaluateHistoricalContract(feed.ticks, contract, selectedDuration, context);
     const baseline = evaluateHistoricalContract(feed.ticks, contract, selectedDuration);
-    if (outcomes.sample < MINIMUM_CONDITIONAL_OUTCOMES || outcomes.smoothedHistoricalHitRate === null || baseline.empiricalHitRate === null) return;
+    if (family !== 'over-under' && (outcomes.sample < MINIMUM_CONDITIONAL_OUTCOMES || outcomes.smoothedHistoricalHitRate === null || baseline.empiricalHitRate === null)) return;
     ranked.push({ contract, outcomes, baseline, label: candidateLabel(contract) });
   };
 
@@ -95,9 +99,9 @@ export function runResearchRanking(
     for (const contractType of FAMILY_CONTRACTS[family]) {
       for (const support of supportsAtDuration.filter((item) => item.contractType === contractType)) {
         for (const barrier of support.barriers) {
-          if (!Number.isInteger(barrier) || barrier < 0 || barrier > 9) continue;
-          if (contractType === 'DIGITOVER' && barrier >= 9) continue;
-          if (contractType === 'DIGITUNDER' && barrier <= 0) continue;
+          // Research is strictly limited to the requested 1–8 domain, even
+          // when Deriv also allows edge barriers for a manual contract.
+          if (!Number.isInteger(barrier) || barrier < 1 || barrier > 8) continue;
           addCandidate({ family, contractType: contractType as 'DIGITOVER' | 'DIGITUNDER', barrier }, support);
         }
       }
@@ -126,14 +130,22 @@ export function runResearchRanking(
         : contract.contractType;
     return [`${contract.family}:${discriminator}:${candidate.outcomes.durationTicks}`, candidate];
   })).values()];
+  if (family === 'over-under') {
+    if (!uniqueRanked.length) return { candidates: [], reason: 'Deriv did not report any supported barrier in the required 1–8 research range at this expiry.' };
+    const contracts = uniqueRanked.map((candidate) => candidate.contract).filter((contract) => contract.family === 'over-under');
+    const overUnder = runOverUnderEnsemble(feed.ticks, selectedDuration, contracts);
+    const candidates = overUnder.candidates.map((score) => ({
+      ...uniqueRanked.find((candidate) => candidate.contract.family === 'over-under' && candidate.contract.contractType === score.contract.contractType && candidate.contract.barrier === score.contract.barrier)!,
+      ensemble: score,
+    }));
+    return { candidates, reason: overUnder.reason, overUnder };
+  }
+
   uniqueRanked.sort((left, right) => {
     const rateDifference = (right.outcomes.smoothedHistoricalHitRate ?? -Infinity) - (left.outcomes.smoothedHistoricalHitRate ?? -Infinity);
     return rateDifference || right.outcomes.sample - left.outcomes.sample || left.label.localeCompare(right.label);
   });
   if (!uniqueRanked.length) {
-    if (family === 'over-under' && !supportsAtDuration.some((support) => support.barriers.length > 0)) {
-      return { candidates: [], reason: 'Deriv did not provide a verifiable barrier list for this expiry; the engine will not guess barrier limits.' };
-    }
     if (family === 'matches' && !supportsAtDuration.some((support) => support.targets.length > 0)) {
       return { candidates: [], reason: 'The valid Matches target-digit domain could not be verified for this contract response.' };
     }

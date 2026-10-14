@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -22,8 +22,11 @@ import {
 import { analyzePriceContext } from '@/lib/price-context';
 import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
 import { TradeDock } from '@/components/trade-dock';
+import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
+import type { OverUnderReport } from '@/lib/over-under/ensemble';
+import type { DigitResearchRequest, DigitResearchResponse } from '@/lib/digit-research.worker';
 
-import { runResearchRanking, contractDisplayLabel, FAMILY_CONTRACTS, MINIMUM_DIGIT_TICKS, type DigitFamily, type RankedCandidate } from '@/lib/digit-signals';
+import { contractDisplayLabel, FAMILY_CONTRACTS, MINIMUM_DIGIT_TICKS, type DigitFamily, type RankedCandidate } from '@/lib/digit-signals';
 type Feed = ReturnType<typeof useDerivDigitFeed>;
 
 type DigitScanSnapshot = {
@@ -36,6 +39,7 @@ type DigitScanSnapshot = {
   candidate: RankedCandidate | null;
   candidates: RankedCandidate[];
   reason: string;
+  overUnder?: OverUnderReport;
 };
 
 const DIGITS = Array.from({ length: 10 }, (_, digit) => digit);
@@ -45,7 +49,7 @@ const FAMILY_DETAILS: Record<DigitFamily, { title: string; eyebrow: string; desc
   'over-under': {
     title: 'Over/Under digit research',
     eyebrow: 'DIGITOVER · DIGITUNDER',
-    description: 'Choose a tick expiry reported by Deriv. The engine compares valid digit barriers for Deriv-supported contracts, applies strict greater-than / less-than settlement rules, and selects the research barrier automatically.',
+    description: 'Twelve fitted models across eight engine families analyze the current digit structure together. The ensemble selects only a Deriv-supported barrier from 1–8 at your research tick expiry, with strict settlement and chronological evidence gates; otherwise it returns WAIT.',
     empty: 'No contract-and-barrier combination has enough validated evidence at this expiry to rank yet.',
   },
   'even-odd': {
@@ -234,6 +238,22 @@ function PriceContextPanel({ feed, analysis }: { feed: Feed; analysis: ReturnTyp
 }
 
 function HistoricalRanking({ family, candidates }: { family: DigitFamily; candidates: RankedCandidate[] }) {
+  if (family === 'over-under') return (
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="over-under-candidate-ranking">
+      <div className="eyebrow">Ensemble barrier comparison · 1–8</div>
+      <h3 className="mt-1 text-sm font-bold">Current-structure evidence, not easiest hit rate</h3>
+      <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Eligible candidates come first, then standardized lift adjusted for held-out Brier skill and engine disagreement. Uniform baseline differs by barrier. Unqualified rows are diagnostics, not recommendations.</p>
+      <div className="mt-3 space-y-2">
+        {candidates.map((candidate) => candidate.ensemble && <div key={candidate.label} className={`rounded-lg border p-3 ${candidate.ensemble.eligible ? 'border-primary/30 bg-primary/5' : 'border-border bg-background/25'}`}>
+          <div className="flex items-center justify-between gap-2"><strong className="text-xs">{candidate.label}</strong><span className={`text-[9px] font-bold ${candidate.ensemble.eligible ? 'text-primary' : 'text-muted-foreground'}`}>{candidate.ensemble.eligible ? 'PASSES GATES' : 'DIAGNOSTIC ONLY'}</span></div>
+          <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]"><div><div className="eyebrow">Model estimate</div><div className="mono mt-1">{formatRate(candidate.ensemble.probability)}</div></div><div><div className="eyebrow">Lift / frequency</div><div className="mono mt-1">{formatDifference(candidate.ensemble.lift)}</div></div><div><div className="eyebrow">Holdout skill</div><div className="mono mt-1">{formatRate(candidate.ensemble.validationSkill)}</div></div></div>
+          <p className="mt-2 text-[9px] text-muted-foreground">Uniform {formatRate(candidate.ensemble.uniformProbability)} · rolling {formatRate(candidate.ensemble.baselineProbability)} · equal-loss estimate {formatRate(candidate.ensemble.equalityProbability)} · {candidate.ensemble.validationSample} held-out outcomes.</p>
+          {!candidate.ensemble.eligible && <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground">{candidate.ensemble.reasons[0]}</p>}
+        </div>)}
+        {!candidates.length && <div className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">Run Analysis to compare supported barriers 1–8.</div>}
+      </div>
+    </section>
+  );
   const rows = family === 'matches'
     ? (() => {
       const latestDuration = candidates[0]?.outcomes.durationTicks;
@@ -262,12 +282,14 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   const [snapshot, setSnapshot] = useState<DigitScanSnapshot | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
+  const [tradeExpiry, setTradeExpiry] = useState<number | null>(null);
   const scanTimer = useRef<number | null>(null);
+  const scanWorker = useRef<Worker | null>(null);
   const scanInputs = useRef({ feed, selectedDuration });
   scanInputs.current = { feed, selectedDuration };
   const latestTick = feed.ticks.at(-1) ?? null;
-  const currentAnalysis = analyzeDigits(feed.ticks);
-  const currentPriceContext = analyzePriceContext(feed.ticks);
+  const currentAnalysis = useMemo(() => analyzeDigits(feed.ticks), [feed.ticks]);
+  const currentPriceContext = useMemo(() => analyzePriceContext(feed.ticks), [feed.ticks]);
   const familyDetails = FAMILY_DETAILS[family];
   const relevantContracts = feed.contracts.filter((contract) => FAMILY_CONTRACTS[family].includes(contract.contractType));
   const availableDurations = [...new Set(relevantContracts
@@ -275,76 +297,92 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
     .flatMap((contract) => supportedTickDurations(contract.minDuration, contract.maxDuration)))].sort((left, right) => left - right);
   const supportedDurationCount = availableDurations.length;
   const defaultDuration = availableDurations[0] ?? null;
+  const durationKey = availableDurations.join(',');
 
   useEffect(() => {
-    if (selectedDuration === null && defaultDuration !== null) setSelectedDuration(defaultDuration);
-  }, [selectedDuration, defaultDuration]);
+    if (selectedDuration === null || !availableDurations.includes(selectedDuration)) setSelectedDuration(defaultDuration);
+    if (tradeExpiry === null || !availableDurations.includes(tradeExpiry)) setTradeExpiry(defaultDuration);
+  }, [selectedDuration, tradeExpiry, defaultDuration, durationKey]);
 
   useEffect(() => () => {
     if (scanTimer.current !== null) window.clearTimeout(scanTimer.current);
+    scanWorker.current?.terminate();
+    scanWorker.current = null;
   }, []);
 
   useEffect(() => {
     setSnapshot(null);
     setSelectedDuration(null);
+    setTradeExpiry(null);
     if (scanTimer.current !== null) window.clearTimeout(scanTimer.current);
+    scanWorker.current?.terminate();
+    scanWorker.current = null;
     setIsScanning(false);
   }, [feed.selectedSymbol]);
 
   useEffect(() => {
     setSnapshot(null);
     if (scanTimer.current !== null) window.clearTimeout(scanTimer.current);
+    scanWorker.current?.terminate();
+    scanWorker.current = null;
     setIsScanning(false);
   }, [selectedDuration]);
 
   function handleRunAnalysis() {
     if (isScanning) return;
     setIsScanning(true);
-    scanTimer.current = window.setTimeout(() => {
-      const { feed, selectedDuration } = scanInputs.current;
-      try {
-        const analysis = analyzeDigits(feed.ticks);
-        const ranking = runResearchRanking(family, feed, analysis, selectedDuration);
-        const blockingReason = !feed.selectedMarket
-          ? 'No selected market metadata is available.'
-          : feed.precisionError
-            ? feed.precisionError
-            : !feed.historyLoaded
-              ? 'Waiting for real historical tick data.'
-              : feed.ticks.length < MINIMUM_DIGIT_TICKS
-                ? `Only ${feed.ticks.length} validated digit ticks; ${MINIMUM_DIGIT_TICKS} are required.`
-                : !feed.fresh
-                  ? 'Live tick freshness is not confirmed; no research candidate is published.'
-                  : !feed.contractsLoaded
-                    ? 'Contract availability has not been verified by Deriv.'
-                    : '';
+    setSnapshot(null);
+    const symbol = feed.selectedSymbol;
+    const duration = selectedDuration;
+    const freshAtRun = feed.fresh;
+    const finish = () => {
+      if (scanTimer.current !== null) window.clearTimeout(scanTimer.current);
+      scanTimer.current = null;
+      scanWorker.current?.terminate();
+      scanWorker.current = null;
+      setIsScanning(false);
+    };
+    const fail = (reason: string) => {
+      setSnapshot({ ranAt: Date.now(), symbol, selectedDuration: duration, latestDigit: currentAnalysis.lastDigit, analysis: currentAnalysis, freshAtRun, candidate: null, candidates: [], reason });
+      finish();
+    };
+    try {
+      const worker = new Worker(new URL('../lib/digit-research.worker.ts', import.meta.url), { type: 'module' });
+      scanWorker.current = worker;
+      worker.onmessage = (event: MessageEvent<DigitResearchResponse>) => {
+        if (scanWorker.current !== worker) return;
+        if ('error' in event.data) { fail(event.data.error); return; }
+        const { analysis, ranking } = event.data;
+        const latest = scanInputs.current;
+        if (latest.feed.selectedSymbol !== symbol || latest.selectedDuration !== duration) { finish(); return; }
+        const blockingReason = !latest.feed.fresh ? 'Live data became stale during the scan. Reconnect and run analysis again.'
+          : latest.feed.precisionError || (!latest.feed.contractsLoaded ? 'Contract rules changed during the scan. Run analysis again.' : '');
         setSnapshot({
-          ranAt: Date.now(),
-          symbol: feed.selectedSymbol,
-          selectedDuration,
-          latestDigit: analysis.lastDigit,
-          analysis,
-          freshAtRun: feed.fresh,
-          candidate: blockingReason ? null : ranking.candidates[0] ?? null,
+          ranAt: Date.now(), symbol, selectedDuration: duration, latestDigit: analysis.lastDigit, analysis, freshAtRun,
+          candidate: blockingReason ? null : family === 'over-under' ? ranking.candidates.find((candidate) => candidate.ensemble?.eligible) ?? null : ranking.candidates[0] ?? null,
           candidates: blockingReason ? [] : ranking.candidates,
           reason: blockingReason || ranking.reason,
+          overUnder: ranking.overUnder,
         });
-      } catch {
-        setSnapshot({
-          ranAt: Date.now(), symbol: feed.selectedSymbol, selectedDuration,
-          latestDigit: null, analysis: currentAnalysis, freshAtRun: feed.fresh,
-          candidate: null, candidates: [], reason: 'Analysis could not finish. Please run it again.',
-        });
-      } finally {
-        setIsScanning(false);
-        scanTimer.current = null;
-      }
-    }, 30);
+        finish();
+      };
+      worker.onerror = () => { if (scanWorker.current === worker) fail('The analysis worker could not finish. Please run it again.'); };
+      scanTimer.current = window.setTimeout(() => fail('The analysis timed out. No result was published; please try again.'), 60_000);
+      // Feed callbacks and sockets are deliberately excluded from the worker message.
+      worker.postMessage({ family, selectedDuration: duration, feed: {
+        selectedMarket: feed.selectedMarket, contractsLoaded: feed.contractsLoaded,
+        historyLoaded: feed.historyLoaded, fresh: feed.fresh, precisionError: feed.precisionError,
+        ticks: feed.ticks, contracts: feed.contracts,
+      } } satisfies DigitResearchRequest);
+    } catch {
+      fail('The background analysis worker could not start. No research signal is available.');
+    }
   }
 
   const snapshotMatchesSelected = snapshot?.symbol === feed.selectedSymbol && snapshot.selectedDuration === selectedDuration;
   const shownSnapshot = snapshotMatchesSelected ? snapshot : null;
-  const resultCandidate = shownSnapshot?.candidate ?? null;
+  const staleSnapshot = Boolean(shownSnapshot && (!feed.fresh || feed.precisionError || !feed.contractsLoaded || feed.selectedMarket?.tradingSuspended || feed.selectedMarket?.exchangeOpen === false));
+  const resultCandidate = staleSnapshot ? null : shownSnapshot?.candidate ?? null;
   const candidates = shownSnapshot?.candidates ?? [];
   const signalLabel = isScanning ? 'ANALYZING' : resultCandidate?.label ?? (shownSnapshot ? 'WAIT' : 'READY');
   const signalTone = resultCandidate ? 'text-primary' : 'text-amber-500';
@@ -407,11 +445,12 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         <article className="signal-panel rounded-xl border border-card-border p-5 panel-glow sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3"><div className="eyebrow">Digit analysis signal</div><span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-amber-500">{isScanning ? 'Analyzing…' : resultCandidate ? 'Analysis complete · no auto-trading' : shownSnapshot ? 'Analysis blocked' : 'Ready to analyze'}</span></div>
           <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div><div className={`text-4xl font-extrabold tracking-[-0.06em] sm:text-5xl ${signalTone}`} data-testid={`${family}-signal`} role="status" aria-live="polite">{signalLabel}</div><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{shownSnapshot ? resultCandidate ? `Historical analysis signals ${resultCandidate.label} for ${shownSnapshot.symbol} at the selected ${resultCandidate.outcomes.durationTicks}-tick expiry from available historical outcomes.` : shownSnapshot.reason || familyDetails.empty : 'Choose a Deriv-reported tick expiry, then press Run Analysis to evaluate this market’s expiry-specific digit outcomes.'}</p></div>
+            <div><div className={`text-4xl font-extrabold tracking-[-0.06em] sm:text-5xl ${signalTone}`} data-testid={`${family}-signal`} role="status" aria-live="polite">{signalLabel}</div><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{staleSnapshot ? 'Live data or contract availability is no longer valid. This historical snapshot is not an active signal; reconnect and run analysis again.' : shownSnapshot ? resultCandidate ? family === 'over-under' ? `The combined engines favor ${resultCandidate.label} for ${shownSnapshot.symbol} at ${resultCandidate.outcomes.durationTicks} ticks, after baseline-relative ranking and held-out checks. This is a research estimate, not a guaranteed outcome.` : `Historical analysis signals ${resultCandidate.label} for ${shownSnapshot.symbol} at the selected ${resultCandidate.outcomes.durationTicks}-tick expiry from available historical outcomes.` : shownSnapshot.reason || familyDetails.empty : 'Choose a Deriv-reported tick expiry, then press Run Analysis to evaluate this market’s expiry-specific digit outcomes.'}</p></div>
             {shownSnapshot && resultCandidate ? (
               <div className="w-full max-w-sm rounded-xl border border-primary/25 bg-primary/5 px-4 py-3" data-testid={`${family}-research-candidate`}>
                 <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-primary">Analysis signal · historical evidence</div>
                 <div className="mt-2 text-xl font-extrabold">{resultCandidate.label}</div>
+                {resultCandidate.ensemble && <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-2 text-[11px]"><strong>{formatRate(resultCandidate.ensemble.probability)}</strong> ensemble estimate · lift {formatDifference(resultCandidate.ensemble.lift)} · {formatRate(resultCandidate.ensemble.agreement)} weighted agreement. Equality loss estimate: {formatRate(resultCandidate.ensemble.equalityProbability)}.</div>}
                 <div className="mt-1 text-[10px] text-muted-foreground">{shownSnapshot.symbol} · selected {resultCandidate.outcomes.durationTicks}-tick expiry</div>
                 <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/70 pt-3 text-xs sm:grid-cols-4"><div><div className="eyebrow">Conditioned rate</div><div className="mono mt-1 font-semibold">{formatRate(resultCandidate.outcomes.empiricalHitRate)}</div></div><div><div className="eyebrow">All-history base</div><div className="mono mt-1 font-semibold">{formatRate(resultCandidate.baseline.empiricalHitRate)}</div></div><div><div className="eyebrow">Nominal 95% interval</div><div className="mono mt-1 font-semibold">{formatInterval(resultCandidate.outcomes.wilson95)}</div></div><div><div className="eyebrow">Sample</div><div className="mono mt-1 font-semibold">{resultCandidate.outcomes.hits} / {resultCandidate.outcomes.sample}</div></div></div>
                 <div className="mt-2 text-[10px] text-muted-foreground">Conditional difference vs all-history base: {formatDifference(resultCandidate.outcomes.empiricalHitRate === null || resultCandidate.baseline.empiricalHitRate === null ? null : resultCandidate.outcomes.empiricalHitRate - resultCandidate.baseline.empiricalHitRate)} (in-sample only).</div>
@@ -424,10 +463,10 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
           </div>
           <div className="mt-4 grid gap-2 sm:grid-cols-3" data-testid={`${family}-evidence-status`}>
             <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Data quality</div><div className="mt-1 text-[11px] font-semibold">{dataQualityLabel}</div></div>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Model reliability</div><div className="mt-1 text-[11px] font-semibold">Not validated</div></div>
+            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Model reliability</div><div className="mt-1 text-[11px] font-semibold">{family === 'over-under' ? shownSnapshot?.overUnder ? resultCandidate ? 'Local held-out gates passed' : 'No qualifying edge' : 'Awaiting model fitting' : 'Not validated'}</div></div>
             <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Historical hit rate</div><div className="mt-1 text-[11px] font-semibold">{resultCandidate ? formatRate(resultCandidate.outcomes.empiricalHitRate) : 'Awaiting valid analysis'}</div></div>
           </div>
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground"><ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" /><span>Historical frequencies and smoothed rankings are descriptive research, not calibrated probabilities. The nominal 95% Wilson interval assumes independent Bernoulli outcomes; overlapping tick horizons violate that simplifying assumption, so it is not a calibrated forecast interval. The rankings are not a payout or expected-value model: live ask prices and payouts are quoted by Deriv only when you trade from the dock with a connected account, and break-even, expected-value, out-of-sample validation and risk services are not provided. The displayed signal ranks historical outcomes, not guaranteed future results. Re-run analysis for an updated snapshot.</span></div>
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground"><ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" /><span>{family === 'over-under' ? 'The ensemble is fitted locally with a chronological training/tuning/holdout split. Model weights never use holdout labels. Non-overlapping expiry outcomes and conservative barrier checks reduce—but do not remove—selection risk or serial dependence. Model estimates are not calibrated win probabilities, and no payout/expected-value or profitability guarantee is provided. Historical rates and Wilson ranges below are descriptive only. Re-run analysis as market structure changes.' : 'Historical frequencies and smoothed rankings are descriptive research, not calibrated probabilities. The nominal 95% Wilson interval assumes independent Bernoulli outcomes; overlapping horizons violate that assumption. These rankings are not a payout/expected-value model or a guarantee of future results. Re-run analysis for an updated snapshot.'}</span></div>
           {shownSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Snapshot {new Date(shownSnapshot.ranAt).toLocaleTimeString()} · {shownSnapshot.analysis.sampleSize} validated digits · live freshness at scan: {shownSnapshot.freshAtRun ? 'confirmed' : 'not confirmed'}</div>}
         </article>
 
@@ -439,6 +478,8 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         </article>
       </section>
 
+      {family === 'over-under' && <OverUnderEnginePanel report={shownSnapshot?.overUnder ?? null} isScanning={isScanning} />}
+
       <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <DigitFrequencyPanel analysis={shownSnapshot?.analysis ?? currentAnalysis} />
         <HistoricalRanking family={family} candidates={candidates} />
@@ -449,7 +490,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
       <section className="grid gap-3 md:grid-cols-3">
         <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Database size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Verified input pipeline</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Active-symbol pip_size, history pip_size and live tick pip_size must agree. Quotes are decimal-scaled before extracting the last displayed digit; invalid precision blocks analysis.</p></div></div>
         <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><BarChart3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Expiry-aware research</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Each candidate uses the final observed digit exactly N ticks after each historical entry and conditions on the current digit or parity. Overlapping comparisons are not independent and are not a calibration set.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Not implemented yet</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Formal multi-horizon Dow analysis, candle-based ATR / ADX, payout/EV gating, model calibration, walk-forward backtesting, persistent signal storage and machine learning remain unavailable. Automatic execution is not offered: the trade dock only sends orders you confirm against a live Deriv quote.</p></div></div>
+        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Research limits</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{family === 'over-under' ? 'Local LSTM, boosted classifiers and chronological validation are available above. Payout/EV gating, probability calibration, external pretrained models, persistent signals and full rolling-refit backtesting are not provided.' : 'Formal multi-horizon Dow analysis, candle-based ATR / ADX, payout/EV gating, model calibration, walk-forward backtesting, persistent signals and machine learning remain unavailable.'} Automatic execution is not offered: the trade dock only sends orders you confirm against a live Deriv quote.</p></div></div>
       </section>
 
       <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite"><Zap size={12} className="mr-1 inline text-primary" />{shownSnapshot ? `${shownSnapshot.analysis.sampleSize} real validated digits were analyzed for ${shownSnapshot.symbol}.` : isReady ? `Choose one of ${supportedDurationCount} Deriv-supported tick expiries, then run analysis.` : 'Waiting for live data, pip precision, contract metadata and sufficient history.'} No simulated digits or fabricated probabilities are used, and no order is ever sent without your confirmation in the trade dock.</div>
@@ -458,9 +499,10 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         family={family}
         marketCode={feed.selectedSymbol || null}
         marketName={feed.selectedMarket?.name ?? null}
-        expiry={selectedDuration}
+        expiry={tradeExpiry}
         expiryOptions={availableDurations}
-        onExpiryChange={setSelectedDuration}
+        onExpiryChange={setTradeExpiry}
+        contracts={feed.contracts}
         expiryVerified={feed.contractsLoaded}
       />
     </div>

@@ -80,12 +80,18 @@ test('Even/Odd produces the observed parity signal rather than a permanent WAIT'
   assert.equal(rank('even-odd', makeFeed(7)).candidates[0].label, 'ODD');
 });
 
-test('Over/Under ranks supported strict-barrier signals', () => {
+test('Over/Under ensemble restricts research barriers to 1–8 and explains ineligible constant streams', () => {
   const result = rank('over-under', makeFeed());
-  assert.equal(result.reason, '');
-  assert.equal(result.candidates[0].contract.contractType, 'DIGITUNDER');
-  assert.equal(result.candidates[0].outcomes.empiricalHitRate, 1);
-  assert.equal(result.candidates.length, 18);
+  // Barriers 0 and 9 are excluded from research even though Deriv allows them manually.
+  assert.equal(result.candidates.length, 16);
+  assert.ok(result.candidates.every((candidate) => candidate.contract.barrier >= 1 && candidate.contract.barrier <= 8));
+  assert.ok(result.candidates.every((candidate) => candidate.ensemble));
+  assert.ok(result.overUnder);
+  assert.equal(result.overUnder.engines.length, 12);
+  // A constant stream is already predicted by the frequency baseline, so no
+  // candidate can show lift over it; the ensemble must say why it waits.
+  assert.notEqual(result.reason, '');
+  assert.equal(result.candidates.some((candidate) => candidate.ensemble.eligible), false);
 });
 
 test('Matches produces a digit signal including zero and evaluates all ten targets', () => {
