@@ -808,7 +808,7 @@ export function RiseFallTool() {
       </section>
 
       <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite">
-        {scanSnapshot ? `Run Analysis examined ${scanSnapshot.rows.length} configured markets across all ${HORIZONS.length} durations at ${new Date(scanSnapshot.ranAt).toLocaleTimeString()}.` : 'Run Analysis to evaluate all markets and durations together. Live feed diagnostics continue updating in the background.'} No automatic order placement is available.
+        {scanSnapshot ? `Run Analysis examined ${scanSnapshot.rows.length} configured markets across all ${HORIZONS.length} durations at ${new Date(scanSnapshot.ranAt).toLocaleTimeString()}.` : 'Run Analysis to evaluate all markets and durations together. Live feed diagnostics continue updating in the background.'} No automatic order placement is available: the trade dock sends only the orders you confirm against a live Deriv quote.
       </div>
 
       <TradeDock
