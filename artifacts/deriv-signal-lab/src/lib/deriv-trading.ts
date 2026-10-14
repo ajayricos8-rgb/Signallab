@@ -23,6 +23,11 @@ export type DerivTradeRequest = {
   durationUnit: DerivDurationUnit;
   /** Last-digit prediction (digits) or relative barrier (rise/fall does not need one). */
   barrier?: string | null;
+  /**
+   * Which of the next five ticks a TICKHIGH / TICKLOW contract predicts
+   * (1–5). Only sent for those contract types.
+   */
+  selectedTick?: number | null;
 };
 
 export type DerivQuote = {
@@ -135,6 +140,7 @@ export function buildProposalRequest(
   // `barrier: undefined` would be dropped by JSON.stringify anyway, but the
   // explicit branch documents the contract rules.
   if (request.barrier) message.barrier = request.barrier;
+  if (request.selectedTick !== undefined && request.selectedTick !== null) message.selected_tick = request.selectedTick;
   return message;
 }
 

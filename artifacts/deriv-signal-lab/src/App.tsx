@@ -6,6 +6,7 @@ import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-cont
 import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
 import { DigitAiBot } from '@/components/premium-bot/digit-ai-bot';
 import { RiseFallAiBot } from '@/components/premium-bot/rise-fall-ai-bot';
+import { HedgingBot } from '@/components/premium-bot/hedging-bot';
 import { SettingsPanel } from '@/components/settings-panel';
 import { TradeHistoryPanel } from '@/components/trade-history-panel';
 import { Toaster } from '@/components/ui/toaster';
@@ -19,7 +20,7 @@ const queryClient = new QueryClient();
 type Theme = 'light' | 'dark';
 type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots' | 'settings';
 type ToolsMiniTab = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
-type PremiumBotTab = 'digit-ai' | 'rise-fall';
+type PremiumBotTab = 'digit-ai' | 'rise-fall' | 'hedging-high-low';
 
 const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
   { id: 'rise-fall', label: 'Rise/Fall' },
@@ -31,6 +32,7 @@ const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
 const premiumBotTabs: { id: PremiumBotTab; label: string; blurb: string }[] = [
   { id: 'digit-ai', label: 'Digit AI engine', blurb: 'Even/Odd, Over/Under and Matches, ranked by walk-forward-validated models.' },
   { id: 'rise-fall', label: 'Rise/Fall AI', blurb: 'Tick momentum and continuation signals that buy real CALL and PUT contracts.' },
+  { id: 'hedging-high-low', label: 'High/Low hedge', blurb: 'Buys a High Tick and a Low Tick together on the same window, with the tick positions chosen automatically.' },
 ];
 
 const workspaceTabs = [
@@ -50,7 +52,8 @@ function readSavedTheme(): Theme {
 
 function readSavedBotTab(): PremiumBotTab {
   try {
-    return window.localStorage.getItem('signal-lab-premium-bot-tab') === 'rise-fall' ? 'rise-fall' : 'digit-ai';
+    const saved = window.localStorage.getItem('signal-lab-premium-bot-tab');
+    return saved === 'rise-fall' || saved === 'hedging-high-low' ? saved : 'digit-ai';
   } catch {
     return 'digit-ai';
   }
@@ -266,7 +269,7 @@ function PremiumBotsWorkspace({
       </div>
       {selected ? <p className="pt-3 text-[11px] leading-relaxed text-muted-foreground" data-testid="premium-bot-blurb">{selected.blurb}</p> : null}
       <div className="min-h-[45vh] pt-4" data-testid={`premium-bot-panel-${activeTab}`}>
-        {activeTab === 'rise-fall' ? <RiseFallAiBot /> : <DigitAiBot />}
+        {activeTab === 'rise-fall' ? <RiseFallAiBot /> : activeTab === 'hedging-high-low' ? <HedgingBot /> : <DigitAiBot />}
       </div>
     </section>
   );

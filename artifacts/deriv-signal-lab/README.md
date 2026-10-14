@@ -45,10 +45,11 @@ The build config requires both `PORT` and `BASE_PATH`, including for production 
 
 ## Premium bots
 
-The **Premium bots** tab hosts the autonomous engines. One bot is mounted at a time (the choice is remembered per browser), each with its own decision cycle, its own minimize/expand state, and its own configuration stored in `localStorage`. Neither bot has a simulated execution mode: an order is either a real Deriv purchase on the authorized demo or real account, or it is not sent at all.
+The **Premium bots** tab hosts the autonomous engines. One bot is mounted at a time (the choice is remembered per browser), each with its own decision cycle and its own configuration stored in `localStorage`. No bot has a simulated execution mode: an order is either a real Deriv purchase on the authorized demo or real account, or it is not sent at all.
 
 - **Digit AI engine** (`src/components/premium-bot/digit-ai-bot.tsx`, engine modules in `src/lib/digit-bot/`, controller `src/hooks/use-digit-bot.ts`) — Even/Odd, Over/Under and Matches candidates ranked by walk-forward-validated models against live Deriv proposals. It never martingales.
 - **Rise/Fall AI** (`src/components/premium-bot/rise-fall-ai-bot.tsx`, engine modules in `src/lib/rise-fall-bot/`, controller `src/hooks/use-rise-fall-bot.ts`) — a port of the reference "Deriv Rise/Fall AI Bot" script. Live ticks feed a feature window (up/down ratios, momentum, mean tick move, last move, streak), two rules name a direction (strong momentum, then continuation of the last move), the risk manager sizes and gates the order, and Deriv settles the CALL or PUT contract.
+- **High/Low hedge** (`src/components/premium-bot/hedging-bot.tsx`, engine modules in `src/lib/hedging-bot/`, controller `src/hooks/use-hedging-bot.ts`) — buys a High Tick and a Low Tick on the same market at the same moment. The bot chooses the tick position each leg predicts from the verified history. See *High/Low hedge specifics* below.
 
 Rise/Fall bot specifics:
 
@@ -61,6 +62,31 @@ Rise/Fall bot specifics:
 - **Order safety.** Purchases are single-flight; a receipt that never arrives leaves the order *unreconciled*, is matched against the account's portfolio, and blocks further orders until the account says what happened (or 20 seconds pass with no matching open contract).
 - **Trade log.** Every attempt — bought, refused or settled — is logged in the browser and exportable as CSV with the same columns the reference script wrote to `trades_log.csv`.
 - **Shared connections.** Both bots reuse the frozen public market-data feed and the authenticated trading session; neither opens its own socket, stores a token, or sends account data anywhere.
+
+## High/Low hedge specifics
+
+**The contract.** A High Tick (`TICKHIGH`) wins if the tick you selected (1 to 5) is the strictly highest of the next five ticks. A Low Tick (`TICKLOW`) wins if it is the strictly lowest. Both have a fixed duration of five ticks, are offered on synthetic indices only, and are sent to Deriv's `proposal` with `duration_unit: t` and `selected_tick`. A tie for the extreme is a loss for that leg.
+
+**The pair.** Each pair is one High Tick and one Low Tick of the same stake on the same window. Both proposals are requested together, both must pass validation, the expected-value gate must pass, and then both `buy` requests are sent together. The worst case for a pair is both stakes lost. On a random walk the two legs win together in about 1 window in 20, exactly one leg wins in about 3 windows in 10, and neither wins in about 65 in 100. A winning leg's payout must cover the losing leg's stake, so the pair's expected value is the sum of the two leg expectations.
+
+**Payout.** Deriv quotes the High Tick and Low Tick payout only through a live `proposal`; it is not published as a fixed figure. The bot therefore never assumes a payout. A leg whose payout is missing, or not above its ask, is unpriced, and so is the pair.
+
+**Choosing the tick positions.** The replay walks the most recent verified ticks (default 500). For each entry tick it looks at the five ticks that followed and records which position was the strict extreme; a tie counts for nobody. Each leg names the position that was the extreme most often, provided there are at least `minSelectionWindows` windows (default 200) and the chosen rate is at least `minTickEdgeZ` standard errors above the 20% baseline (default 2). Below either threshold, automatic selection is withheld. Manual positions can be set instead. This describes the collected history; on an independent random walk every position is 20%.
+
+**Expected-value gate.** Each leg is priced as `q·(payout − ask) − (1 − q)·ask`, where `q` is the leg's historical rate at the chosen position. A pair is bought only if the sum is at least `minExpectedValue` per unit staked (default 0), and only when the pair is priced and the sample is sufficient. Otherwise nothing is bought and the refusal is logged with its reason. The gate can be turned off, in which case it is stated in the log.
+
+**Sizing and limits.** `maxStakeShareOfBalance` caps both legs together, so each leg is at most half of that share of the balance. Limits count pairs: open pairs, pairs per session, losing pairs in a row, daily loss, daily take profit and session length. Refused pairs are recorded separately and capped, so they cannot push real trades out of the log.
+
+**Order safety.**
+- Purchases are single-flight. A purchase reply that times out leaves the pair *unreconciled*: the bot matches it against the account's open contracts (by type, symbol and start time) and sends no new pair until it has an answer.
+- If one leg is refused after the other was bought, the bought leg is sold back rather than left unhedged. If that sale fails, the bot pauses and says so.
+- Stopping the bot blocks new pairs only; bought legs keep being monitored until Deriv settles them.
+
+**Analysis mode.** Each decision cycle records its entry in analysis mode too, and scores it once the next five ticks are in. The hit rates for each position are shown beside the 20% baseline. When an account is connected, analysis mode also requests the two proposals so the live payouts and EV are visible. It never sends a `buy`.
+
+**Not verified here.** The contract documentation says High/Low Tick contracts run for their full five ticks. The bot's early-sale path (`sell`) is used for unwinding and for the manual *Sell* button, and it works only when Deriv reports the contract as sellable. Confirm this on a demo account before relying on the unwind path.
+
+**Disclaimer.** The house edge applies to every contract, including each leg of a hedge. A hedge changes the spread of outcomes, not the expected loss. Use a demo account first.
 
 ## Derived trading protocol (used by the dock and history tab)
 
