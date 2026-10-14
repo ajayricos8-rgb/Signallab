@@ -184,7 +184,6 @@ export function buildAiFeatureObject(input: AiFeatureInput): Record<string, unkn
     },
     safety_state: {
       run_state: input.safety.runState,
-      emergency_stop: input.safety.emergencyStop,
       manual_pause: input.safety.manualPause,
       auto_pause_reasons: input.safety.autoPauseReasons,
     },

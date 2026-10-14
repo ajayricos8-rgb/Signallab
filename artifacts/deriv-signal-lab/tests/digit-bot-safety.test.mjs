@@ -30,7 +30,6 @@ import {
 import {
   clearAutoPause,
   createSafetyState,
-  engageEmergencyStop,
   pauseBot,
   registerAutoPause,
   resumeBot,
@@ -335,12 +334,12 @@ test('17 · duplicate purchases are blocked for the life of the decision', () =>
   assert.equal(openContractCount(state), 1);
 });
 
-test('21 · the emergency stop blocks purchases but never claims an open contract was cancelled', () => {
-  const safety = startBot(createSafetyState(), 'live');
-  const stopped = engageEmergencyStop(safety, { now: NOW, by: 'user' });
+test('21 · stopping the bot blocks purchases but never claims an open contract was cancelled', () => {
+  const started = startBot(createSafetyState(), 'live');
+  const stopped = stopBot(started, 'live', { now: NOW, by: 'user' });
   assert.equal(stopped.canPurchase, false);
-  assert.equal(stopped.runState, 'emergency');
-  assert.equal(stopped.reasonCodes.includes('EMERGENCY_STOP'), true);
+  assert.equal(stopped.runState, 'stopped');
+  assert.equal(stopped.reasonCodes.includes('MANUAL_PAUSE'), true);
   const risk = evaluateRisk({
     config: defaultRiskConfig(),
     account: { ...createAccountState(), currentBalance: 100, dayKey: dayKeyOf(NOW) },
@@ -353,18 +352,19 @@ test('21 · the emergency stop blocks purchases but never claims an open contrac
     purchaseInFlight: false,
   });
   assert.equal(risk.allowed, false);
-  assert.equal(risk.reasonCodes.includes('EMERGENCY_STOP'), true);
+  assert.equal(risk.reasonCodes.includes('MANUAL_PAUSE'), true);
   const validation = validateTrade(validationInput({ safety: stopped }));
   assert.equal(validation.ok, false);
-  assert.equal(validation.codes.includes('EMERGENCY_STOP'), true);
+
+  // Starting again is possible after a stop; there is no latched stop state.
+  const restarted = startBot(stopped, 'live');
+  assert.equal(restarted.canPurchase, true);
 
   // A contract that Deriv already accepted stays open and keeps being monitored.
   let state = createExecutionState();
   const intent = { decisionId: 'bot-live-1', family: 'over-under', contractType: 'DIGITUNDER', symbol: 'R_100', stake: 1, duration: 1, durationUnit: 't', barrier: '5', barrierDigit: 5, currency: 'USD', mode: 'live', createdAt: NOW, reasonCodes: [] };
   state = beginPurchase(state, intent, NOW).state;
   state = completePurchase(state, intent, { contractId: 77, buyPrice: 1, payout: 1.9, balanceAfter: 99, purchaseTime: NOW / 1_000, startTime: NOW / 1_000, longcode: null, shortcode: null, transactionId: null }, NOW).state;
-  const afterStop = stopBot(stopped, 'live', { now: NOW + 1_000, by: 'user' });
-  assert.equal(afterStop.canPurchase, false);
   assert.equal(state.contracts.length, 1);
   assert.equal(state.contracts[0].isSold, false, 'stopping the bot does not cancel or hide the contract');
   const update = applyContractUpdate(state, {
@@ -407,28 +407,29 @@ test('22 · analysis-only mode produces recommendations but can never prepare an
   assert.equal(analysisSafety.canPurchase, false);
 });
 
-test('23 · paper results are stored and reported separately from live results', () => {
-  const paperRecord = createPredictionRecord({
-    id: 'paper-1', at: NOW, mode: 'paper', symbol: 'R_100', currentDigit: 2, window: 500,
+test('23 · live and analysis results are stored and reported separately', () => {
+  const analysisRecord = createPredictionRecord({
+    id: 'analysis-1', at: NOW, mode: 'analysis', symbol: 'R_100', currentDigit: 2, window: 500,
     modelVersions: ['C'], contractType: 'DIGITMATCH', family: 'matches', barrier: 7,
     predictedProbability: 0.31, probabilityLowerBound: 0.22, probabilityUpperBound: 0.4,
     payout: 3, stake: 1, breakEvenProbability: 0.333, expectedValue: -0.07,
-    decision: 'TRADE', reasonCodes: ['TRADE_APPROVED'], reasons: [], traded: true, passedRiskChecks: true, contractId: -1,
+    decision: 'NO_TRADE', reasonCodes: [], reasons: [], traded: false, passedRiskChecks: false, contractId: null,
   });
   const liveRecord = createPredictionRecord({
-    ...paperRecord, id: 'live-1', mode: 'live', contractId: 55, predictedProbability: 0.5,
+    ...analysisRecord, id: 'live-1', mode: 'live', contractId: 55, predictedProbability: 0.5,
   });
-  const separation = separateByMode([paperRecord, liveRecord]);
-  assert.equal(separation.paper.length, 1);
+  const separation = separateByMode([analysisRecord, liveRecord]);
+  assert.equal(separation.analysis.length, 1);
   assert.equal(separation.live.length, 1);
   assert.equal(separation.requiresLabel, true);
-  const paperMetrics = summarizePerformance(separation.paper);
+  const analysisMetrics = summarizePerformance(separation.analysis);
   const liveMetrics = summarizePerformance(separation.live);
-  assert.equal(paperMetrics.sample, 1);
+  assert.equal(analysisMetrics.sample, 1);
   assert.equal(liveMetrics.sample, 1);
-  assert.equal(paperMetrics.traded, 1);
+  assert.equal(analysisMetrics.traded, 0, 'an analysis prediction is never a trade');
   assert.equal(liveMetrics.netProfit, 0, 'an unsettled live contract contributes no realised profit');
-  const walk = walkForwardReport([paperRecord, liveRecord]);
+  assert.equal(separateByMode([liveRecord]).requiresLabel, false, 'a single dataset needs no separation label');
+  const walk = walkForwardReport([analysisRecord, liveRecord]);
   assert.equal(walk.splitAt, null);
   assert.equal(walk.note.includes('twenty'), true);
   assert.equal(contractWins('DIGITMATCH', 7, 7), true);

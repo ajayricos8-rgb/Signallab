@@ -160,10 +160,6 @@ export function evaluateRisk(input: RiskEvaluationInput): RiskEvaluation {
       : `Balance-based stake ${stakeComputation.stake} ${account.currency || ''} (${config.percentOfBalance}% of balance, capped).`);
   }
 
-  if (safety.emergencyStop) {
-    violations.push('The emergency stop is engaged; no purchases are permitted.');
-    reasonCodes.push('EMERGENCY_STOP');
-  }
   if (safety.manualPause) {
     violations.push('The bot is paused manually.');
     reasonCodes.push('MANUAL_PAUSE');
@@ -232,9 +228,7 @@ export function evaluateRisk(input: RiskEvaluationInput): RiskEvaluation {
     reasonCodes.push('MIN_TICKS_BETWEEN_ENTRIES');
   }
   if (input.mode !== 'live') {
-    violations.push(input.mode === 'analysis'
-      ? 'Analysis-only mode never places an order.'
-      : 'Paper-trading mode records the decision without placing an order.');
+    violations.push('Analysis-only mode never places an order.');
     reasonCodes.push('MODE_NOT_EXECUTABLE');
   }
 

@@ -3,18 +3,18 @@
 // Presents engine A–N output for the operator: control, live market status,
 // AI analysis, digit heatmap, candidate comparison, account/risk, live trade
 // monitor and the decision log. It never places an order itself — every
-// purchase goes through the execution engine inside `useDigitBot`.
-import { useMemo, useState } from 'react';
+// purchase goes through the execution engine inside `useDigitBot`, and only in
+// live mode against the authorized Deriv demo or real account.
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
   Bot,
   CircleStop,
-  FlaskConical,
-  OctagonAlert,
+  Maximize2,
+  Minimize2,
   Pause,
   Play,
-  Power,
   RefreshCw,
   Settings2,
   ShieldAlert,
@@ -39,10 +39,11 @@ import {
   BotTradeMonitor,
 } from '@/components/premium-bot/bot-ledger';
 
+const MINIMIZED_KEY = 'signal-lab-digit-bot-minimized';
+
 const MODE_DETAILS: Array<{ id: BotMode; label: string; blurb: string; icon: typeof Terminal }> = [
   { id: 'analysis', label: 'Analysis only', blurb: 'Reads live ticks, predicts and ranks contracts. Never sends an order.', icon: Terminal },
-  { id: 'paper', label: 'Paper trading', blurb: 'Records simulated entries priced from real Deriv proposals and scores them separately.', icon: FlaskConical },
-  { id: 'live', label: 'Live trading', blurb: 'Sends real purchases to the authorized Deriv account after every risk and validation check passes.', icon: TrendingUp },
+  { id: 'live', label: 'Live trading', blurb: 'Sends real purchases to the authorized Deriv demo or real account after every risk and validation check passes.', icon: TrendingUp },
 ];
 
 const FAMILIES: Array<{ id: ContractFamily; label: string }> = [
@@ -50,6 +51,14 @@ const FAMILIES: Array<{ id: ContractFamily; label: string }> = [
   { id: 'over-under', label: 'Over/Under' },
   { id: 'matches', label: 'Matches' },
 ];
+
+function readMinimized(): boolean {
+  try {
+    return window.localStorage.getItem(MINIMIZED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -162,7 +171,7 @@ function LiveActivationDialog({ open, onOpenChange, onConfirm, bot }: { open: bo
             <li>Stake: <span className="mono text-foreground">{bot.riskConfig.stakeMode === 'fixed' ? `${formatMoney(bot.riskConfig.fixedStake, currency)} fixed` : `${bot.riskConfig.percentOfBalance}% of balance (capped at ${bot.riskConfig.maxStakeShareOfBalance}%)`}</span></li>
             <li>Limits: daily loss {formatMoney(bot.riskConfig.maxDailyLoss, currency)}, session loss {formatMoney(bot.riskConfig.maxSessionLoss, currency)}, {bot.riskConfig.maxConsecutiveLosses} consecutive losses, {bot.riskConfig.maxDailyTrades} trades/day, {bot.riskConfig.maxOpenContracts} open contract(s).</li>
             <li>Every purchase still requires a validated model, a positive conservative expected value, a fresh tick stream and a verified Deriv proposal.</li>
-            <li>There is no martingale and no stake increase after a loss. The emergency stop blocks new purchases immediately.</li>
+            <li>There is no martingale and no stake increase after a loss. Stopping the bot blocks new purchases immediately.</li>
             <li>Contracts Deriv has already accepted cannot be cancelled by stopping the bot; they are monitored until settlement.</li>
           </ul>
         </div>
@@ -185,20 +194,13 @@ function LiveActivationDialog({ open, onOpenChange, onConfirm, bot }: { open: bo
   );
 }
 
-function ControlPanel({ bot }: { bot: DigitBotController }) {
+function ControlPanel({ bot, onMinimize }: { bot: DigitBotController; onMinimize: () => void }) {
   const [showSettings, setShowSettings] = useState(false);
   const [activationOpen, setActivationOpen] = useState(false);
   const running = bot.runState === 'running';
   const paused = bot.runState === 'paused';
   const stopped = bot.runState === 'idle' || bot.runState === 'stopped';
-  const currency = bot.accountCurrency;
-  const statusText = bot.safety.emergencyStop
-    ? 'Emergency stop engaged'
-    : running
-      ? 'Running'
-      : paused
-        ? 'Paused'
-        : 'Stopped';
+  const statusText = running ? 'Running' : paused ? 'Paused' : 'Stopped';
 
   return (
     <>
@@ -214,33 +216,41 @@ function ControlPanel({ bot }: { bot: DigitBotController }) {
               </p>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-2">
-            <DerivConnectionStatusBadge />
-            <span className={`mono rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.06em] ${bot.safety.emergencyStop ? 'border-destructive bg-destructive/10 text-destructive' : running ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'border-border bg-background/60 text-muted-foreground'}`} data-testid="bot-status">
-              {statusText}
-            </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onMinimize}
+              className="focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+              aria-label="Minimize bot"
+              title="Minimize bot"
+              data-testid="button-bot-minimize"
+            >
+              <Minimize2 size={15} />
+            </button>
+            <div className="flex flex-col items-end gap-2">
+              <DerivConnectionStatusBadge />
+              <span className={`mono rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.06em] ${running ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'border-border bg-background/60 text-muted-foreground'}`} data-testid="bot-status">
+                {statusText}
+              </span>
+            </div>
           </div>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
           {stopped || paused ? (
-            <Button onClick={paused ? bot.resume : bot.start} disabled={bot.safety.emergencyStop === false && bot.accountCurrency === ''} className="gap-2" data-testid="button-bot-start">
+            <Button onClick={paused ? bot.resume : bot.start} disabled={bot.accountCurrency === ''} className="gap-2" data-testid="button-bot-start">
               <Play size={14} fill="currentColor" />{paused ? 'Resume bot' : 'Start bot'}
             </Button>
           ) : (
             <Button variant="secondary" onClick={bot.pause} className="gap-2" data-testid="button-bot-pause"><Pause size={14} />Pause bot</Button>
           )}
           <Button variant="outline" onClick={bot.stop} disabled={stopped && !running} className="gap-2" data-testid="button-bot-stop"><CircleStop size={14} />Stop bot</Button>
-          <Button variant="destructive" onClick={bot.engageEmergencyStop} className="gap-2" data-testid="button-bot-emergency-stop"><OctagonAlert size={14} />Emergency stop</Button>
-          {bot.safety.emergencyStop ? (
-            <Button variant="outline" onClick={bot.releaseEmergencyStop} className="gap-2" data-testid="button-bot-clear-emergency-stop"><Power size={14} />Clear emergency stop</Button>
-          ) : null}
           <Button variant="ghost" onClick={() => setShowSettings((value) => !value)} className="gap-2" data-testid="button-bot-settings">
             <Settings2 size={14} />{showSettings ? 'Hide limits' : 'Limits &amp; stake'}
           </Button>
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
           {MODE_DETAILS.map(({ id, label, blurb, icon: Icon }) => {
             const active = bot.mode === id;
             return (
@@ -352,7 +362,7 @@ function ControlPanel({ bot }: { bot: DigitBotController }) {
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={bot.pause} data-testid="button-live-pause"><Pause size={14} />Pause</Button>
-            <Button variant="destructive" size="sm" onClick={bot.engageEmergencyStop} data-testid="button-live-stop"><OctagonAlert size={14} />STOP BOT</Button>
+            <Button variant="destructive" size="sm" onClick={bot.stop} data-testid="button-live-stop"><CircleStop size={14} />Stop bot</Button>
           </div>
         </section>
       ) : null}
@@ -363,70 +373,123 @@ function ControlPanel({ bot }: { bot: DigitBotController }) {
 /**
  * Total profit and loss, always visible at the top of the bot.
  *
- * Live (or demo) money and paper results are shown side by side and then added
- * up with an explicit label, because the specification requires the three
- * datasets to stay distinguishable. Nothing here is estimated: the numbers come
- * from Deriv settlements and from the recorded, settled paper results.
+ * The figures come only from Deriv settlements on the connected demo or real
+ * account — nothing here is estimated or simulated, because the bot has no
+ * simulated execution mode: every position it opens is a live one.
  */
 function ProfitLossStrip({ bot }: { bot: DigitBotController }) {
   const currency = bot.accountCurrency;
   const accountLabel = bot.accountType === 'demo'
-    ? 'Demo account balance'
+    ? 'Demo account'
     : bot.accountType === 'real'
-      ? 'Real account balance'
+      ? 'Real account'
       : 'No account connected';
-  const accountTone = bot.accountType === 'real' ? 'text-amber-600 dark:text-amber-400' : 'text-primary';
   const live = bot.metrics;
-  const paper = bot.paperMetrics;
-  const combined = live.netProfit + paper.netProfit;
-  const settled = live.resolved;
+  const account = bot.account;
   const tone = (value: number) => (value > 0 ? 'text-emerald-600 dark:text-emerald-400' : value < 0 ? 'text-destructive' : 'text-foreground');
 
   return (
-    <div className="mt-4 grid gap-3 sm:grid-cols-3" data-testid="bot-profit-loss">
+    <div className="mt-4 grid gap-3 sm:grid-cols-2" data-testid="bot-profit-loss">
       <div className={`rounded-xl border p-3 ${bot.accountType === 'real' ? 'border-amber-500/40 bg-amber-500/5' : 'border-border bg-background/40'}`}>
-        <span className="eyebrow">Total profit / loss · {accountLabel}</span>
+        <span className="eyebrow">Total profit / loss · {accountLabel} (settled)</span>
         <span className={`mono mt-1 block text-2xl font-bold tabular-nums ${tone(live.netProfit)}`} data-testid="bot-total-pnl">
           {formatSignedMoney(live.netProfit, currency)}
         </span>
         <span className="mt-1 block text-[10px] text-muted-foreground">
-          {live.traded} order{live.traded === 1 ? '' : 's'} · {live.wins} won · {live.losses} lost · {settled} settled · staked {formatMoney(live.grossStake, currency)}
+          {live.traded} order{live.traded === 1 ? '' : 's'} · {live.wins} won · {live.losses} lost · {live.resolved} settled · staked {formatMoney(live.grossStake, currency)}
           {live.returnOnStake === null ? '' : ` · return on stake ${formatPercent(live.returnOnStake, 2)}`}
         </span>
       </div>
       <div className="rounded-xl border border-border bg-background/40 p-3">
-        <span className="eyebrow">Paper profit / loss · simulated</span>
-        <span className={`mono mt-1 block text-2xl font-bold tabular-nums ${tone(paper.netProfit)}`} data-testid="bot-paper-pnl">
-          {formatSignedMoney(paper.netProfit, currency)}
+        <span className="eyebrow">Account snapshot · {accountLabel}</span>
+        <span className="mono mt-1 block text-2xl font-bold tabular-nums" data-testid="bot-balance-snapshot">
+          {formatMoney(account.currentBalance, currency)}
         </span>
         <span className="mt-1 block text-[10px] text-muted-foreground">
-          {paper.traded} simulated entr{paper.traded === 1 ? 'y' : 'ies'} · {paper.wins} won · {paper.losses} lost · priced from real Deriv proposals, never from an order
-        </span>
-      </div>
-      <div className="rounded-xl border border-border bg-background/40 p-3">
-        <span className="eyebrow">Combined total · live + paper</span>
-        <span className={`mono mt-1 block text-2xl font-bold tabular-nums ${tone(combined)}`} data-testid="bot-combined-pnl">
-          {formatSignedMoney(combined, currency)}
-        </span>
-        <span className={`mt-1 block text-[10px] ${bot.accountType === 'real' ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>
-          {bot.accountType === 'real'
-            ? 'This account trades real money. Paper results are simulated and are not real profit.'
-            : 'Live and simulated results are kept separate; only the first tile reflects the connected account.'}
+          Session P/L {formatSignedMoney(account.sessionPnl, currency)} · open exposure {formatMoney(account.openExposure, currency)} · {account.tradesThisSession} entr{account.tradesThisSession === 1 ? 'y' : 'ies'} this session
         </span>
       </div>
     </div>
   );
 }
 
+/**
+ * Compact minimized bot bar.
+ *
+ * Keeps the bot visible — and its total profit/loss readable — while it keeps
+ * running in the background. Expanding restores the full engine dashboard.
+ */
+function BotMinimizedBar({ bot, onExpand }: { bot: DigitBotController; onExpand: () => void }) {
+  const running = bot.runState === 'running';
+  const paused = bot.runState === 'paused';
+  const statusText = running ? 'Running' : paused ? 'Paused' : 'Stopped';
+  const live = bot.metrics;
+  const currency = bot.accountCurrency;
+  const tone = live.netProfit > 0 ? 'text-emerald-600 dark:text-emerald-400' : live.netProfit < 0 ? 'text-destructive' : 'text-foreground';
+
+  return (
+    <section className="sticky top-[88px] z-10 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-xl border border-card-border bg-card/95 p-4 panel-glow backdrop-blur animate-rise-in" data-testid="bot-minimized-bar">
+      <div className="flex items-center gap-3">
+        <span className="text-primary"><Bot size={18} /></span>
+        <div>
+          <div className="eyebrow">Premium bot · minimized</div>
+          <div className="mt-0.5 text-sm font-bold tracking-tight">Deriv AI trading engine</div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`mono rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.06em] ${running ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'border-border bg-background/60 text-muted-foreground'}`} data-testid="bot-minimized-status">
+          {statusText}
+        </span>
+        <span className={`mono rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.06em] ${bot.mode === 'live' ? 'border-destructive/40 bg-destructive/10 text-destructive' : 'border-border bg-background/60 text-muted-foreground'}`}>
+          {bot.mode === 'live' ? `Live · ${bot.accountType === 'real' ? 'real' : bot.accountType === 'demo' ? 'demo' : 'no account'}` : 'Analysis only'}
+        </span>
+      </div>
+
+      <div className="ml-auto text-right" data-testid="bot-minimized-pnl">
+        <div className="eyebrow">Total profit / loss</div>
+        <div className={`mono text-2xl font-bold tabular-nums leading-tight ${tone}`}>
+          {formatSignedMoney(live.netProfit, currency)}
+        </div>
+        <div className="text-[10px] text-muted-foreground">
+          {live.traded} order{live.traded === 1 ? '' : 's'} · {live.wins} won · {live.losses} lost · session {formatSignedMoney(bot.account.sessionPnl, currency)}
+        </div>
+      </div>
+
+      <Button onClick={onExpand} className="gap-2" data-testid="button-bot-expand">
+        <Maximize2 size={14} />Expand bot
+      </Button>
+    </section>
+  );
+}
+
 export function DigitAiBot() {
   const bot = useDigitBot();
+  const [minimized, setMinimized] = useState<boolean>(readMinimized);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MINIMIZED_KEY, minimized ? 'true' : 'false');
+    } catch {
+      // Storage is optional; the choice is still held in memory.
+    }
+  }, [minimized]);
+
   const models = bot.decision?.models ?? [];
   const ensemble = bot.decision?.ensemble ?? null;
   const trailing = useMemo(() => bot.records.slice(-25).reverse(), [bot.records]);
 
+  if (minimized) {
+    return (
+      <div className="mx-auto w-full max-w-[1500px] space-y-4 animate-rise-in" data-testid="digit-ai-bot">
+        <BotMinimizedBar bot={bot} onExpand={() => setMinimized(false)} />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-[1500px] space-y-4 animate-rise-in" data-testid="digit-ai-bot">
-      <ControlPanel bot={bot} />
+      <ControlPanel bot={bot} onMinimize={() => setMinimized(true)} />
 
       {bot.accountCurrency === '' ? (
         <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
@@ -505,7 +568,7 @@ export function DigitAiBot() {
           <li>It never substitutes generated ticks for missing market data; stale feeds stop trading.</li>
           <li>It never treats an open contract's potential payout as realised profit.</li>
           <li>It never sends your token, account id or balance to a third-party AI provider.</li>
-          <li>It never reports a paper trade as a real Deriv purchase.</li>
+          <li>It never places an order outside live mode on a demo or real Deriv account — there is no simulated execution.</li>
           <li>It never promises that passing tests implies profitability.</li>
         </ul>
       </section>

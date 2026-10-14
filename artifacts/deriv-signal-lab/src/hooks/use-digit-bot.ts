@@ -49,10 +49,8 @@ import {
 import {
   clearAutoPause,
   createSafetyState,
-  engageEmergencyStop,
   pauseBot,
   registerAutoPause,
-  releaseEmergencyStop,
   resumeBot,
   startBot,
   stopBot,
@@ -67,7 +65,6 @@ import {
   failPurchase,
   nextDecisionId,
   reconcileWithPortfolio,
-  settlePaperContract,
   upsertMonitoredContract,
   type ExecutionState,
   type Settlement,
@@ -111,7 +108,9 @@ function writeJson(key: string, value: unknown): void {
 function readMode(): BotMode {
   try {
     const value = window.localStorage.getItem(MODE_KEY);
-    return value === 'paper' || value === 'live' ? value : 'analysis';
+    // Only analysis and live exist; any stored legacy value (e.g. the removed
+    // simulated mode) falls back to the non-executing analysis mode.
+    return value === 'live' ? 'live' : 'analysis';
   } catch {
     return 'analysis';
   }
@@ -152,8 +151,6 @@ export type DigitBotController = {
   pause: () => void;
   resume: () => void;
   stop: () => void;
-  engageEmergencyStop: () => void;
-  releaseEmergencyStop: () => void;
 
   symbol: string;
   selectSymbol: (symbol: string) => void;
@@ -180,7 +177,6 @@ export type DigitBotController = {
   outcomes: PurchaseOutcome[];
   safety: SafetyState;
   metrics: PerformanceMetrics;
-  paperMetrics: PerformanceMetrics;
   analysisMetrics: PerformanceMetrics;
   walkForward: ReturnType<typeof walkForwardReport> | null;
   hasMixedDatasets: boolean;
@@ -284,7 +280,6 @@ export function useDigitBot(): DigitBotController {
     } catch {
       // Storage is optional; the mode is still held in memory.
     }
-    if (mode !== 'live') setSafety((current) => releaseEmergencyStop(current, mode));
   }, [mode]);
 
   useEffect(() => {
@@ -383,39 +378,6 @@ export function useDigitBot(): DigitBotController {
       return false;
     }
   }, [trading]);
-
-  /** Records a simulated entry priced from the real Deriv proposal. */
-  const simulateEntry = useCallback((intent: TradeIntent, tracked: CandidateRecord | null): boolean => {
-    const now = Date.now();
-    const simulated: MonitoredContract = {
-      contractId: -(now + Math.floor(Math.random() * 0)),
-      decisionId: intent.decisionId,
-      contractType: intent.contractType,
-      symbol: intent.symbol,
-      currency: intent.currency,
-      buyPrice: intent.stake,
-      payout: tracked?.payout ?? null,
-      stake: intent.stake,
-      barrierDigit: intent.barrierDigit,
-      entrySpot: null,
-      exitSpot: null,
-      currentSpot: null,
-      entryDigit: null,
-      exitDigit: null,
-      profit: null,
-      status: 'paper-open',
-      purchaseTime: Math.floor(now / 1_000),
-      expiryTime: null,
-      isSold: false,
-      lastUpdateAt: now,
-      settledProfit: null,
-      settledAt: null,
-      mode: 'paper',
-    };
-    trackContract(simulated);
-    setRecords((current) => current.map((record) => (record.id === intent.decisionId ? { ...record, traded: true } : record)));
-    return true;
-  }, [trackContract]);
 
   const runCycle = useCallback(async () => {
     if (busyRef.current) return;
@@ -537,10 +499,10 @@ export function useDigitBot(): DigitBotController {
       }
 
       let executed = false;
-      if (result.intent && (currentMode === 'live' || currentMode === 'paper')) {
-        executed = currentMode === 'live'
-          ? await executeLiveEntry(result.intent)
-          : simulateEntry(result.intent, tracked);
+      // Only live mode can produce an executable intent, and every intent
+      // becomes a real Deriv order on the authorized demo or real account.
+      if (result.intent && currentMode === 'live') {
+        executed = await executeLiveEntry(result.intent);
       }
       if (!mountedRef.current) return;
 
@@ -592,7 +554,7 @@ export function useDigitBot(): DigitBotController {
       busyRef.current = false;
       if (mountedRef.current) setCycleRunning(false);
     }
-  }, [executeLiveEntry, feed.contracts, feed.fresh, feed.selectedMarket?.precision, feed.selectedSymbol, feed.serverClockOffsetMs, feed.status, simulateEntry, trading]);
+  }, [executeLiveEntry, feed.contracts, feed.fresh, feed.selectedMarket?.precision, feed.selectedSymbol, feed.serverClockOffsetMs, feed.status, trading]);
 
   runCycleRef.current = runCycle;
 
@@ -612,7 +574,6 @@ export function useDigitBot(): DigitBotController {
 
   useEffect(() => {
     bufferRef.current.reset();
-    executionRef.current = { ...executionRef.current, contracts: executionRef.current.contracts.filter((contract) => contract.mode !== 'paper') };
     setContracts([...executionRef.current.contracts]);
     setDataQuality(null);
     setDigits(null);
@@ -706,30 +667,6 @@ export function useDigitBot(): DigitBotController {
     }
   }, [trading.openPositions, trading.closedPositions, feed.selectedMarket?.pipSize, creditSettlement]);
 
-  // ---- paper settlement from real ticks --------------------------------------
-  useEffect(() => {
-    const paperContracts = executionRef.current.contracts.filter((contract) => contract.mode === 'paper' && !contract.isSold);
-    if (!paperContracts.length) return;
-    const ticks = bufferRef.current.list();
-    if (!ticks.length) return;
-    let changed = false;
-    for (const contract of paperContracts) {
-      const settlement = settlePaperContract(contract, ticks, configRef.current.durationTicks);
-      if (!settlement) continue;
-      changed = true;
-      executionRef.current = {
-        ...executionRef.current,
-        contracts: executionRef.current.contracts.map((row) => (row.contractId === contract.contractId
-          ? { ...row, isSold: true, status: 'paper-settled', profit: settlement.profit, settledProfit: settlement.profit, settledAt: settlement.at, exitDigit: settlement.exitDigit }
-          : row)),
-      };
-      setRecords((current) => current.map((record) => (record.id === contract.decisionId
-        ? { ...record, resolved: true, outcomeDigit: settlement.exitDigit, won: settlement.won, realizedProfit: settlement.profit, realizedAt: settlement.at }
-        : record)));
-    }
-    if (changed) setContracts([...executionRef.current.contracts]);
-  }, [feed.ticks]);
-
   // ---- resolve predictions that never became trades --------------------------
   useEffect(() => {
     const ticks = bufferRef.current.list();
@@ -758,7 +695,7 @@ export function useDigitBot(): DigitBotController {
   const start = useCallback(() => {
     const now = Date.now();
     setAccount((current) => beginSession(rollTradingDay(current, now), now));
-    setSafety((current) => startBot(releaseEmergencyStop(current, modeRef.current), modeRef.current));
+    setSafety((current) => startBot(current, modeRef.current));
     lastCycleRef.current = 0;
     void runCycleRef.current();
   }, []);
@@ -770,10 +707,6 @@ export function useDigitBot(): DigitBotController {
     // being monitored and are never reported as cancelled.
     setSafety((current) => stopBot(current, modeRef.current, { now: Date.now(), by: 'user' }));
   }, []);
-  const engageStop = useCallback(() => {
-    setSafety((current) => engageEmergencyStop(current, { now: Date.now(), by: 'user', reason: 'Emergency stop engaged by the operator.' }));
-  }, []);
-  const releaseStop = useCallback(() => setSafety((current) => releaseEmergencyStop(current, modeRef.current)), []);
 
   const setSelectionMode = useCallback((next: SelectionMode) => setSelectionModeState(next), []);
   const setManualFamily = useCallback((next: ContractFamily) => setManualFamilyState(next), []);
@@ -788,7 +721,6 @@ export function useDigitBot(): DigitBotController {
   }, []);
 
   const metrics = useMemo(() => summarizePerformance(records.filter((record) => record.mode === 'live')), [records]);
-  const paperMetrics = useMemo(() => summarizePerformance(records.filter((record) => record.mode === 'paper')), [records]);
   const analysisMetrics = useMemo(() => summarizePerformance(records.filter((record) => record.mode === 'analysis')), [records]);
   const walkForward = useMemo(() => (records.filter((record) => record.mode !== 'analysis').length >= 20 ? walkForwardReport(records.filter((record) => record.mode !== 'analysis')) : null), [records]);
   const hasMixedDatasets = useMemo(() => separateByMode(records).requiresLabel, [records]);
@@ -816,8 +748,6 @@ export function useDigitBot(): DigitBotController {
     pause,
     resume,
     stop,
-    engageEmergencyStop: engageStop,
-    releaseEmergencyStop: releaseStop,
     symbol: feed.selectedSymbol,
     selectSymbol: feed.setSelectedSymbol,
     symbols: feed.symbols,
@@ -842,7 +772,6 @@ export function useDigitBot(): DigitBotController {
     outcomes,
     safety,
     metrics,
-    paperMetrics,
     analysisMetrics,
     walkForward,
     hasMixedDatasets,
@@ -856,9 +785,9 @@ export function useDigitBot(): DigitBotController {
     records,
   }), [
     account, analysisMetrics, candidates, cycleError, cycleLog, cycleRunning, dataQuality, decision, digits,
-    engageStop, feed.selectedMarket?.name, feed.selectedSymbol, feed.status, feed.fresh, hasMixedDatasets,
-    lastCycleAt, latestTick?.digit, latestTick?.quote, metrics, mode, outcomes, paperMetrics, pause, records,
-    releaseStop, resume, risk, riskConfig, safety, selectionMode, manualFamily, setManualFamily, setMode,
+    feed.selectedMarket?.name, feed.selectedSymbol, feed.status, feed.fresh, hasMixedDatasets,
+    lastCycleAt, latestTick?.digit, latestTick?.quote, metrics, mode, outcomes, pause, records,
+    resume, risk, riskConfig, safety, selectionMode, manualFamily, setManualFamily, setMode,
     setSelectionMode, start, stop, tickCount, trading, updateRiskConfig, walkForward, contracts,
     supportedTickExpiries, feed.symbols, feed.setSelectedSymbol, feed.contractsLoaded,
   ]);

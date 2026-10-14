@@ -5,7 +5,7 @@
 // unreconciled-purchase state that survives reconnects, and the conversion of
 // Deriv contract updates into settlements. Network calls live in the hook that
 // drives these transitions, so every rule here is unit testable.
-import { extractFinalDigit, type DigitObservation } from '../digit-analysis.ts';
+import { extractFinalDigit } from '../digit-analysis.ts';
 import type { DerivBuyReceipt, DerivOpenPosition } from '../deriv-trading.ts';
 import { normalizeMoney } from './expectancy.ts';
 import type { BotMode, MonitoredContract, PurchaseOutcome, TradeIntent } from './types.ts';
@@ -362,49 +362,4 @@ export function settlementMatchesRule(contract: MonitoredContract): boolean | nu
     default:
       return null;
   }
-}
-
-export type PaperSettlement = { won: boolean; exitDigit: number; profit: number; at: number };
-
-/**
- * Resolves a simulated (paper) entry using the same strict boundary rules as
- * the real contract, from the digit observed at the entry epoch plus the
- * configured tick duration. Paper results are never mixed with live ones.
- */
-export function settlePaperContract(
-  contract: MonitoredContract,
-  ticks: readonly DigitObservation[],
-  durationTicks: number,
-): PaperSettlement | null {
-  if (contract.stake === null || !Number.isFinite(contract.stake)) return null;
-  if (contract.contractType === null || contract.purchaseTime === null) return null;
-  const entryIndex = ticks.findIndex((tick) => tick.epoch * 1_000 >= contract.purchaseTime!);
-  if (entryIndex < 0) return null;
-  const settlementIndex = entryIndex + durationTicks;
-  if (settlementIndex >= ticks.length) return null;
-  const settlementTick = ticks[settlementIndex];
-  const exitDigit = settlementTick.digit;
-  const barrier = contract.barrierDigit;
-  let won = false;
-  switch (contract.contractType) {
-    case 'DIGITEVEN':
-      won = exitDigit % 2 === 0;
-      break;
-    case 'DIGITODD':
-      won = exitDigit % 2 === 1;
-      break;
-    case 'DIGITOVER':
-      won = barrier !== null && exitDigit > barrier;
-      break;
-    case 'DIGITUNDER':
-      won = barrier !== null && exitDigit < barrier;
-      break;
-    case 'DIGITMATCH':
-      won = barrier !== null && exitDigit === barrier;
-      break;
-    default:
-      return null;
-  }
-  const profit = won ? normalizeMoney((contract.payout ?? contract.stake) - contract.stake) : normalizeMoney(-contract.stake);
-  return { won, exitDigit, profit, at: settlementTick.epoch * 1_000 };
 }

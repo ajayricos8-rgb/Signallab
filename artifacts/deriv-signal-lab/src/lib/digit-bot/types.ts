@@ -23,7 +23,7 @@ export const ENGINE_NAMES: Record<EngineId, string> = {
   K: 'Execution engine',
   L: 'Live contract monitoring engine',
   M: 'Performance and learning engine',
-  N: 'Safety and emergency stop engine',
+  N: 'Safety engine',
 };
 
 export type EngineStatus = 'ok' | 'degraded' | 'blocked';
@@ -103,7 +103,6 @@ export type ReasonCode =
   | 'ACCOUNT_UNAVAILABLE'
   | 'BALANCE_DISCREPANCY'
   | 'ACCOUNT_UNAUTHORIZED'
-  | 'EMERGENCY_STOP'
   | 'MANUAL_PAUSE'
   | 'CONNECTION_INTERRUPTED'
   | 'DUPLICATE_DECISION'
@@ -117,8 +116,13 @@ export type ReasonCode =
   | 'NO_ELIGIBLE_CANDIDATE'
   | 'TRADE_APPROVED';
 
-export type BotMode = 'analysis' | 'paper' | 'live';
-export type BotRunState = 'idle' | 'running' | 'paused' | 'stopped' | 'emergency';
+/**
+ * The bot only ever operates in `analysis` (predicts, never orders) or `live`
+ * (sends real purchases to the authorized Deriv demo or real account). There
+ * is no simulated execution mode: every position the bot opens is a live one.
+ */
+export type BotMode = 'analysis' | 'live';
+export type BotRunState = 'idle' | 'running' | 'paused' | 'stopped';
 
 export type StakeMode = 'fixed' | 'percent';
 
@@ -430,7 +434,6 @@ export type RiskEvaluation = {
 
 export type SafetyState = {
   runState: BotRunState;
-  emergencyStop: boolean;
   manualPause: boolean;
   autoPauseReasons: string[];
   reasonCodes: ReasonCode[];
