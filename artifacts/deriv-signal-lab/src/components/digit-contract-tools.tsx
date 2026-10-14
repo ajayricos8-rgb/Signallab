@@ -1,3 +1,4 @@
+import { snapshotExpiryReason } from '@/lib/over-under/structure';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -381,7 +382,9 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
 
   const snapshotMatchesSelected = snapshot?.symbol === feed.selectedSymbol && snapshot.selectedDuration === selectedDuration;
   const shownSnapshot = snapshotMatchesSelected ? snapshot : null;
-  const staleSnapshot = Boolean(shownSnapshot && (!feed.fresh || feed.precisionError || !feed.contractsLoaded || feed.selectedMarket?.tradingSuspended || feed.selectedMarket?.exchangeOpen === false));
+  const snapshotExpiredReason = shownSnapshot?.overUnder
+    ? snapshotExpiryReason(shownSnapshot.overUnder.asOfEpoch, shownSnapshot.overUnder.horizon, feed.ticks.map((tick) => tick.epoch)) : '';
+  const staleSnapshot = Boolean(shownSnapshot && (snapshotExpiredReason || !feed.fresh || feed.precisionError || !feed.contractsLoaded || feed.selectedMarket?.tradingSuspended || feed.selectedMarket?.exchangeOpen === false));
   const resultCandidate = staleSnapshot ? null : shownSnapshot?.candidate ?? null;
   const candidates = shownSnapshot?.candidates ?? [];
   const signalLabel = isScanning ? 'ANALYZING' : resultCandidate?.label ?? (shownSnapshot ? 'WAIT' : 'READY');
@@ -445,7 +448,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         <article className="signal-panel rounded-xl border border-card-border p-5 panel-glow sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3"><div className="eyebrow">Digit analysis signal</div><span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-amber-500">{isScanning ? 'Analyzing…' : resultCandidate ? 'Analysis complete · no auto-trading' : shownSnapshot ? 'Analysis blocked' : 'Ready to analyze'}</span></div>
           <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div><div className={`text-4xl font-extrabold tracking-[-0.06em] sm:text-5xl ${signalTone}`} data-testid={`${family}-signal`} role="status" aria-live="polite">{signalLabel}</div><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{staleSnapshot ? 'Live data or contract availability is no longer valid. This historical snapshot is not an active signal; reconnect and run analysis again.' : shownSnapshot ? resultCandidate ? family === 'over-under' ? `The combined engines favor ${resultCandidate.label} for ${shownSnapshot.symbol} at ${resultCandidate.outcomes.durationTicks} ticks, after baseline-relative ranking and held-out checks. This is a research estimate, not a guaranteed outcome.` : `Historical analysis signals ${resultCandidate.label} for ${shownSnapshot.symbol} at the selected ${resultCandidate.outcomes.durationTicks}-tick expiry from available historical outcomes.` : shownSnapshot.reason || familyDetails.empty : 'Choose a Deriv-reported tick expiry, then press Run Analysis to evaluate this market’s expiry-specific digit outcomes.'}</p></div>
+            <div><div className={`text-4xl font-extrabold tracking-[-0.06em] sm:text-5xl ${signalTone}`} data-testid={`${family}-signal`} role="status" aria-live="polite">{signalLabel}</div><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{staleSnapshot ? snapshotExpiredReason || 'Live data or contract availability is no longer valid. This historical snapshot is not an active signal; reconnect and run analysis again.' : shownSnapshot ? resultCandidate ? family === 'over-under' ? `The combined engines favor ${resultCandidate.label} for ${shownSnapshot.symbol} at ${resultCandidate.outcomes.durationTicks} ticks, after baseline-relative ranking and held-out checks. This is a research estimate, not a guaranteed outcome.` : `Historical analysis signals ${resultCandidate.label} for ${shownSnapshot.symbol} at the selected ${resultCandidate.outcomes.durationTicks}-tick expiry from available historical outcomes.` : shownSnapshot.reason || familyDetails.empty : 'Choose a Deriv-reported tick expiry, then press Run Analysis to evaluate this market’s expiry-specific digit outcomes.'}</p></div>
             {shownSnapshot && resultCandidate ? (
               <div className="w-full max-w-sm rounded-xl border border-primary/25 bg-primary/5 px-4 py-3" data-testid={`${family}-research-candidate`}>
                 <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-primary">Analysis signal · historical evidence</div>
@@ -478,7 +481,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         </article>
       </section>
 
-      {family === 'over-under' && <OverUnderEnginePanel report={shownSnapshot?.overUnder ?? null} isScanning={isScanning} />}
+      {family === 'over-under' && <OverUnderEnginePanel report={shownSnapshot?.overUnder ?? null} isScanning={isScanning} inactiveReason={staleSnapshot ? snapshotExpiredReason || 'Live data or contract availability is no longer valid. Run analysis again.' : undefined} />}
 
       <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <DigitFrequencyPanel analysis={shownSnapshot?.analysis ?? currentAnalysis} />
@@ -497,6 +500,10 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
 
       <TradeDock
         family={family}
+        recommendation={family === 'over-under' && !isScanning && resultCandidate?.contract.family === 'over-under' && shownSnapshot?.overUnder ? {
+          symbol: shownSnapshot.symbol, contractType: resultCandidate.contract.contractType,
+          barrier: resultCandidate.contract.barrier, horizon: shownSnapshot.overUnder.horizon,
+        } : null}
         marketCode={feed.selectedSymbol || null}
         marketName={feed.selectedMarket?.name ?? null}
         expiry={tradeExpiry}

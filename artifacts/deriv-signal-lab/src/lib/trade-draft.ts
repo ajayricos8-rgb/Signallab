@@ -57,3 +57,24 @@ export function isValidDraftStake(value: string): boolean {
     Number(trimmed) > 0
   );
 }
+
+/** A qualified research result may populate a ticket, never submit one. */
+export type OverUnderRecommendation = {
+  symbol: string;
+  contractType: 'DIGITOVER' | 'DIGITUNDER';
+  barrier: number;
+  horizon: number;
+};
+
+export function canApplyRecommendation(
+  recommendation: OverUnderRecommendation | null | undefined,
+  family: TradeFamily,
+  symbol: string | null,
+  supportedExpiries: readonly number[],
+): recommendation is OverUnderRecommendation {
+  return Boolean(recommendation && family === 'over-under' && symbol && recommendation.symbol === symbol
+    && ['DIGITOVER', 'DIGITUNDER'].includes(recommendation.contractType)
+    && Number.isInteger(recommendation.barrier) && recommendation.barrier >= 1 && recommendation.barrier <= 8
+    && Number.isInteger(recommendation.horizon) && recommendation.horizon >= 1 && recommendation.horizon <= 100
+    && supportedExpiries.includes(recommendation.horizon));
+}
