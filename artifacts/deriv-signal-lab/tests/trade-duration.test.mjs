@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  TRADE_DURATION_UNITS,
   draftDurationIssue,
   durationSeconds,
   formatTradeDuration,
@@ -62,4 +63,14 @@ test('unverified drafts defer to the live Deriv proposal instead of claiming sup
   assert.equal(draftDurationIssue(60, 's', 'CALL', undefined, false), '');
   assert.equal(draftDurationIssue(5, 't', 'CALL', undefined, false), '');
   assert.notEqual(draftDurationIssue(-1, 's', 'CALL', undefined, false), '');
+});
+
+
+test('trade duration dropdown exposes ticks, seconds and minutes with explicit labels', () => {
+  assert.deepEqual(TRADE_DURATION_UNITS, [
+    { value: 't', label: 'Ticks' }, { value: 's', label: 'Seconds' }, { value: 'm', label: 'Minutes' },
+  ]);
+  assert.equal(formatTradeDuration(3, 't'), '3 ticks');
+  assert.equal(formatTradeDuration(30, 's'), '30 seconds');
+  assert.equal(formatTradeDuration(1, 'm'), '1 minute');
 });

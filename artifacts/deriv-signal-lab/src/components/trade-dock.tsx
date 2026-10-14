@@ -6,6 +6,8 @@ import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { TradeConfirmationDialog } from '@/components/trade-confirmation-dialog';
 import {
   DIGIT_TARGETS,
+  canApplyRecommendation,
+  type OverUnderRecommendation,
   TRADE_FAMILIES,
   draftBarriers,
   isValidDraftStake,
@@ -24,6 +26,7 @@ import {
 type MarketChoice = { code: string; name: string };
 
 type TradeDockProps = {
+  recommendation?: OverUnderRecommendation | null;
   family: TradeFamily;
   marketCode: string | null;
   marketName: string | null;
@@ -55,6 +58,7 @@ function readCollapsed(): boolean {
 }
 
 export function TradeDock({
+  recommendation,
   family,
   marketCode,
   marketName,
@@ -148,6 +152,20 @@ export function TradeDock({
     tradeDuration,
   ]);
 
+  const canUseAnalysis = canApplyRecommendation(recommendation, family, marketCode, expiryOptions)
+    && !draftDurationIssue(recommendation.horizon, 't', recommendation.contractType, contracts, expiryVerified);
+
+  function applyAnalysis() {
+    if (!canUseAnalysis || !recommendation) return;
+    setContractType(recommendation.contractType);
+    setBarrier(recommendation.barrier);
+    setDurationUnit('t');
+    onExpiryChange(recommendation.horizon);
+    setTicketIssue('');
+    setDialogOpen(false);
+    setCollapsed(false);
+  }
+
   function handleContractChange(value: TradeContractType) {
     setContractType(value);
     setTicketIssue('');
@@ -209,7 +227,7 @@ export function TradeDock({
         data-testid={`trade-dock-${family}`}
         data-collapsed={collapsed ? 'true' : 'false'}
       >
-        <div className="mx-auto w-full max-w-[1500px] px-4 py-3 sm:px-6 lg:px-8">
+        <div className={`mx-auto w-full max-w-[1500px] px-4 ${collapsed ? 'py-2' : 'py-3'} sm:px-6 lg:px-8`}>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-300/10 text-sky-200">
               <Settings2 size={15} />
@@ -230,6 +248,11 @@ export function TradeDock({
               </span>
             )}
             <span className="ml-auto flex items-center gap-2">
+              {canUseAnalysis && recommendation && <button
+                type="button" onClick={applyAnalysis} data-testid="trade-use-analysis"
+                title={`Copy ${recommendation.contractType === 'DIGITOVER' ? 'Over' : 'Under'} ${recommendation.barrier}, ${recommendation.horizon} ticks into the draft. No order is placed.`}
+                className="focus-ring rounded-lg border border-sky-300/50 bg-sky-300/10 px-2.5 py-2 text-[11px] font-bold text-sky-200"
+              >Use analysis</button>}
               <DerivConnectionStatusBadge compact variant="dock" />
               <button
                 type="button"
@@ -247,8 +270,7 @@ export function TradeDock({
             </span>
           </div>
 
-          {!collapsed && (
-            <div id={bodyId} data-testid="trade-dock-body">
+            <div id={bodyId} hidden={collapsed} data-testid="trade-dock-body">
               <form
                 onSubmit={handleTradeClick}
                 className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5 lg:flex lg:items-end lg:gap-3"
@@ -438,7 +460,9 @@ export function TradeDock({
                 )}
                 {family === 'rise-fall'
                   ? 'Independent of the automatic scan. '
-                  : 'Contract settings are independent of research rankings. '}
+                  : family === 'over-under'
+                    ? 'Manual ticket: Use analysis copies a qualified snapshot into the draft only. '
+                    : 'Contract settings are independent of research rankings. '}
                 {durationUnit !== 't' && (
                   <>Trade duration is {selectedDurationLabel}; the research analysis above remains tick-based and is unchanged. </>
                 )}
@@ -459,7 +483,6 @@ export function TradeDock({
                 )}
               </p>
             </div>
-          )}
         </div>
       </section>
 

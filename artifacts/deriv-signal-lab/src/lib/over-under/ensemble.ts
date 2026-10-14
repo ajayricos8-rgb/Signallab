@@ -3,6 +3,7 @@ import { brier, clamp, countsOf, distributionStats, improvementSummary, mean, mi
 import { ENGINE_FAMILIES, prefix, streakDiagnostics, trendMetrics, type EngineFamily, type FittedEngine, type Forecast, type Sequence } from './features.ts';
 import { fitStatisticalEngines } from './statistical-models.ts';
 import { fitBoosting, fitLstm } from './ml-models.ts';
+import { marketStructure } from './structure.ts';
 
 export const RESEARCH_BARRIERS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export type OverUnderContract = { family: 'over-under'; contractType: 'DIGITOVER' | 'DIGITUNDER'; barrier: number };
@@ -90,6 +91,7 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
   const trainEnd = Math.floor(window.length * 0.6);
   const tuningEnd = Math.floor(window.length * 0.8);
   const train = prefix(sequence, trainEnd);
+  const structure = marketStructure(train.digits, sequence.digits.slice(tuningEnd));
   const statistical = fitStatisticalEngines(train, horizon);
   const lstm = fitLstm(train, horizon);
   const boosting = fitBoosting(train, horizon);
@@ -157,6 +159,9 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
     const validationBaselineBrier = binaryLoss.length ? mean(binaryLoss.map((row) => row.baseline)) : null;
     const validationSkill = validationBrier !== null && validationBaselineBrier !== null && validationBaselineBrier > 1e-9 ? 1 - validationBrier / validationBaselineBrier : null;
     const reasons: string[] = [];
+    if (structure.status !== 'stable') reasons.push(structure.status === 'shifted'
+      ? 'Recent digit frequencies or transitions have shifted away from the fitted market structure. Refit on a newer window before using a barrier.'
+      : 'Insufficient recent observations to check market structure.');
     if (tuning.length < 30 || checked.length < 30) reasons.push(`Need 30 non-overlapping tuning and holdout outcomes; have ${tuning.length} / ${checked.length}.`);
     if (!validationPassed) reasons.push('The combined model did not establish held-out improvement over rolling frequency.');
     if (binaryImprovement.lower <= 0) reasons.push('This barrier failed the conservative held-out Brier improvement check.');
@@ -193,6 +198,7 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
       improvementLower: improvements.length > 1 ? improvement.lower : null, passed: validationPassed,
     },
     diagnostics: {
+      structure,
       windows: [{ window: 100, ...stats100 }, { window: 1_000, ...stats1000 }],
       transitionCounts: statistical.markov.counts, transitionMatrix: statistical.markov.matrix,
       ngrams: statistical.ngram.contexts(sequence.digits).map(({ order, context, support }) => ({ order, context, support })),

@@ -80,7 +80,8 @@ function FamilyDiagnostics({ family, report }: { family: EngineFamily; report: O
   );
 }
 
-export function OverUnderEnginePanel({ report, isScanning }: { report: OverUnderReport | null; isScanning: boolean }) {
+export function OverUnderEnginePanel({ report, isScanning, inactiveReason }: { report: OverUnderReport | null; isScanning: boolean; inactiveReason?: string }) {
+  const activeSelection = !inactiveReason && !isScanning && report?.selected;
   const reference = report?.selected ?? report?.candidates[0];
   const label = reference ? `${reference.contract.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER'} ${reference.contract.barrier}` : null;
   return (
@@ -92,8 +93,14 @@ export function OverUnderEnginePanel({ report, isScanning }: { report: OverUnder
       {report ? <>
         <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Train / tune / held-out" value={`${report.validation.trainSample} ticks / ${report.validation.tuningSample} / ${report.validation.holdoutSample} outcomes`} /><Metric label="Held-out Brier · lower is better" value={`${fixed(report.validation.ensembleBrier, 4)} vs ${fixed(report.validation.baselineBrier, 4)} baseline`} /><Metric label="Held-out Brier skill" value={rate(report.validation.skill)} /><Metric label="Contributing / fitted models" value={`${report.engines.filter((engine) => engine.weight > 0).length} / ${report.engines.length}`} /></div>
         <div className="mt-3 rounded-lg border border-border bg-background/35 px-3 py-2.5 text-[11px] leading-relaxed" data-testid="over-under-consensus">
-          <strong className={report.selected ? 'text-primary' : 'text-amber-500'}>{report.selected ? `Qualified research candidate: ${label}` : `WAIT · ${label ?? 'No candidate'} is diagnostic only`}</strong>
+          <strong className={activeSelection ? 'text-primary' : 'text-amber-500'}>{activeSelection ? `Qualified research candidate: ${label}` : `WAIT · ${label ?? 'No candidate'} is diagnostic only`}</strong>
           {reference && <span className="text-muted-foreground"> · model estimate {rate(reference.probability)} · rolling baseline {rate(reference.baselineProbability)} · lift {points(reference.lift)} · {reference.supportingFamilies}/8 families support · {rate(reference.agreement)} weighted agreement.</span>}
+        </div>
+        {inactiveReason && <p role="status" className="mt-2 text-xs text-amber-500">{inactiveReason}</p>}
+        <div className="mt-3 rounded-lg border border-border bg-background/35 p-3 text-[11px]" data-testid="over-under-market-structure">
+          <div className="font-semibold">Current market structure: {report.diagnostics.structure.status === 'stable' ? 'No large distribution shift detected' : report.diagnostics.structure.status === 'shifted' ? 'Shift detected · barriers blocked' : 'Insufficient evidence'}</div>
+          <div className="mono mt-1 text-muted-foreground">Frequency divergence {fixed(report.diagnostics.structure.marginalDivergence)} / {fixed(report.diagnostics.structure.marginalThreshold)} limit · transition divergence {fixed(report.diagnostics.structure.transitionDivergence)} / {fixed(report.diagnostics.structure.transitionThreshold)} limit</div>
+          <p className="mt-1 text-muted-foreground">Compares {report.diagnostics.structure.referenceSample} fitted ticks with {report.diagnostics.structure.recentSample} recent ticks. Jensen–Shannon divergence includes both digit balance and sequence ordering. Fixed limits are conservative safety heuristics, not significance tests or proof of stability.</p>
         </div>
         <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Engine estimates below refer to {label ?? 'the leading diagnostic candidate'}. Weights exclude the {rate(report.baselineWeight)} baseline reserve. Outcomes are spaced {report.horizon} ticks apart; chronological validation is a local diagnostic, not a guarantee of independent samples or future performance.</p>
       </> : <div className="mt-4 rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">{isScanning ? 'Fitting local models and checking chronological outcomes in a background worker…' : 'Run Analysis to fit all twelve models on real, verified ticks. No model probabilities are shown before a scan.'}</div>}

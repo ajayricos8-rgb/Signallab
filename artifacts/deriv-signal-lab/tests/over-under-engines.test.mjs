@@ -24,6 +24,16 @@ test('a deterministic cycle is learnable and can qualify a barrier inside 1–8'
   assert.equal(report.selected.eligible, true);
   assert.ok(report.validation.passed);
   assert.equal(report.engines.length, 12);
+  assert.deepEqual(new Set(report.engines.map((engine) => engine.family)), new Set(['markov', 'frequency', 'information', 'streaks', 'trend', 'patterns', 'time-series', 'ml']));
+  for (const engine of report.engines) {
+    if (engine.probabilities) {
+      assert.equal(engine.probabilities.length, 10);
+      assert.ok(engine.probabilities.every((value) => Number.isFinite(value) && value >= 0 && value <= 1));
+      assert.ok(Math.abs(engine.probabilities.reduce((a, b) => a + b, 0) - 1) < 1e-8);
+    }
+    assert.ok(Number.isFinite(engine.weight) && engine.weight >= 0);
+  }
+  assert.equal(report.diagnostics.structure.status, 'stable');
   assert.ok(report.engines.some((engine) => engine.weight > 0));
   // Chronology: tuning and holdout never overlap the training partition.
   assert.ok(report.validation.firstTuningOrigin >= report.validation.trainSample);
@@ -66,4 +76,13 @@ test('LZ78 compressibility separates repetition from noise without claiming exac
   const random = lzComplexity(seededRandomDigits(500, 7));
   assert.ok(repeating.ratio < random.ratio);
   assert.ok(repeating.phrases < 500);
+});
+
+
+test('a changed transition regime blocks every barrier even with a uniform histogram', () => {
+  const digits = [...Array.from({ length: 800 }, (_, i) => i % 10), ...Array.from({ length: 200 }, (_, i) => (i * 7) % 10)];
+  const report = runOverUnderEnsemble(ticksOf(digits), 1, contracts);
+  assert.equal(report.diagnostics.structure.status, 'shifted');
+  assert.equal(report.selected, null);
+  assert.ok(report.candidates.every((candidate) => !candidate.eligible && candidate.reasons.some((reason) => reason.includes('market structure'))));
 });
