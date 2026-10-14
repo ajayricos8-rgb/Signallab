@@ -1,14 +1,9 @@
-import { useId, useState, type FormEvent } from 'react';
+import { useId, useMemo, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, Settings2, ShieldAlert } from 'lucide-react';
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { ArrowRight, Settings2, ShieldCheck, WifiOff } from 'lucide-react';
+import { DerivConnectionStatusBadge } from '@/components/deriv-connection-card';
+import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { TradeConfirmationDialog } from '@/components/trade-confirmation-dialog';
 import {
   DIGIT_TARGETS,
   TRADE_FAMILIES,
@@ -17,6 +12,7 @@ import {
   type TradeContractType,
   type TradeFamily,
 } from '@/lib/trade-draft';
+import { barrierFor, type DerivTradeRequest } from '@/lib/deriv-trading';
 
 type MarketChoice = { code: string; name: string };
 
@@ -49,6 +45,7 @@ export function TradeDock({
   onExpiryChange,
   expiryVerified,
 }: TradeDockProps) {
+  const trading = useDerivTrading();
   const [contractType, setContractType] = useState<TradeContractType>(
     TRADE_FAMILIES[family].contracts[0].value,
   );
@@ -56,6 +53,7 @@ export function TradeDock({
   const [targetDigit, setTargetDigit] = useState(0);
   const [stake, setStake] = useState('1.00');
   const [stakeTouched, setStakeTouched] = useState(false);
+  const [ticketIssue, setTicketIssue] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const titleId = useId();
   const noteId = useId();
@@ -74,6 +72,35 @@ export function TradeDock({
     expiry !== null && expiryOptions.includes(expiry)
       ? `${expiry} ${expiry === 1 ? 'tick' : 'ticks'}`
       : 'Not selected';
+  const connected = trading.status === 'connected';
+  const currency = trading.currency || trading.activeAccount?.currency || '';
+  const stakeValue = stakeValid ? Number(stake.trim()) : null;
+
+  const tradeRequest = useMemo<DerivTradeRequest | null>(() => {
+    if (!marketCode || stakeValue === null || expiry === null || !expiryOptions.includes(expiry)) return null;
+    return {
+      contractType,
+      symbol: marketCode,
+      currency,
+      stake: stakeValue,
+      duration: expiry,
+      durationUnit: 't',
+      barrier: barrierFor(
+        contractType,
+        family === 'over-under' ? barrier : family === 'matches' ? targetDigit : null,
+      ),
+    };
+  }, [
+    barrier,
+    contractType,
+    currency,
+    expiry,
+    expiryOptions,
+    family,
+    marketCode,
+    stakeValue,
+    targetDigit,
+  ]);
 
   function handleContractChange(value: TradeContractType) {
     setContractType(value);
@@ -85,9 +112,26 @@ export function TradeDock({
   function handleTradeClick(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setStakeTouched(true);
-    // There is deliberately no buy/proposal request here. The button explains
-    // that this is a draft, even when some fields have not been filled in yet.
+    if (!stakeValid) {
+      setTicketIssue('Enter a positive stake with up to 2 decimal places.');
+      return;
+    }
+    if (!marketCode) {
+      setTicketIssue('Choose a market before trading.');
+      return;
+    }
+    if (expiry === null || !expiryOptions.includes(expiry)) {
+      setTicketIssue('Choose a tick expiry reported by Deriv for this contract.');
+      return;
+    }
+    setTicketIssue('');
     setDialogOpen(true);
+  }
+
+  // Proposal IDs are short-lived, so the dialog requests a fresh quote every
+  // time it opens instead of reusing the one it held before it closed.
+  function closeDialog(open: boolean) {
+    setDialogOpen(open);
   }
 
   return createPortal(
@@ -117,8 +161,8 @@ export function TradeDock({
                 · {TRADE_FAMILIES[family].label}
               </span>
             </h3>
-            <span className="ml-auto rounded-full border border-sky-200/20 bg-sky-200/5 px-2 py-0.5 text-[10px] font-semibold text-sky-100">
-              Draft only
+            <span className="ml-auto flex items-center gap-2">
+              <DerivConnectionStatusBadge compact variant="dock" />
             </span>
           </div>
 
@@ -228,7 +272,7 @@ export function TradeDock({
               </select>
             </label>
             <label className={fieldClass}>
-              Stake · draft
+              Stake {currency ? `· ${currency}` : ''}
               <input
                 type="text"
                 inputMode="decimal"
@@ -254,7 +298,11 @@ export function TradeDock({
             id={noteId}
             className="mt-2 text-[10px] leading-snug text-slate-300"
           >
-            {stakeTouched && !stakeValid ? (
+            {ticketIssue ? (
+              <span className="font-bold text-rose-300" role="alert">
+                {ticketIssue}{' '}
+              </span>
+            ) : stakeTouched && !stakeValid ? (
               <span className="font-bold text-rose-300" role="alert">
                 Enter a positive stake with up to 2 decimal places.{' '}
               </span>
@@ -272,64 +320,28 @@ export function TradeDock({
             {family === 'rise-fall'
               ? 'Independent of the automatic scan. '
               : 'Contract settings are independent of research rankings. '}
-            No account is connected; Trade does not place an order.
+            {connected ? (
+              <span className="inline-flex items-center gap-1 font-semibold text-emerald-300">
+                <ShieldCheck size={12} />
+                {trading.activeAccount?.accountType === 'real' ? 'Real account' : 'Demo account'}{' '}
+                {trading.activeAccount?.accountId} · Trade requests a live Deriv price and buys only after you confirm it.
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 font-semibold text-amber-200">
+                <WifiOff size={12} />
+                No account connected — Trade opens the PAT connection so you can place this order.
+              </span>
+            )}
           </p>
         </div>
       </section>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent data-testid="trade-unavailable-dialog">
-          <DialogHeader>
-            <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-lg bg-rose-500/10 text-rose-500">
-              <ShieldAlert size={20} />
-            </div>
-            <DialogTitle>Trading is not connected</DialogTitle>
-            <DialogDescription className="pt-2 leading-relaxed">
-              This workspace uses public market data only. There is no
-              authorized account, live proposal quote, or order-execution
-              connection.{' '}
-              <strong className="text-foreground">
-                No trade has been placed.
-              </strong>
-            </DialogDescription>
-          </DialogHeader>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-lg border border-border bg-secondary/40 p-4 text-xs">
-            <dt className="text-muted-foreground">Market</dt>
-            <dd className="text-right font-semibold">
-              {marketCode
-                ? `${marketName ?? marketCode} · ${marketCode}`
-                : 'Not selected'}
-            </dd>
-            <dt className="text-muted-foreground">Contract</dt>
-            <dd className="text-right font-semibold">{contractLabel}</dd>
-            <dt className="text-muted-foreground">Expiry</dt>
-            <dd className="text-right font-semibold">
-              {selectedExpiry}
-              {expiryVerified ? '' : ' · draft only'}
-            </dd>
-            <dt className="text-muted-foreground">Stake</dt>
-            <dd className="text-right font-semibold">
-              {stakeValid ? stake : 'Enter a valid amount'}{' '}
-              <span className="font-normal text-muted-foreground">
-                · account currency unavailable
-              </span>
-            </dd>
-          </dl>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            These settings are a draft, not an order or a trade recommendation.
-            An authorized account, verified contract terms and an explicit
-            confirmation flow are needed before live trading can be enabled.
-          </p>
-          <DialogClose asChild>
-            <button
-              type="button"
-              className="focus-ring h-10 rounded-lg bg-primary px-4 text-sm font-bold text-primary-foreground hover:bg-primary/90"
-            >
-              Got it
-            </button>
-          </DialogClose>
-        </DialogContent>
-      </Dialog>
+      <TradeConfirmationDialog
+        open={dialogOpen}
+        onOpenChange={closeDialog}
+        request={tradeRequest}
+        contractLabel={`${contractLabel} · ${selectedExpiry}`}
+      />
     </>,
     document.body,
   );

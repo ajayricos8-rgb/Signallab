@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { RiseFallTool } from '@/components/rise-fall-tool';
 import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
+import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
+import { SettingsPanel } from '@/components/settings-panel';
+import { TradeHistoryPanel } from '@/components/trade-history-panel';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
@@ -24,7 +27,7 @@ const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
 
 const workspaceTabs = [
   { id: 'tools', label: 'Tools', icon: Wrench },
-  { id: 'trade-history', label: 'Signal history', icon: Clock3 },
+  { id: 'trade-history', label: 'Trade history', icon: Clock3 },
   { id: 'premium-bots', label: 'Premium bots', icon: Bot },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
@@ -42,6 +45,8 @@ function Home() {
   const [activeToolsMiniTab, setActiveToolsMiniTab] = useState<ToolsMiniTab>('rise-fall');
   const [theme, setTheme] = useState<Theme>(readSavedTheme);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('tools');
+  const trading = useDerivTrading();
+  const openPositions = trading.openPositions.length;
   const selectedTab = workspaceTabs.find(({ id }) => id === activeTab);
   const tabLabel = selectedTab?.label ?? 'Tools';
 
@@ -96,7 +101,12 @@ function Home() {
                 >
                   <Icon size={16} className={active ? 'text-primary' : ''} />
                   {label}
-                  {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}
+                  {id === 'trade-history' && openPositions > 0 && (
+                    <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary" data-testid="badge-open-positions">
+                      {openPositions}
+                    </span>
+                  )}
+                  {active && <span className={`${id === 'trade-history' && openPositions > 0 ? '' : 'ml-auto '}h-1.5 w-1.5 rounded-full bg-primary`} />}
                 </button>
               );
             })}
@@ -120,14 +130,7 @@ function Home() {
 
           <div className={`min-h-[calc(100dvh-76px)] px-4 pt-5 sm:px-6 sm:pt-7 lg:px-8 ${activeTab === 'tools' ? 'pb-[340px] lg:pb-[230px]' : 'pb-24'}`}>
             {activeTab === 'trade-history' ? (
-              <div className="mx-auto w-full max-w-[1500px]">
-                <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-                  <div className="eyebrow">Workspace records</div>
-                  <h2 className="mt-1 text-xl font-bold tracking-tight">Trade history</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">No verified records have been stored. The analysis tools do not yet persist signals or run a walk-forward contract backtest.</p>
-                  <div className="mt-4 rounded-lg border border-dashed border-border bg-background/40 px-4 py-8 text-center text-sm text-muted-foreground">Signal history will remain empty until real, gated outputs are recorded.</div>
-                </section>
-              </div>
+              <TradeHistoryPanel />
             ) : activeTab === 'premium-bots' ? (
               <div className="mx-auto w-full max-w-3xl rounded-xl border border-card-border bg-card/90 p-6 panel-glow sm:p-8">
                 <div className="eyebrow">Premium tools</div>
@@ -135,7 +138,7 @@ function Home() {
                 <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Premium bots will be listed here when they are configured for this workspace.</p>
               </div>
             ) : activeTab === 'settings' ? (
-              <SettingsComingSoon />
+              <SettingsPanel />
             ) : (
               <ToolsWorkspace activeTab={activeToolsMiniTab} onTabChange={setActiveToolsMiniTab} />
             )}
@@ -161,42 +164,15 @@ function Home() {
                 <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8 ${active ? 'bg-primary/10' : ''}`}><Icon size={16} strokeWidth={active ? 2.4 : 1.8} /></span>
                 <span className="truncate sm:hidden">{compactLabel}</span>
                 <span className="hidden truncate sm:inline">{label}</span>
+                {id === 'trade-history' && openPositions > 0 && (
+                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary">{openPositions}</span>
+                )}
               </button>
             );
           })}
         </div>
       </nav>
     </div>
-  );
-}
-
-function SettingsComingSoon() {
-  const letters = 'Coming soon'.split('');
-  return (
-    <section className="mx-auto flex w-full max-w-3xl flex-col items-center rounded-xl border border-card-border bg-card/90 px-6 py-16 text-center panel-glow animate-rise-in sm:py-20" data-testid="settings-coming-soon">
-      <div className="eyebrow">Configuration</div>
-      <h2 className="mt-1 text-xl font-bold tracking-tight">Settings</h2>
-      <div className="mt-8 flex h-14 items-center justify-center text-2xl font-extrabold tracking-[-0.03em] sm:text-3xl" aria-label="Coming soon" role="status">
-        <span className="coming-soon-text">
-          {letters.map((char, i) => (
-            <span
-              key={i}
-              aria-hidden="true"
-              className="coming-soon-letter"
-              style={{ animationDelay: `${i * 90}ms` }}
-            >
-              {char === ' ' ? '\u00A0' : char}
-            </span>
-          ))}
-        </span>
-      </div>
-      <div className="mt-6 flex items-center gap-1.5" aria-hidden="true">
-        {[0, 1, 2].map((i) => (
-          <span key={i} className="h-1.5 w-8 origin-left rounded-full bg-primary coming-soon-bar" style={{ animationDelay: `${i * 200}ms` }} />
-        ))}
-      </div>
-      <p className="mt-6 max-w-md text-sm leading-relaxed text-muted-foreground">Workspace settings are on the way. This section will hold your preferences once they are available.</p>
-    </section>
   );
 }
 
@@ -253,9 +229,11 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <Router />
-        </WouterRouter>
+        <DerivTradingProvider>
+          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+            <Router />
+          </WouterRouter>
+        </DerivTradingProvider>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>
