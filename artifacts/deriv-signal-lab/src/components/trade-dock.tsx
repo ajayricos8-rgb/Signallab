@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowRight, ChevronDown, ChevronUp, Settings2, ShieldCheck, WifiOff } from 'lucide-react';
 import { DerivConnectionStatusBadge } from '@/components/deriv-connection-card';
@@ -6,8 +6,8 @@ import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { TradeConfirmationDialog } from '@/components/trade-confirmation-dialog';
 import {
   DIGIT_TARGETS,
-  canApplyRecommendation,
-  type OverUnderRecommendation,
+  canApplySignal,
+  type TradeRecommendation,
   TRADE_FAMILIES,
   draftBarriers,
   isValidDraftStake,
@@ -26,7 +26,10 @@ import {
 type MarketChoice = { code: string; name: string };
 
 type TradeDockProps = {
-  recommendation?: OverUnderRecommendation | null;
+  /** Latest finished signal; "Use signal" copies it into the draft only. */
+  recommendation?: TradeRecommendation | null;
+  /** Increment to apply `recommendation` from outside (e.g. the signal card). */
+  applyRequest?: number;
   family: TradeFamily;
   marketCode: string | null;
   marketName: string | null;
@@ -59,6 +62,7 @@ function readCollapsed(): boolean {
 
 export function TradeDock({
   recommendation,
+  applyRequest = 0,
   family,
   marketCode,
   marketName,
@@ -152,19 +156,40 @@ export function TradeDock({
     tradeDuration,
   ]);
 
-  const canUseAnalysis = canApplyRecommendation(recommendation, family, marketCode, expiryOptions)
-    && !draftDurationIssue(recommendation.horizon, 't', recommendation.contractType, contracts, expiryVerified);
+  const sameMarket = Boolean(recommendation && recommendation.symbol === marketCode);
+  const canUseAnalysis = canApplySignal(recommendation, family, expiryOptions)
+    && (sameMarket || Boolean(onMarketChange))
+    && !(sameMarket && recommendation.durationUnit === 't' && draftDurationIssue(recommendation.duration, 't', recommendation.contractType, contracts, expiryVerified));
+  const recommendationTitle = recommendation
+    ? `Copy ${recommendation.label ?? recommendation.contractType} · ${formatTradeDuration(recommendation.duration, recommendation.durationUnit)} on ${recommendation.symbol} into the ticket. No order is placed.`
+    : '';
 
   function applyAnalysis() {
     if (!canUseAnalysis || !recommendation) return;
+    if (recommendation.symbol !== marketCode) onMarketChange?.(recommendation.symbol);
     setContractType(recommendation.contractType);
-    setBarrier(recommendation.barrier);
-    setDurationUnit('t');
-    onExpiryChange(recommendation.horizon);
+    if (family === 'over-under' && recommendation.barrier !== undefined) setBarrier(recommendation.barrier);
+    if (family === 'matches' && recommendation.barrier !== undefined) setTargetDigit(recommendation.barrier);
+    if (recommendation.durationUnit === 't') {
+      setDurationUnit('t');
+      onExpiryChange(recommendation.duration);
+    } else {
+      setDurationUnit(recommendation.durationUnit);
+      setTimeDurationText(String(recommendation.duration));
+    }
     setTicketIssue('');
     setDialogOpen(false);
     setCollapsed(false);
   }
+
+  // External "Use signal" requests (from the signal card) apply the latest
+  // recommendation once per increment.
+  const handledApplyRequest = useRef(applyRequest);
+  useEffect(() => {
+    if (applyRequest === handledApplyRequest.current) return;
+    handledApplyRequest.current = applyRequest;
+    applyAnalysis();
+  });
 
   function handleContractChange(value: TradeContractType) {
     setContractType(value);
@@ -250,9 +275,9 @@ export function TradeDock({
             <span className="ml-auto flex items-center gap-2">
               {canUseAnalysis && recommendation && <button
                 type="button" onClick={applyAnalysis} data-testid="trade-use-analysis"
-                title={`Copy ${recommendation.contractType === 'DIGITOVER' ? 'Over' : 'Under'} ${recommendation.barrier}, ${recommendation.horizon} ticks into the draft. No order is placed.`}
+                title={recommendationTitle}
                 className="focus-ring rounded-lg border border-sky-300/50 bg-sky-300/10 px-2.5 py-2 text-[11px] font-bold text-sky-200"
-              >Use analysis</button>}
+              >Use signal{recommendation.label ? ` · ${recommendation.label}` : ''}</button>}
               <DerivConnectionStatusBadge compact variant="dock" />
               <button
                 type="button"
@@ -458,13 +483,11 @@ export function TradeDock({
                 ) : (
                   'No market selected. '
                 )}
-                {family === 'rise-fall'
-                  ? 'Independent of the automatic scan. '
-                  : family === 'over-under'
-                    ? 'Manual ticket: Use analysis copies a qualified snapshot into the draft only. '
-                    : 'Contract settings are independent of research rankings. '}
+                {recommendation
+                  ? 'Manual ticket: Use signal copies the latest analysis into the draft only. '
+                  : 'Run Analysis to get a signal you can copy into this ticket. '}
                 {durationUnit !== 't' && (
-                  <>Trade duration is {selectedDurationLabel}; the research analysis above remains tick-based and is unchanged. </>
+                  <>Trade duration is {selectedDurationLabel}. </>
                 )}
                 {durationUnit !== 't' && !contracts && (
                   <>Deriv confirms time-based availability in the live proposal. </>

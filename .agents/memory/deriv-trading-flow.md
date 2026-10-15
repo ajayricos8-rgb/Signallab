@@ -3,7 +3,7 @@ name: Deriv trading flow (Options API v1)
 description: How PAT-based connection, trading, and position tracking work in the trade dock, and what must not change.
 ---
 
-Signal Lab runs two separate Deriv connections. The public market-data feed (`wss://api.derivws.com/trading/v1/options/ws/public?app_id=…`) is research-only and must stay untouched, including the `VITE_DERIV_APP_ID` value read in `use-deriv-digit-feed.ts` and `rise-fall-tool.tsx`. Trading uses a second, authenticated socket opened only after a user-entered Personal Access Token is verified.
+Signal Lab runs two separate Deriv connections. The public market-data feed (`wss://api.derivws.com/trading/v1/options/ws/public?app_id=…`) is research-only and must stay untouched, including the `VITE_DERIV_APP_ID` value read in `use-deriv-digit-feed.ts` (premium bots) and `components/market-feed-provider.tsx` (the shared feed for the four Tools tabs). Trading uses a second, authenticated socket opened only after a user-entered Personal Access Token is verified.
 
 Flow: `GET /trading/v1/options/accounts` (Bearer PAT + `Deriv-App-ID` header) → `POST /trading/v1/options/accounts/{accountId}/otp` (single-use, 120s) → connect the returned demo/real `wss` URL. There is no in-socket `authorize` message on v1.
 
