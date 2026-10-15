@@ -47,6 +47,52 @@ test('a pseudo-random stream does not produce a qualified barrier', () => {
   assert.ok(report.candidates.every((candidate) => candidate.contract.barrier >= 1 && candidate.contract.barrier <= 8));
 });
 
+test('a completed scan still publishes a best-ranked signal with engine votes and factors', () => {
+  const report = runOverUnderEnsemble(ticksOf(seededRandomDigits(2000)), 1, contracts);
+  // Nothing qualifies on noise, yet the scan must answer rather than go silent.
+  assert.ok(report.signal, 'every completed scan publishes a signal');
+  assert.equal(report.signal.qualified, false);
+  assert.equal(report.signal.candidate, report.candidates[0]);
+  assert.match(report.signal.label, /^(OVER|UNDER) [1-8]$/);
+  assert.equal(report.signal.enginesTotal, 12);
+  assert.equal(report.signal.enginesAgreed, report.candidates[0].votes.filter((vote) => vote.stance === 'support').length);
+  assert.ok(report.signal.enginesAgreed <= report.signal.enginesTotal);
+  assert.ok(report.signal.familiesAgreed <= report.signal.familiesTotal);
+  assert.ok(report.signal.reasons.length > 0, 'an unqualified signal must explain its gates');
+  for (const candidate of report.candidates) {
+    assert.equal(candidate.votes.length, 12, 'every fitted model votes on every barrier');
+    assert.ok(candidate.factors.length >= 6);
+    for (const vote of candidate.votes) {
+      assert.ok(['support', 'oppose', 'neutral'].includes(vote.stance));
+      assert.ok(vote.strength >= 0 && vote.strength <= 1);
+      assert.ok(vote.weight >= 0);
+      assert.ok(vote.detail.length > 0);
+    }
+    for (const factor of candidate.factors) {
+      assert.ok(factor.score >= 0 && factor.score <= 1);
+      assert.ok(factor.weight > 0);
+    }
+  }
+  // A qualifying stream publishes a gate-qualified signal.
+  const cycleReport = runOverUnderEnsemble(ticksOf(Array.from({ length: 1000 }, (_, index) => (index * 7 + 2) % 10)), 1, contracts);
+  assert.ok(cycleReport.signal);
+  assert.equal(cycleReport.signal.qualified, true);
+  assert.deepEqual(cycleReport.signal.contract, cycleReport.selected.contract);
+});
+
+test('the ensemble streams progress from validation through to the published signal', () => {
+  const steps = [];
+  runOverUnderEnsemble(ticksOf(seededRandomDigits(1200)), 1, contracts, (percent, phase) => steps.push({ percent, phase }));
+  assert.ok(steps.length >= 8, 'fitting and evaluation must report several phases');
+  assert.ok(steps.every((step) => step.percent >= 0 && step.percent <= 100 && step.phase.length > 0));
+  assert.ok(steps[steps.length - 1].percent >= 95);
+  const percents = steps.map((step) => step.percent);
+  // Progress never runs backwards while a single scan is in flight.
+  assert.ok(percents.every((percent, index) => index === 0 || percent >= percents[index - 1]), 'progress must be monotonic');
+  assert.ok(steps.some((step) => /LSTM/i.test(step.phase)), 'local model training is reported');
+  assert.ok(steps.some((step) => /held-out/i.test(step.phase)), 'chronological validation is reported');
+});
+
 test('research input validation rejects short, disordered or out-of-range requests', () => {
   assert.throws(() => runOverUnderEnsemble(ticksOf(seededRandomDigits(100)), 1, contracts), /500/);
   const disordered = ticksOf(seededRandomDigits(600));
