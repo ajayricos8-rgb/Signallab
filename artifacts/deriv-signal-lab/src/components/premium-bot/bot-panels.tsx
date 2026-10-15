@@ -26,6 +26,7 @@ import type {
   ModelEvidence,
 } from '@/lib/digit-bot/types';
 import { CONTRACT_LABELS } from '@/lib/digit-bot/types';
+import { assessExpectedValue, evConfidenceFromReturn, EV_BAND_LABELS, formatEvConfidence } from '@/lib/ev-confidence';
 import type { DigitBotController } from '@/hooks/use-digit-bot';
 
 export function formatPercent(value: number | null | undefined, digits = 2): string {
@@ -197,6 +198,16 @@ export function BotAnalysisPanel({ bot, models, ensemble }: { bot: DigitBotContr
   const decision = bot.decision;
   const selected = decision?.selected ?? null;
   const contributing = models.filter((model) => model.status === 'contributing');
+  // EV confidence of the selected contract, priced at the live Deriv payout.
+  // Without a quoted payout there is no honest expectancy, so the tile stays '—'.
+  const selectedEv = selected
+    ? assessExpectedValue({
+      probability: selected.estimatedProbability,
+      conservativeProbability: selected.probabilityLowerBound,
+      stake: selected.stake,
+      payout: selected.payout,
+    })
+    : null;
   return (
     <Panel
       eyebrow="AI analysis"
@@ -250,6 +261,15 @@ export function BotAnalysisPanel({ bot, models, ensemble }: { bot: DigitBotContr
                 value={formatSignedMoney(selected?.expectedValue ?? null, bot.accountCurrency)}
                 hint={selected?.conservativeExpectedValue === null || selected === null ? undefined : `Conservative ${formatSignedMoney(selected.conservativeExpectedValue, bot.accountCurrency)}`}
                 tone={selected && (selected.conservativeExpectedValue ?? 0) > 0 ? 'good' : selected ? 'warn' : 'default'}
+              />
+              <StatTile
+                label="EV confidence"
+                value={selectedEv ? formatEvConfidence(selectedEv.confidence) : '—'}
+                hint={selectedEv
+                  ? `${EV_BAND_LABELS[selectedEv.band]} · conservative ${formatEvConfidence(selectedEv.pointConfidence)} · ${selectedEv.expectedValuePerStake >= 0 ? '+' : ''}${(selectedEv.expectedValuePerStake * 100).toFixed(1)}% per unit staked`
+                  : 'Needs a live payout: no payout, no expected value'}
+                tone={selectedEv ? (selectedEv.band === 'high' ? 'good' : selectedEv.band === 'low' ? 'warn' : 'default') : 'default'}
+                testId="bot-ev-confidence"
               />
               <StatTile
                 label="Probability uncertainty"
@@ -445,7 +465,7 @@ export function BotCandidateTable({ bot }: { bot: DigitBotController }) {
           <table className="w-full min-w-[900px] border-collapse text-[10px]">
             <thead>
               <tr className="bg-background/60">
-                {['Contract', 'Family', 'Barrier / target', 'Estimated probability', 'Break-even', 'Payout', 'Expected value', 'Qualification', 'Rejection reason'].map((heading) => (
+                {['Contract', 'Family', 'Barrier / target', 'Estimated probability', 'Break-even', 'Payout', 'Expected value', 'EV confidence', 'Qualification', 'Rejection reason'].map((heading) => (
                   <th key={heading} scope="col" className="border-b border-border px-2 py-2 text-left text-[9px] uppercase tracking-wider text-muted-foreground">{heading}</th>
                 ))}
               </tr>
@@ -461,6 +481,7 @@ export function BotCandidateTable({ bot }: { bot: DigitBotController }) {
                     <span className="ml-1 text-muted-foreground">± {formatPercent(row.uncertainty, 1)}</span>
                   </td>
                   <td className="mono border-b border-border px-2 py-1.5">{formatPercent(row.breakEvenProbability)}</td>
+                  <td className="mono border-b border-border px-2 py-1.5">{row.returnOnStake === null ? '—' : formatEvConfidence(evConfidenceFromReturn(row.returnOnStake))}</td>
                   <td className="mono border-b border-border px-2 py-1.5">{formatMoney(row.payout, bot.accountCurrency)}</td>
                   <td className={`mono border-b border-border px-2 py-1.5 ${(row.conservativeExpectedValue ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
                     {formatSignedMoney(row.expectedValue, bot.accountCurrency)}

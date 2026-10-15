@@ -47,6 +47,57 @@ test('a pseudo-random stream does not produce a qualified barrier', () => {
   assert.ok(report.candidates.every((candidate) => candidate.contract.barrier >= 1 && candidate.contract.barrier <= 8));
 });
 
+test('every scan publishes a barrier and direction prediction with an EV confidence', () => {
+  const report = runOverUnderEnsemble(ticksOf(seededRandomDigits(2000)), 1, contracts);
+  const prediction = report.prediction;
+  assert.ok(prediction, 'a completed scan must not end without a prediction');
+  assert.ok(['OVER', 'UNDER'].includes(prediction.direction));
+  assert.ok(Number.isInteger(prediction.barrier) && prediction.barrier >= 1 && prediction.barrier <= 8);
+  assert.equal(prediction.contract.contractType, prediction.direction === 'OVER' ? 'DIGITOVER' : 'DIGITUNDER');
+  assert.ok(Number.isFinite(prediction.probability) && prediction.probability > 0 && prediction.probability < 1);
+  assert.ok(Number.isFinite(prediction.confidence) && prediction.confidence >= 0 && prediction.confidence <= 1);
+  assert.ok(['high', 'moderate', 'low'].includes(prediction.band));
+  assert.equal(prediction.ev.basis, 'fair-payout');
+  assert.ok(prediction.payoutMultiple > 1);
+  assert.ok(Number.isFinite(prediction.expectedValuePerStake));
+  assert.equal(prediction.breakEvenProbability, prediction.ev.breakEvenProbability);
+  // Noise cannot buy a strong confidence: the conservative edge is discounted
+  // by its own sampling error before any expected value is taken.
+  assert.ok(prediction.confidence <= 0.5, `noise produced confidence ${prediction.confidence}`);
+  assert.ok(prediction.conservativeProbability <= prediction.probability);
+  assert.ok(prediction.totalEngines === 12);
+  // The strict gates still hold every barrier back from `selected`, and the
+  // prediction explains why instead of ending in a blocked analysis.
+  assert.ok(prediction.caveats.length > 0);
+  assert.equal(prediction.grade, 'research');
+});
+
+test('a learnable stream produces a high-confidence predicted barrier at its highest expected value', () => {
+  const digits = Array.from({ length: 1000 }, (_, index) => (index * 7 + 2) % 10);
+  const report = runOverUnderEnsemble(ticksOf(digits), 1, contracts);
+  const prediction = report.prediction;
+  assert.ok(prediction);
+  assert.equal(prediction.grade, 'gated');
+  assert.ok(prediction.confidence > 0.65, `learnable structure should be confident, got ${prediction.confidence}`);
+  assert.equal(prediction.band, 'high');
+  assert.ok(prediction.expectedValuePerStake > 0);
+  assert.equal(prediction.caveats.length, 0);
+  // The prediction is the highest expected value on the board, not the highest hit rate.
+  const values = report.candidates.map((candidate) => candidate.ev.conservativeExpectedValuePerStake);
+  assert.ok(prediction.ev.conservativeExpectedValuePerStake >= Math.max(...values) - 1e-9);
+  assert.ok(report.candidates.every((candidate) => candidate.ev !== null));
+  assert.ok(prediction.supportingEngines.every((engine) => engine.probability > prediction.baselineProbability));
+});
+
+test('a shifted market structure still yields a prediction, flagged as a caveat', () => {
+  const digits = [...Array.from({ length: 800 }, (_, i) => i % 10), ...Array.from({ length: 200 }, (_, i) => (i * 7) % 10)];
+  const report = runOverUnderEnsemble(ticksOf(digits), 1, contracts);
+  assert.equal(report.selected, null);
+  assert.ok(report.prediction);
+  assert.equal(report.prediction.grade, 'research');
+  assert.ok(report.prediction.caveats.some((caveat) => caveat.includes('market structure')));
+});
+
 test('research input validation rejects short, disordered or out-of-range requests', () => {
   assert.throws(() => runOverUnderEnsemble(ticksOf(seededRandomDigits(100)), 1, contracts), /500/);
   const disordered = ticksOf(seededRandomDigits(600));

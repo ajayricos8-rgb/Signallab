@@ -18,6 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { TradeDock } from '@/components/trade-dock';
+import { assessExpectedValue, discountedEdgeProbability, EV_BAND_LABELS, evidenceReliability, formatEvConfidence, type EvAssessment } from '@/lib/ev-confidence';
 import { analyzeRiseFall, type Bias, type HistoricalOutcomes, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 
@@ -44,6 +45,10 @@ type HorizonEvaluation = {
   horizon: Horizon;
   historical: HistoricalOutcomes;
   directionalSupport: number | null;
+  /** Share of non-equal outcomes that matched the composite direction. */
+  directionalProbability: number | null;
+  /** EV-derived confidence for a Rise/Fall contract at this horizon. */
+  ev: EvAssessment | null;
   qualified: boolean;
   reasons: string[];
 };
@@ -59,10 +64,30 @@ type MarketRow = {
   horizonEvaluations: HorizonEvaluation[];
   bestHorizon: HorizonEvaluation | null;
 };
+/**
+ * The Rise/Fall prediction: the direction and duration with the highest
+ * expected value. A Rise/Fall contract settles near even money, so the
+ * zero-margin break-even is 0.50 and a live Deriv payout supersedes it.
+ * Produced for every scan that has a directional bias and enough history, so a
+ * scan never ends in a permanent WAIT; unmet gates are listed as caveats.
+ */
+type ScanPrediction = {
+  marketCode: string;
+  marketName: string;
+  direction: 'RISE' | 'FALL';
+  horizon: Horizon;
+  probability: number;
+  conservativeProbability: number | null;
+  ev: EvAssessment;
+  caveats: string[];
+  grade: 'gated' | 'research';
+};
+
 type ScanSnapshot = {
   ranAt: number;
   rows: MarketRow[];
   bestCandidate: { marketCode: string; horizon: Horizon } | null;
+  prediction: ScanPrediction | null;
 };
 
 const REQUIRED_TICKS = 500;
@@ -486,10 +511,28 @@ function evaluateHorizon(row: MarketRow, horizon: Horizon): HorizonEvaluation {
     reasons.push('No non-equal outcomes are available to compare this duration.');
   }
 
+  // Expected value for a Rise/Fall contract: the observed directional rate is
+  // priced against the near-even-money break-even of 0.50, then discounted by
+  // its own sampling error. No live Deriv payout is quoted on this surface.
+  const directionalProbability = directionalCount > 0 ? alignedCount / directionalCount : null;
+  const ev = directionalProbability === null ? null : (() => {
+    const referenceProbability = 0.5;
+    const conservative = discountedEdgeProbability({
+      probability: directionalProbability,
+      referenceProbability,
+      sample: directionalCount,
+      referenceSample: directionalCount,
+    }) ?? directionalProbability;
+    const reliability = evidenceReliability({ sample: directionalCount, sampleTarget: 300, structureStable: true });
+    return assessExpectedValue({ probability: directionalProbability, referenceProbability, conservativeProbability: conservative, reliability });
+  })();
+
   return {
     horizon,
     historical,
     directionalSupport,
+    directionalProbability,
+    ev,
     qualified: row.technicalEligible && reasons.length === 0 && directionalSupport !== null && directionalSupport > 0,
     reasons,
   };
@@ -501,6 +544,24 @@ function evaluateMarketDurations(row: MarketRow): MarketRow {
     .filter((evaluation) => evaluation.qualified)
     .sort((left, right) => (right.directionalSupport ?? -Infinity) - (left.directionalSupport ?? -Infinity))[0] ?? null;
   return { ...row, horizonEvaluations, bestHorizon };
+}
+
+/** Highest expected value at the conservative win probability, gates aside. */
+function bestPrediction(rows: MarketRow[]): { row: MarketRow; evaluation: HorizonEvaluation } | null {
+  const options = rows.flatMap((row) => {
+    if (!row.fresh || !row.info.historyLoaded || row.ticks.length < REQUIRED_TICKS) return [];
+    return row.horizonEvaluations
+      .filter((evaluation) => evaluation.ev !== null)
+      .map((evaluation) => ({
+        row, evaluation,
+        value: evaluation.ev!.conservativeExpectedValuePerStake ?? evaluation.ev!.expectedValuePerStake,
+      }));
+  });
+  return options
+    .sort((left, right) =>
+      right.value - left.value
+      || (right.evaluation.directionalSupport ?? -Infinity) - (left.evaluation.directionalSupport ?? -Infinity)
+      || Math.abs(right.row.analysis.biasScore) - Math.abs(left.row.analysis.biasScore))[0] ?? null;
 }
 
 function bestCandidate(rows: MarketRow[]): { row: MarketRow; evaluation: HorizonEvaluation } | null {
@@ -662,7 +723,9 @@ export function RiseFallTool() {
   const candidateRow = candidateRef ? scanSnapshot?.rows.find((row) => row.market.code === candidateRef.marketCode) ?? null : null;
   const candidateEvaluation = candidateRow?.horizonEvaluations.find((evaluation) => candidateRef && sameHorizon(evaluation.horizon, candidateRef.horizon)) ?? null;
   const scanCandidate = candidateRow && candidateEvaluation?.qualified ? { row: candidateRow, evaluation: candidateEvaluation } : null;
-  const chartRow = scanCandidate?.row ?? resultRows.find((row) => row.ticks.length > 1) ?? resultRows[0];
+  const prediction = scanSnapshot?.prediction ?? null;
+  const predictionRow = prediction ? scanSnapshot?.rows.find((row) => row.market.code === prediction.marketCode) ?? null : null;
+  const chartRow = scanCandidate?.row ?? predictionRow ?? resultRows.find((row) => row.ticks.length > 1) ?? resultRows[0];
   const chartHorizon = scanCandidate?.evaluation.horizon ?? null;
   const chartHistorical = scanCandidate?.evaluation.historical ?? null;
 
@@ -677,20 +740,34 @@ export function RiseFallTool() {
         reasons: [...row.reasons],
       }));
       const candidate = bestCandidate(rows);
+      const prediction = bestPrediction(rows);
       setScanSnapshot({
         ranAt: Date.now(),
         rows,
         bestCandidate: candidate ? { marketCode: candidate.row.market.code, horizon: candidate.evaluation.horizon } : null,
+        prediction: prediction && prediction.evaluation.ev ? {
+          marketCode: prediction.row.market.code,
+          marketName: prediction.row.market.name,
+          direction: prediction.row.analysis.bias === 'FALL' ? 'FALL' : 'RISE',
+          horizon: prediction.evaluation.horizon,
+          probability: prediction.evaluation.ev.probability,
+          conservativeProbability: prediction.evaluation.ev.conservativeProbability,
+          ev: prediction.evaluation.ev,
+          caveats: prediction.evaluation.reasons,
+          grade: prediction.evaluation.qualified ? 'gated' : 'research',
+        } : null,
       });
       setIsScanning(false);
     }, 80);
   }
 
   const scanSummary = !scanSnapshot
-    ? 'Run Analysis checks every configured market against all 25 durations. It chooses a duration only when the data, combined engines and that duration’s observed outcomes pass the gates.'
-    : scanCandidate
-      ? `${scanCandidate.row.market.name} is the highest-ranked qualifying research candidate at ${formatHorizon(scanCandidate.evaluation.horizon)}. Duration is selected automatically; this remains unvalidated and is not a trade-ready signal.`
-      : 'No market-and-duration pair passed every gate. The system returns WAIT rather than forcing a direction or expiry.';
+    ? 'Run Analysis checks every configured market against all 25 durations and predicts the direction and duration with the highest expected value. The confidence shown is that expected value; gates and warnings are listed with the prediction instead of suppressing it.'
+    : prediction
+      ? `${prediction.marketName} is the highest expected-value prediction: ${prediction.direction} at ${formatHorizon(prediction.horizon)}, ranked by expected value at the conservative win probability and priced against the 0.50 even-money break-even. ${prediction.grade === 'gated' ? 'Every configured gate passed.' : `${prediction.caveats.length} gate(s) are unmet and listed below; this stays a research estimate.`}`
+      : scanSnapshot.rows.some((row) => row.fresh && row.info.historyLoaded)
+        ? 'The engines found no directional bias with enough history to price, so the scan returns WAIT rather than forcing a direction.'
+        : 'No market has a fresh, history-loaded feed right now, so no direction can be priced.';
 
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid="rise-fall-analysis">
@@ -732,8 +809,21 @@ export function RiseFallTool() {
             <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-amber-500">No auto-trading</span>
           </div>
           <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <div className="text-5xl font-extrabold tracking-[-0.06em] text-amber-500">WAIT</div>
+            <div className="min-w-0">
+              <div className={`text-5xl font-extrabold tracking-[-0.06em] ${prediction ? prediction.direction === 'RISE' ? 'text-emerald-500' : 'text-rose-500' : 'text-amber-500'}`} data-testid="rise-fall-prediction">{prediction ? prediction.direction : 'WAIT'}</div>
+              {prediction && (
+                <div className="mt-3 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2.5" data-testid="rise-fall-ev-confidence">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="eyebrow">EV confidence</span>
+                    <span className="mono text-base font-extrabold">{formatEvConfidence(prediction.ev.confidence)}</span>
+                    <span className="inline-flex items-center gap-1 rounded-full border border-current/30 px-2 py-0.5 text-[10px] font-bold">{formatHorizon(prediction.horizon)}</span>
+                    <span className="text-[10px] text-muted-foreground">{EV_BAND_LABELS[prediction.ev.band]} · {prediction.grade === 'gated' ? 'every gate passed' : `${prediction.caveats.length} gate(s) unmet`}</span>
+                  </div>
+                  <div className="mono mt-1.5 text-[11px] font-semibold">{prediction.marketName} · {prediction.direction} wins {formatPct(prediction.probability)} of replayed outcomes (conservative {formatPct(prediction.conservativeProbability)}) · break-even {formatPct(prediction.ev.breakEvenProbability)} · payout {prediction.ev.payoutMultiple.toFixed(2)}× · EV {prediction.ev.expectedValuePerStake >= 0 ? '+' : ''}{(prediction.ev.expectedValuePerStake * 100).toFixed(1)}% per unit staked.</div>
+                  <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{prediction.ev.basisNote}</p>
+                  {prediction.caveats.length > 0 && <p className="mt-1 text-[10px] leading-relaxed text-amber-600 dark:text-amber-400">Unmet gates: {prediction.caveats.slice(0, 3).join(' ')}</p>}
+                </div>
+              )}
               <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{scanSummary}</p>
             </div>
             {scanCandidate ? (
@@ -747,15 +837,27 @@ export function RiseFallTool() {
                 </div>
                 <div className="mt-2 text-[10px] opacity-80">Observed direction aligns at this expiry · not a probability or forecast.</div>
               </div>
+            ) : prediction ? (
+              <div className="w-full max-w-sm rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3">
+                <div className="text-[10px] font-bold uppercase tracking-[0.1em] opacity-80">Highest expected-value prediction · gates unmet</div>
+                <div className="mt-2 text-base font-extrabold">{prediction.marketName}</div>
+                <div className="mt-0.5 text-[10px] mono opacity-80">{prediction.marketCode}</div>
+                <div className="mt-3 flex flex-wrap items-center gap-3 text-sm font-bold">
+                  <span className="inline-flex items-center gap-1.5">{prediction.direction === 'RISE' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}{prediction.direction}</span>
+                  <span className="rounded-full border border-current/20 px-2 py-1 text-xs">{formatHorizon(prediction.horizon)}</span>
+                  <span className="rounded-full border border-current/20 px-2 py-1 text-xs">EV confidence {formatEvConfidence(prediction.ev.confidence)}</span>
+                </div>
+                <div className="mt-2 text-[10px] opacity-80">Priced against the 0.50 even-money break-even · {prediction.caveats.length} unmet gate(s) · research estimate only.</div>
+              </div>
             ) : (
               <div className="w-full max-w-sm rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-                {scanSnapshot ? 'No market and duration passed all data, technical and expiry-specific gates.' : 'No analysis has been run yet; no duration is selected.'}
+                {scanSnapshot ? 'No direction could be priced on this scan: the composite evidence is mixed or the feed has no usable history.' : 'No analysis has been run yet; no duration is selected.'}
               </div>
             )}
           </div>
           <div className="mt-5 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground">
             <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
-            <span>The automatic horizon is a research heuristic based on current engine alignment and historical outcomes, not a calibrated forecast. No out-of-sample calibration, live Deriv proposal, payout, break-even or expected-value check is connected; actionable output therefore remains WAIT.</span>
+            <span>The direction and duration are chosen by expected value at the conservative win probability, priced against the 0.50 even-money break-even of a Rise/Fall contract. No live Deriv payout is quoted on this surface, so no house margin is included, there is no out-of-sample calibration, and profitability is not guaranteed. Every trade still requires your explicit confirmation in the trade dock.</span>
           </div>
           {scanSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Last scan: {new Date(scanSnapshot.ranAt).toLocaleTimeString()} · every supported horizon evaluated automatically</div>}
         </article>

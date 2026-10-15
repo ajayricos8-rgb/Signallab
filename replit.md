@@ -31,7 +31,12 @@ _Populate as you build — non-obvious choices a reader couldn't infer from the 
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Deriv Signal Lab is a market-analysis workspace for Deriv continuous indices. Research tools (Rise/Fall, Over/Under, Even/Odd, Matches) and premium bots fit local models to verified ticks and never invent data.
+
+Signal rules that must not regress:
+
+- A finished scan always publishes a signal — a barrier and OVER/UNDER direction for Over/Under, a direction and duration for Rise/Fall. Strict gate failures appear as caveats and a `research` grade, never as an "analysis blocked" dead end.
+- Every signal reports a confidence derived from expected value (`src/lib/ev-confidence.ts`): `0.5 + ROI / 20 %`, computed at a conservative win probability that discounts the edge by its own sampling error. Payouts are either a live Deriv proposal or a clearly labelled zero-margin fair price built from the contract's baseline; none are fabricated.
 
 ## User preferences
 

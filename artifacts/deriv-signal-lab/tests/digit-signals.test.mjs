@@ -111,6 +111,50 @@ test('selected expiry changes settlement horizons and remains limited to support
   assert.equal(rank('matches', makeFeed(), null).candidates.length, 0);
 });
 
+test('every ranked candidate carries an EV confidence on the zero-margin fair price', () => {
+  const odd = rank('even-odd', makeFeed(7));
+  assert.equal(odd.candidates.length, 2);
+  for (const candidate of odd.candidates) {
+    assert.ok(candidate.ev, `${candidate.label} should publish an EV assessment`);
+    assert.equal(candidate.ev.basis, 'fair-payout');
+    assert.ok(candidate.ev.confidence >= 0 && candidate.ev.confidence <= 1);
+    assert.ok(['high', 'moderate', 'low'].includes(candidate.ev.band));
+    assert.ok(candidate.ev.payoutMultiple > 1);
+    assert.equal(candidate.ev.breakEvenProbability, 1 / candidate.ev.payoutMultiple);
+  }
+  // The observed parity wins its even-money price; the opposite side loses it.
+  assert.equal(odd.candidates[0].label, 'ODD');
+  assert.ok(odd.candidates[0].ev.expectedValuePerStake > 0);
+  assert.ok(odd.candidates[0].ev.confidence > 0.5);
+  assert.ok(odd.candidates[1].ev.expectedValuePerStake < 0);
+  assert.ok(odd.candidates[1].ev.confidence < 0.5);
+  // Ranking follows expected value, so the first row is also the best value.
+  assert.ok(odd.candidates[0].ev.conservativeExpectedValuePerStake >= odd.candidates[1].ev.conservativeExpectedValuePerStake);
+  const match = rank('matches', makeFeed(4));
+  assert.equal(match.candidates[0].label, 'MATCH 4');
+  assert.ok(match.candidates[0].ev.payoutMultiple > 9);
+  assert.ok(match.candidates.every((candidate) => candidate.ev !== null));
+});
+
+test('an Over/Under scan publishes a prediction even when no barrier passes the strict gates', () => {
+  // A constant digit stream is already fully predicted by the frequency
+  // baseline, so no barrier can show lift; the scan must still publish the
+  // barrier and direction with its EV confidence instead of a blocked analysis.
+  const result = rank('over-under', makeFeed());
+  assert.ok(result.overUnder.prediction);
+  assert.ok(result.overUnder.prediction.barrier >= 1 && result.overUnder.prediction.barrier <= 8);
+  assert.ok(['OVER', 'UNDER'].includes(result.overUnder.prediction.direction));
+  assert.ok(result.overUnder.prediction.confidence >= 0 && result.overUnder.prediction.confidence <= 1);
+  assert.equal(result.overUnder.prediction.grade, 'research');
+  // The gate reasons stay attached to the prediction instead of blocking it.
+  assert.ok(result.overUnder.prediction.caveats.length > 0);
+  assert.notEqual(result.reason, '');
+  const predicted = result.candidates.find((candidate) => candidate.contract.barrier === result.overUnder.prediction.barrier
+    && candidate.contract.contractType === result.overUnder.prediction.contract.contractType);
+  assert.ok(predicted, 'the predicted barrier must be one of the ranked candidates');
+  assert.equal(predicted.ev, result.overUnder.prediction.ev);
+});
+
 test('unavailable, stale, suspended or invalid data returns a blocking reason without fabricating signals', () => {
   for (const override of [
     { fresh: false }, { contractsLoaded: false }, { historyLoaded: false },

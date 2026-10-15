@@ -46,6 +46,7 @@ import {
   formatSignedMoney,
 } from '@/components/premium-bot/bot-panels';
 import { ConfigGroup, Field, NumberInput, SelectInput, ToggleField } from '@/components/premium-bot/bot-form';
+import { assessExpectedValue, discountedEdgeProbability, EV_BAND_LABELS, evidenceReliability, formatEvConfidence } from '@/lib/ev-confidence';
 import { TRADE_LOG_FILENAME } from '@/lib/rise-fall-bot/performance';
 import {
   RISE_FALL_LABELS,
@@ -530,6 +531,26 @@ function SignalPanel({ bot }: { bot: RiseFallBotController }) {
   const decision = bot.decision;
   const evidence = decision?.evidence ?? null;
   const gate = bot.risk;
+  // EV confidence for the named direction. A Rise/Fall contract settles near
+  // even money, so 0.50 is the zero-margin break-even; a live Deriv quote, when
+  // one is available, supersedes it.
+  const directionEv = evidence && evidence.winRate !== null && decision?.direction
+    ? (() => {
+      const referenceProbability = 0.5;
+      const conservative = discountedEdgeProbability({
+        probability: evidence.winRate!,
+        referenceProbability,
+        sample: evidence.occurrences,
+        referenceSample: evidence.occurrences,
+      }) ?? evidence.winRate!;
+      return assessExpectedValue({
+        probability: evidence.winRate!,
+        referenceProbability,
+        conservativeProbability: conservative,
+        reliability: evidenceReliability({ sample: evidence.occurrences, sampleTarget: 300, structureStable: true }),
+      });
+    })()
+    : null;
   return (
     <Panel
       eyebrow="Live signal"
@@ -568,6 +589,15 @@ function SignalPanel({ bot }: { bot: RiseFallBotController }) {
           hint={evidence ? `${evidence.occurrences} firing(s) at ${evidence.horizonTicks ?? '—'} ticks · baseline ${evidence.baselineWinRate === null ? '—' : formatPercent(evidence.baselineWinRate, 1)}` : 'Replayed once a direction is named'}
           tone={evidence?.sufficient ? (evidence.winRate !== null && evidence.winRate > 0.5 ? 'good' : 'warn') : 'default'}
           testId="rise-fall-evidence"
+        />
+        <StatTile
+          label="EV confidence"
+          value={directionEv ? formatEvConfidence(directionEv.confidence) : '—'}
+          hint={directionEv
+            ? `${EV_BAND_LABELS[directionEv.band]} · break-even ${formatPercent(directionEv.breakEvenProbability, 1)} · EV ${directionEv.expectedValuePerStake >= 0 ? '+' : ''}${(directionEv.expectedValuePerStake * 100).toFixed(1)}% per unit staked`
+            : 'Needs a named direction with replayed evidence'}
+          tone={directionEv ? (directionEv.band === 'high' ? 'good' : directionEv.band === 'low' ? 'warn' : 'default') : 'default'}
+          testId="rise-fall-ev-confidence"
         />
         <StatTile
           label="Purchase gate"

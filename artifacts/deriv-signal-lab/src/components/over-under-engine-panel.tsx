@@ -1,6 +1,7 @@
-import { BrainCircuit, ChevronDown, Layers3, ShieldAlert } from 'lucide-react';
+import { BrainCircuit, ChevronDown, Layers3, ShieldAlert, Target } from 'lucide-react';
 import { ENGINE_FAMILIES, type EngineFamily } from '@/lib/over-under/features';
-import { contractProbability, type EngineEvidence, type OverUnderReport } from '@/lib/over-under/ensemble';
+import { contractProbability, type EngineEvidence, type OverUnderPrediction, type OverUnderReport } from '@/lib/over-under/ensemble';
+import { EV_BAND_LABELS, formatEvConfidence } from '@/lib/ev-confidence';
 
 const rate = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(1)}%`;
 const fixed = (value: number | null | undefined, digits = 3) => value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits);
@@ -28,6 +29,35 @@ function EngineRow({ engine, report }: { engine: EngineEvidence; report: OverUnd
         <div><div className="text-muted-foreground">Context / fit N</div><div className="mono mt-0.5">{engine.support}</div></div>
       </div>
       {engine.note && <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">{engine.note}.</p>}
+    </div>
+  );
+}
+
+function PredictionBlock({ prediction, dimmed }: { prediction: OverUnderPrediction; dimmed: boolean }) {
+  const over = prediction.direction === 'OVER';
+  return (
+    <div className={`mt-4 rounded-xl border p-4 ${dimmed ? 'border-border bg-background/30 opacity-70' : prediction.grade === 'gated' ? 'border-primary/30 bg-primary/5' : 'border-sky-500/25 bg-sky-500/5'}`} data-testid="over-under-prediction">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="eyebrow flex items-center gap-2"><Target size={13} /> Engine prediction · barrier and direction</div>
+          <div className="mt-1 flex flex-wrap items-baseline gap-3">
+            <span className={`text-2xl font-extrabold tracking-[-0.04em] ${dimmed ? 'text-muted-foreground' : over ? 'text-emerald-500' : 'text-rose-500'}`} data-testid="over-under-prediction-label">{prediction.direction} {prediction.barrier}</span>
+            <span className="mono text-sm font-bold">EV confidence {formatEvConfidence(prediction.confidence)}</span>
+            <span className="rounded-full border border-border bg-background/50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] text-muted-foreground">{EV_BAND_LABELS[prediction.band]}</span>
+            <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${prediction.grade === 'gated' ? 'border-primary/30 bg-primary/10 text-primary' : 'border-sky-500/30 bg-sky-500/10 text-sky-500'}`}>{prediction.grade === 'gated' ? 'Every gate passed' : 'Research estimate · gates unmet'}</span>
+          </div>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">Win probability {rate(prediction.probability)} (conservative {rate(prediction.conservativeProbability)}) against a break-even of {rate(prediction.breakEvenProbability)} — a payout multiple of {prediction.payoutMultiple.toFixed(2)}× and expected value {prediction.expectedValuePerStake >= 0 ? '+' : ''}{(prediction.expectedValuePerStake * 100).toFixed(1)}% per unit staked. Lift over the rolling baseline {points(prediction.lift)}.</p>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Model estimate / conservative" value={`${rate(prediction.probability)} / ${rate(prediction.conservativeProbability)}`} />
+        <Metric label="Break-even · payout multiple" value={`${rate(prediction.breakEvenProbability)} · ${prediction.payoutMultiple.toFixed(2)}× (uniform ${rate(prediction.uniformProbability)})`} />
+        <Metric label="Expected value per unit staked" value={`${prediction.expectedValuePerStake >= 0 ? '+' : ''}${(prediction.expectedValuePerStake * 100).toFixed(1)}%`} />
+        <Metric label="Engines behind it" value={`${prediction.contributingEngines}/${prediction.totalEngines} contributing · ${prediction.deepEngines} deep model(s) · ${prediction.supportingFamilies}/8 families · ${rate(prediction.agreement)} agreement`} />
+      </div>
+      {prediction.supportingEngines.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{prediction.supportingEngines.map((engine) => <span key={engine.id} className="rounded-md border border-border bg-background/40 px-2 py-1 text-[10px]"><strong>{engine.label}</strong><span className="ml-2 text-muted-foreground">{rate(engine.probability)} · {rate(engine.weight)} weight</span></span>)}</div>}
+      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">{prediction.ev?.basisNote} Held-out sample {prediction.validationSample} outcomes · Brier skill {rate(prediction.validationSkill)}.</p>
+      {prediction.caveats.length > 0 && <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-2.5 py-2 text-[10px] leading-relaxed text-muted-foreground"><strong className="text-amber-500">Unmet gates:</strong> {prediction.caveats.join(' ')}</div>}
     </div>
   );
 }
@@ -82,18 +112,24 @@ function FamilyDiagnostics({ family, report }: { family: EngineFamily; report: O
 
 export function OverUnderEnginePanel({ report, isScanning, inactiveReason }: { report: OverUnderReport | null; isScanning: boolean; inactiveReason?: string }) {
   const activeSelection = !inactiveReason && !isScanning && report?.selected;
-  const reference = report?.selected ?? report?.candidates[0];
+  // The panel reports the engine prediction first; the strictly gated candidate
+  // stays visible as `activeSelection`.
+  const reference = report?.prediction
+    ? report.candidates.find((candidate) => candidate.contract.contractType === report.prediction!.contract.contractType
+      && candidate.contract.barrier === report.prediction!.barrier) ?? report.candidates[0]
+    : report?.candidates[0];
   const label = reference ? `${reference.contract.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER'} ${reference.contract.barrier}` : null;
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="over-under-engine-panel" aria-busy={isScanning}>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><div className="eyebrow flex items-center gap-2"><BrainCircuit size={14} /> Unified Over/Under analysis</div><h3 className="mt-1 text-base font-bold">Eight engine families. One evidence-gated decision.</h3><p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">All models evaluate the same market and tick expiry. Tuning performance sets family-balanced weights; a later held-out segment checks the combined forecast. Weak engines remain visible but cannot inflate agreement.</p></div>
+        <div><div className="eyebrow flex items-center gap-2"><BrainCircuit size={14} /> Unified Over/Under analysis</div><h3 className="mt-1 text-base font-bold">Eight engine families. One predicted barrier and direction.</h3><p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">All models evaluate the same market and tick expiry. Tuning performance sets family-balanced weights; a later held-out segment checks the combined forecast. The prediction is the barrier and direction with the highest expected value at the conservative win probability, and the confidence shown is that expected value. Weak engines remain visible but cannot inflate agreement, and unmet gates are listed as caveats rather than hiding the prediction.</p></div>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/5 px-3 py-1.5 text-[10px] font-semibold text-primary"><Layers3 size={12} /> Barriers 1–8 only</span>
       </div>
       {report ? <>
         <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Train / tune / held-out" value={`${report.validation.trainSample} ticks / ${report.validation.tuningSample} / ${report.validation.holdoutSample} outcomes`} /><Metric label="Held-out Brier · lower is better" value={`${fixed(report.validation.ensembleBrier, 4)} vs ${fixed(report.validation.baselineBrier, 4)} baseline`} /><Metric label="Held-out Brier skill" value={rate(report.validation.skill)} /><Metric label="Contributing / fitted models" value={`${report.engines.filter((engine) => engine.weight > 0).length} / ${report.engines.length}`} /></div>
+        {report.prediction && <PredictionBlock prediction={report.prediction} dimmed={Boolean(inactiveReason)} />}
         <div className="mt-3 rounded-lg border border-border bg-background/35 px-3 py-2.5 text-[11px] leading-relaxed" data-testid="over-under-consensus">
-          <strong className={activeSelection ? 'text-primary' : 'text-amber-500'}>{activeSelection ? `Qualified research candidate: ${label}` : `WAIT · ${label ?? 'No candidate'} is diagnostic only`}</strong>
+          <strong className={activeSelection ? 'text-primary' : 'text-amber-500'}>{activeSelection ? `All gates passed for ${label}` : `${label ?? 'No candidate'} carries ${report.prediction?.caveats.length ?? 0} unmet gate(s)`}</strong>
           {reference && <span className="text-muted-foreground"> · model estimate {rate(reference.probability)} · rolling baseline {rate(reference.baselineProbability)} · lift {points(reference.lift)} · {reference.supportingFamilies}/8 families support · {rate(reference.agreement)} weighted agreement.</span>}
         </div>
         {inactiveReason && <p role="status" className="mt-2 text-xs text-amber-500">{inactiveReason}</p>}
@@ -102,7 +138,7 @@ export function OverUnderEnginePanel({ report, isScanning, inactiveReason }: { r
           <div className="mono mt-1 text-muted-foreground">Frequency divergence {fixed(report.diagnostics.structure.marginalDivergence)} / {fixed(report.diagnostics.structure.marginalThreshold)} limit · transition divergence {fixed(report.diagnostics.structure.transitionDivergence)} / {fixed(report.diagnostics.structure.transitionThreshold)} limit</div>
           <p className="mt-1 text-muted-foreground">Compares {report.diagnostics.structure.referenceSample} fitted ticks with {report.diagnostics.structure.recentSample} recent ticks. Jensen–Shannon divergence includes both digit balance and sequence ordering. Fixed limits are conservative safety heuristics, not significance tests or proof of stability.</p>
         </div>
-        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Engine estimates below refer to {label ?? 'the leading diagnostic candidate'}. Weights exclude the {rate(report.baselineWeight)} baseline reserve. Outcomes are spaced {report.horizon} ticks apart; chronological validation is a local diagnostic, not a guarantee of independent samples or future performance.</p>
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Engine estimates below are the per-engine contribution to {label ?? 'the predicted barrier'}. Weights exclude the {rate(report.baselineWeight)} baseline reserve. Outcomes are spaced {report.horizon} ticks apart; chronological validation is a local diagnostic, not a guarantee of independent samples or future performance.</p>
       </> : <div className="mt-4 rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">{isScanning ? 'Fitting local models and checking chronological outcomes in a background worker…' : 'Run Analysis to fit all twelve models on real, verified ticks. No model probabilities are shown before a scan.'}</div>}
       <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {ENGINE_FAMILIES.map((family, index) => <details key={family.id} className="group rounded-xl border border-border bg-background/20" data-testid={`over-under-family-${family.id}`}>
@@ -114,7 +150,7 @@ export function OverUnderEnginePanel({ report, isScanning, inactiveReason }: { r
         </details>)}
       </div>
       {report && <details className="mt-3 rounded-xl border border-border bg-background/20"><summary className="cursor-pointer p-4 text-xs font-semibold">Inspect the fitted 10 × 10 transition matrix</summary><div className="overflow-x-auto px-4 pb-4"><table className="w-full min-w-[580px] text-center text-[10px]"><caption className="pb-3 text-left text-muted-foreground">Rows = current digit, columns = next digit. Training-only smoothed probabilities; hover for observed counts. Multi-tick forecasts propagate this matrix {report.horizon} times.</caption><thead><tr><th scope="col" className="p-2">From / to</th>{Array.from({ length: 10 }, (_, digit) => <th scope="col" key={digit} className="p-2">{digit}</th>)}</tr></thead><tbody>{report.diagnostics.transitionMatrix.map((row, from) => <tr key={from} className="border-t border-border"><th scope="row" className="p-2">{from}</th>{row.map((probability, to) => <td key={to} className="mono p-2" title={`${report.diagnostics.transitionCounts[from][to]} observed transitions`} style={{ backgroundColor: `hsl(158 60% 40% / ${Math.min(0.45, probability * 0.7)})` }}>{rate(probability)}</td>)}</tr>)}</tbody></table></div></details>}
-      <div className="mt-4 flex items-start gap-2 text-[10px] leading-relaxed text-muted-foreground"><ShieldAlert size={14} className="mt-0.5 shrink-0 text-amber-500" /><p>More engines cannot create an edge in an independent random stream. Models are correlated, estimates are not calibrated win probabilities, and searching barriers or repeatedly scanning adds selection risk. Barriers are ranked by baseline-relative, validation-aware evidence—not raw hit rate. No payout/expected-value or profitability claim is made; all trades still require your explicit confirmation.</p></div>
+      <div className="mt-4 flex items-start gap-2 text-[10px] leading-relaxed text-muted-foreground"><ShieldAlert size={14} className="mt-0.5 shrink-0 text-amber-500" /><p>More engines cannot create an edge in an independent random stream. Models are correlated and estimates are not calibrated win probabilities, so the predicted barrier is the one with the highest expected value at the conservative win probability — never the one with the highest raw hit rate. The confidence is priced against a zero-margin fair payout built from the rolling-frequency baseline: no live Deriv payout is quoted on this surface, so no house margin is included and no profitability is guaranteed. Searching barriers or repeatedly scanning adds selection risk. All trades still require your explicit confirmation.</p></div>
     </section>
   );
 }

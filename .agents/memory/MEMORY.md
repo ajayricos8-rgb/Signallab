@@ -1,2 +1,3 @@
 - [Artifact build environment](artifact-build-environment.md) — workspace builds of Vite artifacts require `PORT` and `BASE_PATH` to be set.
 - [Deriv trading flow](deriv-trading-flow.md) — PAT → accounts → OTP → authenticated socket; the public feed and `VITE_DERIV_APP_ID` stay frozen.
+- [EV confidence convention](ev-confidence.md) — every signal publishes an expected-value confidence; Over/Under always predicts a barrier and direction.

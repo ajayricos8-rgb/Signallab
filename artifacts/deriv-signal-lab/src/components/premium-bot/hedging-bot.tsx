@@ -32,6 +32,7 @@ import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { useHedgingBot, type HedgingBotController, type LegPricing, type PairPricing } from '@/hooks/use-hedging-bot';
 import { Panel, ReasonList, StatTile, formatClock, formatMoney, formatPercent, formatSignedMoney } from '@/components/premium-bot/bot-panels';
 import { ConfigGroup, Field, NumberInput, SelectInput, ToggleField } from '@/components/premium-bot/bot-form';
+import { evConfidenceFromReturn, formatEvConfidence } from '@/lib/ev-confidence';
 import { HEDGE_LOG_FILENAME, isPairOpen } from '@/lib/hedging-bot/ledger';
 import type { LegChoice } from '@/lib/hedging-bot/selection';
 import {
@@ -450,6 +451,7 @@ function SignalPanel({ bot }: { bot: HedgingBotController }) {
               <span>one win {formatSignedMoney(pricing.economics.scenarios.onlyHigh, currency)} to {formatSignedMoney(pricing.economics.scenarios.onlyLow, currency)}</span>
               <span>neither {formatSignedMoney(pricing.economics.scenarios.neither, currency)}</span>
               <span>per unit staked {pricing.economics.returnOnStake === null ? '—' : pricing.economics.returnOnStake.toFixed(4)}</span>
+              <span data-testid="hedging-ev-confidence">EV confidence {pricing.economics.returnOnStake === null ? '—' : formatEvConfidence(evConfidenceFromReturn(pricing.economics.returnOnStake))}</span>
             </div>
           ) : null}
           <div className="mt-2"><ReasonList reasons={pricing.notes} limit={4} /></div>

@@ -1,5 +1,6 @@
 import { evaluateHistoricalContract, supportedTickDurations, type DigitAnalysis, type DigitContractCandidate, type DigitObservation, type HistoricalContractOutcomes } from './digit-analysis.ts';
 import type { DigitContractSupport, DigitMarketSymbol } from './deriv-digit-metadata.ts';
+import { assessExpectedValue, discountedEdgeProbability, evidenceReliability, type EvAssessment } from './ev-confidence.ts';
 import { runOverUnderEnsemble, type OverUnderCandidateScore, type OverUnderReport } from './over-under/ensemble.ts';
 
 export type DigitFamily = 'over-under' | 'even-odd' | 'matches';
@@ -9,6 +10,13 @@ export type RankedCandidate = {
   baseline: HistoricalContractOutcomes;
   label: string;
   ensemble?: OverUnderCandidateScore;
+  /**
+   * EV-derived confidence behind this candidate. For Over/Under it is the
+   * ensemble's own assessment; for Even/Odd and Matches it is computed from the
+   * conditioned historical rate against the zero-margin fair price of the
+   * contract's all-history baseline.
+   */
+  ev: EvAssessment | null;
 };
 
 export type DigitRankingResult = { candidates: RankedCandidate[]; reason: string; overUnder?: OverUnderReport };
@@ -43,6 +51,42 @@ export function contractDisplayLabel(candidate: DigitContractCandidate): string 
 
 function familySupports(feed: DigitRankingFeed, contractType: string): DigitContractSupport[] {
   return feed.contracts.filter((contract) => contract.contractType === contractType && contract.expiryType.toLowerCase() === 'tick');
+}
+
+/**
+ * EV assessment for one conditioned historical candidate. The reference rate is
+ * the contract's own all-history hit rate — the zero-margin fair price the
+ * research surface assumes — and the conservative probability discounts the
+ * condition's edge by its sampling error before the expected value is taken.
+ */
+function assessHistoricalCandidate(
+  family: DigitFamily,
+  outcomes: HistoricalContractOutcomes,
+  baseline: HistoricalContractOutcomes,
+): EvAssessment | null {
+  const probability = outcomes.smoothedHistoricalHitRate;
+  if (probability === null) return null;
+  const observed = baseline.empiricalHitRate;
+  const uniformReference = family === 'even-odd' ? 0.5 : family === 'matches' ? 0.1 : null;
+  const referenceProbability = observed !== null && observed > 0.001 && observed < 0.999
+    ? observed
+    : uniformReference;
+  if (referenceProbability === null) return null;
+  const conservative = discountedEdgeProbability({
+    probability,
+    referenceProbability,
+    sample: outcomes.sample,
+    referenceSample: baseline.sample,
+  }) ?? probability;
+  const reliability = evidenceReliability({ sample: outcomes.sample, sampleTarget: 200, structureStable: true });
+  return assessExpectedValue({ probability, referenceProbability, conservativeProbability: conservative, reliability });
+}
+
+/** Highest expected value first: the ranking is the EV ranking, not the hit rate. */
+function expectedValueOf(candidate: RankedCandidate): number {
+  const ev = candidate.ev;
+  if (!ev) return -Infinity;
+  return ev.conservativeExpectedValuePerStake ?? ev.expectedValuePerStake;
 }
 
 function conditionalContext(family: DigitFamily, latestDigit: number | null): { digit?: number; parity?: 0 | 1 } | null {
@@ -92,7 +136,10 @@ export function runResearchRanking(
     const outcomes = evaluateHistoricalContract(feed.ticks, contract, selectedDuration, context);
     const baseline = evaluateHistoricalContract(feed.ticks, contract, selectedDuration);
     if (family !== 'over-under' && (outcomes.sample < MINIMUM_CONDITIONAL_OUTCOMES || outcomes.smoothedHistoricalHitRate === null || baseline.empiricalHitRate === null)) return;
-    ranked.push({ contract, outcomes, baseline, label: candidateLabel(contract) });
+    ranked.push({
+      contract, outcomes, baseline, label: candidateLabel(contract),
+      ev: family === 'over-under' ? null : assessHistoricalCandidate(family, outcomes, baseline),
+    });
   };
 
   if (family === 'over-under') {
@@ -137,11 +184,14 @@ export function runResearchRanking(
     const candidates = overUnder.candidates.map((score) => ({
       ...uniqueRanked.find((candidate) => candidate.contract.family === 'over-under' && candidate.contract.contractType === score.contract.contractType && candidate.contract.barrier === score.contract.barrier)!,
       ensemble: score,
+      ev: score.ev,
     }));
     return { candidates, reason: overUnder.reason, overUnder };
   }
 
   uniqueRanked.sort((left, right) => {
+    const valueDifference = expectedValueOf(right) - expectedValueOf(left);
+    if (Number.isFinite(valueDifference) && valueDifference !== 0) return valueDifference;
     const rateDifference = (right.outcomes.smoothedHistoricalHitRate ?? -Infinity) - (left.outcomes.smoothedHistoricalHitRate ?? -Infinity);
     return rateDifference || right.outcomes.sample - left.outcomes.sample || left.label.localeCompare(right.label);
   });
