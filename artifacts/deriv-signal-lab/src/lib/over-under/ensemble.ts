@@ -4,6 +4,7 @@ import { ENGINE_FAMILIES, prefix, streakDiagnostics, trendMetrics, type EngineFa
 import { fitStatisticalEngines } from './statistical-models.ts';
 import { fitBoosting, fitLstm } from './ml-models.ts';
 import { marketStructure } from './structure.ts';
+import { confidenceFactor, engineVote, scale, type ConfidenceFactor, type EngineVote } from '../signal-confidence.ts';
 
 export const RESEARCH_BARRIERS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export type OverUnderContract = { family: 'over-under'; contractType: 'DIGITOVER' | 'DIGITUNDER'; barrier: number };
@@ -31,9 +32,37 @@ export type OverUnderCandidateScore = {
   score: number;
   eligible: boolean;
   reasons: string[];
+  /** How the twelve fitted models voted on this exact contract. */
+  votes: EngineVote[];
+  /** Held-out evidence factors that feed the published confidence score. */
+  factors: ConfidenceFactor[];
+};
+
+/**
+ * The signal every scan publishes. `qualified` keeps the strict held-out gates
+ * intact; the candidate itself is always present so the UI can show a signal,
+ * its engine agreement and its confidence instead of a bare WAIT.
+ */
+export type OverUnderSignal = {
+  contract: OverUnderContract;
+  label: string;
+  candidate: OverUnderCandidateScore;
+  qualified: boolean;
+  enginesAgreed: number;
+  enginesTotal: number;
+  familiesAgreed: number;
+  familiesTotal: number;
+  probability: number;
+  baselineProbability: number;
+  lift: number;
+  agreement: number;
+  reasons: string[];
 };
 
 export type OverUnderReport = ReturnType<typeof runOverUnderEnsemble>;
+
+/** Progress reporter so the UI can show a real percentage while models fit. */
+export type EnsembleProgress = (percent: number, phase: string) => void;
 
 type Evaluation = { origin: number; targetIndex: number; target: number; baseline: number[]; forecasts: Forecast[]; context: Sequence };
 
@@ -43,6 +72,18 @@ export function contractProbability(probabilities: readonly number[], contract: 
 
 function baselineForecast(context: Sequence): number[] {
   return smooth(countsOf(context.digits.slice(-1_000)));
+}
+
+/** Engine families whose supporting weight is at least their opposing weight. */
+function supportingFamilyCount(votes: readonly EngineVote[]): number {
+  const families = new Map<string, { support: number; oppose: number }>();
+  for (const vote of votes) {
+    const row = families.get(vote.family) ?? { support: 0, oppose: 0 };
+    if (vote.stance === 'support') row.support += vote.weight;
+    if (vote.stance === 'oppose') row.oppose += vote.weight;
+    families.set(vote.family, row);
+  }
+  return [...families.values()].filter((row) => row.support > 0 && row.support >= row.oppose).length;
 }
 
 function cappedFamilyWeights(scores: { id: EngineFamily; score: number }[]): Map<EngineFamily, number> {
@@ -80,7 +121,9 @@ function combine(forecasts: Forecast[], weights: number[], baseline: number[], c
  * Evaluation origins are spaced by the selected tick horizon. This reduces
  * overlapping outcomes but does NOT establish independence or profitability.
  */
-export function runOverUnderEnsemble(observations: DigitObservation[], horizon: number, contracts: OverUnderContract[]) {
+export function runOverUnderEnsemble(observations: DigitObservation[], horizon: number, contracts: OverUnderContract[], onProgress?: EnsembleProgress) {
+  const report: EnsembleProgress = typeof onProgress === 'function' ? onProgress : () => {};
+  report(2, 'Validating the digit stream');
   if (!Number.isInteger(horizon) || horizon < 1 || horizon > 100) throw new Error('Over/Under research requires a tick horizon from 1 to 100.');
   if (observations.length < 500) throw new Error('At least 500 validated observations are required.');
   if (contracts.some((contract) => !RESEARCH_BARRIERS.includes(contract.barrier as typeof RESEARCH_BARRIERS[number]) || !['DIGITOVER', 'DIGITUNDER'].includes(contract.contractType))) throw new Error('Research barriers must be integers from 1 to 8.');
@@ -91,21 +134,29 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
   const trainEnd = Math.floor(window.length * 0.6);
   const tuningEnd = Math.floor(window.length * 0.8);
   const train = prefix(sequence, trainEnd);
+  report(6, 'Comparing fitted and live market structure');
   const structure = marketStructure(train.digits, sequence.digits.slice(tuningEnd));
+  report(10, 'Fitting Markov, frequency, information, streak, trend, pattern and ARIMA/GARCH engines');
   const statistical = fitStatisticalEngines(train, horizon);
+  report(22, 'Training the local LSTM on chronological sequences');
   const lstm = fitLstm(train, horizon);
+  report(30, 'Training gradient-boosted classification trees');
   const boosting = fitBoosting(train, horizon);
   const engines: FittedEngine[] = [...statistical.engines, lstm.engine, boosting.engine];
-  const evaluate = (start: number, end: number): Evaluation[] => {
+  report(36, `Scoring ${engines.length} engines on the tuning segment`);
+  const evaluate = (start: number, end: number, fromPercent: number, toPercent: number, phase: string): Evaluation[] => {
     const rows: Evaluation[] = [];
+    const total = Math.max(1, Math.ceil((end - start) / horizon));
     for (let origin = start; origin + horizon < end; origin += horizon) {
       const context = prefix(sequence, origin + 1);
       rows.push({ origin, targetIndex: origin + horizon, target: sequence.digits[origin + horizon], baseline: baselineForecast(context), forecasts: engines.map((engine) => engine.predict(context, horizon)), context });
+      if (rows.length % 8 === 0) report(fromPercent + (toPercent - fromPercent) * Math.min(1, rows.length / total), `${phase} · ${rows.length} outcomes`);
     }
     return rows;
   };
-  const tuning = evaluate(trainEnd, tuningEnd);
-  const holdout = evaluate(tuningEnd, sequence.digits.length);
+  const tuning = evaluate(trainEnd, tuningEnd, 36, 52, 'Chronological tuning evaluation');
+  report(52, 'Evaluating the held-out segment');
+  const holdout = evaluate(tuningEnd, sequence.digits.length, 52, 68, 'Held-out evaluation');
   const tuningScores = engines.map((_, index) => {
     const available = tuning.filter((row) => row.forecasts[index].probabilities);
     const loss = available.length ? mean(available.map((row) => brier(row.forecasts[index].probabilities!, row.target))) : null;
@@ -138,7 +189,8 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
     weight: current.effectiveWeights[index] * (1 - current.baselineWeight),
     status: !liveForecasts[index].probabilities || tuningScores[index].sample < 30 ? 'sparse' : weights[index] > 0 ? 'contributing' : 'no-skill',
   }));
-  const candidates: OverUnderCandidateScore[] = contracts.map((contract) => {
+  report(70, `Scoring ${contracts.length} Deriv-supported barriers`);
+  const candidates: OverUnderCandidateScore[] = contracts.map((contract, contractIndex) => {
     const probability = contractProbability(current.probabilities, contract);
     const baselineProbability = contractProbability(baseline, contract);
     const lift = probability - baselineProbability;
@@ -169,24 +221,97 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
     if (supportingFamilies < 3 || agreement < 0.65) reasons.push('Fewer than three engine families agree, or weighted agreement is below 65%.');
     if (dispersion > 0.18) reasons.push('Engine probability estimates disagree too widely.');
     const score = lift / Math.sqrt(Math.max(0.01, baselineProbability * (1 - baselineProbability))) * (0.25 + 0.75 * Math.max(0, validationSkill ?? 0)) - 0.25 * dispersion;
+    const label = `${contract.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER'} ${contract.barrier}`;
+    // Every fitted model votes on this exact contract. Models that abstained on
+    // the tuning segment keep weight 0 so they can never inflate agreement.
+    const votes: EngineVote[] = engineEvidence.map((engine) => {
+      const engineProbability = engine.probabilities ? contractProbability(engine.probabilities, contract) : null;
+      if (engineProbability === null) {
+        return engineVote({
+          id: engine.id, label: engine.label, family: engine.family, stance: 'neutral', strength: 0, weight: 0,
+          detail: `${engine.note || 'This model had too little context to forecast.'} It abstains from voting.`,
+        });
+      }
+      const difference = engineProbability - baselineProbability;
+      const stance = difference > 0.005 ? 'support' as const : difference < -0.005 ? 'oppose' as const : 'neutral' as const;
+      return engineVote({
+        id: engine.id, label: engine.label, family: engine.family, stance, strength: scale(Math.abs(difference), 0.05),
+        weight: engine.weight,
+        detail: `Forecasts ${label} at ${(engineProbability * 100).toFixed(1)}% versus the ${(baselineProbability * 100).toFixed(1)}% rolling baseline${engine.weight > 0 ? ` · ${(engine.weight * 100).toFixed(1)}% ensemble weight from held-out tuning skill` : ' · no ensemble weight (no tuning skill)'}.`,
+      });
+    });
+    const factors: ConfidenceFactor[] = [
+      confidenceFactor({
+        id: 'model-edge', label: 'Model edge over the rolling baseline', score: scale(lift, 0.05), weight: 0.22,
+        detail: `Ensemble estimate ${(probability * 100).toFixed(1)}% versus a ${(baselineProbability * 100).toFixed(1)}% rolling-frequency baseline (${lift >= 0 ? '+' : ''}${(lift * 100).toFixed(1)} pp).`,
+      }),
+      confidenceFactor({
+        id: 'holdout-skill', label: 'Held-out Brier skill', score: scale(validationSkill ?? 0, 0.08), weight: 0.22,
+        detail: validationSkill === null
+          ? 'No held-out outcomes were available to measure skill.'
+          : `${(validationSkill * 100).toFixed(1)}% Brier skill against the baseline on ${checked.length} held-out outcomes.`,
+      }),
+      confidenceFactor({
+        id: 'holdout-improvement', label: 'Held-out improvement lower bound', score: binaryLoss.length > 1 && binaryImprovement.lower > 0 ? scale(binaryImprovement.lower, 0.02) : 0, weight: 0.16,
+        detail: binaryLoss.length > 1
+          ? `Conservative lower bound ${binaryImprovement.lower >= 0 ? '+' : ''}${(binaryImprovement.lower * 100).toFixed(2)} pp of Brier improvement per outcome.`
+          : 'Too few held-out outcomes to bound the improvement.',
+      }),
+      confidenceFactor({
+        id: 'engine-coherence', label: 'Engine coherence (low dispersion)', score: 1 - scale(dispersion, 0.18), weight: 0.12,
+        detail: `Weighted standard deviation of engine estimates is ${(dispersion * 100).toFixed(1)} pp (limit 18 pp).`,
+      }),
+      confidenceFactor({
+        id: 'market-structure', label: 'Market-structure stability', score: structure.status === 'stable' ? 1 : structure.status === 'insufficient' ? 0.4 : 0, weight: 0.14,
+        detail: structure.status === 'stable'
+          ? 'Fitted and live digit structure agree within the divergence limits.'
+          : structure.status === 'insufficient'
+            ? 'Not enough recent observations to confirm the structure is unchanged.'
+            : 'Digit frequencies or transitions shifted away from the fitted structure.',
+      }),
+      confidenceFactor({
+        id: 'validation-sample', label: 'Non-overlapping validation sample', score: scale(Math.min(tuning.length, checked.length), 60), weight: 0.14,
+        detail: `${tuning.length} tuning and ${checked.length} held-out outcomes spaced ${horizon} ticks apart.`,
+      }),
+    ];
+    if ((contractIndex + 1) % 4 === 0) report(70 + 20 * Math.min(1, (contractIndex + 1) / contracts.length), `Scoring barriers · ${contractIndex + 1}/${contracts.length}`);
     return {
       contract, probability, baselineProbability, uniformProbability: contractProbability(UNIFORM, contract), equalityProbability: current.probabilities[contract.barrier],
       lift, agreement, dispersion, supportingFamilies,
       validationSample: checked.length, validationBrier, validationBaselineBrier, validationSkill,
       validationImprovementLower: binaryLoss.length > 1 ? binaryImprovement.lower : null,
-      score, eligible: reasons.length === 0, reasons,
+      score, eligible: reasons.length === 0, reasons, votes, factors,
     };
   }).sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.score - a.score || a.contract.barrier - b.contract.barrier || a.contract.contractType.localeCompare(b.contract.contractType));
   const selected = candidates.find((candidate) => candidate.eligible) ?? null;
+  // A completed scan always publishes its best-ranked barrier. Gates still
+  // decide whether it is `qualified`; the UI shows both, never a bare WAIT.
+  const signal: OverUnderSignal | null = candidates[0] ? {
+    contract: candidates[0].contract,
+    label: `${candidates[0].contract.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER'} ${candidates[0].contract.barrier}`,
+    candidate: candidates[0],
+    qualified: candidates[0].eligible,
+    enginesAgreed: candidates[0].votes.filter((vote) => vote.stance === 'support').length,
+    enginesTotal: candidates[0].votes.length,
+    familiesAgreed: supportingFamilyCount(candidates[0].votes),
+    familiesTotal: ENGINE_FAMILIES.length,
+    probability: candidates[0].probability,
+    baselineProbability: candidates[0].baselineProbability,
+    lift: candidates[0].lift,
+    agreement: candidates[0].agreement,
+    reasons: candidates[0].reasons,
+  } : null;
+  report(92, 'Building engine consensus and confidence');
   const stats100 = distributionStats(sequence.digits.slice(-100));
   const stats1000 = distributionStats(sequence.digits.slice(-1_000));
   const hmmPosterior = statistical.hmm.posterior(sequence.digits);
   const timeForecast = statistical.timeSeries.forecast(sequence, horizon, true);
+  report(99, 'Finalising diagnostics and the published signal');
   return {
     symbol, sample: sequence.digits.length, asOfEpoch: sequence.epochs.at(-1)!, horizon,
     probabilities: current.probabilities, baselineProbabilities: baseline,
     baselineWeight: current.baselineWeight,
-    engines: engineEvidence, candidates, selected,
+    engines: engineEvidence, candidates, selected, signal,
     reason: selected ? '' : candidates[0]?.reasons.join(' ') || 'No supported barriers in the 1–8 research range.',
     validation: {
       trainSample: trainEnd, trainingLastIndex: trainEnd - 1, tuningEndIndex: tuningEnd - 1,

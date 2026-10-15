@@ -1,6 +1,8 @@
 import { BrainCircuit, ChevronDown, Layers3, ShieldAlert } from 'lucide-react';
 import { ENGINE_FAMILIES, type EngineFamily } from '@/lib/over-under/features';
 import { contractProbability, type EngineEvidence, type OverUnderReport } from '@/lib/over-under/ensemble';
+import type { SignalConsensus } from '@/lib/signal-confidence';
+import { AnalysisProgress, type AnalysisProgressState } from '@/components/analysis-signal';
 
 const rate = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(1)}%`;
 const fixed = (value: number | null | undefined, digits = 3) => value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits);
@@ -12,7 +14,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function EngineRow({ engine, report }: { engine: EngineEvidence; report: OverUnderReport }) {
-  const candidate = report.selected ?? report.candidates[0];
+  const candidate = report.signal?.candidate ?? report.selected ?? report.candidates[0];
   const probability = candidate && engine.probabilities ? contractProbability(engine.probabilities, candidate.contract) : null;
   return (
     <div className="rounded-lg border border-border/80 bg-background/30 p-3" data-testid={`over-under-engine-${engine.id}`}>
@@ -34,7 +36,7 @@ function EngineRow({ engine, report }: { engine: EngineEvidence; report: OverUnd
 
 function FamilyDiagnostics({ family, report }: { family: EngineFamily; report: OverUnderReport }) {
   const diagnostics = report.diagnostics;
-  const candidate = report.selected ?? report.candidates[0];
+  const candidate = report.signal?.candidate ?? report.selected ?? report.candidates[0];
   const barrier = candidate?.contract.barrier ?? 4;
   if (family === 'markov') return (
     <div className="space-y-2 text-[10px]">
@@ -80,22 +82,37 @@ function FamilyDiagnostics({ family, report }: { family: EngineFamily; report: O
   );
 }
 
-export function OverUnderEnginePanel({ report, isScanning, inactiveReason }: { report: OverUnderReport | null; isScanning: boolean; inactiveReason?: string }) {
+export function OverUnderEnginePanel({ report, isScanning, inactiveReason, progress = null, consensus = null }: {
+  report: OverUnderReport | null;
+  isScanning: boolean;
+  inactiveReason?: string;
+  progress?: AnalysisProgressState | null;
+  consensus?: SignalConsensus | null;
+}) {
   const activeSelection = !inactiveReason && !isScanning && report?.selected;
-  const reference = report?.selected ?? report?.candidates[0];
+  // The published signal is the report's own best-ranked barrier, so the panel
+  // always has something concrete to explain instead of a bare WAIT.
+  const reference = report?.signal?.candidate ?? report?.selected ?? report?.candidates[0];
   const label = reference ? `${reference.contract.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER'} ${reference.contract.barrier}` : null;
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="over-under-engine-panel" aria-busy={isScanning}>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><div className="eyebrow flex items-center gap-2"><BrainCircuit size={14} /> Unified Over/Under analysis</div><h3 className="mt-1 text-base font-bold">Eight engine families. One evidence-gated decision.</h3><p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">All models evaluate the same market and tick expiry. Tuning performance sets family-balanced weights; a later held-out segment checks the combined forecast. Weak engines remain visible but cannot inflate agreement.</p></div>
+        <div><div className="eyebrow flex items-center gap-2"><BrainCircuit size={14} /> Unified Over/Under analysis</div><h3 className="mt-1 text-base font-bold">Eight engine families. One published signal, counted vote by vote.</h3><p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">All models evaluate the same market and tick expiry. Tuning performance sets family-balanced weights; a later held-out segment checks the combined forecast. Every scan publishes its best-ranked barrier with the engine agreement and confidence score — the gates only decide whether that signal is qualified or diagnostic. Weak engines remain visible but cannot inflate agreement.</p></div>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/5 px-3 py-1.5 text-[10px] font-semibold text-primary"><Layers3 size={12} /> Barriers 1–8 only</span>
       </div>
+      {isScanning && <AnalysisProgress progress={progress} label="Fitting twelve models across eight engine families" />}
       {report ? <>
-        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Train / tune / held-out" value={`${report.validation.trainSample} ticks / ${report.validation.tuningSample} / ${report.validation.holdoutSample} outcomes`} /><Metric label="Held-out Brier · lower is better" value={`${fixed(report.validation.ensembleBrier, 4)} vs ${fixed(report.validation.baselineBrier, 4)} baseline`} /><Metric label="Held-out Brier skill" value={rate(report.validation.skill)} /><Metric label="Contributing / fitted models" value={`${report.engines.filter((engine) => engine.weight > 0).length} / ${report.engines.length}`} /></div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5"><Metric label="Train / tune / held-out" value={`${report.validation.trainSample} ticks / ${report.validation.tuningSample} / ${report.validation.holdoutSample} outcomes`} /><Metric label="Held-out Brier · lower is better" value={`${fixed(report.validation.ensembleBrier, 4)} vs ${fixed(report.validation.baselineBrier, 4)} baseline`} /><Metric label="Held-out Brier skill" value={rate(report.validation.skill)} /><Metric label="Contributing / fitted models" value={`${report.engines.filter((engine) => engine.weight > 0).length} / ${report.engines.length}`} /><Metric label="Engines agreeing on the signal" value={consensus ? `${consensus.enginesAgreed} / ${consensus.enginesTotal}` : reference ? `${reference.votes.filter((vote) => vote.stance === 'support').length} / ${reference.votes.length}` : '—'} /></div>
         <div className="mt-3 rounded-lg border border-border bg-background/35 px-3 py-2.5 text-[11px] leading-relaxed" data-testid="over-under-consensus">
-          <strong className={activeSelection ? 'text-primary' : 'text-amber-500'}>{activeSelection ? `Qualified research candidate: ${label}` : `WAIT · ${label ?? 'No candidate'} is diagnostic only`}</strong>
-          {reference && <span className="text-muted-foreground"> · model estimate {rate(reference.probability)} · rolling baseline {rate(reference.baselineProbability)} · lift {points(reference.lift)} · {reference.supportingFamilies}/8 families support · {rate(reference.agreement)} weighted agreement.</span>}
+          <strong className={activeSelection ? 'text-primary' : 'text-amber-500'}>{activeSelection ? `Qualified research candidate: ${label}` : `Signal: ${label ?? 'No candidate'}${reference && !reference.eligible ? ' · best-ranked, gates not passed' : ''}`}</strong>
+          {reference && <span className="text-muted-foreground"> · model estimate {rate(reference.probability)} · rolling baseline {rate(reference.baselineProbability)} · lift {points(reference.lift)} · {reference.supportingFamilies}/8 fitted families support · {rate(reference.agreement)} weighted agreement{consensus ? ` · ${consensus.confidencePercent}% confidence across ${consensus.enginesTotal} engines` : ''}.</span>}
         </div>
+        {reference && !reference.eligible && reference.reasons.length > 0 && (
+          <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground" data-testid="over-under-signal-gates">
+            <strong className="text-amber-500">Why this signal is diagnostic rather than gate-qualified:</strong>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">{reference.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+          </div>
+        )}
         {inactiveReason && <p role="status" className="mt-2 text-xs text-amber-500">{inactiveReason}</p>}
         <div className="mt-3 rounded-lg border border-border bg-background/35 p-3 text-[11px]" data-testid="over-under-market-structure">
           <div className="font-semibold">Current market structure: {report.diagnostics.structure.status === 'stable' ? 'No large distribution shift detected' : report.diagnostics.structure.status === 'shifted' ? 'Shift detected · barriers blocked' : 'Insufficient evidence'}</div>
@@ -103,7 +120,7 @@ export function OverUnderEnginePanel({ report, isScanning, inactiveReason }: { r
           <p className="mt-1 text-muted-foreground">Compares {report.diagnostics.structure.referenceSample} fitted ticks with {report.diagnostics.structure.recentSample} recent ticks. Jensen–Shannon divergence includes both digit balance and sequence ordering. Fixed limits are conservative safety heuristics, not significance tests or proof of stability.</p>
         </div>
         <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Engine estimates below refer to {label ?? 'the leading diagnostic candidate'}. Weights exclude the {rate(report.baselineWeight)} baseline reserve. Outcomes are spaced {report.horizon} ticks apart; chronological validation is a local diagnostic, not a guarantee of independent samples or future performance.</p>
-      </> : <div className="mt-4 rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">{isScanning ? 'Fitting local models and checking chronological outcomes in a background worker…' : 'Run Analysis to fit all twelve models on real, verified ticks. No model probabilities are shown before a scan.'}</div>}
+      </> : <div className="mt-4 rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">{isScanning ? `Fitting local models and checking chronological outcomes in a background worker… ${progress ? `${progress.percent}% · ${progress.phase}` : ''}` : 'Run Analysis to fit all twelve models on real, verified ticks. No model probabilities are shown before a scan.'}</div>}
       <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {ENGINE_FAMILIES.map((family, index) => <details key={family.id} className="group rounded-xl border border-border bg-background/20" data-testid={`over-under-family-${family.id}`}>
           <summary className="flex cursor-pointer list-none items-start gap-3 rounded-xl p-4 focus-visible:outline focus-visible:outline-primary">

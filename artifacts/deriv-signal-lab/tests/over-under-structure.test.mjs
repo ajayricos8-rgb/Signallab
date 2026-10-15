@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { jensenShannon, marketStructure, snapshotExpiryReason } from '../src/lib/over-under/structure.ts';
+import { jensenShannon, marketStructure, snapshotAge, snapshotExpiryReason } from '../src/lib/over-under/structure.ts';
 import { canApplyRecommendation } from '../src/lib/trade-draft.ts';
 
 const cycle = (length, step = 1) => Array.from({ length }, (_, index) => (index * step) % 10);
@@ -32,12 +32,36 @@ test('structure checks withhold confidence for small samples or unsupported tran
   assert.ok(sparseRows.comparableTransitions <= 99);
 });
 
-test('snapshot signals expire after the tick budget or a minute of market advancement', () => {
+test('a fresh snapshot stays current and may pre-fill a ticket', () => {
+  const age = snapshotAge(1000, 1, [999, 1000, 1001]);
+  assert.equal(age.state, 'current');
+  assert.equal(age.actionable, true);
+  assert.equal(age.reason, '');
   assert.equal(snapshotExpiryReason(1000, 1, [999, 1000, 1001]), '');
-  assert.match(snapshotExpiryReason(1000, 1, Array.from({ length: 20 }, (_, i) => 1001 + i)), /advanced/);
-  assert.equal(snapshotExpiryReason(1000, 30, Array.from({ length: 20 }, (_, i) => 1001 + i)), '');
-  assert.match(snapshotExpiryReason(1000, 1, [1061]), /advanced/);
-  assert.match(snapshotExpiryReason(1000, 1, []), /unavailable/);
+  // A longer horizon earns a proportionally longer current window.
+  assert.equal(snapshotAge(1000, 30, Array.from({ length: 25 }, (_, i) => 1001 + i)).state, 'current');
+});
+
+test('a snapshot the market has moved past ages visibly instead of reporting a blocked analysis', () => {
+  const aged = snapshotAge(1000, 1, Array.from({ length: 20 }, (_, i) => 1001 + i));
+  assert.equal(aged.state, 'aging');
+  assert.equal(aged.actionable, false);
+  assert.equal(aged.reason, '', 'an aging snapshot must not read as an error');
+  assert.match(aged.notice, /newer ticks/);
+  assert.equal(snapshotExpiryReason(1000, 1, Array.from({ length: 20 }, (_, i) => 1001 + i)), '');
+  // A scan that took longer than the current budget is born aging, not blocked.
+  assert.equal(snapshotAge(1000, 1, [1061]).state, 'aging');
+});
+
+test('a snapshot only expires after substantial market advancement', () => {
+  const expired = snapshotAge(1000, 1, Array.from({ length: 1000 }, (_, i) => 1001 + i));
+  assert.equal(expired.state, 'expired');
+  assert.equal(expired.actionable, false);
+  assert.match(expired.reason, /advanced/);
+  assert.match(snapshotExpiryReason(1000, 1, [2000]), /advanced/);
+  const unavailable = snapshotAge(1000, 1, []);
+  assert.equal(unavailable.state, 'unavailable');
+  assert.match(unavailable.reason, /unavailable/);
 });
 
 test('analysis-to-ticket handoff accepts only current-market supported barriers 1–8', () => {
