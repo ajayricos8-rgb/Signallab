@@ -4,6 +4,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { RiseFallTool } from '@/components/rise-fall-tool';
 import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
 import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
+import { SignalBotProvider } from '@/components/signal-bot-provider';
 import { MarketFeedProvider } from '@/components/market-feed-provider';
 import { DigitAiBot } from '@/components/premium-bot/digit-ai-bot';
 import { RiseFallAiBot } from '@/components/premium-bot/rise-fall-ai-bot';
@@ -301,9 +302,11 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <DerivTradingProvider>
-          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-            <Router />
-          </WouterRouter>
+          <SignalBotProvider>
+            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+              <Router />
+            </WouterRouter>
+          </SignalBotProvider>
         </DerivTradingProvider>
         <Toaster />
       </TooltipProvider>

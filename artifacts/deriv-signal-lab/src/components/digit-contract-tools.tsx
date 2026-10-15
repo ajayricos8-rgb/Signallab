@@ -258,6 +258,16 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   const detailAnalysis = useMemo(() => analyzeDigits(detailDigits), [detailDigits]);
   const priceContext = useMemo(() => analyzePriceContext(detailEntry?.ticks ?? []), [detailEntry?.ticks]);
   const recommendation = selectedResult && signal ? recommendationFor(selectedResult, signal) : null;
+  // Passed to the trade dock so it can pop open and offer Load and Run.
+  const analysis = selectedResult && signal
+    ? {
+        runId: run?.id ?? 0,
+        confidence: signal.confidence,
+        strength: signal.strength,
+        marketName: selectedResult.name,
+        ranAt: run?.ranAt ?? 0,
+      }
+    : null;
   const tradeEntry = markets.find((entry) => entry.symbol === (tradeMarket ?? detailSymbol));
 
   async function handleRunAnalysis() {
@@ -410,6 +420,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
       <TradeDock
         family={family}
         recommendation={recommendation}
+        analysis={analysis}
         applyRequest={applyRequest}
         marketCode={tradeMarket ?? detailSymbol ?? null}
         marketName={tradeEntry?.name ?? null}

@@ -1,9 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, ChevronDown, ChevronUp, Settings2, ShieldCheck, WifiOff } from 'lucide-react';
+import { ArrowRight, Bot, ChevronDown, ChevronUp, Loader2, Settings2, ShieldCheck, WifiOff } from 'lucide-react';
 import { DerivConnectionStatusBadge } from '@/components/deriv-connection-card';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { SignalBotWindow } from '@/components/signal-bot-window';
 import { TradeConfirmationDialog } from '@/components/trade-confirmation-dialog';
+import { useSignalBotContext } from '@/components/signal-bot-provider';
+import type { SignalBotPlan } from '@/hooks/use-signal-bot';
 import {
   DIGIT_TARGETS,
   canApplySignal,
@@ -14,7 +17,17 @@ import {
   type TradeContractType,
   type TradeFamily,
 } from '@/lib/trade-draft';
-import { barrierFor, type DerivTradeRequest } from '@/lib/deriv-trading';
+import { barrierFor, formatAmount, type DerivTradeRequest } from '@/lib/deriv-trading';
+import {
+  SIGNAL_BOT_LIMITS,
+  defaultSignalBotConfig,
+  maxLadderStake,
+  recommendedRuns,
+  resolveMaxRuns,
+  sanitizeSignalBotConfig,
+} from '@/lib/signal-bot/plan.ts';
+import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
+import type { SignalStrength } from '@/lib/signal-engine/confidence';
 import {
   TRADE_DURATION_UNITS,
   draftDurationIssue,
@@ -24,6 +37,16 @@ import {
 } from '@/lib/trade-duration';
 
 type MarketChoice = { code: string; name: string };
+
+/** The finished analysis behind `recommendation`; drives the signal bot. */
+export type SignalAnalysisBrief = {
+  /** Changes whenever a new analysis finishes, so the dock can pop open. */
+  runId: number;
+  confidence: number;
+  strength: SignalStrength;
+  marketName: string;
+  ranAt: number;
+};
 
 type TradeDockProps = {
   /** Latest finished signal; "Use signal" copies it into the draft only. */
@@ -43,6 +66,8 @@ type TradeDockProps = {
   expiryVerified: boolean;
   /** Deriv-reported contract support for the selected market, when available. */
   contracts?: readonly DurationSupport[];
+  /** Finished analysis for `recommendation`; enables Load and Run. */
+  analysis?: SignalAnalysisBrief | null;
 };
 
 const fieldClass =
@@ -51,6 +76,7 @@ const controlClass =
   'h-9 w-full min-w-0 rounded-lg border border-[#385677] bg-[#162f50] px-2 text-xs font-semibold normal-case tracking-normal text-white outline-none transition-colors focus:border-sky-300 focus:ring-2 focus:ring-sky-300/35 disabled:cursor-not-allowed disabled:opacity-60';
 
 const COLLAPSED_KEY = 'signal-lab-trade-dock-collapsed';
+const BOT_CONFIG_KEY = 'signal-lab-signal-bot-config';
 
 function readCollapsed(): boolean {
   try {
@@ -58,6 +84,57 @@ function readCollapsed(): boolean {
   } catch {
     return false;
   }
+}
+
+function readBotConfig(): SignalBotConfig {
+  try {
+    const stored = window.localStorage.getItem(BOT_CONFIG_KEY);
+    return sanitizeSignalBotConfig(stored ? (JSON.parse(stored) as Partial<SignalBotConfig>) : null);
+  } catch {
+    return defaultSignalBotConfig();
+  }
+}
+
+/** Compact numeric field for the bot row of the dock. */
+function BotNumberField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  hint,
+  testId,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  hint?: string;
+  testId: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1 text-[10px] font-bold uppercase tracking-[0.04em] text-slate-300">
+      {label}
+      <input
+        type="number"
+        inputMode="decimal"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          onChange(Number.isFinite(next) ? Math.min(max, Math.max(min, next)) : min);
+        }}
+        className={controlClass}
+        data-testid={testId}
+        title={hint}
+      />
+    </label>
+  );
 }
 
 export function TradeDock({
@@ -73,8 +150,11 @@ export function TradeDock({
   onExpiryChange,
   expiryVerified,
   contracts,
+  analysis = null,
 }: TradeDockProps) {
   const trading = useDerivTrading();
+  const signalBot = useSignalBotContext();
+  const bot = signalBot.bot;
   const [contractType, setContractType] = useState<TradeContractType>(
     TRADE_FAMILIES[family].contracts[0].value,
   );
@@ -87,6 +167,7 @@ export function TradeDock({
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed);
   const [durationUnit, setDurationUnit] = useState<TradeDurationUnit>('t');
   const [timeDurationText, setTimeDurationText] = useState('');
+  const [botConfig, setBotConfig] = useState<SignalBotConfig>(readBotConfig);
   const titleId = useId();
   const noteId = useId();
   const bodyId = useId();
@@ -109,6 +190,14 @@ export function TradeDock({
       // Keep the toggle state in memory when storage is unavailable.
     }
   }, [collapsed]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(BOT_CONFIG_KEY, JSON.stringify(botConfig));
+    } catch {
+      // Storage is optional; the configuration is still held in memory.
+    }
+  }, [botConfig]);
 
   const timeDuration = /^\d+$/.test(timeDurationText.trim())
     ? Number(timeDurationText.trim())
@@ -163,6 +252,60 @@ export function TradeDock({
   const recommendationTitle = recommendation
     ? `Copy ${recommendation.label ?? recommendation.contractType} · ${formatTradeDuration(recommendation.duration, recommendation.durationUnit)} on ${recommendation.symbol} into the ticket. No order is placed.`
     : '';
+
+  // The signal the bot would trade: market, contract and tick duration all
+  // come from the analysis, never from the manual draft.
+  const botPlan = useMemo<SignalBotPlan | null>(() => {
+    if (!recommendation || !canApplySignal(recommendation, family, expiryOptions)) return null;
+    const confidence = analysis?.confidence ?? 0;
+    const strength = analysis?.strength ?? 'WEAK';
+    return {
+      family,
+      symbol: recommendation.symbol,
+      marketName: analysis?.marketName ?? marketName ?? recommendation.symbol,
+      contractType: recommendation.contractType,
+      barrierDigit: recommendation.barrier ?? null,
+      duration: recommendation.duration,
+      durationUnit: recommendation.durationUnit,
+      label: recommendation.label ?? recommendation.contractType,
+      contractLabel: `${recommendation.label ?? recommendation.contractType} · ${formatTradeDuration(recommendation.duration, recommendation.durationUnit)}`,
+      confidence,
+      strength,
+      recommendedRuns: recommendedRuns({ confidence, strength }),
+      ranAt: analysis?.ranAt ?? 0,
+    };
+  }, [analysis, expiryOptions, family, marketName, recommendation]);
+
+  const botRuns = botPlan ? resolveMaxRuns(botConfig, botPlan.recommendedRuns) : 0;
+  const ladderTop = maxLadderStake({ ...botConfig, baseStake: stakeValue ?? botConfig.baseStake });
+
+  // A finished analysis pops the dock open so Load and Run is reachable.
+  const lastAnalysisRunId = useRef(analysis?.runId ?? 0);
+  useEffect(() => {
+    const runId = analysis?.runId ?? 0;
+    if (runId === 0 || runId === lastAnalysisRunId.current) return;
+    lastAnalysisRunId.current = runId;
+    if (botPlan) setCollapsed(false);
+  }, [analysis, botPlan]);
+
+  function handleLoadAndRun() {
+    if (!botPlan) {
+      setTicketIssue('Run Analysis to generate a signal before loading the bot.');
+      return;
+    }
+    if (!connected) {
+      setTicketIssue('Connect your Deriv account before running the bot.');
+      return;
+    }
+    if (stakeValue === null) {
+      setStakeTouched(true);
+      setTicketIssue('Enter a positive stake with up to 2 decimal places.');
+      return;
+    }
+    setTicketIssue('');
+    setCollapsed(false);
+    signalBot.loadAndRun(botPlan, { ...botConfig, baseStake: stakeValue });
+  }
 
   function applyAnalysis() {
     if (!canUseAnalysis || !recommendation) return;
@@ -241,18 +384,35 @@ export function TradeDock({
 
   return createPortal(
     <>
-      <section
-        className="trade-dock fixed inset-x-0 z-[25] overflow-y-auto border-t border-[#345576] bg-[#0b2140] text-slate-50 shadow-[0_-16px_40px_rgba(3,12,29,0.32)] md:left-[254px]"
+      {/* The bot page and the trade menu share one bottom-anchored stack, so
+          the bot page always sits directly above the ticket it trades. */}
+      <div
+        className="pointer-events-none fixed inset-x-0 z-[25] flex flex-col overflow-y-auto md:left-[254px]"
         // Workspace navigation: 48px minimum button + 16px padding + 1px border.
         style={{
           bottom: 'calc(65px + env(safe-area-inset-bottom))',
           maxHeight: 'calc(100dvh - 65px - env(safe-area-inset-bottom))',
         }}
-        aria-labelledby={titleId}
-        data-testid={`trade-dock-${family}`}
-        data-collapsed={collapsed ? 'true' : 'false'}
       >
-        <div className={`mx-auto w-full max-w-[1500px] px-4 ${collapsed ? 'py-2' : 'py-3'} sm:px-6 lg:px-8`}>
+        {signalBot.open && (
+          <div className="mx-auto mb-2 w-full max-w-[1500px] px-3 sm:px-6 lg:px-8">
+            <SignalBotWindow
+              bot={bot}
+              family={bot.plan?.family ?? family}
+              currency={signalBot.currency || currency}
+              expanded={signalBot.expanded}
+              onExpandedChange={signalBot.setExpanded}
+              onClose={signalBot.hide}
+            />
+          </div>
+        )}
+        <section
+          className="trade-dock pointer-events-auto w-full border-t border-[#345576] bg-[#0b2140] text-slate-50 shadow-[0_-16px_40px_rgba(3,12,29,0.32)]"
+          aria-labelledby={titleId}
+          data-testid={`trade-dock-${family}`}
+          data-collapsed={collapsed ? 'true' : 'false'}
+        >
+          <div className={`mx-auto w-full max-w-[1500px] px-4 ${collapsed ? 'py-2' : 'py-3'} sm:px-6 lg:px-8`}>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-300/10 text-sky-200">
               <Settings2 size={15} />
@@ -278,6 +438,38 @@ export function TradeDock({
                 title={recommendationTitle}
                 className="focus-ring rounded-lg border border-sky-300/50 bg-sky-300/10 px-2.5 py-2 text-[11px] font-bold text-sky-200"
               >Use signal{recommendation.label ? ` · ${recommendation.label}` : ''}</button>}
+              {botPlan && (
+                <button
+                  type="button"
+                  onClick={handleLoadAndRun}
+                  disabled={bot.running || !stakeValid}
+                  title={
+                    bot.running
+                      ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
+                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time.`
+                  }
+                  className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 text-[11px] font-extrabold text-[#052e1e] transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-55"
+                  data-testid={`button-load-and-run-${family}`}
+                >
+                  {bot.running ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
+                  {bot.running ? 'Running…' : 'Load and Run'}
+                </button>
+              )}
+              {bot.hasActivity && !signalBot.open && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    signalBot.show();
+                    setCollapsed(false);
+                  }}
+                  title="Reopen the bot page"
+                  className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-emerald-300/50 bg-emerald-300/10 px-2.5 text-[11px] font-bold text-emerald-200"
+                  data-testid={`button-show-bot-${family}`}
+                >
+                  <Bot size={13} />
+                  Bot {bot.summary.started}/{bot.targetRuns}
+                </button>
+              )}
               <DerivConnectionStatusBadge compact variant="dock" />
               <button
                 type="button"
@@ -456,6 +648,73 @@ export function TradeDock({
                   Trade <ArrowRight size={16} />
                 </button>
               </form>
+              <div
+                className="mt-2 rounded-lg border border-[#2d4c73] bg-[#0f2846] px-2.5 py-2"
+                data-testid="trade-bot-config"
+              >
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.06em] text-emerald-200">
+                    <Bot size={12} /> Bot
+                  </span>
+                  <span className="text-[10px] text-slate-300">
+                    Stake {stakeValue === null ? '—' : formatAmount(stakeValue, currency)} from the ticket above · ticks and runs from the analysis.
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    {botPlan
+                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'}.`
+                      : 'Run Analysis to load a signal into the bot.'}
+                  </span>
+                </div>
+                <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <BotNumberField
+                    label="Martingale ×"
+                    value={botConfig.martingaleMultiplier}
+                    min={SIGNAL_BOT_LIMITS.martingaleMultiplier.min}
+                    max={SIGNAL_BOT_LIMITS.martingaleMultiplier.max}
+                    step={0.1}
+                    hint="Stake multiplier applied after each loss. 1 keeps every stake flat."
+                    testId="bot-multiplier"
+                    onChange={(value) => setBotConfig((current) => ({ ...current, martingaleMultiplier: value }))}
+                  />
+                  <BotNumberField
+                    label="Max steps"
+                    value={botConfig.maxMartingaleSteps}
+                    min={SIGNAL_BOT_LIMITS.maxMartingaleSteps.min}
+                    max={SIGNAL_BOT_LIMITS.maxMartingaleSteps.max}
+                    step={1}
+                    hint="Highest ladder step; past it the stake resets to the base stake. 0 keeps every stake flat."
+                    testId="bot-max-steps"
+                    onChange={(value) => setBotConfig((current) => ({ ...current, maxMartingaleSteps: value }))}
+                  />
+                  <BotNumberField
+                    label="Stop loss · losses"
+                    value={botConfig.stopLossStreak}
+                    min={SIGNAL_BOT_LIMITS.stopLossStreak.min}
+                    max={SIGNAL_BOT_LIMITS.stopLossStreak.max}
+                    step={1}
+                    hint="Consecutive losing trades that stop the bot immediately. 0 disables the stop loss."
+                    testId="bot-stop-loss"
+                    onChange={(value) => setBotConfig((current) => ({ ...current, stopLossStreak: value }))}
+                  />
+                  <BotNumberField
+                    label="Runs · 0 = analysis"
+                    value={botConfig.maxRuns}
+                    min={SIGNAL_BOT_LIMITS.maxRuns.min}
+                    max={SIGNAL_BOT_LIMITS.maxRuns.max}
+                    step={1}
+                    hint="Override the number of runs the analysis suggests. 0 uses the analysis."
+                    testId="bot-max-runs"
+                    onChange={(value) => setBotConfig((current) => ({ ...current, maxRuns: value }))}
+                  />
+                </div>
+                {botConfig.martingaleMultiplier > 1 && botConfig.maxMartingaleSteps > 0 && (
+                  <p className="mt-1.5 text-[10px] leading-snug text-amber-200" data-testid="bot-ladder-warning">
+                    Martingale ladder: {formatAmount(stakeValue ?? botConfig.baseStake, currency)} → up to{' '}
+                    {formatAmount(ladderTop, currency)} after {botConfig.maxMartingaleSteps} loss
+                    {botConfig.maxMartingaleSteps === 1 ? '' : 'es'} in a row, then back to the base stake.
+                  </p>
+                )}
+              </div>
               <p
                 id={noteId}
                 className="mt-2 text-[10px] leading-snug text-slate-300"
@@ -486,6 +745,9 @@ export function TradeDock({
                 {recommendation
                   ? 'Manual ticket: Use signal copies the latest analysis into the draft only. '
                   : 'Run Analysis to get a signal you can copy into this ticket. '}
+                {botPlan
+                  ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. `
+                  : ''}
                 {durationUnit !== 't' && (
                   <>Trade duration is {selectedDurationLabel}. </>
                 )}
@@ -507,7 +769,8 @@ export function TradeDock({
               </p>
             </div>
         </div>
-      </section>
+        </section>
+      </div>
 
       <TradeConfirmationDialog
         open={dialogOpen}
