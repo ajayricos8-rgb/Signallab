@@ -226,3 +226,37 @@ test('rise/fall confidence falls when the feed is stale or outcomes disagree', (
   const thin = riseFallConsensus({ ...base, fresh: true, historical: { horizon: 5, sample: 12, rise: 8, fall: 4, unchanged: 0 }, directionalSupport: 0.3 });
   assert.ok(thin.confidence < fresh.confidence, 'a thin outcome sample must lower confidence');
 });
+
+test('scans on empty or short feeds abstain loudly instead of crashing or changing the engine count', () => {
+  // Rise/Fall: a market with no validated history yet must still publish a row.
+  for (const prices of [[], [1000], Array.from({ length: 40 }, (_, index) => 1000 + index)]) {
+    const ticks = prices.map((quote, index) => ({ quote, epoch: 1_700_000_000 + index }));
+    const analysis = analyzeRiseFall(ticks, 5);
+    const consensus = riseFallConsensus({
+      marketCode: 'R_100', marketName: 'Volatility 100 Index', analysis, prices,
+      fresh: false, historyLoaded: false, tickCount: prices.length,
+      horizon: { unit: 'ticks', value: 5 },
+      historical: { horizon: 5, sample: 0, rise: 0, fall: 0, unchanged: 0 },
+      directionalSupport: null, qualified: false, gateReasons: ['Waiting for validated history.'],
+      quant: riseFallQuantMetrics(prices),
+    });
+    assert.equal(consensus.enginesTotal, 14, 'the engine count must not depend on feed size');
+    assert.equal(consensus.enginesAgreed, consensus.votes.filter((vote) => vote.stance === 'support').length);
+    assert.ok(consensus.confidence >= 0 && consensus.confidence <= 1);
+    assert.ok(consensus.votes.every((vote) => vote.detail.length > 0), 'abstentions must explain themselves');
+  }
+
+  // Digit families: below the quant minimum the engines abstain but still vote.
+  for (const digits of [[], [7, 7, 7], Array.from({ length: 60 }, (_, index) => index % 10)]) {
+    const analysis = analyzeDigits(ticksOf(digits));
+    const consensus = digitConsensus({
+      family: 'even-odd', label: 'EVEN', contract: { family: 'even-odd', contractType: 'DIGITEVEN' },
+      outcomes: { candidate: { family: 'even-odd', contractType: 'DIGITEVEN' }, durationTicks: 1, sample: digits.length, hits: 0, misses: digits.length, barrierEqual: 0, empiricalHitRate: null, wilson95: null, smoothedHistoricalHitRate: null, contextSample: 0, contextDigit: null, contextParity: null },
+      baseline: { candidate: { family: 'even-odd', contractType: 'DIGITEVEN' }, durationTicks: 1, sample: 0, hits: 0, misses: 0, barrierEqual: 0, empiricalHitRate: null, wilson95: null, smoothedHistoricalHitRate: null, contextSample: 0, contextDigit: null, contextParity: null },
+      analysis, digits, quant: buildDigitQuantContext('even-odd', digits),
+      qualified: false, gateReasons: ['Not enough conditioned outcomes.'], familiesTotal: 6,
+    });
+    assert.equal(consensus.enginesTotal, 7, 'the digit engine count must not depend on feed size');
+    assert.ok(consensus.confidence <= 0.5, 'a thin feed must not produce a confident signal');
+  }
+});

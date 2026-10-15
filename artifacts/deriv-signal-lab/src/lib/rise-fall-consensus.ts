@@ -162,7 +162,9 @@ export function riseFallConsensus(input: RiseFallConsensusInput): SignalConsensu
     }));
   }
 
-  // ENGINE 14 — rule-based AI synthesis of the deterministic outputs.
+  // ENGINE 14 — rule-based AI synthesis of the deterministic outputs. It stays
+  // on the list and abstains openly when there is too little history, so the
+  // published engine count never silently changes between scans.
   if (quant) {
     const insight = riseFallInsight(quant);
     const verdictSign = insight.verdict === 'Bullish bias' ? 1 : insight.verdict === 'Bearish bias' ? -1 : 0;
@@ -172,6 +174,12 @@ export function riseFallConsensus(input: RiseFallConsensusInput): SignalConsensu
       strength: verdictSign === 0 ? 0 : scale(Math.abs(quant.trendBias), 0.6),
       weight: verdictSign === 0 ? 0 : 0.1,
       detail: `${insight.verdict}. ${insight.bullets[0] ?? ''} ${insight.risk}`,
+    }));
+  } else {
+    votes.push(engineVote({
+      id: 'ai-synthesis', label: 'AI synthesis · regime verdict', family: 'ai',
+      stance: 'neutral', strength: 0, weight: 0,
+      detail: `Fewer than 30 validated ticks in the last ${QUANT_WINDOW}, so the synthesis engine has no regime verdict and abstains.`,
     }));
   }
 
