@@ -1,4 +1,5 @@
 import type { DigitObservation } from '../digit-analysis.ts';
+import { assessExpectedValue, discountedEdgeProbability, evidenceReliability, type EvAssessment, type EvBand } from '../ev-confidence.ts';
 import { brier, clamp, countsOf, distributionStats, improvementSummary, mean, mix, normalize, smooth, sum, UNIFORM, variance } from './math.ts';
 import { ENGINE_FAMILIES, prefix, streakDiagnostics, trendMetrics, type EngineFamily, type FittedEngine, type Forecast, type Sequence } from './features.ts';
 import { fitStatisticalEngines } from './statistical-models.ts';
@@ -31,6 +32,48 @@ export type OverUnderCandidateScore = {
   score: number;
   eligible: boolean;
   reasons: string[];
+  /** EV-derived assessment of this barrier at the ensemble probability. */
+  ev: EvAssessment | null;
+};
+
+/**
+ * The barrier and direction the combined engines predict, with the EV-derived
+ * confidence behind it. A prediction is produced for every scan that has at
+ * least one supported contract; the strict eligibility gates stay visible as
+ * `caveats` instead of suppressing the prediction entirely.
+ */
+export type OverUnderPrediction = {
+  contract: OverUnderContract;
+  direction: 'OVER' | 'UNDER';
+  barrier: number;
+  probability: number;
+  baselineProbability: number;
+  uniformProbability: number;
+  equalityProbability: number;
+  lift: number;
+  agreement: number;
+  dispersion: number;
+  supportingFamilies: number;
+  contributingEngines: number;
+  totalEngines: number;
+  /** LSTM and boosted-classifier contributions inside the ensemble. */
+  deepEngines: number;
+  validationSample: number;
+  validationSkill: number | null;
+  conservativeProbability: number | null;
+  /** EV confidence at the conservative probability (headline figure). */
+  confidence: number;
+  /** EV confidence at the point probability, for comparison. */
+  pointConfidence: number;
+  band: EvBand;
+  expectedValuePerStake: number;
+  breakEvenProbability: number;
+  payoutMultiple: number;
+  ev: EvAssessment | null;
+  grade: 'gated' | 'research';
+  caveats: string[];
+  /** Highest-weighted engines that support this exact contract. */
+  supportingEngines: { id: string; label: string; family: EngineFamily; weight: number; probability: number }[];
 };
 
 export type OverUnderReport = ReturnType<typeof runOverUnderEnsemble>;
@@ -169,15 +212,85 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
     if (supportingFamilies < 3 || agreement < 0.65) reasons.push('Fewer than three engine families agree, or weighted agreement is below 65%.');
     if (dispersion > 0.18) reasons.push('Engine probability estimates disagree too widely.');
     const score = lift / Math.sqrt(Math.max(0.01, baselineProbability * (1 - baselineProbability))) * (0.25 + 0.75 * Math.max(0, validationSkill ?? 0)) - 0.25 * dispersion;
+    // The strict eligibility reasons stay in `reasons`; the EV assessment below
+    // never hides them, it only supplies a confidence for the prediction.
+    const reliability = evidenceReliability({
+      validationSkill, agreement, supportingFamilies, dispersion,
+      sample: checked.length,
+      sampleTarget: 60,
+      structureStable: structure.status !== 'shifted',
+    });
+    // Zero-margin fair price for this contract: the rolling-frequency baseline
+    // when it is usable, otherwise the uniform 10-digit baseline.
+    const referenceProbability = baselineProbability > 0.001 && baselineProbability < 0.999
+      ? baselineProbability
+      : contractProbability(UNIFORM, contract);
+    // The conservative win probability discounts the ensemble's edge over the
+    // reference by its own sampling error (± one-sided 95 %), using the held-out
+    // block as the sample, so noise cannot buy a strong EV confidence.
+    const conservative = discountedEdgeProbability({
+      probability,
+      referenceProbability,
+      sample: binaryLoss.length,
+      referenceSample: Math.min(1_000, sequence.digits.length),
+    }) ?? probability;
+    const ev = assessExpectedValue({ probability, referenceProbability, conservativeProbability: conservative, reliability });
     return {
       contract, probability, baselineProbability, uniformProbability: contractProbability(UNIFORM, contract), equalityProbability: current.probabilities[contract.barrier],
       lift, agreement, dispersion, supportingFamilies,
       validationSample: checked.length, validationBrier, validationBaselineBrier, validationSkill,
       validationImprovementLower: binaryLoss.length > 1 ? binaryImprovement.lower : null,
-      score, eligible: reasons.length === 0, reasons,
+      score, eligible: reasons.length === 0, reasons, ev,
     };
   }).sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.score - a.score || a.contract.barrier - b.contract.barrier || a.contract.contractType.localeCompare(b.contract.contractType));
   const selected = candidates.find((candidate) => candidate.eligible) ?? null;
+  // The prediction is the barrier/direction with the highest value per unit
+  // staked — the conservative expected value first, then the point estimate —
+  // ranked independently of the strict gates so a scan always yields a usable
+  // signal. The gates stay visible on the prediction as `caveats`.
+  const predictionValue = (candidate: OverUnderCandidateScore) =>
+    candidate.ev?.conservativeExpectedValuePerStake ?? candidate.ev?.expectedValuePerStake ?? candidate.score * 0.01;
+  const rankedForPrediction = [...candidates].sort((a, b) =>
+    predictionValue(b) - predictionValue(a)
+    || (b.ev?.confidence ?? 0) - (a.ev?.confidence ?? 0)
+    || b.score - a.score
+    || a.contract.barrier - b.contract.barrier
+    || a.contract.contractType.localeCompare(b.contract.contractType));
+  const best = rankedForPrediction[0] ?? null;
+  const contributing = engineEvidence.filter((engine) => engine.weight > 0 && engine.probabilities);
+  const prediction: OverUnderPrediction | null = best ? {
+    contract: best.contract,
+    direction: best.contract.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER',
+    barrier: best.contract.barrier,
+    probability: best.probability,
+    baselineProbability: best.baselineProbability,
+    uniformProbability: best.uniformProbability,
+    equalityProbability: best.equalityProbability,
+    lift: best.lift,
+    agreement: best.agreement,
+    dispersion: best.dispersion,
+    supportingFamilies: best.supportingFamilies,
+    contributingEngines: contributing.length,
+    totalEngines: engines.length,
+    deepEngines: contributing.filter((engine) => engine.family === 'ml').length,
+    validationSample: best.validationSample,
+    validationSkill: best.validationSkill,
+    conservativeProbability: best.ev?.conservativeProbability ?? null,
+    confidence: best.ev?.confidence ?? 0.5,
+    pointConfidence: best.ev?.pointConfidence ?? 0.5,
+    band: best.ev?.band ?? 'low',
+    expectedValuePerStake: best.ev?.expectedValuePerStake ?? 0,
+    breakEvenProbability: best.ev?.breakEvenProbability ?? best.baselineProbability,
+    payoutMultiple: best.ev?.payoutMultiple ?? (best.baselineProbability > 0 ? 1 / best.baselineProbability : 0),
+    ev: best.ev,
+    grade: best.eligible ? 'gated' : 'research',
+    caveats: best.reasons,
+    supportingEngines: contributing
+      .filter((engine) => contractProbability(engine.probabilities!, best.contract) > best.baselineProbability)
+      .sort((a, b) => b.weight - a.weight)
+      .slice(0, 4)
+      .map((engine) => ({ id: engine.id, label: engine.label, family: engine.family, weight: engine.weight, probability: contractProbability(engine.probabilities!, best.contract) })),
+  } : null;
   const stats100 = distributionStats(sequence.digits.slice(-100));
   const stats1000 = distributionStats(sequence.digits.slice(-1_000));
   const hmmPosterior = statistical.hmm.posterior(sequence.digits);
@@ -186,7 +299,7 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
     symbol, sample: sequence.digits.length, asOfEpoch: sequence.epochs.at(-1)!, horizon,
     probabilities: current.probabilities, baselineProbabilities: baseline,
     baselineWeight: current.baselineWeight,
-    engines: engineEvidence, candidates, selected,
+    engines: engineEvidence, candidates, selected, prediction,
     reason: selected ? '' : candidates[0]?.reasons.join(' ') || 'No supported barriers in the 1–8 research range.',
     validation: {
       trainSample: trainEnd, trainingLastIndex: trainEnd - 1, tuningEndIndex: tuningEnd - 1,

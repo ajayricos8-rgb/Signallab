@@ -25,7 +25,8 @@ import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
 import { TradeDock } from '@/components/trade-dock';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
-import type { OverUnderReport } from '@/lib/over-under/ensemble';
+import { EV_BAND_LABELS, formatEvConfidence, type EvAssessment, type EvBand } from '@/lib/ev-confidence';
+import type { OverUnderPrediction, OverUnderReport } from '@/lib/over-under/ensemble';
 import type { DigitResearchRequest, DigitResearchResponse } from '@/lib/digit-research.worker';
 
 import { contractDisplayLabel, FAMILY_CONTRACTS, MINIMUM_DIGIT_TICKS, type DigitFamily, type RankedCandidate } from '@/lib/digit-signals';
@@ -91,6 +92,41 @@ function formatDifference(value: number | null): string {
 
 function formatMetric(value: number | null, decimalPlaces = 3): string {
   return value === null || !Number.isFinite(value) ? '—' : value.toFixed(decimalPlaces);
+}
+
+/** Expected return per unit staked, the quantity the EV confidence is built from. */
+function formatPerStake(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  return `${value > 0 ? '+' : ''}${(value * 100).toFixed(1)}% per unit staked`;
+}
+
+function evBandClass(band: EvBand): string {
+  if (band === 'high') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500';
+  if (band === 'moderate') return 'border-sky-500/30 bg-sky-500/10 text-sky-500';
+  return 'border-amber-500/30 bg-amber-500/10 text-amber-500';
+}
+
+function evSummary(ev: EvAssessment): string {
+  return `win probability ${formatRate(ev.probability)} · break-even ${formatRate(ev.breakEvenProbability)} · payout ${ev.payoutMultiple.toFixed(2)}× · expected value ${formatPerStake(ev.expectedValuePerStake)}`;
+}
+
+/** The headline EV confidence block every signal surface shows. */
+function EvConfidenceBlock({ ev, testId, tone = 'primary' }: { ev: EvAssessment | null; testId: string; tone?: 'primary' | 'muted' }) {
+  if (!ev) return null;
+  return (
+    <div className={`mt-3 rounded-lg border px-3 py-2.5 ${tone === 'primary' ? 'border-primary/25 bg-primary/5' : 'border-border bg-background/35'}`} data-testid={testId}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="eyebrow">EV confidence</span>
+        <span className="mono text-base font-extrabold">{formatEvConfidence(ev.confidence)}</span>
+        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${evBandClass(ev.band)}`}>{EV_BAND_LABELS[ev.band]}</span>
+        <span className="rounded-full border border-border bg-background/50 px-2 py-0.5 text-[9px] font-semibold text-muted-foreground">{ev.basis === 'live-payout' ? 'Live Deriv payout' : 'Zero-margin fair price'}</span>
+        {ev.conservative && <span className="text-[9px] text-muted-foreground">computed at the conservative probability {formatRate(ev.conservativeProbability ?? null)}</span>}
+      </div>
+      <div className="mono mt-1.5 text-[10px] font-semibold">{evSummary(ev)}</div>
+      {ev.expectedValue !== null && <div className="mono mt-0.5 text-[10px] text-muted-foreground">expected value {ev.expectedValue.toFixed(4)} per contract at the quoted stake</div>}
+      <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground">{ev.basisNote} Model probability {formatRate(ev.probability)} against a break-even of {formatRate(ev.breakEvenProbability)} puts the edge at {formatDifference(ev.edge)}.</p>
+    </div>
+  );
 }
 
 function formatIndicator(value: number | null): string {
@@ -248,8 +284,8 @@ function HistoricalRanking({ family, candidates }: { family: DigitFamily; candid
       <div className="mt-3 space-y-2">
         {candidates.map((candidate) => candidate.ensemble && <div key={candidate.label} className={`rounded-lg border p-3 ${candidate.ensemble.eligible ? 'border-primary/30 bg-primary/5' : 'border-border bg-background/25'}`}>
           <div className="flex items-center justify-between gap-2"><strong className="text-xs">{candidate.label}</strong><span className={`text-[9px] font-bold ${candidate.ensemble.eligible ? 'text-primary' : 'text-muted-foreground'}`}>{candidate.ensemble.eligible ? 'PASSES GATES' : 'DIAGNOSTIC ONLY'}</span></div>
-          <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]"><div><div className="eyebrow">Model estimate</div><div className="mono mt-1">{formatRate(candidate.ensemble.probability)}</div></div><div><div className="eyebrow">Lift / frequency</div><div className="mono mt-1">{formatDifference(candidate.ensemble.lift)}</div></div><div><div className="eyebrow">Holdout skill</div><div className="mono mt-1">{formatRate(candidate.ensemble.validationSkill)}</div></div></div>
-          <p className="mt-2 text-[9px] text-muted-foreground">Uniform {formatRate(candidate.ensemble.uniformProbability)} · rolling {formatRate(candidate.ensemble.baselineProbability)} · equal-loss estimate {formatRate(candidate.ensemble.equalityProbability)} · {candidate.ensemble.validationSample} held-out outcomes.</p>
+          <div className="mt-2 grid grid-cols-4 gap-2 text-[10px]"><div><div className="eyebrow">Model estimate</div><div className="mono mt-1">{formatRate(candidate.ensemble.probability)}</div></div><div><div className="eyebrow">Lift / frequency</div><div className="mono mt-1">{formatDifference(candidate.ensemble.lift)}</div></div><div><div className="eyebrow">Holdout skill</div><div className="mono mt-1">{formatRate(candidate.ensemble.validationSkill)}</div></div><div><div className="eyebrow">EV confidence</div><div className="mono mt-1">{formatEvConfidence(candidate.ev?.confidence ?? null)}</div></div></div>
+          <p className="mt-2 text-[9px] text-muted-foreground">Uniform {formatRate(candidate.ensemble.uniformProbability)} · rolling {formatRate(candidate.ensemble.baselineProbability)} · equal-loss estimate {formatRate(candidate.ensemble.equalityProbability)} · {candidate.ensemble.validationSample} held-out outcomes · EV {formatPerStake(candidate.ev?.expectedValuePerStake ?? null)} at a break-even of {formatRate(candidate.ev?.breakEvenProbability ?? null)}.</p>
           {!candidate.ensemble.eligible && <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground">{candidate.ensemble.reasons[0]}</p>}
         </div>)}
         {!candidates.length && <div className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">Run Analysis to compare supported barriers 1–8.</div>}
@@ -264,13 +300,13 @@ function HistoricalRanking({ family, candidates }: { family: DigitFamily; candid
     : candidates.slice(0, 8);
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid={`${family}-candidate-ranking`}>
-      <div><div className="eyebrow">Historical candidate ranking</div><h3 className="mt-1 text-sm font-bold">{family === 'matches' ? 'Target digits · selected expiry' : family === 'even-odd' ? 'Parity · selected expiry' : 'Barriers · selected expiry'}</h3><p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Sorted by smoothed current-context hit rate at the selected expiry. The all-history baseline and in-sample difference are separate; this is not a calibrated or payout-adjusted forecast.</p></div>
+      <div><div className="eyebrow">Historical candidate ranking</div><h3 className="mt-1 text-sm font-bold">{family === 'matches' ? 'Target digits · selected expiry' : family === 'even-odd' ? 'Parity · selected expiry' : 'Barriers · selected expiry'}</h3><p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Sorted by expected value at the selected expiry: each conditioned rate is priced against the contract&rsquo;s own all-history baseline as a zero-margin fair price and discounted by its own sampling error before its confidence is shown. The all-history baseline and in-sample difference are separate; this is not a calibrated forecast, carries no house margin, and no profitability is guaranteed.</p></div>
       {rows.length ? (
         <div className="mt-3 space-y-2">
           {rows.map((candidate, index) => (
             <div key={`${candidate.outcomes.durationTicks}-${candidate.label}-${index}`} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md border px-3 py-2 ${index === 0 ? 'border-primary/25 bg-primary/5' : 'border-border bg-background/25'}`}>
               <div className="min-w-0"><div className="truncate text-[11px] font-semibold">{candidate.label} <span className="text-muted-foreground">· {candidate.outcomes.durationTicks} ticks</span></div><div className="mt-0.5 text-[9px] text-muted-foreground">{candidate.outcomes.hits} / {candidate.outcomes.sample} conditioned · baseline {formatRate(candidate.baseline.empiricalHitRate)} · Δ {formatDifference(candidate.outcomes.empiricalHitRate === null || candidate.baseline.empiricalHitRate === null ? null : candidate.outcomes.empiricalHitRate - candidate.baseline.empiricalHitRate)}{candidate.outcomes.barrierEqual ? ` · ${candidate.outcomes.barrierEqual} exact-barrier losses` : ''}</div></div>
-              <div className="text-right"><div className="eyebrow">Observed</div><div className="mono text-xs font-semibold">{formatRate(candidate.outcomes.empiricalHitRate)}</div><div className="eyebrow mt-1">Nominal 95% range</div><div className="mono text-[9px] text-muted-foreground">{formatInterval(candidate.outcomes.wilson95)}</div></div>
+              <div className="text-right"><div className="eyebrow">Observed</div><div className="mono text-xs font-semibold">{formatRate(candidate.outcomes.empiricalHitRate)}</div><div className="eyebrow mt-1">Nominal 95% range</div><div className="mono text-[9px] text-muted-foreground">{formatInterval(candidate.outcomes.wilson95)}</div><div className="eyebrow mt-1">EV confidence</div><div className="mono text-xs font-semibold">{formatEvConfidence(candidate.ev?.confidence ?? null)}</div><div className="mono text-[9px] text-muted-foreground">EV {formatPerStake(candidate.ev?.expectedValuePerStake ?? null)} · break-even {formatRate(candidate.ev?.breakEvenProbability ?? null)}</div></div>
             </div>
           ))}
         </div>
@@ -359,9 +395,19 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         if (latest.feed.selectedSymbol !== symbol || latest.selectedDuration !== duration) { finish(); return; }
         const blockingReason = !latest.feed.fresh ? 'Live data became stale during the scan. Reconnect and run analysis again.'
           : latest.feed.precisionError || (!latest.feed.contractsLoaded ? 'Contract rules changed during the scan. Run analysis again.' : '');
+        const overUnder = ranking.overUnder;
+        const prediction = overUnder?.prediction ?? null;
+        const predictionCandidate = prediction
+          ? ranking.candidates.find((candidate) => candidate.contract.family === 'over-under'
+            && candidate.contract.barrier === prediction.barrier
+            && candidate.contract.contractType === prediction.contract.contractType) ?? null
+          : null;
         setSnapshot({
           ranAt: Date.now(), symbol, selectedDuration: duration, latestDigit: analysis.lastDigit, analysis, freshAtRun,
-          candidate: blockingReason ? null : family === 'over-under' ? ranking.candidates.find((candidate) => candidate.ensemble?.eligible) ?? null : ranking.candidates[0] ?? null,
+          candidate: blockingReason ? null
+            : family === 'over-under'
+              ? predictionCandidate ?? ranking.candidates.find((candidate) => candidate.ensemble?.eligible) ?? null
+              : ranking.candidates[0] ?? null,
           candidates: blockingReason ? [] : ranking.candidates,
           reason: blockingReason || ranking.reason,
           overUnder: ranking.overUnder,
@@ -386,9 +432,23 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   const snapshotExpiredReason = shownSnapshot?.overUnder
     ? snapshotExpiryReason(shownSnapshot.overUnder.asOfEpoch, shownSnapshot.overUnder.horizon, feed.ticks.map((tick) => tick.epoch)) : '';
   const staleSnapshot = Boolean(shownSnapshot && (snapshotExpiredReason || !feed.fresh || feed.precisionError || !feed.contractsLoaded || feed.selectedMarket?.tradingSuspended || feed.selectedMarket?.exchangeOpen === false));
-  const resultCandidate = staleSnapshot ? null : shownSnapshot?.candidate ?? null;
   const candidates = shownSnapshot?.candidates ?? [];
-  const signalLabel = isScanning ? 'ANALYZING' : resultCandidate?.label ?? (shownSnapshot ? 'WAIT' : 'READY');
+  // The Over/Under prediction is the barrier and direction the engines' EV
+  // confidence favours; it is produced for every scan, so a completed scan no
+  // longer ends in a blocked tile.
+  const overUnderPrediction: OverUnderPrediction | null = shownSnapshot?.overUnder?.prediction ?? null;
+  const predictionCandidate = overUnderPrediction
+    ? candidates.find((candidate) => candidate.contract.family === 'over-under'
+      && candidate.contract.barrier === overUnderPrediction.barrier
+      && candidate.contract.contractType === overUnderPrediction.contract.contractType) ?? null
+    : null;
+  const resultCandidate = staleSnapshot
+    ? null
+    : family === 'over-under'
+      ? predictionCandidate ?? shownSnapshot?.candidate ?? null
+      : shownSnapshot?.candidate ?? null;
+  const signalEv = resultCandidate?.ev ?? null;
+  const signalLabel = isScanning ? 'ANALYZING' : resultCandidate?.label ?? (staleSnapshot ? 'EXPIRED' : shownSnapshot ? 'NO SIGNAL' : 'READY');
   const signalTone = resultCandidate ? 'text-primary' : 'text-amber-500';
   const isReady = Boolean(feed.selectedMarket && feed.historyLoaded && feed.contractsLoaded && feed.fresh && !feed.precisionError);
   const dataQualityLabel = feed.precisionError
@@ -447,14 +507,15 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
 
       <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]" data-testid={`${family}-signal-summary`} aria-busy={isScanning}>
         <article className="signal-panel rounded-xl border border-card-border p-5 panel-glow sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div className="eyebrow">Digit analysis signal</div><span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-amber-500">{isScanning ? 'Analyzing…' : resultCandidate ? 'Analysis complete · no auto-trading' : shownSnapshot ? 'Analysis blocked' : 'Ready to analyze'}</span></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div className="eyebrow">Digit analysis signal</div><span className={`rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] ${resultCandidate ? 'border-primary/30 bg-primary/10 text-primary' : 'border-amber-500/30 bg-amber-500/10 text-amber-500'}`} data-testid={`${family}-signal-state`}>{isScanning ? 'Analyzing…' : resultCandidate ? (family === 'over-under' && overUnderPrediction?.grade === 'gated' ? 'Signal ready · all gates passed' : 'Signal ready · research estimate') : staleSnapshot ? 'Snapshot expired · run analysis again' : shownSnapshot ? (shownSnapshot.candidates.length ? 'No supported contract at this expiry' : 'No signal · read the reason') : 'Ready to analyze'}</span></div>
           <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div><div className={`text-4xl font-extrabold tracking-[-0.06em] sm:text-5xl ${signalTone}`} data-testid={`${family}-signal`} role="status" aria-live="polite">{signalLabel}</div><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{staleSnapshot ? snapshotExpiredReason || 'Live data or contract availability is no longer valid. This historical snapshot is not an active signal; reconnect and run analysis again.' : shownSnapshot ? resultCandidate ? family === 'over-under' ? `The combined engines favor ${resultCandidate.label} for ${shownSnapshot.symbol} at ${resultCandidate.outcomes.durationTicks} ticks, after baseline-relative ranking and held-out checks. This is a research estimate, not a guaranteed outcome.` : `Historical analysis signals ${resultCandidate.label} for ${shownSnapshot.symbol} at the selected ${resultCandidate.outcomes.durationTicks}-tick expiry from available historical outcomes.` : shownSnapshot.reason || familyDetails.empty : 'Choose a Deriv-reported tick expiry, then press Run Analysis to evaluate this market’s expiry-specific digit outcomes.'}</p></div>
+            <div><div className={`text-4xl font-extrabold tracking-[-0.06em] sm:text-5xl ${signalTone}`} data-testid={`${family}-signal`} role="status" aria-live="polite">{signalLabel}</div><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{staleSnapshot ? snapshotExpiredReason || 'Live data or contract availability is no longer valid. This historical snapshot is not an active signal; reconnect and run analysis again.' : shownSnapshot ? resultCandidate ? family === 'over-under' ? `The combined engines predict ${resultCandidate.label} for ${shownSnapshot.symbol} at ${resultCandidate.outcomes.durationTicks} ticks, ranked by expected value and checked against held-out outcomes. This is a research estimate, not a guaranteed outcome.` : `The engines signal ${resultCandidate.label} for ${shownSnapshot.symbol} at the selected ${resultCandidate.outcomes.durationTicks}-tick expiry, ranked by expected value over the contract's own baseline.` : shownSnapshot.reason || familyDetails.empty : 'Choose a Deriv-reported tick expiry, then press Run Analysis to evaluate this market’s expiry-specific digit outcomes.'}</p><EvConfidenceBlock ev={signalEv} testId={`${family}-signal-ev`} /></div>
             {shownSnapshot && resultCandidate ? (
               <div className="w-full max-w-sm rounded-xl border border-primary/25 bg-primary/5 px-4 py-3" data-testid={`${family}-research-candidate`}>
                 <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-primary">Analysis signal · historical evidence</div>
                 <div className="mt-2 text-xl font-extrabold">{resultCandidate.label}</div>
                 {resultCandidate.ensemble && <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-2 text-[11px]"><strong>{formatRate(resultCandidate.ensemble.probability)}</strong> ensemble estimate · lift {formatDifference(resultCandidate.ensemble.lift)} · {formatRate(resultCandidate.ensemble.agreement)} weighted agreement. Equality loss estimate: {formatRate(resultCandidate.ensemble.equalityProbability)}.</div>}
+                <EvConfidenceBlock ev={resultCandidate.ev} testId={`${family}-candidate-ev`} tone="muted" />
                 <div className="mt-1 text-[10px] text-muted-foreground">{shownSnapshot.symbol} · selected {resultCandidate.outcomes.durationTicks}-tick expiry</div>
                 <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/70 pt-3 text-xs sm:grid-cols-4"><div><div className="eyebrow">Conditioned rate</div><div className="mono mt-1 font-semibold">{formatRate(resultCandidate.outcomes.empiricalHitRate)}</div></div><div><div className="eyebrow">All-history base</div><div className="mono mt-1 font-semibold">{formatRate(resultCandidate.baseline.empiricalHitRate)}</div></div><div><div className="eyebrow">Nominal 95% interval</div><div className="mono mt-1 font-semibold">{formatInterval(resultCandidate.outcomes.wilson95)}</div></div><div><div className="eyebrow">Sample</div><div className="mono mt-1 font-semibold">{resultCandidate.outcomes.hits} / {resultCandidate.outcomes.sample}</div></div></div>
                 <div className="mt-2 text-[10px] text-muted-foreground">Conditional difference vs all-history base: {formatDifference(resultCandidate.outcomes.empiricalHitRate === null || resultCandidate.baseline.empiricalHitRate === null ? null : resultCandidate.outcomes.empiricalHitRate - resultCandidate.baseline.empiricalHitRate)} (in-sample only).</div>
@@ -467,10 +528,10 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
           </div>
           <div className="mt-4 grid gap-2 sm:grid-cols-3" data-testid={`${family}-evidence-status`}>
             <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Data quality</div><div className="mt-1 text-[11px] font-semibold">{dataQualityLabel}</div></div>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Model reliability</div><div className="mt-1 text-[11px] font-semibold">{family === 'over-under' ? shownSnapshot?.overUnder ? resultCandidate ? 'Local held-out gates passed' : 'No qualifying edge' : 'Awaiting model fitting' : 'Not validated'}</div></div>
+            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Model reliability</div><div className="mt-1 text-[11px] font-semibold">{family === 'over-under' ? !shownSnapshot?.overUnder ? 'Awaiting model fitting' : overUnderPrediction ? overUnderPrediction.grade === 'gated' ? 'Local held-out gates passed' : `${overUnderPrediction.caveats.length} gate(s) unmet · research estimate` : 'No supported barrier' : signalEv ? `EV confidence ${formatEvConfidence(signalEv.confidence)} · ${EV_BAND_LABELS[signalEv.band]}` : 'EV unavailable'}</div></div>
             <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Historical hit rate</div><div className="mt-1 text-[11px] font-semibold">{resultCandidate ? formatRate(resultCandidate.outcomes.empiricalHitRate) : 'Awaiting valid analysis'}</div></div>
           </div>
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground"><ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" /><span>{family === 'over-under' ? 'The ensemble is fitted locally with a chronological training/tuning/holdout split. Model weights never use holdout labels. Non-overlapping expiry outcomes and conservative barrier checks reduce—but do not remove—selection risk or serial dependence. Model estimates are not calibrated win probabilities, and no payout/expected-value or profitability guarantee is provided. Historical rates and Wilson ranges below are descriptive only. Re-run analysis as market structure changes.' : 'Historical frequencies and smoothed rankings are descriptive research, not calibrated probabilities. The nominal 95% Wilson interval assumes independent Bernoulli outcomes; overlapping horizons violate that assumption. These rankings are not a payout/expected-value model or a guarantee of future results. Re-run analysis for an updated snapshot.'}</span></div>
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground"><ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" /><span>{family === 'over-under' ? 'The ensemble is fitted locally with a chronological training/tuning/holdout split. Model weights never use holdout labels. The prediction is the barrier and direction with the highest expected value: the confidence shown is that expected value at the conservative win probability, priced against a zero-margin fair payout built from the rolling-frequency baseline. No live Deriv payout is quoted on this surface, so no house margin is included and no profitability is guaranteed. Non-overlapping expiry outcomes and conservative gates reduce—but do not remove—selection risk or serial dependence. Re-run analysis as market structure changes.' : 'Historical frequencies and EV-based rankings are descriptive research, not calibrated probabilities. Confidence is the expected value of the ranking at the conservative win probability, against the contract\u2019s own all-history baseline as the zero-margin fair price — there is no live Deriv payout here, so no house margin is included and no profitability is guaranteed. The nominal 95% Wilson interval assumes independent Bernoulli outcomes; overlapping horizons violate that assumption. Re-run analysis for an updated snapshot.'}</span></div>
           {shownSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Snapshot {new Date(shownSnapshot.ranAt).toLocaleTimeString()} · {shownSnapshot.analysis.sampleSize} validated digits · live freshness at scan: {shownSnapshot.freshAtRun ? 'confirmed' : 'not confirmed'}</div>}
         </article>
 
@@ -496,7 +557,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
       <section className="grid gap-3 md:grid-cols-3">
         <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Database size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Verified input pipeline</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Active-symbol pip_size, history pip_size and live tick pip_size must agree. Quotes are decimal-scaled before extracting the last displayed digit; invalid precision blocks analysis.</p></div></div>
         <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><BarChart3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Expiry-aware research</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Each candidate uses the final observed digit exactly N ticks after each historical entry and conditions on the current digit or parity. Overlapping comparisons are not independent and are not a calibration set.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Research limits</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{family === 'over-under' ? 'Local LSTM, boosted classifiers and chronological validation are available above. Payout/EV gating, probability calibration, external pretrained models, persistent signals and full rolling-refit backtesting are not provided.' : 'Formal multi-horizon Dow analysis, candle-based ATR / ADX, payout/EV gating, model calibration, walk-forward backtesting, persistent signals and machine learning remain unavailable.'} Automatic execution is not offered: the trade dock only sends orders you confirm against a live Deriv quote.</p></div></div>
+        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Research limits</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{family === 'over-under' ? 'Local LSTM, boosted classifiers and chronological validation are available above, and every barrier is priced by expected value. Live Deriv payout gating, probability calibration, external pretrained models, persistent signals and full rolling-refit backtesting are not provided.' : 'Formal multi-horizon Dow analysis, candle-based ATR / ADX, live Deriv payout gating, model calibration, walk-forward backtesting, persistent signals and machine learning remain unavailable.'} Automatic execution is not offered: the trade dock only sends orders you confirm against a live Deriv quote.</p></div></div>
       </section>
 
       <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite"><Zap size={12} className="mr-1 inline text-primary" />{shownSnapshot ? `${shownSnapshot.analysis.sampleSize} real validated digits were analyzed for ${shownSnapshot.symbol}.` : isReady ? `Choose one of ${supportedDurationCount} Deriv-supported tick expiries, then run analysis.` : 'Waiting for live data, pip precision, contract metadata and sufficient history.'} No simulated digits or fabricated probabilities are used, and no order is ever sent without your confirmation in the trade dock.</div>
