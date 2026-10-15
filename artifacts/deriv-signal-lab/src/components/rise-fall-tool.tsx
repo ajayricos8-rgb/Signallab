@@ -186,6 +186,16 @@ export function RiseFallTool() {
   const chartTicks = chartEntry?.ticks ?? [];
   const liveAnalysis = useMemo(() => analyzeRiseFall(chartTicks.slice(-500), 5), [chartTicks]);
   const recommendation = selectedResult && signal ? recommendationFor(selectedResult, signal) : null;
+  // Passed to the trade dock so it can pop open and offer Load and Run.
+  const analysis = selectedResult && signal
+    ? {
+        runId: run?.id ?? 0,
+        confidence: signal.confidence,
+        strength: signal.strength,
+        marketName: selectedResult.name,
+        ranAt: run?.ranAt ?? 0,
+      }
+    : null;
   const draftMarket = draftMarketCode ?? chartSymbol ?? null;
 
   async function handleRunAnalysis() {
@@ -345,6 +355,7 @@ export function RiseFallTool() {
       <TradeDock
         family="rise-fall"
         recommendation={recommendation}
+        analysis={analysis}
         applyRequest={applyRequest}
         marketCode={draftMarket}
         marketName={markets.find(({ symbol }) => symbol === draftMarket)?.name ?? null}
