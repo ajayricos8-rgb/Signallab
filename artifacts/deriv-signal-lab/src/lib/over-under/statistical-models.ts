@@ -87,10 +87,31 @@ export function fitHmm(sequence: Sequence) {
     emissions = emissionCounts.map(normalize);
     transition = transitionCounts.map(normalize);
   }
-  const posterior = (context: number[]) => {
-    let state = initial;
-    context.forEach((digit, index) => { state = normalize((index ? propagate(state, transition, 1) : state).map((p, k) => p * emissions[k][digit])); });
-    return state;
+  // Exact scaled forward filter, written allocation-free because it runs once
+  // per evaluation origin (hundreds of times per market scan).
+  const posterior = (context: readonly number[]) => {
+    const [t00, t01] = transition[0];
+    const [t10, t11] = transition[1];
+    const [e0, e1] = emissions;
+    let s0 = initial[0];
+    let s1 = initial[1];
+    for (let index = 0; index < context.length; index += 1) {
+      let p0 = s0;
+      let p1 = s1;
+      if (index) {
+        const n0 = s0 * t00 + s1 * t10;
+        const n1 = s0 * t01 + s1 * t11;
+        const total = n0 + n1;
+        p0 = total > 0 ? n0 / total : 0.5;
+        p1 = total > 0 ? n1 / total : 0.5;
+      }
+      const a = p0 * e0[context[index]];
+      const b = p1 * e1[context[index]];
+      const total = a + b;
+      s0 = total > 0 ? a / total : 0.5;
+      s1 = total > 0 ? b / total : 0.5;
+    }
+    return [s0, s1];
   };
   const engine: FittedEngine = {
     id: 'hmm', family: 'markov', label: 'Hidden Markov model · 2 regimes',
@@ -193,13 +214,19 @@ export function fitTrend(sequence: Sequence, horizon: number) {
 
 type ArimaModel = { p: number; d: number; q: number; center: number; coefficients: number[]; residuals: number[]; innovationVariance: number; aic: number };
 
-function filterArima(digits: number[], model: Pick<ArimaModel, 'p' | 'd' | 'center' | 'coefficients'>) {
-  const raw = model.d ? digits.slice(1).map((digit, i) => digit - digits[i]) : digits;
-  const values = raw.map((value) => value - model.center);
-  const residuals = Array<number>(values.length).fill(0);
-  for (let t = model.p; t < values.length; t += 1) {
-    const row = [1, ...Array.from({ length: model.p }, (_, lag) => values[t - lag - 1]), residuals[t - 1]];
-    residuals[t] = clamp(values[t] - dot(model.coefficients, row), -30, 30);
+function filterArima(digits: readonly number[], model: Pick<ArimaModel, 'p' | 'd' | 'center' | 'coefficients'>) {
+  const length = model.d ? Math.max(0, digits.length - 1) : digits.length;
+  const values = Array<number>(length);
+  for (let i = 0; i < length; i += 1) values[i] = (model.d ? digits[i + 1] - digits[i] : digits[i]) - model.center;
+  const residuals = Array<number>(length).fill(0);
+  const { p, coefficients } = model;
+  // Same left-to-right accumulation as dot([1, lags..., previous error]) but
+  // without allocating a row per step: this filter runs for every forecast.
+  for (let t = p; t < length; t += 1) {
+    let prediction = coefficients[0];
+    for (let lag = 0; lag < p; lag += 1) prediction += coefficients[lag + 1] * values[t - lag - 1];
+    prediction += coefficients[p + 1] * residuals[t - 1];
+    residuals[t] = clamp(values[t] - prediction, -30, 30);
   }
   return { values, residuals };
 }
@@ -241,11 +268,18 @@ export function fitTimeSeries(sequence: Sequence) {
   }
   const forecast = (context: Sequence, horizon: number, conditionalVariance: boolean) => {
     const filtered = filterArima(context.digits, arima);
-    const values = [...filtered.values];
+    // Only the last p filtered values feed the recursion; avoid copying the full context.
+    const values = filtered.values.slice(-Math.max(1, arima.p));
     let lastError = filtered.residuals.at(-1) ?? 0;
     let prediction = context.digits.at(-1)!;
     let v = arima.innovationVariance;
-    if (conditionalVariance) for (const error of filtered.residuals.slice(arima.p)) v = Math.max(0.05, garch.omega + garch.alpha * error * error + garch.beta * v);
+    if (conditionalVariance) {
+      const { residuals } = filtered;
+      for (let index = arima.p; index < residuals.length; index += 1) {
+        const error = residuals[index];
+        v = Math.max(0.05, garch.omega + garch.alpha * error * error + garch.beta * v);
+      }
+    }
     const futureVariances: number[] = [];
     for (let step = 0; step < horizon; step += 1) {
       const next = dot(arima.coefficients, [1, ...Array.from({ length: arima.p }, (_, lag) => values.at(-lag - 1) ?? 0), lastError]);

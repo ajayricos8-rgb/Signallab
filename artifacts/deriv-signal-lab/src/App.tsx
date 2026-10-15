@@ -4,6 +4,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { RiseFallTool } from '@/components/rise-fall-tool';
 import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
 import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
+import { MarketFeedProvider } from '@/components/market-feed-provider';
 import { DigitAiBot } from '@/components/premium-bot/digit-ai-bot';
 import { RiseFallAiBot } from '@/components/premium-bot/rise-fall-ai-bot';
 import { HedgingBot } from '@/components/premium-bot/hedging-bot';
@@ -218,9 +219,13 @@ function ToolsWorkspace({
           );
         })}
       </div>
-      <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
-        {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
-      </div>
+      {/* One shared multi-market feed for all four tools: switching tabs keeps
+          the loaded history, so Run Analysis can start scanning immediately. */}
+      <MarketFeedProvider>
+        <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
+          {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
+        </div>
+      </MarketFeedProvider>
     </section>
   );
 }

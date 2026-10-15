@@ -58,7 +58,36 @@ export function isValidDraftStake(value: string): boolean {
   );
 }
 
-/** A qualified research result may populate a ticket, never submit one. */
+/**
+ * A finished analysis may populate a ticket, never submit one. `barrier` is the
+ * Over/Under barrier or the Matches target digit; Rise/Fall may use minutes.
+ */
+export type TradeRecommendation = {
+  symbol: string;
+  contractType: TradeContractType;
+  barrier?: number;
+  duration: number;
+  durationUnit: 't' | 's' | 'm';
+  label?: string;
+};
+
+export function canApplySignal(
+  recommendation: TradeRecommendation | null | undefined,
+  family: TradeFamily,
+  supportedTickExpiries: readonly number[],
+): recommendation is TradeRecommendation {
+  if (!recommendation || !recommendation.symbol) return false;
+  if (!TRADE_FAMILIES[family].contracts.some(({ value }) => value === recommendation.contractType)) return false;
+  const barrier = recommendation.barrier;
+  if (family === 'over-under' && !(barrier !== undefined && Number.isInteger(barrier) && draftBarriers(recommendation.contractType).includes(barrier))) return false;
+  if (family === 'matches' && !(barrier !== undefined && Number.isInteger(barrier) && DIGIT_TARGETS.includes(barrier))) return false;
+  if (!Number.isInteger(recommendation.duration) || recommendation.duration < 1) return false;
+  if (recommendation.durationUnit === 't') return supportedTickExpiries.includes(recommendation.duration);
+  // Time-based expiries are only offered for Rise/Fall signals.
+  return family === 'rise-fall';
+}
+
+/** Legacy Over/Under-only handoff, kept for existing callers and tests. */
 export type OverUnderRecommendation = {
   symbol: string;
   contractType: 'DIGITOVER' | 'DIGITUNDER';

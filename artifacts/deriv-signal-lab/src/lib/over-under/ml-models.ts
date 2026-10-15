@@ -13,8 +13,6 @@ const BIAS_OFFSET = OUTPUT_OFFSET + 10 * HIDDEN;
 const PARAMETERS = BIAS_OFFSET + 10;
 const sigmoid = (value: number) => 1 / (1 + Math.exp(-clamp(value, -30, 30)));
 
-type LstmStep = { z: number[]; gates: number[]; cell: number[]; previousCell: number[]; hidden: number[] };
-
 export function fitLstm(sequence: Sequence, horizon: number) {
   const random = seededRandom(12383 + horizon);
   const weights = Float64Array.from({ length: PARAMETERS }, () => (random() - 0.5) * 0.18);
@@ -24,41 +22,69 @@ export function fitLstm(sequence: Sequence, horizon: number) {
   // Forget-gate bias encourages retaining context at initialization.
   for (let unit = 0; unit < HIDDEN; unit += 1) weights[(HIDDEN + unit) * WIDTH + WIDTH - 1] = 1;
 
-  const encode = (context: Sequence, origin: number) => Array.from({ length: STEPS }, (_, step) => {
-    const index = origin - STEPS + step + 1;
-    return [...Array.from({ length: 10 }, (_, digit) => Number(context.digits[index] === digit)), timeDeltaFeature(context.epochs, index)];
-  });
-  const forward = (inputs: number[][]) => {
-    let hidden = Array<number>(HIDDEN).fill(0);
-    let cell = Array<number>(HIDDEN).fill(0);
-    const trace: LstmStep[] = [];
-    for (const input of inputs) {
-      const z = [...input, ...hidden, 1];
-      const gates = Array<number>(4 * HIDDEN).fill(0);
-      for (let gate = 0; gate < gates.length; gate += 1) {
-        let activation = 0;
-        for (let k = 0; k < WIDTH; k += 1) activation += weights[gate * WIDTH + k] * z[k];
-        gates[gate] = gate >= 3 * HIDDEN ? Math.tanh(activation) : sigmoid(activation);
-      }
-      const previousCell = cell;
-      cell = cell.map((value, unit) => gates[HIDDEN + unit] * value + gates[unit] * gates[3 * HIDDEN + unit]);
-      hidden = cell.map((value, unit) => gates[2 * HIDDEN + unit] * Math.tanh(value));
-      trace.push({ z, gates, cell, previousCell, hidden });
+  // Each step's input is a one-hot digit plus a causal time delta, stored as the
+  // active digit index (-1 when the step precedes the series) and the delta.
+  // Skipping the exact zeros of the one-hot block leaves every partial sum
+  // bit-identical while roughly halving the gate arithmetic.
+  const encodeInto = (digitsOut: Int8Array, deltasOut: Float64Array, offset: number, context: Sequence, origin: number) => {
+    for (let step = 0; step < STEPS; step += 1) {
+      const index = origin - STEPS + step + 1;
+      const digit = context.digits[index];
+      digitsOut[offset + step] = Number.isInteger(digit) && digit >= 0 && digit <= 9 ? digit : -1;
+      deltasOut[offset + step] = timeDeltaFeature(context.epochs, index);
     }
-    const probabilities = softmax(Array.from({ length: 10 }, (_, digit) => {
+  };
+  // Preallocated trace buffers so the forward / backward passes do not allocate
+  // per step. Slot 0 of the cell and hidden buffers is the zero initial state;
+  // step s reads slot s and writes slot s + 1.
+  const gateTrace = new Float64Array(STEPS * 4 * HIDDEN);
+  const cellTrace = new Float64Array((STEPS + 1) * HIDDEN);
+  const hiddenTrace = new Float64Array((STEPS + 1) * HIDDEN);
+  const logits = Array<number>(10).fill(0);
+  const forward = (stepDigits: Int8Array, stepDeltas: Float64Array, offset: number): number[] => {
+    for (let step = 0; step < STEPS; step += 1) {
+      const digit = stepDigits[offset + step];
+      const delta = stepDeltas[offset + step];
+      const previous = step * HIDDEN;
+      const gates = step * 4 * HIDDEN;
+      for (let gate = 0; gate < 4 * HIDDEN; gate += 1) {
+        const row = gate * WIDTH;
+        let activation = 0;
+        if (digit >= 0) activation += weights[row + digit];
+        activation += weights[row + 10] * delta;
+        for (let unit = 0; unit < HIDDEN; unit += 1) activation += weights[row + INPUTS + unit] * hiddenTrace[previous + unit];
+        activation += weights[row + WIDTH - 1];
+        gateTrace[gates + gate] = gate >= 3 * HIDDEN ? Math.tanh(activation) : sigmoid(activation);
+      }
+      const next = (step + 1) * HIDDEN;
+      for (let unit = 0; unit < HIDDEN; unit += 1) {
+        const cell = gateTrace[gates + HIDDEN + unit] * cellTrace[previous + unit] + gateTrace[gates + unit] * gateTrace[gates + 3 * HIDDEN + unit];
+        cellTrace[next + unit] = cell;
+        hiddenTrace[next + unit] = gateTrace[gates + 2 * HIDDEN + unit] * Math.tanh(cell);
+      }
+    }
+    const last = STEPS * HIDDEN;
+    for (let digit = 0; digit < 10; digit += 1) {
       let logit = weights[BIAS_OFFSET + digit];
-      for (let unit = 0; unit < HIDDEN; unit += 1) logit += weights[OUTPUT_OFFSET + digit * HIDDEN + unit] * hidden[unit];
-      return logit;
-    }));
-    return { trace, probabilities };
+      for (let unit = 0; unit < HIDDEN; unit += 1) logit += weights[OUTPUT_OFFSET + digit * HIDDEN + unit] * hiddenTrace[last + unit];
+      logits[digit] = logit;
+    }
+    return softmax(logits);
   };
   const origins = Array.from({ length: Math.max(0, sequence.digits.length - horizon - STEPS + 1) }, (_, i) => i + STEPS - 1);
-  const inputs = origins.map((origin) => encode(sequence, origin));
+  const inputDigits = new Int8Array(origins.length * STEPS);
+  const inputDeltas = new Float64Array(origins.length * STEPS);
+  origins.forEach((origin, index) => encodeInto(inputDigits, inputDeltas, index * STEPS, sequence, origin));
   const targets = origins.map((origin) => sequence.digits[origin + horizon]);
-  const loss = () => mean(inputs.map((input, index) => -Math.log(Math.max(1e-9, forward(input).probabilities[targets[index]]))));
+  const loss = () => mean(targets.map((target, index) => -Math.log(Math.max(1e-9, forward(inputDigits, inputDeltas, index * STEPS)[target]))));
   const initialLoss = loss();
   const epochs = 7;
   const gradient = new Float64Array(PARAMETERS);
+  const dh = new Float64Array(HIDDEN);
+  const dc = new Float64Array(HIDDEN);
+  const previousDh = new Float64Array(HIDDEN);
+  const previousDc = new Float64Array(HIDDEN);
+  const gateDerivative = new Float64Array(4 * HIDDEN);
   for (let epoch = 0; epoch < epochs; epoch += 1) {
     const order = origins.map((_, i) => i);
     for (let i = order.length - 1; i > 0; i -= 1) { const j = Math.floor(random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
@@ -67,46 +93,54 @@ export function fitLstm(sequence: Sequence, horizon: number) {
       const batchEnd = Math.min(order.length, batch + 16);
       for (let sample = batch; sample < batchEnd; sample += 1) {
         const index = order[sample];
-        const { trace, probabilities } = forward(inputs[index]);
-        let dh = Array<number>(HIDDEN).fill(0);
-        let dc = Array<number>(HIDDEN).fill(0);
+        const probabilities = forward(inputDigits, inputDeltas, index * STEPS);
+        dh.fill(0);
+        dc.fill(0);
+        const last = STEPS * HIDDEN;
         for (let digit = 0; digit < 10; digit += 1) {
           const error = probabilities[digit] - Number(targets[index] === digit);
           gradient[BIAS_OFFSET + digit] += error;
           for (let unit = 0; unit < HIDDEN; unit += 1) {
-            gradient[OUTPUT_OFFSET + digit * HIDDEN + unit] += error * trace.at(-1)!.hidden[unit];
+            gradient[OUTPUT_OFFSET + digit * HIDDEN + unit] += error * hiddenTrace[last + unit];
             dh[unit] += error * weights[OUTPUT_OFFSET + digit * HIDDEN + unit];
           }
         }
         // Full backpropagation through the 12-step sequence, including all
         // input/forget/output/candidate gates and recurrent connections.
-        for (let step = trace.length - 1; step >= 0; step -= 1) {
-          const state = trace[step];
-          const gateDerivative = Array<number>(4 * HIDDEN).fill(0);
-          const previousDc = Array<number>(HIDDEN).fill(0);
+        for (let step = STEPS - 1; step >= 0; step -= 1) {
+          const gates = step * 4 * HIDDEN;
+          const cells = (step + 1) * HIDDEN;
+          const previousCells = step * HIDDEN;
           for (let unit = 0; unit < HIDDEN; unit += 1) {
-            const input = state.gates[unit];
-            const forget = state.gates[HIDDEN + unit];
-            const output = state.gates[2 * HIDDEN + unit];
-            const candidate = state.gates[3 * HIDDEN + unit];
-            const tanhCell = Math.tanh(state.cell[unit]);
+            const input = gateTrace[gates + unit];
+            const forget = gateTrace[gates + HIDDEN + unit];
+            const output = gateTrace[gates + 2 * HIDDEN + unit];
+            const candidate = gateTrace[gates + 3 * HIDDEN + unit];
+            const tanhCell = Math.tanh(cellTrace[cells + unit]);
             const cellGradient = dc[unit] + dh[unit] * output * (1 - tanhCell * tanhCell);
             gateDerivative[unit] = cellGradient * candidate * input * (1 - input);
-            gateDerivative[HIDDEN + unit] = cellGradient * state.previousCell[unit] * forget * (1 - forget);
+            gateDerivative[HIDDEN + unit] = cellGradient * cellTrace[previousCells + unit] * forget * (1 - forget);
             gateDerivative[2 * HIDDEN + unit] = dh[unit] * tanhCell * output * (1 - output);
             gateDerivative[3 * HIDDEN + unit] = cellGradient * input * (1 - candidate * candidate);
             previousDc[unit] = cellGradient * forget;
           }
-          const previousDh = Array<number>(HIDDEN).fill(0);
-          for (let gate = 0; gate < gateDerivative.length; gate += 1) {
+          previousDh.fill(0);
+          const digit = inputDigits[index * STEPS + step];
+          const timeDelta = inputDeltas[index * STEPS + step];
+          for (let gate = 0; gate < 4 * HIDDEN; gate += 1) {
             const delta = gateDerivative[gate];
-            for (let k = 0; k < WIDTH; k += 1) {
-              gradient[gate * WIDTH + k] += delta * state.z[k];
-              if (k >= INPUTS && k < INPUTS + HIDDEN) previousDh[k - INPUTS] += delta * weights[gate * WIDTH + k];
+            const row = gate * WIDTH;
+            // Zero one-hot inputs contribute exactly zero gradient; skip them.
+            if (digit >= 0) gradient[row + digit] += delta;
+            gradient[row + 10] += delta * timeDelta;
+            for (let unit = 0; unit < HIDDEN; unit += 1) {
+              gradient[row + INPUTS + unit] += delta * hiddenTrace[previousCells + unit];
+              previousDh[unit] += delta * weights[row + INPUTS + unit];
             }
+            gradient[row + WIDTH - 1] += delta;
           }
-          dh = previousDh;
-          dc = previousDc;
+          dh.set(previousDh);
+          dc.set(previousDc);
         }
       }
       for (let parameter = 0; parameter < PARAMETERS; parameter += 1) {
@@ -117,9 +151,14 @@ export function fitLstm(sequence: Sequence, horizon: number) {
     }
   }
   const finalLoss = loss();
+  const liveDigits = new Int8Array(STEPS);
+  const liveDeltas = new Float64Array(STEPS);
   const engine: FittedEngine = {
     id: 'lstm', family: 'ml', label: 'LSTM · 12-step / 8-cell sequence classifier',
-    predict: (context) => ({ probabilities: forward(encode(context, context.digits.length - 1)).probabilities, support: origins.length, note: 'Local categorical head sums strictly above / below each barrier; equality is a loss' }),
+    predict: (context) => {
+      encodeInto(liveDigits, liveDeltas, 0, context, context.digits.length - 1);
+      return { probabilities: forward(liveDigits, liveDeltas, 0), support: origins.length, note: 'Local categorical head sums strictly above / below each barrier; equality is a loss' };
+    },
   };
   return { engine, samples: origins.length, epochs, sequenceLength: STEPS, hiddenUnits: HIDDEN, parameters: PARAMETERS, initialLoss, finalLoss };
 }
@@ -141,35 +180,75 @@ export function fitBoosting(sequence: Sequence, horizon: number) {
     const sorted = features.map((row) => row[feature]).sort((a, b) => a - b);
     return [...new Set([0.2, 0.4, 0.6, 0.8].map((q) => sorted[Math.floor(q * (sorted.length - 1))]))];
   });
+  // Bin each value once against its ascending, de-duplicated thresholds:
+  // value <= thresholds[j] exactly when bin <= j. Split search then becomes a
+  // cumulative histogram scan with the same left/right membership rule.
+  const rowCount = features.length;
+  const featureCount = thresholds.length;
+  const bins = new Uint8Array(featureCount * rowCount);
+  for (let feature = 0; feature < featureCount; feature += 1) {
+    const cuts = thresholds[feature];
+    for (let row = 0; row < rowCount; row += 1) {
+      const value = features[row][feature];
+      let bin = 0;
+      while (bin < cuts.length && value > cuts[bin]) bin += 1;
+      bins[feature * rowCount + row] = bin;
+    }
+  }
+  const histogramG = new Float64Array(5);
+  const histogramH = new Float64Array(5);
+  const histogramN = new Int32Array(5);
   const rounds: Tree[][] = [];
   const rate = 0.15;
   const lambda = 4;
   const allRows = features.map((_, i) => i);
   const loss = () => mean(logits.map((row, index) => -Math.log(Math.max(1e-9, softmax(row)[targets[index]]))));
   const initialLoss = loss();
-  const buildTree = (rows: number[], gradient: number[], curvature: number[], depth: number): Tree => {
-    const g = sum(rows.map((row) => gradient[row]));
-    const h = sum(rows.map((row) => curvature[row]));
+  const buildTree = (rows: number[], gradient: Float64Array, curvature: Float64Array, depth: number): Tree => {
+    let g = 0;
+    let h = 0;
+    for (const row of rows) { g += gradient[row]; h += curvature[row]; }
     const leaf = { value: clamp(g / (h + lambda), -2, 2) };
     if (depth === 2 || rows.length < 32) return leaf;
     let bestGain = 0.02;
-    let best: { feature: number; threshold: number } | null = null;
-    for (let feature = 0; feature < thresholds.length; feature += 1) for (const threshold of thresholds[feature]) {
+    let best: { feature: number; bin: number; threshold: number } | null = null;
+    for (let feature = 0; feature < featureCount; feature += 1) {
+      const cuts = thresholds[feature];
+      histogramG.fill(0); histogramH.fill(0); histogramN.fill(0);
+      const offset = feature * rowCount;
+      for (const row of rows) {
+        const bin = bins[offset + row];
+        histogramG[bin] += gradient[row];
+        histogramH[bin] += curvature[row];
+        histogramN[bin] += 1;
+      }
       let leftG = 0; let leftH = 0; let leftN = 0;
-      for (const row of rows) if (features[row][feature] <= threshold) { leftG += gradient[row]; leftH += curvature[row]; leftN += 1; }
-      if (leftN < 16 || rows.length - leftN < 16) continue;
-      const gain = leftG * leftG / (leftH + lambda) + (g - leftG) ** 2 / (h - leftH + lambda) - g * g / (h + lambda);
-      if (gain > bestGain) { bestGain = gain; best = { feature, threshold }; }
+      for (let bin = 0; bin < cuts.length; bin += 1) {
+        leftG += histogramG[bin]; leftH += histogramH[bin]; leftN += histogramN[bin];
+        if (leftN < 16 || rows.length - leftN < 16) continue;
+        const gain = leftG * leftG / (leftH + lambda) + (g - leftG) ** 2 / (h - leftH + lambda) - g * g / (h + lambda);
+        if (gain > bestGain) { bestGain = gain; best = { feature, bin, threshold: cuts[bin] }; }
+      }
     }
     if (!best) return leaf;
     const split = best;
-    return { ...leaf, ...split, left: buildTree(rows.filter((row) => features[row][split.feature] <= split.threshold), gradient, curvature, depth + 1), right: buildTree(rows.filter((row) => features[row][split.feature] > split.threshold), gradient, curvature, depth + 1) };
+    const offset = split.feature * rowCount;
+    return {
+      ...leaf, feature: split.feature, threshold: split.threshold,
+      left: buildTree(rows.filter((row) => bins[offset + row] <= split.bin), gradient, curvature, depth + 1),
+      right: buildTree(rows.filter((row) => bins[offset + row] > split.bin), gradient, curvature, depth + 1),
+    };
   };
+  const gradient = new Float64Array(rowCount);
+  const curvature = new Float64Array(rowCount);
   for (let round = 0; round < 24; round += 1) {
     const probabilities = logits.map(softmax);
     const trees = Array.from({ length: 10 }, (_, digit) => {
-      const gradient = targets.map((target, index) => Number(target === digit) - probabilities[index][digit]);
-      const curvature = probabilities.map((row) => Math.max(1e-3, row[digit] * (1 - row[digit])));
+      for (let index = 0; index < rowCount; index += 1) {
+        const p = probabilities[index][digit];
+        gradient[index] = Number(targets[index] === digit) - p;
+        curvature[index] = Math.max(1e-3, p * (1 - p));
+      }
       return buildTree(allRows, gradient, curvature, 0);
     });
     rounds.push(trees);
