@@ -38,6 +38,16 @@ function seededDigits(count, seed = 99) {
 const rank = (family, feed, duration = 1, onProgress) =>
   runResearchRanking(family, feed, analyzeDigits(feed.ticks), duration, onProgress);
 
+/** A candidate with no measurable history at all. */
+function emptyOutcomes(candidate) {
+  return { candidate, durationTicks: 5, sample: 0, hits: 0, misses: 0, barrierEqual: 0, empiricalHitRate: null, wilson95: null, smoothedHistoricalHitRate: null, contextSample: 0, contextDigit: null, contextParity: null };
+}
+
+/** A candidate with deep, favourable history. */
+function richOutcomes() {
+  return { candidate: { family: 'even-odd', contractType: 'DIGITEVEN' }, durationTicks: 5, sample: 700, hits: 470, misses: 230, barrierEqual: 0, empiricalHitRate: 0.67, wilson95: { lower: 0.63, upper: 0.71 }, smoothedHistoricalHitRate: 0.69, contextSample: 300, contextDigit: 8, contextParity: 'even' };
+}
+
 test('confidence combines weighted factors and counts agreement without inflating it', () => {
   const votes = [
     engineVote({ id: 'a', label: 'A', family: 'trend', stance: 'support', strength: 0.8, weight: 0.5, detail: '' }),
@@ -259,4 +269,73 @@ test('scans on empty or short feeds abstain loudly instead of crashing or changi
     assert.equal(consensus.enginesTotal, 7, 'the digit engine count must not depend on feed size');
     assert.ok(consensus.confidence <= 0.5, 'a thin feed must not produce a confident signal');
   }
+});
+
+test('agreement is discounted by how much of the engine room actually voted', () => {
+  // Three identical digits: only the frequency engines have enough to vote, and
+  // exactly one of them supports MATCH 7. Raw weighted agreement among the
+  // engines that voted is a perfect 1.0, which must NOT read as unanimity.
+  const digits = [7, 7, 7];
+  const thin = digitConsensus({
+    family: 'matches', label: 'MATCH 7', contract: { family: 'matches', contractType: 'DIGITMATCH', targetDigit: 7 },
+    outcomes: emptyOutcomes({ family: 'matches', contractType: 'DIGITMATCH', targetDigit: 7 }),
+    baseline: emptyOutcomes({ family: 'matches', contractType: 'DIGITMATCH', targetDigit: 7 }),
+    analysis: analyzeDigits(ticksOf(digits)), digits, quant: null,
+    qualified: false, gateReasons: ['Not enough conditioned outcomes.'], familiesTotal: 6,
+  });
+  const participation = thin.votes.filter((vote) => vote.weight > 0).length / thin.votes.length;
+  const consensusFactor = thin.factors.find((factor) => factor.id === 'engine-consensus');
+  const convictionFactor = thin.factors.find((factor) => factor.id === 'engine-conviction');
+  assert.equal(thin.enginesAgreed, 1, 'exactly one engine supports this candidate');
+  assert.ok(participation < 0.5, 'most of the engine room must have abstained');
+  assert.equal(thin.weightedAgreement, 1, 'agreement among the engines that voted is unanimous');
+  assert.ok(consensusFactor.score < thin.weightedAgreement, 'coverage must discount a lone supporter');
+  assert.ok(Math.abs(consensusFactor.score - thin.weightedAgreement * participation) < 1e-9, 'the discount is exactly the coverage');
+  assert.ok(convictionFactor.score <= participation + 1e-9, 'conviction is discounted the same way');
+  assert.ok(thin.confidence < 0.25, `a three-digit feed must not look confident, got ${thin.confidencePercent}%`);
+  assert.equal(thin.grade, 'very weak');
+
+  // A full panel with the same unanimity is not discounted at all.
+  const richDigits = Array.from({ length: 900 }, (_, index) => (index % 3 === 0 ? 8 : index % 2));
+  const rich = digitConsensus({
+    family: 'even-odd', label: 'EVEN', contract: { family: 'even-odd', contractType: 'DIGITEVEN' },
+    outcomes: richOutcomes(), baseline: richOutcomes(),
+    analysis: analyzeDigits(ticksOf(richDigits)), digits: richDigits,
+    quant: buildDigitQuantContext('even-odd', richDigits),
+    qualified: true, gateReasons: [], familiesTotal: 6,
+  });
+  const richParticipation = rich.votes.filter((vote) => vote.weight > 0).length / rich.votes.length;
+  const richFactor = rich.factors.find((factor) => factor.id === 'engine-consensus');
+  assert.equal(richParticipation, 1, 'every engine votes on a deep feed');
+  assert.ok(Math.abs(richFactor.score - rich.weightedAgreement) < 1e-9, 'full coverage leaves agreement untouched');
+  assert.ok(rich.confidence > thin.confidence, 'a deep feed must outscore a degenerate one');
+});
+
+test('rise/fall data quality reflects feed depth, not freshness alone', () => {
+  const pricesOf = (tickCount) => Array.from({ length: tickCount }, (_, index) => 1000 + Math.sin(index / 9) * 4 + index * 0.05);
+  const build = (tickCount, fresh = true) => {
+    const prices = pricesOf(tickCount);
+    const ticks = prices.map((quote, epoch) => ({ quote, epoch: 1_700_000_000 + epoch }));
+    return riseFallConsensus({
+      marketCode: 'R_100', marketName: 'Volatility 100 Index', analysis: analyzeRiseFall(ticks, 5), prices,
+      fresh, historyLoaded: true, tickCount, horizon: { unit: 'ticks', value: 5 },
+      // Identical outcome evidence in every arm, so only depth or freshness differ.
+      historical: { horizon: 5, sample: 200, rise: 120, fall: 80, unchanged: 0 },
+      directionalSupport: 0.4, qualified: false, gateReasons: ['Gate not passed.'],
+      quant: riseFallQuantMetrics(prices),
+    });
+  };
+  const quality = (consensus) => consensus.factors.find((factor) => factor.id === 'data-quality').score;
+  const shallow = build(40);
+  const mid = build(250);
+  const deep = build(600);
+  assert.ok(quality(shallow) < quality(mid), 'a shallow live feed is weaker evidence than a mid-depth one');
+  assert.ok(quality(mid) < quality(deep), 'quality keeps rising with depth');
+  assert.equal(quality(deep), 1, 'a feed at the required depth scores full quality');
+  assert.ok(quality(shallow) < 0.5, `40 live ticks must not score as full-quality data, got ${quality(shallow)}`);
+
+  // Freshness still matters at equal depth.
+  const stale = build(600, false);
+  assert.ok(quality(stale) < quality(deep), 'a stale feed is discounted at the same depth');
+  assert.ok(quality(stale) > 0, 'a stale but deep feed is still partial evidence');
 });

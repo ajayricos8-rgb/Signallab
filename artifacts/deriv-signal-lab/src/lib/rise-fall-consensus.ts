@@ -38,6 +38,13 @@ export type RiseFallConsensusInput = {
 /** Deep-quant window: enough history for Hurst/fractal stability, still fast. */
 const QUANT_WINDOW = 600;
 
+/**
+ * Tick depth the scanner asks for before a market is gate-qualified. Data
+ * quality reaches its ceiling here; a shallower live feed is discounted rather
+ * than treated as equally trustworthy.
+ */
+export const REQUIRED_CONSENSUS_TICKS = 500;
+
 export function horizonLabel(horizon: RiseFallHorizon): string {
   return `${horizon.value} ${horizon.unit === 'ticks' ? (horizon.value === 1 ? 'tick' : 'ticks') : (horizon.value === 1 ? 'minute' : 'minutes')}`;
 }
@@ -184,12 +191,23 @@ export function riseFallConsensus(input: RiseFallConsensusInput): SignalConsensu
   }
 
   const agreement = buildConsensus({ votes, factors: [] });
-  const dataQuality = input.fresh ? 1 : input.historyLoaded && input.tickCount >= 500 ? 0.5 : 0.15;
+  // Coverage: how much of the engine room had enough evidence to vote. Weighted
+  // agreement only spans the engines that voted, so scaling by coverage stops a
+  // near-empty feed from scoring a perfect agreement on one lone supporter.
+  const voting = votes.filter((vote) => vote.weight > 0).length;
+  const participation = votes.length ? voting / votes.length : 0;
+  const coveredAgreement = agreement.weightedAgreement * participation;
+  // Freshness alone is not depth: a live feed with 40 ticks is far weaker
+  // evidence than a live feed with the 500 the scanner asks for, so quality is
+  // the product of both. A full-depth feed still scores 1.
+  const freshness = input.fresh ? 1 : input.historyLoaded ? 0.5 : 0.15;
+  const depth = scale(input.tickCount, REQUIRED_CONSENSUS_TICKS);
+  const dataQuality = clamp01(freshness * (0.2 + 0.8 * depth));
 
   const factors = [
     confidenceFactor({
-      id: 'engine-consensus', label: 'Weighted engine agreement', score: agreement.weightedAgreement, weight: 0.22,
-      detail: `${agreement.enginesAgreed} of ${agreement.enginesTotal} engines support ${direction === 'WAIT' ? 'the leading lean' : direction}; ${(agreement.weightedAgreement * 100).toFixed(0)}% of the voting weight agrees.`,
+      id: 'engine-consensus', label: 'Weighted engine agreement', score: coveredAgreement, weight: 0.22,
+      detail: `${agreement.enginesAgreed} of ${agreement.enginesTotal} engines support ${direction === 'WAIT' ? 'the leading lean' : direction}; ${(agreement.weightedAgreement * 100).toFixed(0)}% of the voting weight agrees, and ${voting} of ${votes.length} engines had enough evidence to vote (${(participation * 100).toFixed(0)}% coverage).`,
     }),
     confidenceFactor({
       id: 'engine-breadth', label: 'Engine-family breadth', score: agreement.familiesTotal ? agreement.familiesAgreed / agreement.familiesTotal : 0, weight: 0.1,

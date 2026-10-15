@@ -279,6 +279,13 @@ export function digitConsensus(input: DigitConsensusInput): SignalConsensus {
 
   const counted = votes.filter((vote) => vote.weight > 0 || vote.stance !== 'neutral');
   const agreement = buildConsensus({ votes: counted, factors: [], familiesTotal: input.familiesTotal });
+  // Coverage: how much of the engine room actually had enough evidence to vote.
+  // Weighted agreement is measured only among the engines that voted, so a lone
+  // supporter would otherwise score a perfect 1.0 on a three-digit feed. Scaling
+  // by coverage keeps agreement honest without punishing a full panel.
+  const voting = votes.filter((vote) => vote.weight > 0).length;
+  const participation = votes.length ? voting / votes.length : 0;
+  const coveredAgreement = agreement.weightedAgreement * participation;
 
   const wilsonWidth = outcomes.wilson95 ? outcomes.wilson95.upper - outcomes.wilson95.lower : 1;
   const conditionedEdge = outcomes.smoothedHistoricalHitRate !== null && baseline.empiricalHitRate !== null
@@ -289,16 +296,16 @@ export function digitConsensus(input: DigitConsensusInput): SignalConsensus {
   const factors: ConfidenceFactor[] = [
     ...(input.ensembleFactors ?? []),
     confidenceFactor({
-      id: 'engine-consensus', label: 'Weighted engine agreement', score: agreement.weightedAgreement, weight: 0.2 + 0.3 * ensembleScale,
-      detail: `${agreement.enginesAgreed} of ${agreement.enginesTotal} engines support ${input.label}; ${(agreement.weightedAgreement * 100).toFixed(0)}% of the voting weight agrees.`,
+      id: 'engine-consensus', label: 'Weighted engine agreement', score: coveredAgreement, weight: 0.2 + 0.3 * ensembleScale,
+      detail: `${agreement.enginesAgreed} of ${agreement.enginesTotal} engines support ${input.label}; ${(agreement.weightedAgreement * 100).toFixed(0)}% of the voting weight agrees, and ${voting} of ${votes.length} engines had enough evidence to vote (${(participation * 100).toFixed(0)}% coverage).`,
     }),
     confidenceFactor({
       id: 'engine-breadth', label: 'Engine-family breadth', score: agreement.familiesTotal ? agreement.familiesAgreed / agreement.familiesTotal : 0, weight: 0.1 + 0.15 * ensembleScale,
       detail: `${agreement.familiesAgreed} of ${agreement.familiesTotal} engine families point the same way.`,
     }),
     confidenceFactor({
-      id: 'engine-conviction', label: 'Supporting-engine conviction', score: agreement.conviction, weight: 0.06 + 0.09 * ensembleScale,
-      detail: `Average strength of the supporting engines' own evidence: ${(agreement.conviction * 100).toFixed(0)}%.`,
+      id: 'engine-conviction', label: 'Supporting-engine conviction', score: agreement.conviction * participation, weight: 0.06 + 0.09 * ensembleScale,
+      detail: `Average strength of the supporting engines' own evidence: ${(agreement.conviction * 100).toFixed(0)}%, across ${(participation * 100).toFixed(0)}% of the engine room.`,
     }),
     confidenceFactor({
       id: 'conditioned-edge', label: 'Edge over the all-history base rate', score: conditionedEdge === null ? 0 : scale(conditionedEdge, 0.05), weight: ensembleScale ? 0.2 : 0.14,
