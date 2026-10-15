@@ -281,11 +281,47 @@ export function BotPerformancePanel({ bot }: { bot: DigitBotController }) {
 /** Engine status: what each of the fourteen engines last reported. */
 export function BotEnginePanel({ bot }: { bot: DigitBotController }) {
   const engines = bot.decision?.engines ?? [];
+  const ensemble = bot.decision?.ensemble ?? null;
+  const models = bot.decision?.models ?? [];
+  const reported = engines.filter((engine) => engine.confidence !== null).map((engine) => engine.confidence as number);
+  const meanConfidence = reported.length ? reported.reduce((sum, value) => sum + value, 0) / reported.length : null;
+  const okCount = engines.filter((engine) => engine.status === 'ok').length;
+  const degradedCount = engines.filter((engine) => engine.status === 'degraded').length;
+  const blockedCount = engines.filter((engine) => engine.status === 'blocked').length;
   return (
     <Panel eyebrow="Engine status" title="The fourteen coordinated engines" icon={<Cpu size={16} />} testId="bot-engines">
       {!engines.length ? (
         <p className="text-[11px] text-muted-foreground">Engine output appears after the first decision cycle.</p>
       ) : (
+        <>
+        <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4" data-testid="bot-engine-summary">
+          <StatTile
+            label="Engines reporting ok"
+            value={`${okCount} / ${engines.length}`}
+            hint={degradedCount || blockedCount ? `${degradedCount} degraded · ${blockedCount} blocked` : 'No engine degraded or blocked this cycle'}
+            tone={blockedCount ? 'bad' : degradedCount ? 'warn' : 'good'}
+            testId="bot-engine-agreement"
+          />
+          <StatTile
+            label="Mean engine confidence"
+            value={meanConfidence === null ? '—' : formatPercent(meanConfidence, 0)}
+            hint={reported.length ? `Reported by ${reported.length} of ${engines.length} engines` : 'No engine reported a confidence this cycle'}
+            testId="bot-engine-confidence"
+          />
+          <StatTile
+            label="Models supporting the forecast"
+            value={ensemble ? `${ensemble.supportingModels} / ${models.length}` : '—'}
+            hint={ensemble ? `Agreement ${formatPercent(ensemble.agreement, 0)} · dispersion ${ensemble.dispersion.toFixed(3)} across ${ensemble.probabilities.length} outcome states` : 'No ensemble forecast this cycle'}
+            testId="bot-ensemble-support"
+          />
+          <StatTile
+            label="Held-out skill vs baseline"
+            value={ensemble?.validationSkill === null || ensemble?.validationSkill === undefined ? '—' : formatPercent(ensemble.validationSkill, 1)}
+            hint={ensemble ? (ensemble.valid ? `Improvement lower bound ${ensemble.improvementLower === null ? '—' : ensemble.improvementLower.toFixed(4)}` : ensemble.reason) : 'Chronological validation unavailable'}
+            tone={ensemble && !ensemble.valid ? 'warn' : 'default'}
+            testId="bot-ensemble-skill"
+          />
+        </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {engines.map((finding) => (
             <div key={finding.engine} className="rounded-lg border border-border bg-background/35 p-3" data-testid={`bot-engine-${finding.engine}`}>
@@ -300,6 +336,7 @@ export function BotEnginePanel({ bot }: { bot: DigitBotController }) {
             </div>
           ))}
         </div>
+        </>
       )}
       {bot.decision?.models.length ? (
         <div className="mt-4 overflow-x-auto rounded-lg border border-border" role="region" aria-label="Model evidence table">
