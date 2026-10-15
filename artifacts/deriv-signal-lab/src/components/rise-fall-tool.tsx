@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { TradeDock } from '@/components/trade-dock';
 import { analyzeRiseFall, type Bias, type HistoricalOutcomes, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
+import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 
 type DerivWireMessage = {
   msg_type?: string;
@@ -806,6 +807,8 @@ export function RiseFallTool() {
         </article>
         <div className="space-y-3"><div className="flex items-center gap-2"><TrendingDown size={16} className="text-primary" /><h3 className="text-sm font-bold">Rolling-window consensus</h3></div><WindowTable analysis={chartRow.analysis} /></div>
       </section>
+
+      <RiseFallDeepPanel prices={chartRow.ticks.map((t) => t.quote)} />
 
       <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite">
         {scanSnapshot ? `Run Analysis examined ${scanSnapshot.rows.length} configured markets across all ${HORIZONS.length} durations at ${new Date(scanSnapshot.ranAt).toLocaleTimeString()}.` : 'Run Analysis to evaluate all markets and durations together. Live feed diagnostics continue updating in the background.'} No automatic order placement is available: the trade dock sends only the orders you confirm against a live Deriv quote.

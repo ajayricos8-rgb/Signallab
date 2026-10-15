@@ -23,6 +23,7 @@ import {
 import { analyzePriceContext } from '@/lib/price-context';
 import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
 import { TradeDock } from '@/components/trade-dock';
+import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import type { OverUnderReport } from '@/lib/over-under/ensemble';
 import type { DigitResearchRequest, DigitResearchResponse } from '@/lib/digit-research.worker';
@@ -489,6 +490,8 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
       </section>
 
       <PriceContextPanel feed={feed} analysis={currentPriceContext} />
+
+      <DigitDeepPanel digits={feed.ticks.map((t) => t.digit)} family={family === 'over-under' ? 'over-under' : family === 'even-odd' ? 'even-odd' : 'matches'} />
 
       <section className="grid gap-3 md:grid-cols-3">
         <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Database size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Verified input pipeline</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Active-symbol pip_size, history pip_size and live tick pip_size must agree. Quotes are decimal-scaled before extracting the last displayed digit; invalid precision blocks analysis.</p></div></div>
