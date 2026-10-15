@@ -20,6 +20,9 @@ import {
 import { TradeDock } from '@/components/trade-dock';
 import { analyzeRiseFall, type Bias, type HistoricalOutcomes, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
+import { buildConsensus, pickMajority, type AnalysisProgress, type ConsensusSignal } from '@/lib/engine-consensus';
+import { riseFallCouncil } from '@/lib/rise-fall-engines';
+import { ConsensusCard, ScanProgressBar } from '@/components/consensus-panel';
 
 type DerivWireMessage = {
   msg_type?: string;
@@ -58,11 +61,14 @@ type MarketRow = {
   reasons: string[];
   horizonEvaluations: HorizonEvaluation[];
   bestHorizon: HorizonEvaluation | null;
+  consensusHorizon: Horizon | null;
+  consensus: ConsensusSignal | null;
 };
 type ScanSnapshot = {
   ranAt: number;
   rows: MarketRow[];
   bestCandidate: { marketCode: string; horizon: Horizon } | null;
+  signal: ConsensusSignal | null;
 };
 
 const REQUIRED_TICKS = 500;
@@ -458,7 +464,7 @@ function createMarketRow(
   if (directionSign && (analysis.volatilityRatio === null || analysis.volatilityRegime === 'Insufficient history')) reasons.push('Volatility context is unavailable.');
 
   const technicalEligible = reasons.length === 0 && directionSign !== 0;
-  return { market, ticks, info, analysis, fresh, sourceAgeMs, technicalEligible, reasons, horizonEvaluations: [], bestHorizon: null };
+  return { market, ticks, info, analysis, fresh, sourceAgeMs, technicalEligible, reasons, horizonEvaluations: [], bestHorizon: null, consensusHorizon: null, consensus: null };
 }
 
 function evaluateHorizon(row: MarketRow, horizon: Horizon): HorizonEvaluation {
@@ -500,17 +506,35 @@ function evaluateMarketDurations(row: MarketRow): MarketRow {
   const bestHorizon = horizonEvaluations
     .filter((evaluation) => evaluation.qualified)
     .sort((left, right) => (right.directionalSupport ?? -Infinity) - (left.directionalSupport ?? -Infinity))[0] ?? null;
-  return { ...row, horizonEvaluations, bestHorizon };
+  // Every completed market scan yields a consensus signal from the full engine
+  // council, even when no duration passes every gate.
+  const consensusEvaluation = bestHorizon
+    ?? horizonEvaluations.slice().sort((left, right) => Math.abs(right.directionalSupport ?? 0) - Math.abs(left.directionalSupport ?? 0))[0]
+    ?? null;
+  const votes = riseFallCouncil(row.analysis, consensusEvaluation?.historical ?? null, row.ticks.map((tick) => tick.quote));
+  const side = pickMajority(votes);
+  const evidenceBase = consensusEvaluation?.directionalSupport;
+  const consensus = buildConsensus(votes, side ?? 'WAIT', {
+    evidence: Math.max(0, Math.min(1, 0.3 + Math.abs(evidenceBase ?? 0) * 0.55 + (row.fresh ? 0.12 : 0))),
+    note: consensusEvaluation
+      ? `Strongest horizon ${formatHorizon(consensusEvaluation.horizon)} · ${consensusEvaluation.historical.sample} completed outcomes.`
+      : 'No completed horizon outcomes were available for this market.',
+  });
+  return { ...row, horizonEvaluations, bestHorizon, consensusHorizon: consensusEvaluation?.horizon ?? null, consensus };
 }
 
-function bestCandidate(rows: MarketRow[]): { row: MarketRow; evaluation: HorizonEvaluation } | null {
+function pickCrossMarketSignal(rows: MarketRow[]): { row: MarketRow; consensus: ConsensusSignal } | null {
+  const directional = rows
+    .filter((row) => row.consensus && row.consensus.label !== 'WAIT')
+    .map((row) => ({ row, consensus: row.consensus! }))
+    .sort((left, right) => right.consensus.confidence - left.consensus.confidence
+      || right.consensus.agreement - left.consensus.agreement
+      || Math.abs(right.row.analysis.biasScore) - Math.abs(left.row.analysis.biasScore));
+  if (directional.length) return directional[0];
   return rows
-    .filter((row) => row.bestHorizon !== null)
-    .map((row) => ({ row, evaluation: row.bestHorizon! }))
-    .sort((left, right) => {
-      const supportDifference = (right.evaluation.directionalSupport ?? -Infinity) - (left.evaluation.directionalSupport ?? -Infinity);
-      return supportDifference || Math.abs(right.row.analysis.biasScore) - Math.abs(left.row.analysis.biasScore);
-    })[0] ?? null;
+    .filter((row) => row.consensus)
+    .map((row) => ({ row, consensus: row.consensus! }))
+    .sort((left, right) => right.consensus.confidence - left.consensus.confidence)[0] ?? null;
 }
 
 function PricePath({ ticks, marketName }: { ticks: FeedTick[]; marketName: string }) {
@@ -627,7 +651,7 @@ function MarketScanTable({ rows, hasScan }: { rows: MarketRow[]; hasScan: boolea
             <td className="px-3 py-3 text-muted-foreground mono">{formatSigned(row.analysis.trendScore)} / {formatSigned(row.analysis.momentumScore)}</td>
             <td className="px-3 py-3 font-semibold">{row.bestHorizon ? formatHorizon(row.bestHorizon.horizon) : '—'}</td>
             <td className="px-3 py-3 text-muted-foreground mono">{row.bestHorizon ? row.bestHorizon.historical.sample : '—'}</td>
-            <td className="px-3 py-3 text-right">{row.bestHorizon ? <span className="inline-flex items-center gap-1 text-emerald-500"><CheckCircle2 size={13} /> Candidate</span> : <span className="text-muted-foreground">{hasScan ? 'No qualifying duration' : 'Run Analysis to scan'}</span>}{row.bestHorizon === null && hasScan && firstReason && <div className="mt-1 max-w-52 text-left text-[10px] leading-relaxed text-muted-foreground">{firstReason}</div>}</td>
+            <td className="px-3 py-3 text-right">{row.bestHorizon ? <span className="inline-flex items-center gap-1 text-emerald-500"><CheckCircle2 size={13} /> Candidate</span> : row.consensus ? <span className="text-amber-500">{row.consensus.label} consensus</span> : <span className="text-muted-foreground">{hasScan ? 'No qualifying duration' : 'Run Analysis to scan'}</span>}{row.consensus && <div className="mt-1 max-w-52 text-left text-[10px] leading-relaxed text-muted-foreground">{row.consensus.votesFor}/{row.consensus.votesTotal} engines · {row.consensus.confidence}% confidence</div>}{row.bestHorizon === null && hasScan && firstReason && <div className="mt-1 max-w-52 text-left text-[10px] leading-relaxed text-muted-foreground">{firstReason}</div>}</td>
           </tr>;
         })}</tbody>
       </table>
@@ -639,6 +663,7 @@ export function RiseFallTool() {
   const [now, setNow] = useState(Date.now());
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<AnalysisProgress | null>(null);
   const [draftMarketCode, setDraftMarketCode] = useState<string>(SYMBOLS[0].code);
   const [draftExpiry, setDraftExpiry] = useState<number | null>(1);
   const { ticksBySymbol, marketInfo, feedStatus, feedError, serverClockOffsetMs } = useDerivMarkets(SYMBOLS);
@@ -661,7 +686,7 @@ export function RiseFallTool() {
   const candidateRef = scanSnapshot?.bestCandidate;
   const candidateRow = candidateRef ? scanSnapshot?.rows.find((row) => row.market.code === candidateRef.marketCode) ?? null : null;
   const candidateEvaluation = candidateRow?.horizonEvaluations.find((evaluation) => candidateRef && sameHorizon(evaluation.horizon, candidateRef.horizon)) ?? null;
-  const scanCandidate = candidateRow && candidateEvaluation?.qualified ? { row: candidateRow, evaluation: candidateEvaluation } : null;
+  const scanCandidate = candidateRow && candidateEvaluation ? { row: candidateRow, evaluation: candidateEvaluation } : null;
   const chartRow = scanCandidate?.row ?? resultRows.find((row) => row.ticks.length > 1) ?? resultRows[0];
   const chartHorizon = scanCandidate?.evaluation.horizon ?? null;
   const chartHistorical = scanCandidate?.evaluation.historical ?? null;
@@ -669,28 +694,53 @@ export function RiseFallTool() {
   function handleRunAnalysis() {
     if (isScanning) return;
     setIsScanning(true);
-    window.setTimeout(() => {
-      const rows = liveRows.map((row) => evaluateMarketDurations({
-        ...row,
-        info: { ...row.info },
-        ticks: [...row.ticks],
-        reasons: [...row.reasons],
-      }));
-      const candidate = bestCandidate(rows);
-      setScanSnapshot({
-        ranAt: Date.now(),
-        rows,
-        bestCandidate: candidate ? { marketCode: candidate.row.market.code, horizon: candidate.evaluation.horizon } : null,
+    setScanProgress({ percent: 0, stage: `Scanning ${liveRows.length} markets × ${HORIZONS.length} durations` });
+    const sourceRows = liveRows.map((row) => ({
+      ...row,
+      info: { ...row.info },
+      ticks: [...row.ticks],
+      reasons: [...row.reasons],
+    }));
+    const rows: MarketRow[] = [];
+    let index = 0;
+    const step = () => {
+      if (index >= sourceRows.length) {
+        setScanProgress({ percent: 100, stage: 'Building consensus signal' });
+        window.setTimeout(() => {
+          const candidate = pickCrossMarketSignal(rows);
+          setScanSnapshot({
+            ranAt: Date.now(),
+            rows,
+            bestCandidate: candidate
+              ? { marketCode: candidate.row.market.code, horizon: candidate.row.consensusHorizon ?? candidate.row.bestHorizon?.horizon ?? HORIZONS[0] }
+              : null,
+            signal: candidate?.consensus ?? null,
+          });
+          setIsScanning(false);
+          setScanProgress(null);
+        }, 30);
+        return;
+      }
+      const row = evaluateMarketDurations(sourceRows[index]);
+      rows.push(row);
+      index += 1;
+      setScanProgress({
+        percent: Math.min(96, Math.round((index / sourceRows.length) * 96)),
+        stage: `Analyzing ${row.market.name} · engines and ${HORIZONS.length} durations`,
       });
-      setIsScanning(false);
-    }, 80);
+      window.setTimeout(step, 0);
+    };
+    window.setTimeout(step, 30);
   }
 
+  const scanSignal = scanSnapshot?.signal ?? null;
+  const signalLabel = isScanning ? 'ANALYZING' : scanSignal?.label ?? (scanSnapshot ? 'WAIT' : 'READY');
+  const signalTone = scanSignal && scanSignal.tier === 'STRONG' ? 'text-primary' : scanSignal && scanSignal.tier === 'MODERATE' ? 'text-amber-500' : 'text-amber-500';
   const scanSummary = !scanSnapshot
-    ? 'Run Analysis checks every configured market against all 25 durations. It chooses a duration only when the data, combined engines and that duration’s observed outcomes pass the gates.'
-    : scanCandidate
-      ? `${scanCandidate.row.market.name} is the highest-ranked qualifying research candidate at ${formatHorizon(scanCandidate.evaluation.horizon)}. Duration is selected automatically; this remains unvalidated and is not a trade-ready signal.`
-      : 'No market-and-duration pair passed every gate. The system returns WAIT rather than forcing a direction or expiry.';
+    ? 'Run Analysis starts immediately across every configured market and all 25 durations, with live percentage progress. The full engine council votes on the outcome and the top consensus signal is returned with a confidence score.'
+    : scanSignal
+      ? `${scanSignal.label === 'WAIT' ? 'The engine council sees no directional edge on any market right now' : `${scanSignal.label} on ${candidateRow?.market.name ?? 'the leading market'} is the strongest cross-market consensus at ${scanSignal.confidence}% confidence, with ${scanSignal.votesFor} of ${scanSignal.votesTotal} engines agreeing`}. Duration is selected automatically from the engines and expiry-specific outcomes; this remains a research estimate, not a guaranteed outcome.`
+      : 'The scan completed but the engines could not build a consensus on this data. Re-run analysis to refresh the market state.';
 
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid="rise-fall-analysis">
@@ -711,7 +761,7 @@ export function RiseFallTool() {
             <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground">No manual duration choice. The engines test all 25 horizons per market and select the top qualifying horizon only when technical alignment and expiry-specific historical checks agree; otherwise the output is WAIT.</p>
           </div>
           <button type="button" onClick={handleRunAnalysis} disabled={isScanning} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60" data-testid="button-run-analysis">
-            <Play size={16} fill="currentColor" />{isScanning ? 'Analyzing markets and durations…' : 'Run Analysis'}
+            <Play size={16} fill="currentColor" />{isScanning ? `Analyzing… ${scanProgress?.percent ?? 0}%` : 'Run Analysis'}
           </button>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
@@ -722,42 +772,46 @@ export function RiseFallTool() {
           <span>{serverClockOffsetMs === null ? 'Server clock unverified' : 'Deriv server time synced'}</span>
           <span>Synthetic tick count is not traded volume</span>
         </div>
+        <ScanProgressBar progress={isScanning ? scanProgress : null} />
         {feedError && <div className="mt-3 flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive" role="alert"><AlertTriangle size={15} className="mt-0.5 shrink-0" /><span>{feedError}</span></div>}
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]" data-testid="analysis-summary">
+      <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]" data-testid="analysis-summary" aria-busy={isScanning}>
         <article className="signal-panel rounded-xl border border-card-border p-5 panel-glow sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="eyebrow">Trade-grade decision</div>
-            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-amber-500">No auto-trading</span>
+            <div className="eyebrow">Cross-market engine consensus</div>
+            <span className="rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-primary" data-testid="rise-fall-status-chip">{isScanning ? `Analyzing… ${scanProgress?.percent ?? 0}%` : scanSnapshot ? 'Analysis complete · no auto-trading' : 'Ready to analyze'}</span>
           </div>
+          {isScanning && <ScanProgressBar progress={scanProgress} />}
           <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <div className="text-5xl font-extrabold tracking-[-0.06em] text-amber-500">WAIT</div>
+              <div className={`text-5xl font-extrabold tracking-[-0.06em] ${signalTone}`} data-testid="rise-fall-signal" role="status" aria-live="polite">{signalLabel}</div>
               <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{scanSummary}</p>
             </div>
-            {scanCandidate ? (
-              <div className={`w-full max-w-sm rounded-xl border px-4 py-3 ${biasTone(scanCandidate.row.analysis.bias)}`}>
-                <div className="text-[10px] font-bold uppercase tracking-[0.1em] opacity-80">Auto-selected research candidate · unvalidated</div>
-                <div className="mt-2 text-base font-extrabold">{scanCandidate.row.market.name}</div>
-                <div className="mt-0.5 text-[10px] mono opacity-80">{scanCandidate.row.market.code}</div>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-sm font-bold">
-                  <span className="inline-flex items-center gap-1.5">{scanCandidate.row.analysis.bias === 'RISE' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}{scanCandidate.row.analysis.bias}</span>
-                  <span className="rounded-full border border-current/20 px-2 py-1 text-xs">{formatHorizon(scanCandidate.evaluation.horizon)}</span>
+            <div className="flex w-full max-w-sm flex-col gap-3">
+              {scanSignal ? <ConsensusCard signal={scanSignal} /> : (
+                <div className="w-full rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+                  {scanSnapshot ? 'The engines could not build a consensus on this data.' : 'No analysis has been run yet; no duration is selected.'}
                 </div>
-                <div className="mt-2 text-[10px] opacity-80">Observed direction aligns at this expiry · not a probability or forecast.</div>
-              </div>
-            ) : (
-              <div className="w-full max-w-sm rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-                {scanSnapshot ? 'No market and duration passed all data, technical and expiry-specific gates.' : 'No analysis has been run yet; no duration is selected.'}
-              </div>
-            )}
+              )}
+              {scanCandidate ? (
+                <div className={`w-full rounded-xl border px-4 py-3 ${biasTone(scanCandidate.row.analysis.bias)}`}>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.1em] opacity-80">Selected signal market · research estimate</div>
+                  <div className="mt-2 text-base font-extrabold">{scanCandidate.row.market.name}</div>
+                  <div className="mt-0.5 text-[10px] mono opacity-80">{scanCandidate.row.market.code}</div>
+                  <div className="mt-3 flex flex-wrap items-center gap-3 text-sm font-bold">
+                    <span className="inline-flex items-center gap-1.5">{scanCandidate.row.analysis.bias === 'FALL' ? <ArrowDownRight size={18} /> : <ArrowUpRight size={18} />}{scanSignal?.label ?? scanCandidate.row.analysis.bias}</span>
+                    <span className="rounded-full border border-current/20 px-2 py-1 text-xs">{formatHorizon(scanCandidate.evaluation.horizon)}</span>
+                  </div>
+                  <div className="mt-2 text-[10px] opacity-80">{scanSignal ? `${scanSignal.votesFor} of ${scanSignal.votesTotal} engines agree at ${scanSignal.confidence}% confidence.` : 'Observed direction at this expiry · not a probability or forecast.'}</div>
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="mt-5 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground">
             <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
-            <span>The automatic horizon is a research heuristic based on current engine alignment and historical outcomes, not a calibrated forecast. No out-of-sample calibration, live Deriv proposal, payout, break-even or expected-value check is connected; actionable output therefore remains WAIT.</span>
+            <span>The automatic horizon and consensus are research heuristics based on current engine alignment and historical outcomes, not calibrated forecasts. No out-of-sample calibration, live Deriv proposal, payout, break-even or expected-value check is connected. All trades still require your explicit confirmation in the trade dock.</span>
           </div>
-          {scanSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Last scan: {new Date(scanSnapshot.ranAt).toLocaleTimeString()} · every supported horizon evaluated automatically</div>}
         </article>
 
         <article className="rounded-xl border border-card-border bg-card/90 p-5 panel-glow">

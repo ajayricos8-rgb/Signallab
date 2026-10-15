@@ -1,6 +1,7 @@
 import { BrainCircuit, ChevronDown, Layers3, ShieldAlert } from 'lucide-react';
 import { ENGINE_FAMILIES, type EngineFamily } from '@/lib/over-under/features';
 import { contractProbability, type EngineEvidence, type OverUnderReport } from '@/lib/over-under/ensemble';
+import { tierDescription, type ConsensusSignal } from '@/lib/engine-consensus';
 
 const rate = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(1)}%`;
 const fixed = (value: number | null | undefined, digits = 3) => value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits);
@@ -80,21 +81,24 @@ function FamilyDiagnostics({ family, report }: { family: EngineFamily; report: O
   );
 }
 
-export function OverUnderEnginePanel({ report, isScanning, inactiveReason }: { report: OverUnderReport | null; isScanning: boolean; inactiveReason?: string }) {
+export function OverUnderEnginePanel({ report, isScanning, inactiveReason, signal }: { report: OverUnderReport | null; isScanning: boolean; inactiveReason?: string; signal?: ConsensusSignal | null }) {
   const activeSelection = !inactiveReason && !isScanning && report?.selected;
   const reference = report?.selected ?? report?.candidates[0];
   const label = reference ? `${reference.contract.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER'} ${reference.contract.barrier}` : null;
+  const consensusLabel = signal?.label ?? label;
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="over-under-engine-panel" aria-busy={isScanning}>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><div className="eyebrow flex items-center gap-2"><BrainCircuit size={14} /> Unified Over/Under analysis</div><h3 className="mt-1 text-base font-bold">Eight engine families. One evidence-gated decision.</h3><p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">All models evaluate the same market and tick expiry. Tuning performance sets family-balanced weights; a later held-out segment checks the combined forecast. Weak engines remain visible but cannot inflate agreement.</p></div>
+        <div><div className="eyebrow flex items-center gap-2"><BrainCircuit size={14} /> Unified Over/Under analysis</div><h3 className="mt-1 text-base font-bold">Eight engine families. One consensus signal.</h3><p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">All twelve models evaluate the same market and tick expiry and every one of them votes on the signal. Tuning performance sets family-balanced probability weights; the consensus tally below counts how many engines agree with the emitted signal and at what confidence.</p></div>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/5 px-3 py-1.5 text-[10px] font-semibold text-primary"><Layers3 size={12} /> Barriers 1–8 only</span>
       </div>
       {report ? <>
         <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Train / tune / held-out" value={`${report.validation.trainSample} ticks / ${report.validation.tuningSample} / ${report.validation.holdoutSample} outcomes`} /><Metric label="Held-out Brier · lower is better" value={`${fixed(report.validation.ensembleBrier, 4)} vs ${fixed(report.validation.baselineBrier, 4)} baseline`} /><Metric label="Held-out Brier skill" value={rate(report.validation.skill)} /><Metric label="Contributing / fitted models" value={`${report.engines.filter((engine) => engine.weight > 0).length} / ${report.engines.length}`} /></div>
         <div className="mt-3 rounded-lg border border-border bg-background/35 px-3 py-2.5 text-[11px] leading-relaxed" data-testid="over-under-consensus">
-          <strong className={activeSelection ? 'text-primary' : 'text-amber-500'}>{activeSelection ? `Qualified research candidate: ${label}` : `WAIT · ${label ?? 'No candidate'} is diagnostic only`}</strong>
+          <strong className={signal && signal.tier !== 'WEAK' ? 'text-primary' : 'text-amber-500'}>{signal ? `Consensus signal: ${signal.label}` : activeSelection ? `Qualified research candidate: ${consensusLabel}` : `${consensusLabel ?? 'No candidate'} · diagnostic only`}</strong>
+          {signal && <span className="text-primary"> · confidence {signal.confidence}% · {signal.votesFor}/{signal.votesTotal} engines agree.</span>}
           {reference && <span className="text-muted-foreground"> · model estimate {rate(reference.probability)} · rolling baseline {rate(reference.baselineProbability)} · lift {points(reference.lift)} · {reference.supportingFamilies}/8 families support · {rate(reference.agreement)} weighted agreement.</span>}
+          {signal && <div className="mt-1 text-[10px] text-muted-foreground">{tierDescription(signal.tier)}{signal.note ? ` ${signal.note}` : ''}</div>}
         </div>
         {inactiveReason && <p role="status" className="mt-2 text-xs text-amber-500">{inactiveReason}</p>}
         <div className="mt-3 rounded-lg border border-border bg-background/35 p-3 text-[11px]" data-testid="over-under-market-structure">

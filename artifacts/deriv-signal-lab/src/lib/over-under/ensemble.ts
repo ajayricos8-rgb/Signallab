@@ -80,7 +80,14 @@ function combine(forecasts: Forecast[], weights: number[], baseline: number[], c
  * Evaluation origins are spaced by the selected tick horizon. This reduces
  * overlapping outcomes but does NOT establish independence or profitability.
  */
-export function runOverUnderEnsemble(observations: DigitObservation[], horizon: number, contracts: OverUnderContract[]) {
+export function runOverUnderEnsemble(
+  observations: DigitObservation[],
+  horizon: number,
+  contracts: OverUnderContract[],
+  onProgress?: (percent: number, stage: string) => void,
+) {
+  const report = (percent: number, stage: string) => onProgress?.(Math.max(0, Math.min(100, Math.round(percent))), stage);
+  report(4, 'Validating digit stream');
   if (!Number.isInteger(horizon) || horizon < 1 || horizon > 100) throw new Error('Over/Under research requires a tick horizon from 1 to 100.');
   if (observations.length < 500) throw new Error('At least 500 validated observations are required.');
   if (contracts.some((contract) => !RESEARCH_BARRIERS.includes(contract.barrier as typeof RESEARCH_BARRIERS[number]) || !['DIGITOVER', 'DIGITUNDER'].includes(contract.contractType))) throw new Error('Research barriers must be integers from 1 to 8.');
@@ -91,11 +98,16 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
   const trainEnd = Math.floor(window.length * 0.6);
   const tuningEnd = Math.floor(window.length * 0.8);
   const train = prefix(sequence, trainEnd);
+  report(10, 'Checking market structure');
   const structure = marketStructure(train.digits, sequence.digits.slice(tuningEnd));
+  report(18, 'Fitting Markov, frequency & regime engines');
   const statistical = fitStatisticalEngines(train, horizon);
+  report(40, 'Training local LSTM network');
   const lstm = fitLstm(train, horizon);
+  report(55, 'Training gradient boosted trees');
   const boosting = fitBoosting(train, horizon);
   const engines: FittedEngine[] = [...statistical.engines, lstm.engine, boosting.engine];
+  report(65, 'Scoring chronological validation');
   const evaluate = (start: number, end: number): Evaluation[] => {
     const rows: Evaluation[] = [];
     for (let origin = start; origin + horizon < end; origin += horizon) {
@@ -177,11 +189,13 @@ export function runOverUnderEnsemble(observations: DigitObservation[], horizon: 
       score, eligible: reasons.length === 0, reasons,
     };
   }).sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.score - a.score || a.contract.barrier - b.contract.barrier || a.contract.contractType.localeCompare(b.contract.contractType));
+  report(88, 'Ranking barrier markets 1–8');
   const selected = candidates.find((candidate) => candidate.eligible) ?? null;
   const stats100 = distributionStats(sequence.digits.slice(-100));
   const stats1000 = distributionStats(sequence.digits.slice(-1_000));
   const hmmPosterior = statistical.hmm.posterior(sequence.digits);
   const timeForecast = statistical.timeSeries.forecast(sequence, horizon, true);
+  report(100, 'Building consensus signal');
   return {
     symbol, sample: sequence.digits.length, asOfEpoch: sequence.epochs.at(-1)!, horizon,
     probabilities: current.probabilities, baselineProbabilities: baseline,
