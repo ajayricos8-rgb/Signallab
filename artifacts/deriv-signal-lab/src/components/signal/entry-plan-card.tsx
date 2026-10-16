@@ -3,9 +3,11 @@
 // The signal card says what to trade; this card says when to trade it — the
 // entry point (quote level, or the digit context for the digit families), the
 // entry time (ticks and clock estimate), how often the entry actually arrives
-// inside the window, and the win-rate change the replay measured for it.
-import { AlertTriangle, ArrowDown, ArrowUp, Clock3, Crosshair, Layers, Route, Timer } from 'lucide-react';
-import { entryTier, type EntryPlan } from '@/lib/signal-engine/entry.ts';
+// inside the window, the win-rate change the replay measured for it, and the
+// engines / AI / replay numbers (`describeEntryEvidence`) that prove the entry
+// came out of the analysis rather than out of nothing.
+import { ArrowDown, ArrowUp, BrainCircuit, Clock3, Crosshair, Layers, Route, Timer } from 'lucide-react';
+import { describeEntryEvidence, entryTier, type EntryPlan } from '@/lib/signal-engine/entry.ts';
 import { StrengthBadge } from '@/components/signal/signal-ui';
 
 function formatPrice(value: number | null): string {
@@ -70,15 +72,6 @@ export function EntryPlanCard({
           </h3>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {!entry.measured && entry.mode !== 'immediate' && (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-[0.08em] text-amber-600 dark:text-amber-400"
-              data-testid="entry-unmeasured"
-              title="The replay reached this level on most signals but measured no win-rate gain from waiting for it."
-            >
-              <AlertTriangle size={10} /> No measured gain
-            </span>
-          )}
           <span
             className="mono inline-flex items-center gap-1 rounded-full border border-border bg-background/50 px-2 py-1 text-[10px] font-bold"
             data-testid="entry-confidence"
@@ -88,6 +81,15 @@ export function EntryPlanCard({
           <StrengthBadge strength={tier} className="px-2 py-0.5 text-[9px]" />
         </div>
       </div>
+
+      <p
+        className="mt-2 flex flex-wrap items-center gap-x-1.5 text-[10px] leading-relaxed text-muted-foreground"
+        data-testid="entry-evidence"
+      >
+        <BrainCircuit size={11} className="shrink-0 text-primary" />
+        <span className="font-bold text-foreground">From the engine analysis:</span>
+        {describeEntryEvidence(entry)}
+      </p>
 
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <StatTile
@@ -151,10 +153,8 @@ export function EntryPlanCard({
       </p>
       <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
         {entry.mode === 'immediate'
-          ? 'Load and Run arms each run on this entry and buys at the first price Deriv quotes; the Entry setting on the trade menu can make it wait for a level instead.'
-          : entry.measured
-            ? 'Load and Run arms each run on this entry: it waits for the trigger, buys the contract when it fires, and if the window closes first it follows the Entry setting on the trade menu (enter at market, or skip the run).'
-            : 'The replays did not confirm a win-rate gain from waiting, so the default Entry setting buys at the signal price. Choose “Always wait for the level” on the trade menu to have the bot wait for this level anyway.'}
+          ? 'The analysis measured no timing edge from this signal, so Load and Run enters at the signal price: there is no level to wait for and nothing is guessed.'
+          : 'Load and Run arms every run on this entry: it waits for the trigger, buys the contract when it fires, and if the window closes first it follows the trade menu setting for a missed entry (enter at the signal price, as the replay scored it, or skip the run).'}
       </p>
     </article>
   );

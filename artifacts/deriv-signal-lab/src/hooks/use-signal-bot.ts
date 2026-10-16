@@ -2,9 +2,10 @@
 //
 // Rules (all of them are pure functions in `lib/signal-bot/plan.ts`):
 //   * the market, contract, tick duration, number of runs AND the entry the
-//     trade should be opened on come from the analysis the user just ran;
-//   * the stake, the martingale ladder and how the entry is used (follow it,
-//     enter at market, or skip a missed entry) come from the trade dock;
+//     trade should be opened on come from the analysis the user just ran — a
+//     plan without the analysis evidence behind it is refused, never guessed;
+//   * the stake, the martingale ladder and what happens when the entry never
+//     arrives (enter at market as replayed, or skip the run) come from the dock;
 //   * every run is armed on the entry first: the bot waits for the planned
 //     quote level (or digit context) while borrowing ticks from the shared
 //     public market feed, then buys, then waits for that contract to settle
@@ -23,6 +24,7 @@ import type { TradeDurationUnit } from '@/lib/trade-duration';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
 import {
   evaluateEntry,
+  isEntryPlan,
   medianTickSpacingMs,
   ticksSince,
   type EntryEvaluation,
@@ -315,6 +317,15 @@ export function useSignalBot(): SignalBotController {
         setStatus('error');
         setStopReason('error');
         setError('Connect your Deriv account before running the bot.');
+        return;
+      }
+      // The bot trades the analysis, so the entry has to be one the engine
+      // produced. A signal without it (an analysis restored from before the
+      // entry layer, or a hand-made plan) is refused rather than guessed at.
+      if (!isEntryPlan(nextPlan.entry)) {
+        setStatus('error');
+        setStopReason('error');
+        setError('This signal carries no entry from the engine analysis. Run Analysis again, then Load and Run.');
         return;
       }
       const config = sanitizeSignalBotConfig(rawConfig);

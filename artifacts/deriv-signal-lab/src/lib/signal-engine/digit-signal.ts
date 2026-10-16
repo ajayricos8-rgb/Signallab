@@ -282,6 +282,13 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       wins: (digit) => contractWins(contract, digit),
       context: input.family === 'even-odd' ? 'parity' : 'digit',
       fairRate: fair,
+      signal: {
+        source: 'digit',
+        agreeing: tally.agreeing,
+        total: tally.total,
+        probability,
+        aiProbability: rawProbability,
+      },
     });
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,

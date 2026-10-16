@@ -563,6 +563,9 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     }
     // 7. Entry timing: replay the same fired signals for the price level and
     //    the wait a trade should use, instead of buying at the signal tick.
+    //    The analysis's own numbers (engine agreement, the AI probability for
+    //    this direction, the its win estimate against the no-edge rate) travel
+    //    with the entry as its evidence.
     const entry = analyzeQuoteEntry({
       prices,
       epochs,
@@ -575,6 +578,13 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
           : Math.round((horizon.value * 60_000) / tickSpacingMs),
       exits,
       fairRate: fair,
+      signal: {
+        source: 'rise-fall',
+        agreeing: tally.agreeing,
+        total: tally.total,
+        probability: winEstimate,
+        aiProbability: aiForDirection,
+      },
     });
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill,

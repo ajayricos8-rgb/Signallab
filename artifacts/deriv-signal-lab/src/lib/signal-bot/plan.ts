@@ -5,7 +5,7 @@
 // ordering, waiting, quoting and purchasing so these rules can be tested in
 // isolation.
 import type { SignalStrength } from '../signal-engine/confidence.ts';
-import { entryWindowMs, immediateEntryPlan, rebaseEntryPlan, type EntryPlan } from '../signal-engine/entry.ts';
+import { entryWindowMs, rebaseEntryPlan, type EntryPlan } from '../signal-engine/entry.ts';
 import type {
   SignalBotConfig,
   SignalBotEntryMode,
@@ -22,13 +22,11 @@ export const SIGNAL_BOT_LIMITS = {
   maxRuns: { min: 0, max: 100 },
 } as const;
 
-export const SIGNAL_BOT_ENTRY_MODES: SignalBotEntryMode[] = ['analysis', 'level', 'market', 'skip'];
+export const SIGNAL_BOT_ENTRY_MODES: SignalBotEntryMode[] = ['analysis', 'skip'];
 
 export const SIGNAL_BOT_ENTRY_MODE_LABELS: Record<SignalBotEntryMode, string> = {
-  analysis: 'Follow the analysis entry',
-  level: 'Always wait for the level',
-  market: 'Enter at the signal price',
-  skip: 'Skip a missed entry',
+  analysis: 'Enter at the signal price',
+  skip: 'Skip that run',
 };
 
 /** Baseline runs per signal strength, nudged by the confidence score. */
@@ -176,15 +174,13 @@ export type RunEntryDecision = {
 };
 
 /**
- * Turns the entry the analysis planned plus the dock's Entry setting into the
- * decision for one run.
+ * Turns the entry the analysis planned into the decision for one run.
  *
- * The level is re-based on the live quote every run, so run 12 waits for the
- * same measured pullback run 1 did instead of an absolute price that has gone
- * stale. `analysis` only waits for a trigger the replay measured a gain for;
- * `level` also waits for a structural level the analysis flagged as unmeasured;
- * `market` ignores the plan entirely; `skip` keeps the analysis rules and drops
- * a run whose entry never arrives.
+ * The entry is never invented here: it is the plan the engine produced, and the
+ * level is re-based on the live quote so run 12 waits for the same measured
+ * pullback run 1 did instead of an absolute price that has gone stale. The
+ * dock's Entry setting only picks what happens when the trigger never arrives —
+ * enter at market exactly as the replay scored it, or skip the run.
  */
 export function planRunEntry(input: {
   config: SignalBotConfig;
@@ -196,33 +192,21 @@ export function planRunEntry(input: {
   now: number;
 }): RunEntryDecision {
   const mode = sanitizeEntryMode(input.config.entryMode);
-  if (mode === 'market') {
-    return {
-      entry: immediateEntryPlan({
-        reason:
-          'The Entry setting on the trade menu is "Enter at the signal price", so the bot buys at the first price Deriv quotes.',
-        sample: input.entry.sample,
-      }),
-      wait: false,
-      fallback: 'market',
-      deadline: input.now,
-      note: 'Entry setting: market.',
-    };
-  }
   const entry = rebaseEntryPlan(input.entry, input.quote);
   const fallback: 'market' | 'skip' = mode === 'skip' ? 'skip' : 'market';
-  const wait = entry.trigger !== 'immediate' && (mode === 'level' || entry.measured);
+  // Immediate is the analysis's own conclusion (no timing edge to wait for),
+  // so it is followed rather than overridden.
+  const wait = entry.trigger !== 'immediate';
+  const from = `${entry.evidence.agreeing}/${entry.evidence.total} engines${entry.evidence.signalProbability === null ? '' : `, the analysis rates the trade ${(entry.evidence.signalProbability * 100).toFixed(1)}% against a ${(entry.evidence.fairRate * 100).toFixed(1)}% no-edge rate`}`;
   return {
     entry,
     wait,
     fallback,
     deadline: wait ? input.now + entryWindowMs(entry, input.tickSpacingMs) : input.now,
     note:
-      entry.mode === 'immediate'
-        ? 'Entry: next tick.'
-        : wait
-          ? `${entry.measured ? entry.label : `${entry.label} (no measured gain)`}: ${entry.contextLabel ?? entryNoteTarget(entry)}.`
-          : `Entry: next tick — the analysis found ${entry.label.toLowerCase()} but measured no win-rate gain for it.`,
+      entry.trigger === 'immediate'
+        ? `Entry next tick, from the analysis: it measured no timing edge to wait for (${from}).`
+        : `${entry.label} from the analysis: ${entry.contextLabel ?? entryNoteTarget(entry)} (${from}).`,
   };
 }
 
