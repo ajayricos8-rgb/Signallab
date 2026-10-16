@@ -13,6 +13,7 @@ import {
   confidenceScore, strengthOf, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
+import { familyBalancedWeights } from './consensus.ts';
 
 export type RiseFallDirection = 'RISE' | 'FALL';
 export type RiseFallHorizon = { unit: 'ticks' | 'minutes'; value: number };
@@ -29,6 +30,33 @@ const REPLAY_STRIDE = 2;
 const VOTE_THRESHOLD = 0.05;
 const MARKOV_WINDOW = 1_000;
 const DRIFT_WINDOW = 500;
+
+/**
+ * Keep the feed's newest quote for each epoch, then restore chronological
+ * order. This makes all engines see the same unique observations even when a
+ * caller supplies a replay with out-of-order or duplicated ticks.
+ */
+export function normalizeRiseFallTicks(ticks: readonly MarketTick[]): MarketTick[] {
+  const byEpoch = new Map<number, MarketTick>();
+  for (const tick of ticks) {
+    if (!Number.isFinite(tick.epoch) || !Number.isFinite(tick.quote) || tick.epoch <= 0 || tick.quote <= 0) continue;
+    byEpoch.set(tick.epoch, tick);
+  }
+  return [...byEpoch.values()].sort((left, right) => left.epoch - right.epoch);
+}
+
+/** Validate and de-duplicate user-provided model durations before any fit. */
+export function resolveRiseFallHorizons(horizons?: readonly RiseFallHorizon[]): RiseFallHorizon[] {
+  if (!horizons?.length) return [...RISE_FALL_HORIZONS];
+  const unique = new Map<string, RiseFallHorizon>();
+  for (const horizon of horizons) {
+    const validTicks = horizon?.unit === 'ticks' && Number.isInteger(horizon.value) && horizon.value >= 1 && horizon.value <= 10;
+    const validMinutes = horizon?.unit === 'minutes' && Number.isInteger(horizon.value) && horizon.value >= 1 && horizon.value <= 15;
+    if (!validTicks && !validMinutes) throw new Error('Rise/Fall durations must be 1–10 ticks or 1–15 minutes.');
+    unique.set(`${horizon.unit}:${horizon.value}`, { unit: horizon.unit, value: horizon.value });
+  }
+  return [...unique.values()];
+}
 
 export type RiseFallHorizonSignal = {
   horizon: RiseFallHorizon;
@@ -79,6 +107,52 @@ export type RiseFallMarketInput = {
 };
 
 type EngineDef = { id: string; label: string; family: string };
+
+export type PurgedReplayRow = { origin: number; exit: number; label: number | null };
+export type PurgedReplaySplit<T extends PurgedReplayRow> = { training: T[]; validation: T[]; holdout: T[] };
+
+/**
+ * Chronological 50/25/25 replay split with horizon-aware purging. A training
+ * label must settle before validation begins, and a validation label must settle
+ * before holdout begins; otherwise future price movement can leak across a
+ * split even though the prediction origin itself is earlier.
+ */
+export function splitPurgedReplay<T extends PurgedReplayRow>(
+  rows: readonly T[],
+  trainingBoundary: number,
+  holdoutBoundary: number,
+): PurgedReplaySplit<T> {
+  if (!Number.isFinite(trainingBoundary) || !Number.isFinite(holdoutBoundary) || holdoutBoundary <= trainingBoundary) {
+    throw new Error('Replay boundaries must be finite and strictly increasing.');
+  }
+  const labelled = rows.filter((row) => row.label !== null && Number.isFinite(row.label) && Number.isFinite(row.origin) && Number.isFinite(row.exit) && row.exit >= row.origin);
+  return {
+    training: labelled.filter((row) => row.origin < trainingBoundary && row.exit < trainingBoundary),
+    validation: labelled.filter((row) => row.origin >= trainingBoundary && row.origin < holdoutBoundary && row.exit < holdoutBoundary),
+    holdout: labelled.filter((row) => row.origin >= holdoutBoundary),
+  };
+}
+
+/** Select outcome intervals that do not reuse any return increments. */
+export function selectNonOverlappingOutcomes<T extends Pick<PurgedReplayRow, 'origin' | 'exit'>>(rows: readonly T[]): T[] {
+  const ordered = rows
+    .filter((row) => Number.isFinite(row.origin) && Number.isFinite(row.exit) && row.exit > row.origin)
+    .slice()
+    .sort((left, right) => left.origin - right.origin || left.exit - right.exit);
+  const selected: T[] = [];
+  let lastExit = Number.NEGATIVE_INFINITY;
+  for (const row of ordered) {
+    if (row.origin < lastExit) continue;
+    selected.push(row);
+    lastExit = row.exit;
+  }
+  return selected;
+}
+
+/** Count independent outcome intervals. */
+export function countNonOverlappingOutcomes(rows: readonly Pick<PurgedReplayRow, 'origin' | 'exit'>[]): number {
+  return selectNonOverlappingOutcomes(rows).length;
+}
 
 export const RISE_FALL_ENGINES: EngineDef[] = [
   { id: 'trend', label: 'Multi-window trend · 20–500 ticks', family: 'trend' },
@@ -233,8 +307,12 @@ function exitIndices(epochs: readonly number[], horizon: RiseFallHorizon): Int32
 
 /** Ridge-regularized logistic regression fitted by Newton / IRLS steps. */
 function fitLogistic(rows: readonly number[][], labels: readonly number[], ridge = 2): ((row: number[]) => number) | null {
-  if (rows.length < 120) return null;
+  if (rows.length < 120 || labels.length !== rows.length || !rows[0]?.length) return null;
   const width = rows[0].length;
+  if (rows.some((row) => row.length !== width || row.some((value) => !Number.isFinite(value)))
+    || labels.some((label) => label !== 0 && label !== 1)) return null;
+  const positives = labels.reduce((total, label) => total + label, 0);
+  if (positives < 10 || rows.length - positives < 10) return null;
   const means = Array.from({ length: width }, (_, j) => rows.reduce((sum, row) => sum + row[j], 0) / rows.length);
   const deviations = Array.from({ length: width }, (_, j) => Math.sqrt(rows.reduce((sum, row) => sum + (row[j] - means[j]) ** 2, 0) / rows.length) || 1);
   const standardize = (row: readonly number[]) => [1, ...row.map((value, j) => (value - means[j]) / deviations[j])];
@@ -288,12 +366,12 @@ function dataQuality(sample: number, fresh: boolean): number {
 /** Full multi-duration analysis for one market. */
 export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: ProgressCallback): RiseFallMarketAnalysis {
   const started = Date.now();
-  const ticks = input.ticks.filter((tick) => Number.isFinite(tick.epoch) && Number.isFinite(tick.quote) && tick.epoch > 0 && tick.quote > 0);
-  if (ticks.length < RISE_FALL_MIN_TICKS) throw new Error(`${input.name} has ${ticks.length} valid ticks; ${RISE_FALL_MIN_TICKS} are needed.`);
+  const ticks = normalizeRiseFallTicks(input.ticks);
+  if (ticks.length < RISE_FALL_MIN_TICKS) throw new Error(`${input.name} has ${ticks.length} valid unique ticks; ${RISE_FALL_MIN_TICKS} are needed.`);
   const prices = ticks.map((tick) => tick.quote);
   const epochs = ticks.map((tick) => tick.epoch);
   const n = ticks.length;
-  const horizons = input.horizons?.length ? input.horizons : RISE_FALL_HORIZONS;
+  const horizons = resolveRiseFallHorizons(input.horizons);
   onProgress?.(0.02, 'Replaying 12 indicator engines over recent history');
 
   // 1. Replay every state engine at past origins (no look-ahead: each origin
@@ -338,27 +416,32 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       const fall = fallPrefix[lastCompleted + 1] - fallPrefix[from];
       return rise + fall >= 30 ? (rise - fall) / (rise + fall) : null;
     };
-    const rows = origins.map((origin, index) => ({ origin, scores: [...replayScores[index], driftAt(origin)], label: outcome(origin) }));
+    const rows = origins.map((origin, index) => ({
+      origin,
+      exit: exits[origin],
+      scores: [...replayScores[index], driftAt(origin)],
+      label: outcome(origin),
+    }));
     const liveDrift = driftAt(n - 1);
-    const labelled = rows.filter((row) => row.label !== null);
-    const aEnd = Math.floor(labelled.length * 0.5);
-    const bEnd = Math.floor(labelled.length * 0.75);
-    const setA = labelled.slice(0, aEnd);
-    const setB = labelled.slice(aEnd, bEnd);
-    const setC = labelled.slice(bEnd);
+    const replaySpan = Math.max(1, n - firstOrigin - 1);
+    const trainingBoundary = firstOrigin + Math.floor(replaySpan * 0.5);
+    const holdoutBoundary = firstOrigin + Math.floor(replaySpan * 0.75);
+    const { training: setA, validation: setB, holdout: setC } = splitPurgedReplay(rows, trainingBoundary, holdoutBoundary);
 
     // 3. AI meta-model: logistic regression on all replayed engine scores.
     const features = (scores: Array<number | null>) => scores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => value ?? 0);
-    const trainRows = setA.filter((row) => row.label !== 0);
+    const trainRows = selectNonOverlappingOutcomes(setA).filter((row) => row.label !== 0);
     const model = fitLogistic(trainRows.map((row) => features(row.scores)), trainRows.map((row) => (row.label === 1 ? 1 : 0)));
     const aiScore = (scores: Array<number | null>) => (model ? 2 * (model(features(scores)) - 0.5) : null);
     const withAi = (scores: Array<number | null>) => [...scores, aiScore(scores)];
 
-    // 4. Engine weights from directional accuracy on validation slice B.
+    // 4. Engine weights from independent directional outcomes in validation
+    // slice B, not the overlapping replay rows themselves.
+    const independentValidationRows = selectNonOverlappingOutcomes(setB);
     const accuracy = RISE_FALL_ENGINES.map((_, engine) => {
       let hits = 0;
       let total = 0;
-      for (const row of setB) {
+      for (const row of independentValidationRows) {
         const score = engine === AI_INDEX ? aiScore(row.scores) : row.scores[engine];
         if (score === null || Math.abs(score) <= VOTE_THRESHOLD) continue;
         total += 1;
@@ -369,15 +452,20 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // Log-odds style weighting: coin-flip engines fade, consistently right ones lead.
     const factors = accuracy.map((item) => (item.rate === null ? 1 : clamp(Math.exp(8 * (item.rate - 0.5)), 0.3, 3)));
     const consensus = (scores: Array<number | null>) => {
-      let total = 0;
-      let weight = 0;
-      scores.forEach((score, engine) => { if (score !== null) { total += factors[engine] * score; weight += factors[engine]; } });
-      return weight > 0 ? total / weight : 0;
+      const weights = familyBalancedWeights(RISE_FALL_ENGINES.map((engine, index) => ({
+        family: engine.family,
+        reliability: factors[index],
+        available: scores[index] !== null,
+      })));
+      const score = scores.reduce<number>((total, value, index) => total + (value === null ? 0 : weights[index] * value), 0);
+      return { score, weights };
     };
 
     // 5. Backtest the consensus rule on the later held-out slice C, separately
     //    per direction: a live RISE is judged only by past RISE calls.
     const fired = { rise: 0, fall: 0 };
+    const firedRows: { rise: typeof setC; fall: typeof setC } = { rise: [], fall: [] };
+    const independentHoldoutOrigins = new Set(selectNonOverlappingOutcomes(setC).map((row) => row.origin));
     const wins = { rise: 0, fall: 0 };
     let flats = 0;
     let aiLoss = 0;
@@ -386,11 +474,11 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     for (const row of setC) {
       if (row.label === 0) flats += 1;
       const scores = withAi(row.scores);
-      const score = consensus(scores);
-      if (score > 0.02) { fired.rise += 1; if (row.label === 1) wins.rise += 1; }
-      else if (score < -0.02) { fired.fall += 1; if (row.label === -1) wins.fall += 1; }
+      const score = consensus(scores).score;
+      if (score > 0.02) { fired.rise += 1; firedRows.rise.push(row); if (row.label === 1) wins.rise += 1; }
+      else if (score < -0.02) { fired.fall += 1; firedRows.fall.push(row); if (row.label === -1) wins.fall += 1; }
       const ai = scores[AI_INDEX];
-      if (ai !== null && row.label !== 0) {
+      if (independentHoldoutOrigins.has(row.origin) && ai !== null && row.label !== 0) {
         const p = 0.5 + ai / 2;
         const y = row.label === 1 ? 1 : 0;
         aiLoss += (p - y) ** 2;
@@ -400,20 +488,21 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     }
     const flatRate = setC.length ? flats / setC.length : 0;
     const fair = 0.5 * (1 - flatRate);
-    const horizonTicks = horizon.unit === 'ticks' ? horizon.value : Math.max(1, Math.round((horizon.value * 60) / Math.max(0.5, (epochs[n - 1] - epochs[0]) / Math.max(1, n - 1))));
-    const span = setC.length ? setC.at(-1)!.origin - setC[0].origin + 1 : 0;
-    // Overlapping outcomes carry less information than their count suggests.
-    const independentOutcomes = Math.max(1, Math.floor(span / Math.max(1, horizonTicks)) + 1);
+    // Count non-overlapping outcome intervals directly from their observed exit
+    // ticks. This is more reliable than converting elapsed minutes with an
+    // average tick rate, especially when the feed has irregular gaps.
+    const independentOutcomes = countNonOverlappingOutcomes(setC);
     const reliability = clamp(independentOutcomes / 40, 0, 1);
     const rawSkill = aiRows >= 30 && fairLoss > 0 ? 1 - aiLoss / fairLoss : null;
     const validationSkill = rawSkill === null ? null : rawSkill * reliability;
 
-    // 6. Live vote.
+    // 6. Live vote. Family budgets prevent correlated indicators from
+    // outvoting independent evidence just because that family has more models.
     const liveScores = withAi([...liveState, liveDrift]);
-    const consensusScore = consensus(liveScores);
+    const liveConsensus = consensus(liveScores);
+    const consensusScore = liveConsensus.score;
     const directionSign = consensusScore !== 0 ? sign(consensusScore) : sign(liveAnalysis.trendScore) || 1;
     const direction: RiseFallDirection = directionSign > 0 ? 'RISE' : 'FALL';
-    const totalFactor = liveScores.reduce<number>((sum, score, engine) => sum + (score === null ? 0 : factors[engine]), 0);
     const votes: EngineVote[] = RISE_FALL_ENGINES.map((engine, index) => {
       const score = liveScores[index];
       const vote = score === null ? 'abstain' : Math.abs(score) <= VOTE_THRESHOLD ? 'neutral' : sign(score) === directionSign ? 'agree' : 'against';
@@ -421,7 +510,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       return {
         id: engine.id, label: engine.label, family: engine.family, vote,
         value: score === null ? null : score * directionSign,
-        weight: score === null || totalFactor <= 0 ? 0 : factors[index] / totalFactor,
+        weight: score === null ? 0 : liveConsensus.weights[index],
         skill: measured.rate === null ? null : measured.rate - 0.5,
         note: measured.rate === null ? 'Too few validation outcomes to measure accuracy' : `Validation accuracy ${(measured.rate * 100).toFixed(1)}% on ${measured.total} outcomes`,
       };
@@ -429,7 +518,8 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const tally = tallyVotes(votes);
     const aiProbability = liveScores[AI_INDEX] === null ? null : 0.5 + (liveScores[AI_INDEX] as number) / 2;
     const side = direction === 'RISE' ? 'rise' : 'fall';
-    const backtest = summarizeBacktest(wins[side], fired[side], fair, Math.min(fired[side], independentOutcomes));
+    const independentCalls = countNonOverlappingOutcomes(firedRows[side]);
+    const backtest = summarizeBacktest(wins[side], fired[side], fair, independentCalls);
     const horizonQuality = quality * clamp(0.6 + 0.4 * reliability, 0.6, 1);
     // Indicator alignment is not an edge by itself (trend tools agree whenever a
     // random path drifts). The edge comes from the AI meta-model's probability
@@ -446,7 +536,9 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       selectionPool: horizons.length * Math.max(1, input.marketsInScan ?? 1),
     });
     const recent = { sample: 0, rise: 0, fall: 0, unchanged: 0 };
-    for (let start = Math.max(0, n - DRIFT_WINDOW - (horizon.unit === 'ticks' ? horizon.value : horizonTicks)); start < n; start += 1) {
+    // Report the latest 500 completed outcomes (not 500 start ticks) so the
+    // historical panel uses comparable sample sizes across every duration.
+    for (let start = n - 1; start >= 0 && recent.sample < DRIFT_WINDOW; start -= 1) {
       const result = outcome(start);
       if (result === null) continue;
       recent.sample += 1;
