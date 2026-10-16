@@ -28,6 +28,44 @@ import type { SignalStrength } from './confidence.ts';
 export type EntryTrigger = 'immediate' | 'quote' | 'digit';
 export type EntryMode = 'immediate' | 'pullback' | 'breakout' | 'context';
 
+/**
+ * The analysis this entry belongs to: what its engines and its AI model said
+ * about the traded outcome. Both analyzers require it, so an entry can only
+ * ever be produced by a real analysis — there is no way to build one from
+ * nothing, and `EntryPlan.evidence` carries these numbers to the UI and the bot.
+ */
+export type EntrySignalContext = {
+  source: 'rise-fall' | 'digit';
+  /** Engines that agreed with the traded outcome, out of those that voted. */
+  agreeing: number;
+  total: number;
+  /** The analysis's own probability for the traded outcome (0–1). */
+  probability: number | null;
+  /** Raw AI meta-model probability for the same outcome (0–1), when there is one. */
+  aiProbability?: number | null;
+};
+
+/** Where an entry came from: the engine analysis, its AI and its replay. */
+export type EntryEvidence = {
+  source: 'rise-fall' | 'digit';
+  agreeing: number;
+  total: number;
+  /** The analysis's own probability for the traded outcome (0–1). */
+  signalProbability: number | null;
+  /** Raw AI meta-model probability for the same outcome (0–1). */
+  aiProbability: number | null;
+  /** Win probability with no edge for this contract (0–1). */
+  fairRate: number;
+  /** The replay the entry numbers were measured on. */
+  rule: string;
+};
+
+/** The replay rule behind each family's entry numbers. */
+const ENTRY_RULES: Record<EntrySignalContext['source'], string> = {
+  'rise-fall': "the signal's consensus rule replayed tick by tick on this market",
+  digit: "the contract's held-out ensemble rule replayed tick by tick",
+};
+
 export type EntryPlan = {
   mode: EntryMode;
   trigger: EntryTrigger;
@@ -63,11 +101,18 @@ export type EntryPlan = {
   confidence: number;
   /**
    * True when the replay measured a win-rate gain for this trigger (and, for the
-   * digit families, when the context survived its held-out slice). A plan with
-   * `measured: false` is a structural level only: the bot follows it when the
-   * trade menu's Entry setting says to wait for the level regardless.
+   * digit families, when the context survived its held-out slice). Only a
+   * measured trigger is ever offered to the bot; `false` always means "the
+   * analysis concluded the trade should be entered at the signal tick".
    */
   measured: boolean;
+  /**
+   * The engine analysis this entry came from: which engines agreed, what the AI
+   * model said, the contract's no-edge rate and the replay the numbers were
+   * measured on. Every plan carries it, and `isEntryPlan` refuses plans without
+   * it, so the bot can never trade an entry that was not produced by a run.
+   */
+  evidence: EntryEvidence;
 };
 
 export type EntryObservation = {
@@ -184,7 +229,13 @@ export function entryConfidence(input: { improved: number; worsened: number; sam
 }
 
 /** The plan the bot falls back to when no timing evidence exists. */
-export function immediateEntryPlan(options: { reason: string; sample?: number; confidence?: number }): EntryPlan {
+export function immediateEntryPlan(options: {
+  reason: string;
+  sample?: number;
+  confidence?: number;
+  /** The analysis the plan belongs to. Required: an entry always has a source. */
+  evidence: EntryEvidence;
+}): EntryPlan {
   return {
     mode: 'immediate',
     trigger: 'immediate',
@@ -204,7 +255,39 @@ export function immediateEntryPlan(options: { reason: string; sample?: number; c
     sample: Math.max(0, Math.round(options.sample ?? 0)),
     confidence: clamp(Math.round(options.confidence ?? 50), 0, 100),
     measured: false,
+    evidence: options.evidence,
   };
+}
+
+/** Builds the provenance block from what the analysis knows about the signal. */
+function buildEvidence(signal: EntrySignalContext, fairRate: number): EntryEvidence {
+  return {
+    source: signal.source,
+    agreeing: Math.max(0, Math.round(signal.agreeing)),
+    total: Math.max(0, Math.round(signal.total)),
+    signalProbability:
+      typeof signal.probability === 'number' && Number.isFinite(signal.probability)
+        ? clamp(signal.probability, 0, 1)
+        : null,
+    aiProbability:
+      typeof signal.aiProbability === 'number' && Number.isFinite(signal.aiProbability)
+        ? clamp(signal.aiProbability, 0, 1)
+        : null,
+    fairRate,
+    rule: ENTRY_RULES[signal.source],
+  };
+}
+
+/**
+ * Why the analysis does not stand behind this signal, or null when it does. An
+ * entry is never planned on a signal the analysis rates below the contract's
+ * no-edge rate: timing cannot rescue a trade with no edge.
+ */
+function analysisRejection(evidence: EntryEvidence): string | null {
+  const probability = evidence.signalProbability;
+  if (probability !== null && probability < evidence.fairRate)
+    return `${(probability * 100).toFixed(1)}% against the contract's ${(evidence.fairRate * 100).toFixed(1)}% no-edge rate`;
+  return null;
 }
 
 /** Average absolute tick move, used when the caller has no estimate handy. */
@@ -237,6 +320,11 @@ export type QuoteEntryInput = {
   exits?: ArrayLike<number> | null;
   /** Win probability with no edge (flat outcomes removed); 0.5 when omitted. */
   fairRate?: number | null;
+  /**
+   * The analysis that produced the signal. Required, so every plan is traceable
+   * to the engines, the AI and the probability the analysis put on the trade.
+   */
+  signal: EntrySignalContext;
 };
 
 type RowStats = {
@@ -479,11 +567,20 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
   const prices = input.prices;
   const rows = sampleRows(input.rows, ENTRY_LIMITS.maxSample);
   const referenceQuote = prices.at(-1) ?? null;
+  const fairRate = clamp(
+    input.fairRate !== null && input.fairRate !== undefined && input.fairRate > 0 && input.fairRate < 1
+      ? input.fairRate
+      : 0.5,
+    0.05,
+    0.95,
+  );
+  const evidence = buildEvidence(input.signal, fairRate);
   if (rows.length < ENTRY_LIMITS.minSample) {
     return immediateEntryPlan({
       reason: `Only ${rows.length} replayed signals were available, so the bot enters at the next tick instead of guessing a level.`,
       sample: rows.length,
       confidence: 35,
+      evidence,
     });
   }
   const averageMove = input.averageMove && input.averageMove > 0 ? input.averageMove : typicalTickMove(prices);
@@ -492,15 +589,9 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
       reason: 'The market printed no measurable tick movement, so there is no entry point to wait for.',
       sample: rows.length,
       confidence: 35,
+      evidence,
     });
   }
-  const fairRate = clamp(
-    input.fairRate !== null && input.fairRate !== undefined && input.fairRate > 0 && input.fairRate < 1
-      ? input.fairRate
-      : 0.5,
-    0.05,
-    0.95,
-  );
   const horizonTicks = clamp(Math.round(input.horizonTicks) || 1, 1, 3_000);
   const direction = input.direction;
 
@@ -546,64 +637,38 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
     const windowTicks = windowTicksFor(candidate.waits, horizonTicks);
     return { candidate, windowTicks, policy: assessPolicy(input, candidate, windowTicks) };
   });
-  const promising = assessed.filter((item) => usableCandidate(item.policy, fairRate));
-  // A level can be structurally useful (the price comes back to it most of the
-  // time) without the replay confirming a win-rate gain. It is still reported,
-  // flagged as unmeasured, and only traded when the Entry setting asks for it.
-  const structural = [...assessed]
-    .filter(
-      (item) =>
-        item.policy.reached >= ENTRY_LIMITS.minSample &&
-        item.policy.reachRate >= ENTRY_LIMITS.minReach &&
-        item.policy.waitTicks.length >= ENTRY_LIMITS.minSample,
-    )
-    .sort((left, right) => right.policy.reachRate - left.policy.reachRate)[0];
+  // Only a trigger the replay actually scored as an improvement is offered: the
+  // bot trades the analysis, so a level that is merely reached often (with no
+  // measured win-rate gain) stays a number in the explanation, never an entry.
+  const rejection = analysisRejection(evidence);
+  const promising = assessed.filter((item) => usableCandidate(item.policy, fairRate) && rejection === null);
 
   if (!promising.length) {
-    if (structural) {
-      const { candidate, windowTicks, policy } = structural;
-      const mode: EntryMode = candidate.side === 'adverse' ? 'pullback' : 'breakout';
-      const expectedWaitTicks = Math.round(median(policy.waitTicks) ?? 0);
-      const expectedWaitMs = Math.max(0, Math.round(median(policy.waits) ?? expectedWaitTicks * 1_000));
-      const priceCondition: 'above' | 'below' =
-        candidate.side === 'adverse' ? (direction === 1 ? 'below' : 'above') : direction === 1 ? 'above' : 'below';
-      const distance = candidate.depth;
-      const priceLevel =
-        referenceQuote === null ? null : priceCondition === 'below' ? referenceQuote - distance : referenceQuote + distance;
-      return {
-        mode,
-        trigger: 'quote',
-        label: mode === 'pullback' ? 'Pullback level' : 'Breakout level',
-        detail: `The replay measured no win-rate gain from waiting (${describeRates(policy)}, fair ${(fairRate * 100).toFixed(1)}%), but the ${mode === 'pullback' ? 'pullback' : 'breakout'} level is where the price usually goes: ${Math.round(policy.reachRate * 100)}% of the ${rows.length} replayed signals reached it, in a median of ${expectedWaitTicks} tick${expectedWaitTicks === 1 ? '' : 's'}${expectedWaitMs > 0 ? ` (~${(expectedWaitMs / 1_000).toFixed(1)}s)` : ''}, and the entry stays valid ${windowTicks} ticks. The trade menu's Entry setting decides whether the bot waits for it or buys at the signal price.`,
-        priceLevel,
-        priceCondition,
-        distance,
-        referenceQuote,
-        contextDigits: null,
-        contextLabel: null,
-        windowTicks,
-        expectedWaitTicks,
-        expectedWaitMs,
-        reachRate: policy.reachRate,
-        edgeGainPts: Math.round(policy.gainPts * 10) / 10,
-        sample: rows.length,
-        confidence: entryConfidence({ improved: policy.improved, worsened: policy.worsened, sample: policy.settled }),
-        measured: false,
-      };
-    }
     const best = [...assessed].sort((left, right) => right.policy.gainPts - left.policy.gainPts)[0];
-    let reason = `Replayed ${rows.length} signals and found no price level worth waiting for, so the bot enters at the next tick.`;
-    if (best) {
+    // The level the price usually returns to, for the explanation only.
+    const reached = [...assessed]
+      .filter(
+        (item) =>
+          item.policy.reached >= ENTRY_LIMITS.minSample && item.policy.reachRate >= ENTRY_LIMITS.minReach,
+      )
+      .sort((left, right) => right.policy.reachRate - left.policy.reachRate)[0];
+    const reachedNote = reached
+      ? ` The ${reached.candidate.side === 'adverse' ? 'pullback' : 'breakout'} level itself was reached by ${Math.round(reached.policy.reachRate * 100)}% of those signals inside ${reached.windowTicks} ticks, but being reached is not the same as winning more often.`
+      : '';
+    let reason = `Replayed ${rows.length} signals and found no price level that improved the win rate, so the bot enters at the next tick.${reachedNote}`;
+    if (rejection !== null)
+      reason = `The analysis rates this signal at ${rejection}, so there is no edge to time and the bot enters at the next tick.`;
+    else if (best) {
       if (best.policy.baselineRate < fairRate)
-        reason = `Replayed ${rows.length} signals: buying at the signal only won ${(best.policy.baselineRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so waiting cannot add a timing edge — the bot enters at the next tick.`;
+        reason = `Replayed ${rows.length} signals: buying at the signal only won ${(best.policy.baselineRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so waiting cannot add a timing edge — the bot enters at the next tick.${reachedNote}`;
       else if (best.policy.policyRate < fairRate)
-        reason = `Replayed ${rows.length} signals: entering on the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level won only ${(best.policy.policyRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so the bot enters at the next tick.`;
+        reason = `Replayed ${rows.length} signals: entering on the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level won only ${(best.policy.policyRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so the bot enters at the next tick.${reachedNote}`;
       else if (best.policy.gainPts < ENTRY_LIMITS.minEdgePts)
-        reason = `Replayed ${rows.length} signals: waiting at the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level did not beat buying at the signal (${describeRates(best.policy)}), so the bot enters at the next tick.`;
+        reason = `Replayed ${rows.length} signals: waiting at the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level did not beat buying at the signal (${describeRates(best.policy)}), so the bot enters at the next tick.${reachedNote}`;
       else
-        reason = `Replayed ${rows.length} signals: the entry level was reached too rarely to be worth waiting for, so the bot enters at the next tick.`;
+        reason = `Replayed ${rows.length} signals: no entry level was reached often enough to be worth waiting for, so the bot enters at the next tick.${reachedNote}`;
     }
-    return immediateEntryPlan({ reason, sample: rows.length });
+    return immediateEntryPlan({ reason, sample: rows.length, evidence });
   }
 
   const best = [...promising].sort((left, right) => right.policy.gainPts - left.policy.gainPts)[0];
@@ -618,11 +683,11 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
   const priceLevel =
     referenceQuote === null ? null : priceCondition === 'below' ? referenceQuote - distance : referenceQuote + distance;
   const level = `${priceText(distance)} (${(distance / averageMove).toFixed(1)} average ticks)`;
-  const evidence = `the entry must fire within ${windowTicks} ticks: ${Math.round(policy.reachRate * 100)}% of the ${rows.length} replayed signals got there, in a median of ${expectedWaitTicks} tick${expectedWaitTicks === 1 ? '' : 's'}${expectedWaitMs > 0 ? ` (~${(expectedWaitMs / 1_000).toFixed(1)}s)` : ''}, and ${describeRates(policy)} (fair ${(fairRate * 100).toFixed(1)}%).`;
+  const replayNote = `the entry must fire within ${windowTicks} ticks: ${Math.round(policy.reachRate * 100)}% of the ${rows.length} replayed signals got there, in a median of ${expectedWaitTicks} tick${expectedWaitTicks === 1 ? '' : 's'}${expectedWaitMs > 0 ? ` (~${(expectedWaitMs / 1_000).toFixed(1)}s)` : ''}, and ${describeRates(policy)} (fair ${(fairRate * 100).toFixed(1)}%).`;
   const detail =
     mode === 'pullback'
-      ? `Waits for the price to pull ${level} against the signal before buying the ${direction === 1 ? 'rise' : 'fall'}, and buys at the market price if the level never arrives before the window closes — ${evidence}`
-      : `Waits for the price to break ${level} further in the signal's direction (a continuation entry) before buying, and buys at the market price if the level never arrives before the window closes — ${evidence}`;
+      ? `Waits for the price to pull ${level} against the signal before buying the ${direction === 1 ? 'rise' : 'fall'}, and buys at the market price if the level never arrives before the window closes — ${replayNote}`
+      : `Waits for the price to break ${level} further in the signal's direction (a continuation entry) before buying, and buys at the market price if the level never arrives before the window closes — ${replayNote}`;
 
   return {
     mode,
@@ -643,6 +708,7 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
     sample: rows.length,
     confidence,
     measured: true,
+    evidence,
   };
 }
 
@@ -659,6 +725,11 @@ export type DigitEntryInput = {
   context?: 'digit' | 'parity';
   /** Win probability with no edge (0.5 for Even/Odd, the barrier odds otherwise). */
   fairRate?: number | null;
+  /**
+   * The analysis that produced the contract signal. Required, so a context
+   * entry always carries the engines and the probability behind it.
+   */
+  signal: EntrySignalContext;
 };
 
 type DigitContextStats = { hits: number; sample: number };
@@ -673,6 +744,14 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
   const { digits, epochs } = input;
   const length = Math.min(digits.length, epochs.length);
   const horizon = clamp(Math.round(input.horizon) || 1, 1, 10);
+  const fairRate = clamp(
+    input.fairRate !== null && input.fairRate !== undefined && input.fairRate > 0 && input.fairRate < 1
+      ? input.fairRate
+      : 0.5,
+    0.02,
+    0.95,
+  );
+  const evidence = buildEvidence(input.signal, fairRate);
   const contextMode = input.context ?? 'digit';
   const readContext = (index: number) => (contextMode === 'parity' ? digits[index] % 2 : digits[index]);
   // The entry tick is the first tick the bot can buy on after reading a
@@ -684,6 +763,7 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
       reason: `Only ${Math.max(0, end)} ticks were available to measure an entry context, so the bot enters at the next tick.`,
       sample: Math.max(0, end),
       confidence: 35,
+      evidence,
     });
   }
 
@@ -708,6 +788,7 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
       reason: `Only ${selectionSample} settled ticks were available to measure an entry context, so the bot enters at the next tick.`,
       sample: selectionSample,
       confidence: 35,
+      evidence,
     });
   }
 
@@ -732,6 +813,7 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
         ? 'Every digit context was equally good, so waiting for one adds nothing; the bot enters at the next tick.'
         : `Replayed ${selectionSample} ticks: no digit context beat this contract's overall hit rate with enough evidence, so the bot enters at the next tick.`,
       sample: selectionSample,
+      evidence,
     });
   }
 
@@ -776,13 +858,16 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
   const pooled = total ? (insideHits + outsideHits) / total : 0;
   const standardError = Math.sqrt(pooled * (1 - pooled) * (1 / Math.max(1, insideSample) + 1 / Math.max(1, outsideSample)));
   const validationZ = standardError > 0 ? (insideRate - outsideRate) / standardError : 0;
-  const fairRate = clamp(
-    input.fairRate !== null && input.fairRate !== undefined && input.fairRate > 0 && input.fairRate < 1
-      ? input.fairRate
-      : 0.5,
-    0.02,
-    0.95,
-  );
+  // A context cannot rescue a contract the analysis itself does not rate: the
+  // ensemble's own probability for this contract has to clear its no-edge rate.
+  const rejection = analysisRejection(evidence);
+  if (rejection !== null) {
+    return immediateEntryPlan({
+      reason: `The analysis rates this contract at ${rejection}, so the entry is not timed and the bot enters at the next tick.`,
+      sample: total,
+      evidence,
+    });
+  }
   if (
     insideSample < CONTEXT_MIN_VALIDATION_ROWS ||
     outsideSample < 25 ||
@@ -795,6 +880,7 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
     return immediateEntryPlan({
       reason: `The digit context did not hold out of sample (${(insideRate * 100).toFixed(1)}% against ${(outsideRate * 100).toFixed(1)}% on ${total} held-out ticks), so the bot enters at the next tick.`,
       sample: total,
+      evidence,
     });
   }
 
@@ -839,6 +925,7 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
     sample: total,
     confidence,
     measured: true,
+    evidence,
   };
 }
 
@@ -953,6 +1040,36 @@ export function entryModeLabel(plan: EntryPlan): string {
 }
 
 /**
+ * Where the entry came from, in one line: the engines that produced the signal,
+ * the AI's probability, the analysis's own rating against the contract's
+ * no-edge rate, and the replay the level and window were measured on.
+ */
+export function describeEntryEvidence(plan: EntryPlan): string {
+  const { evidence } = plan;
+  const parts = [`${evidence.agreeing}/${evidence.total} engines agree`];
+  if (evidence.aiProbability !== null) parts.push(`AI ${(evidence.aiProbability * 100).toFixed(1)}%`);
+  if (evidence.signalProbability !== null)
+    parts.push(`the analysis rates the trade ${(evidence.signalProbability * 100).toFixed(1)}% against a ${(evidence.fairRate * 100).toFixed(1)}% no-edge rate`);
+  else parts.push(`no-edge rate ${(evidence.fairRate * 100).toFixed(1)}%`);
+  parts.push(`${plan.sample} replayed signal${plan.sample === 1 ? '' : 's'}`);
+  return `${parts.join(' · ')} — ${evidence.rule}`;
+}
+
+/** True when a plan carries the analysis provenance the bot requires. */
+function isEntryEvidence(value: unknown): value is EntryEvidence {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<EntryEvidence>;
+  return (
+    (item.source === 'rise-fall' || item.source === 'digit') &&
+    typeof item.agreeing === 'number' &&
+    typeof item.total === 'number' &&
+    typeof item.fairRate === 'number' &&
+    Number.isFinite(item.fairRate) &&
+    typeof item.rule === 'string'
+  );
+}
+
+/**
  * One sentence the tools and the bot page can print as-is. `formatQuote` keeps
  * price formatting (precision) in the caller, so this stays pure.
  */
@@ -967,7 +1084,11 @@ export function describeEntryPlan(
   return `Entry: wait for the quote to tick ${plan.priceCondition === 'below' ? 'down' : 'up'} to ${level} within ${plan.windowTicks} ticks (usually ~${plan.expectedWaitTicks} tick${plan.expectedWaitTicks === 1 ? '' : 's'}) — ${plan.detail}`;
 }
 
-/** Guards restored or older analyses that predate the entry layer. */
+/**
+ * Guards restored or older analyses: a plan is only usable when it carries the
+ * evidence of the run that produced it, so the bot can never trade an entry
+ * that did not come out of an analysis.
+ */
 export function isEntryPlan(value: unknown): value is EntryPlan {
   if (!value || typeof value !== 'object') return false;
   const plan = value as Partial<EntryPlan>;
@@ -980,7 +1101,12 @@ export function isEntryPlan(value: unknown): value is EntryPlan {
     Number.isFinite(plan.windowTicks) &&
     typeof plan.confidence === 'number' &&
     Number.isFinite(plan.confidence) &&
-    typeof plan.measured === 'boolean'
+    typeof plan.measured === 'boolean' &&
+    // Either the analysis measured a trigger to wait for, or it concluded the
+    // trade is entered at the signal tick — there is no third state, so a plan
+    // can never ask the bot to wait for something nothing measured.
+    plan.measured === (plan.trigger !== 'immediate') &&
+    isEntryEvidence(plan.evidence)
   );
 }
 

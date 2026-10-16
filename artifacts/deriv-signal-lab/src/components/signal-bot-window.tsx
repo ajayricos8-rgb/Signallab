@@ -7,7 +7,7 @@ import { useDerivTrading } from '@/components/deriv-trading-provider';
 import type { SignalBotController } from '@/hooks/use-signal-bot';
 import { describeStopReason } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotEntryWatch, SignalBotRun, SignalBotStatus } from '@/lib/signal-bot/types.ts';
-import { entryModeLabel } from '@/lib/signal-engine/entry.ts';
+import { describeEntryEvidence, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { formatAmount, formatSignedAmount } from '@/lib/deriv-trading';
 import type { TradeFamily } from '@/lib/trade-draft';
 import { TRADE_FAMILIES } from '@/lib/trade-draft';
@@ -217,7 +217,6 @@ export function SignalBotWindow({
                 <Timer size={12} /> Entry
               </span>{' '}
               {entryModeLabel(plan.entry)}
-              {plan.entry.measured ? '' : ' · no measured win-rate gain'}
               {' · '}
               {plan.entry.confidence}% entry confidence
               {plan.entry.reachRate !== null ? ` · ${Math.round(plan.entry.reachRate * 100)}% of ${plan.entry.sample} replayed signals reached it` : ''}
@@ -225,6 +224,9 @@ export function SignalBotWindow({
                 {plan.entry.mode === 'immediate'
                   ? plan.entry.detail
                   : `Entry point ${plan.entry.mode === 'context' ? plan.entry.contextLabel ?? 'digit context' : formatLevel(plan.entry.priceLevel)} · entry time ~${plan.entry.expectedWaitTicks} tick${plan.entry.expectedWaitTicks === 1 ? '' : 's'}${plan.entry.expectedWaitMs > 0 ? ` (~${(plan.entry.expectedWaitMs / 1_000).toFixed(1)}s)` : ''} · valid ${plan.entry.windowTicks} ticks`}
+              </div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground" data-testid="bot-entry-evidence">
+                From the engine analysis: {describeEntryEvidence(plan.entry)}
               </div>
             </div>
             {entryWatch && <EntryWatchBand watch={entryWatch} />}

@@ -25,16 +25,17 @@ export type SignalBotRunStatus =
 export type SignalBotStopReason = 'manual' | 'runs' | 'stop-loss' | 'error' | null;
 
 /**
- * What the bot does with the entry the analysis planned.
- * - `analysis`: wait for it when the replay measured a gain, and enter at
- *   market if the window closes.
- * - `level`: wait for the level/context the analysis found even when the replay
- *   measured no win-rate gain for it.
- * - `market`: ignore it and buy at the signal price straight away.
- * - `skip`: like `analysis`, but a run whose entry never arrives is skipped
- *   instead of entered at market.
+ * What the bot does when the entry the analysis planned never arrives.
+ *
+ * The entry itself is never a setting: it always comes from the engine analysis
+ * (`EntryPlan.evidence` is what proves it), and the bot waits for it on every
+ * run. These two modes only decide the miss:
+ * - `analysis`: follow the policy the replay scored — enter at the signal price
+ *   when the window closes without a trigger.
+ * - `skip`: only buy when the trigger fires; a run whose entry never arrives is
+ *   skipped without staking anything.
  */
-export type SignalBotEntryMode = 'analysis' | 'level' | 'market' | 'skip';
+export type SignalBotEntryMode = 'analysis' | 'skip';
 
 export type SignalBotConfig = {
   /** Stake typed into the trade dock. */

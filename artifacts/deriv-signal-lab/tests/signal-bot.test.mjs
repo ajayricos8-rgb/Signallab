@@ -17,7 +17,7 @@ import {
   stakeForRun,
   summarizeBotRuns,
 } from '../src/lib/signal-bot/plan.ts';
-import { immediateEntryPlan } from '../src/lib/signal-engine/entry.ts';
+import { immediateEntryPlan, isEntryPlan } from '../src/lib/signal-engine/entry.ts';
 
 // ---- runs the analysis is worth -------------------------------------------
 
@@ -104,21 +104,35 @@ test('a missing or broken configuration falls back to the defaults', () => {
   });
 });
 
-test('the entry setting only accepts the documented modes', () => {
+test('the entry setting only picks what happens to a missed entry', () => {
   assert.equal(defaultSignalBotConfig().entryMode, 'analysis');
-  assert.deepEqual(SIGNAL_BOT_ENTRY_MODES, ['analysis', 'level', 'market', 'skip']);
+  // No mode can send the bot to market without the analysis entry: "market"
+  // (buy at the signal price straight away) and "level" (wait for a level the
+  // replay never scored) were removed, and restored configs fall back to it.
+  assert.deepEqual(SIGNAL_BOT_ENTRY_MODES, ['analysis', 'skip']);
   for (const mode of SIGNAL_BOT_ENTRY_MODES) {
     assert.equal(sanitizeSignalBotConfig({ entryMode: mode }).entryMode, mode);
   }
-  assert.equal(sanitizeSignalBotConfig({ entryMode: 'chase' }).entryMode, 'analysis');
-  assert.equal(sanitizeSignalBotConfig({ entryMode: 7 }).entryMode, 'analysis');
+  for (const retired of ['market', 'level', 'chase', 7, null]) {
+    assert.equal(sanitizeSignalBotConfig({ entryMode: retired }).entryMode, 'analysis');
+  }
 });
 
 // ---- the entry each run waits for -----------------------------------------
 
+const EVIDENCE = {
+  source: 'rise-fall',
+  agreeing: 9,
+  total: 12,
+  signalProbability: 0.53,
+  aiProbability: 0.56,
+  fairRate: 0.5,
+  rule: "the signal's consensus rule replayed tick by tick on this market",
+};
+
 function pullbackPlan(overrides = {}) {
   return {
-    ...immediateEntryPlan({ reason: 'test' }),
+    ...immediateEntryPlan({ reason: 'test', evidence: EVIDENCE }),
     mode: 'pullback',
     trigger: 'quote',
     label: 'Pullback entry',
@@ -155,19 +169,23 @@ test('the analysis entry is re-based on the live quote for every run', () => {
   assert.match(decision.note, /Pullback entry/);
 });
 
-test('the market entry setting ignores the planned entry entirely', () => {
-  const decision = planRunEntry({
-    config: { ...defaultSignalBotConfig(), entryMode: 'market' },
-    entry: pullbackPlan(),
-    quote: 1_200,
-    tickSpacingMs: 1_000,
-    now: 5_000,
-  });
-  assert.equal(decision.wait, false);
-  assert.equal(decision.entry.trigger, 'immediate');
-  assert.equal(decision.entry.priceLevel, null);
-  assert.equal(decision.fallback, 'market');
-  assert.equal(decision.deadline, 5_000);
+test('no setting can hand the bot an entry the analysis did not plan', () => {
+  for (const mode of SIGNAL_BOT_ENTRY_MODES) {
+    const decision = planRunEntry({
+      config: { ...defaultSignalBotConfig(), entryMode: mode },
+      entry: pullbackPlan(),
+      quote: 1_200,
+      tickSpacingMs: 1_000,
+      now: 5_000,
+    });
+    // Same plan the engine produced, re-based on the live quote, never replaced.
+    assert.equal(decision.wait, true);
+    assert.equal(decision.entry.trigger, 'quote');
+    assert.equal(decision.entry.priceLevel, 1_199.5);
+    assert.equal(decision.entry.distance, 0.5);
+    assert.equal(decision.entry.evidence.agreeing, 9);
+    assert.match(decision.note, /9\/12 engines/);
+  }
 });
 
 test('the skip setting keeps the entry and drops a run that never gets there', () => {
@@ -186,39 +204,32 @@ test('the skip setting keeps the entry and drops a run that never gets there', (
 test('an analysis with no timing edge never makes the bot wait', () => {
   const decision = planRunEntry({
     config: defaultSignalBotConfig(),
-    entry: immediateEntryPlan({ reason: 'no timing edge' }),
+    entry: immediateEntryPlan({ reason: 'no timing edge', evidence: EVIDENCE }),
     quote: 1_200,
     tickSpacingMs: 1_000,
     now: 5_000,
   });
   assert.equal(decision.wait, false);
   assert.equal(decision.fallback, 'market');
+  assert.match(decision.note, /Entry next tick, from the analysis: it measured no timing edge/);
 });
 
-test('the default setting only waits for a level the replay measured a gain for', () => {
-  const structural = pullbackPlan({ measured: false, edgeGainPts: -0.4, confidence: 52 });
-  const analysis = planRunEntry({
-    config: defaultSignalBotConfig(),
-    entry: structural,
-    quote: 1_200,
-    tickSpacingMs: 1_000,
-    now: 5_000,
-  });
-  assert.equal(analysis.wait, false);
-  assert.equal(analysis.fallback, 'market');
-  assert.match(analysis.note, /next tick/);
-  // The user can still ask for the structural level explicitly.
-  const level = planRunEntry({
-    config: { ...defaultSignalBotConfig(), entryMode: 'level' },
-    entry: structural,
-    quote: 1_200,
-    tickSpacingMs: 1_000,
-    now: 5_000,
-  });
-  assert.equal(level.wait, true);
-  assert.equal(level.entry.priceLevel, 1_199.5);
-  assert.equal(level.deadline, 5_000 + 8_000);
-  assert.match(level.note, /no measured gain/);
+test('a plan without the analysis evidence behind it is refused, not traded', () => {
+  // `isEntryPlan` is what the dock and the hook check before the bot may start.
+  assert.equal(isEntryPlan(pullbackPlan()), true);
+  const { evidence, ...withoutEvidence } = pullbackPlan();
+  assert.equal(isEntryPlan(withoutEvidence), false);
+  assert.equal(isEntryPlan({ ...pullbackPlan(), evidence: { source: 'rise-fall' } }), false);
+  assert.equal(isEntryPlan({ ...pullbackPlan(), evidence: { ...EVIDENCE, fairRate: 'x' } }), false);
+});
+
+test('a trigger nothing measured can never become a wait', () => {
+  // A plan either waits for a measured trigger or enters at the signal tick:
+  // "wait for this, but nobody measured it" is not a plan the bot accepts.
+  assert.equal(isEntryPlan(pullbackPlan({ measured: false, edgeGainPts: -0.4 })), false);
+  assert.equal(isEntryPlan(pullbackPlan()), true);
+  assert.equal(isEntryPlan(immediateEntryPlan({ reason: 'no edge', evidence: EVIDENCE })), true);
+  assert.equal(isEntryPlan({ ...pullbackPlan(), measured: false }), false);
 });
 
 test('a context entry from the digit engines is always followed', () => {

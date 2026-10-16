@@ -4,6 +4,7 @@ import {
   ENTRY_LIMITS,
   analyzeDigitEntry,
   analyzeQuoteEntry,
+  describeEntryEvidence,
   describeEntryPlan,
   entryConfidence,
   entryModeLabel,
@@ -53,6 +54,18 @@ function quotesFrom(seed, length, drift = 0, noise = 1) {
   return prices;
 }
 
+/** Mean-reverting (Ornstein-Uhlenbeck) quotes: dips are pulled back to 1,000. */
+function revertingQuotes(seed, length, pull = 0.35, noise = 1.2) {
+  const random = sfc32(seed);
+  const prices = [];
+  let quote = 1_000;
+  for (let index = 0; index < length; index += 1) {
+    quote += pull * (1_000 - quote) + (random() - 0.5) * noise;
+    prices.push(Number(quote.toFixed(4)));
+  }
+  return prices;
+}
+
 function epochsFor(length, spacingMs = 1_000) {
   return Array.from({ length }, (_, index) => 1_700_000_000_000 + index * spacingMs);
 }
@@ -64,9 +77,39 @@ function everyRow(prices, horizon) {
   return rows;
 }
 
+const EVIDENCE = {
+  source: 'rise-fall',
+  agreeing: 9,
+  total: 12,
+  signalProbability: 0.53,
+  aiProbability: 0.56,
+  fairRate: 0.5,
+  rule: "the signal's consensus rule replayed tick by tick on this market",
+};
+
+const DIGIT_EVIDENCE = {
+  source: 'digit',
+  agreeing: 8,
+  total: 12,
+  signalProbability: 0.55,
+  aiProbability: 0.54,
+  fairRate: 0.5,
+  rule: "the contract's held-out ensemble rule replayed tick by tick",
+};
+
+/** The analysis context every quote replay is fed with. */
+function quoteSignal(overrides = {}) {
+  return { source: 'rise-fall', agreeing: 9, total: 12, probability: 0.53, aiProbability: 0.56, ...overrides };
+}
+
+/** The analysis context every digit replay is fed with. */
+function digitSignal(overrides = {}) {
+  return { source: 'digit', agreeing: 8, total: 12, probability: 0.55, aiProbability: 0.54, ...overrides };
+}
+
 function pullbackPlan(overrides = {}) {
   return {
-    ...immediateEntryPlan({ reason: 'test' }),
+    ...immediateEntryPlan({ reason: 'test', evidence: EVIDENCE }),
     mode: 'pullback',
     trigger: 'quote',
     label: 'Pullback entry',
@@ -82,6 +125,7 @@ function pullbackPlan(overrides = {}) {
     sample: 90,
     confidence: 72,
     measured: true,
+    evidence: EVIDENCE,
     ...overrides,
   };
 }
@@ -99,6 +143,7 @@ test('a trending market earns a pullback entry with a measured level and window'
     direction: 1,
     averageMove: typicalTickMove(prices),
     horizonTicks: 5,
+    signal: quoteSignal(),
   });
   assert.ok(plan.windowTicks >= ENTRY_LIMITS.windowTicks.min && plan.windowTicks <= ENTRY_LIMITS.windowTicks.max);
   assert.ok(plan.confidence >= 0 && plan.confidence <= 100);
@@ -126,6 +171,7 @@ test('a fall signal looks for the opposite side of the price', () => {
     direction: -1,
     averageMove: typicalTickMove(prices),
     horizonTicks: 4,
+    signal: quoteSignal(),
   });
   if (plan.mode !== 'immediate') {
     assert.equal(plan.priceCondition, 'above');
@@ -142,6 +188,7 @@ test('too few replayed signals falls back to entering on the next tick', () => {
     direction: 1,
     averageMove: typicalTickMove(prices),
     horizonTicks: 3,
+    signal: quoteSignal(),
   });
   assert.equal(plan.mode, 'immediate');
   assert.equal(plan.trigger, 'immediate');
@@ -158,6 +205,7 @@ test('a pure random walk earns no timing edge, so the entry stays immediate', ()
     direction: 1,
     averageMove: typicalTickMove(prices),
     horizonTicks: 5,
+    signal: quoteSignal(),
   });
   // Either the plan is immediate, or it claims a positive measured edge.
   if (plan.mode !== 'immediate') assert.ok(plan.edgeGainPts >= ENTRY_LIMITS.minEdgePts);
@@ -172,6 +220,7 @@ test('a flat market has no entry point to wait for', () => {
     rows: everyRow(prices, 5),
     direction: 1,
     horizonTicks: 5,
+    signal: quoteSignal(),
   });
   assert.equal(plan.mode, 'immediate');
   assert.match(plan.detail, /no measurable tick movement/);
@@ -190,6 +239,7 @@ test('pure noise earns no context entry, and any context offered carries its own
       epochs: epochsFor(digits.length),
       horizon: 1,
       wins,
+      signal: digitSignal(),
     });
     if (plan.mode === 'context') {
       assert.ok(Array.isArray(plan.contextDigits) && plan.contextDigits.length);
@@ -218,6 +268,7 @@ test('a digit context that lifts the win rate out of sample becomes the entry', 
     epochs: epochsFor(digits.length),
     horizon: 1,
     wins: (digit) => digit === 7,
+    signal: digitSignal(),
   });
   if (plan.mode === 'context') {
     assert.equal(plan.trigger, 'digit');
@@ -248,6 +299,7 @@ test('even/odd reads the parity of the tick before the entry', () => {
     horizon: 2,
     wins: (digit) => digit % 2 === 0,
     context: 'parity',
+    signal: digitSignal(),
   });
   if (plan.mode === 'context') {
     assert.ok(plan.contextDigits.every((digit) => digit % 2 === 0));
@@ -263,6 +315,7 @@ test('a short digit stream cannot measure a context', () => {
     epochs: epochsFor(60),
     horizon: 1,
     wins: (digit) => digit === 1,
+    signal: digitSignal(),
   });
   assert.equal(plan.mode, 'immediate');
   assert.match(plan.detail, /were available to measure an entry context/);
@@ -279,7 +332,7 @@ test('re-basing keeps the measured distance and moves the level to the live quot
   const higher = rebaseEntryPlan({ ...plan, priceCondition: 'above' }, 1_050);
   assert.equal(higher.priceLevel, 1_050 + plan.distance);
   // Immediate and context plans never change.
-  const immediate = immediateEntryPlan({ reason: 'x' });
+  const immediate = immediateEntryPlan({ reason: 'x', evidence: EVIDENCE });
   assert.equal(rebaseEntryPlan(immediate, 1_050), immediate);
 });
 
@@ -319,7 +372,7 @@ test('the entry check waits, fires on the level and expires with the window', ()
 });
 
 test('an immediate entry is ready straight away and never asks for a level', () => {
-  const plan = immediateEntryPlan({ reason: 'no timing edge' });
+  const plan = immediateEntryPlan({ reason: 'no timing edge', evidence: EVIDENCE });
   const evaluation = evaluateEntry(plan, { quote: 1_000, digit: 3, epoch: 1 }, { elapsedTicks: 0, now: 0, deadline: 0 });
   assert.equal(evaluation.status, 'ready');
   assert.equal(evaluation.distance, null);
@@ -369,11 +422,74 @@ test('wilson bounds keep thin buckets out of the plan', () => {
   assert.equal(wilsonLowerBound(0, 0), 0);
 });
 
-test('a structural level without a measured gain is reported but flagged', () => {
-  // A strong upward drift: every dip is bought back, so the pullback level is
-  // reached on most signals. Whether the replay also measures a win-rate gain
-  // is what decides `measured`.
-  const prices = quotesFrom(201, 1_600, 0.08, 1.2);
+test('the bot is only ever offered a trigger the replay measured', () => {
+  // Whatever the market does, the plan is either "enter at the signal tick" or
+  // a level that cleared the documented edge bar — never a level the replay
+  // reached often but could not show a gain for.
+  for (const [seed, drift, noise, fairRate] of [
+    [201, 0.08, 1.2, 0.5],
+    [17, 0.02, 1.5, 0.52],
+    [88, -0.05, 1.1, 0.5],
+  ]) {
+    const prices = quotesFrom(seed, 1_600, drift, noise);
+    const plan = analyzeQuoteEntry({
+      prices,
+      epochs: epochsFor(prices.length),
+      rows: everyRow(prices, 5),
+      direction: drift >= 0 ? 1 : -1,
+      averageMove: typicalTickMove(prices),
+      horizonTicks: 5,
+      fairRate,
+      signal: quoteSignal(),
+    });
+    assert.ok(isEntryPlan(plan));
+    assert.equal(plan.trigger === 'immediate', plan.mode === 'immediate');
+    if (plan.mode === 'immediate') {
+      assert.equal(plan.measured, false);
+      assert.equal(plan.priceLevel, null);
+      assert.ok(plan.detail.length > 40);
+    } else {
+      assert.equal(plan.measured, true);
+      assert.ok(plan.edgeGainPts >= ENTRY_LIMITS.minEdgePts);
+      assert.ok(plan.reachRate >= ENTRY_LIMITS.minReach - 1e-9);
+    }
+  }
+});
+
+test('a market that really does revert still earns a measured pullback', () => {
+  // The guard against invented entries must not turn every plan into "next
+  // tick": on a genuinely mean-reverting stream the replay finds a real edge and
+  // the analysis still produces a level, a window and a wait for it.
+  const prices = revertingQuotes(16, 1_800);
+  const rows = [];
+  for (let origin = 0; origin + 25 < prices.length; origin += 3) rows.push({ origin, exit: origin + 5 });
+  const plan = analyzeQuoteEntry({
+    prices,
+    epochs: epochsFor(prices.length),
+    rows,
+    direction: 1,
+    averageMove: typicalTickMove(prices),
+    horizonTicks: 5,
+    fairRate: 0.5,
+    signal: quoteSignal({ probability: 0.56, aiProbability: 0.56 }),
+  });
+  assert.equal(plan.mode, 'pullback');
+  assert.equal(plan.trigger, 'quote');
+  assert.equal(plan.measured, true);
+  assert.ok(plan.distance > 0 && plan.priceLevel < plan.referenceQuote);
+  assert.ok(plan.windowTicks >= ENTRY_LIMITS.windowTicks.min && plan.windowTicks <= ENTRY_LIMITS.windowTicks.max);
+  assert.ok(plan.expectedWaitTicks >= 0 && plan.expectedWaitTicks <= plan.windowTicks);
+  assert.ok(plan.reachRate >= ENTRY_LIMITS.minReach);
+  assert.ok(plan.edgeGainPts >= ENTRY_LIMITS.minEdgePts);
+  assert.equal(plan.label, 'Pullback entry');
+  assert.match(plan.detail, /Waits for the price to pull .* against the signal/);
+  assert.equal(isEntryPlan(plan), true);
+});
+
+test('a signal the analysis does not stand behind is never timed', () => {
+  // The same trending market, but the engine's own probability for the trade
+  // sits under the contract's no-edge rate: the entry must stay immediate.
+  const prices = quotesFrom(11, 1_400, 0.05, 1.4);
   const plan = analyzeQuoteEntry({
     prices,
     epochs: epochsFor(prices.length),
@@ -382,33 +498,50 @@ test('a structural level without a measured gain is reported but flagged', () =>
     averageMove: typicalTickMove(prices),
     horizonTicks: 5,
     fairRate: 0.5,
+    signal: quoteSignal({ probability: 0.31 }),
   });
-  assert.ok(isEntryPlan(plan));
-  if (plan.mode !== 'immediate') {
-    // A plan that claims a gain must clear the documented edge bar.
-    if (plan.measured) assert.ok(plan.edgeGainPts >= ENTRY_LIMITS.minEdgePts);
-    else assert.match(plan.detail, /no win-rate gain|did not confirm/);
-  } else {
-    assert.equal(plan.measured, false);
-  }
+  assert.equal(plan.mode, 'immediate');
+  assert.equal(plan.measured, false);
+  assert.match(plan.detail, /analysis rates this signal at 31\.0%/);
 });
 
 test('the entry chip text and tier reflect the plan', () => {
-  assert.equal(entryModeLabel(immediateEntryPlan({ reason: 'x' })), 'Entry next tick');
+  assert.equal(entryModeLabel(immediateEntryPlan({ reason: 'x', evidence: EVIDENCE })), 'Entry next tick');
   assert.match(entryModeLabel(pullbackPlan()), /within 6 ticks/);
   assert.equal(entryTier(pullbackPlan()), 'STRONG');
-  assert.equal(entryTier(immediateEntryPlan({ reason: 'x' })), 'WEAK');
-  // An unmeasured level never reaches the top tier, however often it is reached.
+  assert.equal(entryTier(immediateEntryPlan({ reason: 'x', evidence: EVIDENCE })), 'WEAK');
+  // A level nothing measured never reaches the top tier.
   assert.equal(entryTier(pullbackPlan({ measured: false, confidence: 80, edgeGainPts: 0 })), 'MODERATE');
   assert.match(describeEntryPlan(pullbackPlan(), (value) => value.toFixed(2)), /tick down to 999.50/);
 });
 
+test('every plan names the analysis it came from', () => {
+  const text = describeEntryEvidence(pullbackPlan());
+  assert.match(text, /9\/12 engines agree/);
+  assert.match(text, /AI 56\.0%/);
+  assert.match(text, /the analysis rates the trade 53\.0% against a 50\.0% no-edge rate/);
+  assert.match(text, /90 replayed signals/);
+  assert.match(text, /consensus rule replayed/);
+  const digit = describeEntryEvidence({
+    ...pullbackPlan({ mode: 'context', trigger: 'digit', priceLevel: null, priceCondition: null, sample: 240, evidence: DIGIT_EVIDENCE }),
+  });
+  assert.match(digit, /8\/12 engines agree/);
+  assert.match(digit, /held-out ensemble rule/);
+});
+
 test('only well-formed plans pass the guard used for restored analyses', () => {
   assert.equal(isEntryPlan(pullbackPlan()), true);
-  assert.equal(isEntryPlan(immediateEntryPlan({ reason: 'x' })), true);
+  assert.equal(isEntryPlan(immediateEntryPlan({ reason: 'x', evidence: EVIDENCE })), true);
   assert.equal(isEntryPlan(null), false);
   assert.equal(isEntryPlan({ mode: 'pullback' }), false);
   assert.equal(isEntryPlan({ ...pullbackPlan(), trigger: 'magic' }), false);
+  // No provenance, no trade: an entry has to come out of an analysis run.
+  const { evidence, ...restored } = pullbackPlan();
+  assert.equal(isEntryPlan(restored), false);
+  assert.equal(isEntryPlan({ ...pullbackPlan(), evidence: null }), false);
+  assert.equal(isEntryPlan({ ...pullbackPlan(), evidence: { ...EVIDENCE, source: 'guessed' } }), false);
+  // …and a wait for something nothing measured is not a plan either.
+  assert.equal(isEntryPlan({ ...pullbackPlan(), measured: false }), false);
 });
 
 // ---- the engines always ship an entry --------------------------------------
@@ -431,6 +564,16 @@ test('every Rise/Fall duration carries an entry plan with a usable window', () =
     const entry = signal.entry;
     assert.ok(isEntryPlan(entry));
     assert.equal(typeof entry.measured, 'boolean');
+    // The entry carries the run that produced it: the engines, the AI and the
+    // analysis's own rating of the trade — never a made-up level.
+    assert.equal(entry.evidence.source, 'rise-fall');
+    assert.equal(entry.evidence.agreeing, signal.tally.agreeing);
+    assert.equal(entry.evidence.total, signal.tally.total);
+    assert.ok(Math.abs(entry.evidence.signalProbability - signal.winEstimate) < 1e-9);
+    assert.ok(Math.abs(entry.evidence.fairRate - signal.fairProbability) < 1e-9);
+    assert.match(describeEntryEvidence(entry), /engines agree/);
+    // A wait is only ever planned for something the replay measured.
+    assert.equal(entry.measured, entry.trigger !== 'immediate');
     assert.ok(entry.windowTicks >= ENTRY_LIMITS.windowTicks.min);
     assert.ok(entry.confidence >= 0 && entry.confidence <= 100);
     assert.ok(entry.detail.length > 20);
@@ -438,6 +581,7 @@ test('every Rise/Fall duration carries an entry plan with a usable window', () =
       assert.ok(entry.priceLevel !== null && entry.distance !== null && entry.distance > 0);
       assert.ok(entry.priceCondition === 'below' || entry.priceCondition === 'above');
       assert.ok(entry.reachRate >= ENTRY_LIMITS.minReach - 1e-9);
+      assert.ok(entry.edgeGainPts >= ENTRY_LIMITS.minEdgePts);
     } else {
       assert.equal(entry.trigger, 'immediate');
       assert.equal(entry.priceLevel, null);
@@ -461,6 +605,13 @@ test('every digit contract carries an entry plan', () => {
     });
     for (const signal of analysis.contracts) {
       assert.ok(isEntryPlan(signal.entry), `${family} contract ${signal.label} has no entry plan`);
+      // Digit entries carry the ensemble and the contract's own no-edge rate.
+      assert.equal(signal.entry.evidence.source, 'digit');
+      assert.equal(signal.entry.evidence.agreeing, signal.tally.agreeing);
+      assert.equal(signal.entry.evidence.total, signal.tally.total);
+      assert.ok(Math.abs(signal.entry.evidence.signalProbability - signal.probability) < 1e-9);
+      assert.ok(Math.abs(signal.entry.evidence.fairRate - signal.fairProbability) < 1e-9);
+      assert.equal(signal.entry.measured, signal.entry.trigger !== 'immediate');
       if (signal.entry.trigger === 'digit') {
         assert.ok(signal.entry.windowTicks >= ENTRY_LIMITS.contextWindowTicks.min);
         assert.ok(signal.entry.windowTicks <= ENTRY_LIMITS.contextWindowTicks.max);

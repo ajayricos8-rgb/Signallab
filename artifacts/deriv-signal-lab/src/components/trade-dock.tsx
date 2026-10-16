@@ -24,14 +24,13 @@ import {
   SIGNAL_BOT_LIMITS,
   defaultSignalBotConfig,
   maxLadderStake,
-  planRunEntry,
   recommendedRuns,
   resolveMaxRuns,
   sanitizeSignalBotConfig,
 } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
-import { entryModeLabel, immediateEntryPlan, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
+import { describeEntryEvidence, entryModeLabel, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
 import {
   TRADE_DURATION_UNITS,
   draftDurationIssue,
@@ -259,10 +258,14 @@ export function TradeDock({
     ? `Copy ${recommendation.label ?? recommendation.contractType} · ${formatTradeDuration(recommendation.duration, recommendation.durationUnit)} on ${recommendation.symbol} into the ticket. No order is placed.`
     : '';
 
-  // The signal the bot would trade: market, contract and tick duration all
-  // come from the analysis, never from the manual draft.
+  // The signal the bot would trade: market, contract, tick duration and entry
+  // all come from the analysis, never from the manual draft. A loaded signal
+  // whose entry did not come out of the engine run is not tradeable.
+  const loadedEntry = analysis?.entry ?? null;
+  const analysisEntryReady = isEntryPlan(loadedEntry);
   const botPlan = useMemo<SignalBotPlan | null>(() => {
     if (!recommendation || !canApplySignal(recommendation, family, expiryOptions)) return null;
+    if (!analysisEntryReady) return null;
     const confidence = analysis?.confidence ?? 0;
     const strength = analysis?.strength ?? 'WEAK';
     return {
@@ -278,22 +281,17 @@ export function TradeDock({
       confidence,
       strength,
       recommendedRuns: recommendedRuns({ confidence, strength }),
-      entry: isEntryPlan(analysis?.entry)
-        ? (analysis.entry as EntryPlan)
-        : immediateEntryPlan({
-            reason:
-              'This analysis ran before the entry layer, so the bot buys at the signal price. Run Analysis again for a planned entry.',
-            confidence: 40,
-          }),
+      entry: loadedEntry,
       ranAt: analysis?.ranAt ?? 0,
     };
-  }, [analysis, expiryOptions, family, marketName, recommendation]);
+  }, [analysis, analysisEntryReady, expiryOptions, family, loadedEntry, marketName, recommendation]);
 
   const botRuns = botPlan ? resolveMaxRuns(botConfig, botPlan.recommendedRuns) : 0;
-  // What the bot will actually do with the analysis entry, given the Entry box.
-  const botEntryWaits = botPlan
-    ? planRunEntry({ config: botConfig, entry: botPlan.entry, quote: null, tickSpacingMs: 1_000, now: 0 }).wait
-    : false;
+  // The bot always waits for the analysis entry; immediate is the analysis's own
+  // conclusion that there is no timing edge to wait for.
+  const botEntryWaits = Boolean(botPlan && botPlan.entry.trigger !== 'immediate');
+  // A finished signal whose analysis has no engine entry (restored, older runs).
+  const analysisEntryMissing = Boolean(recommendation && canApplySignal(recommendation, family, expiryOptions) && !analysisEntryReady);
   const ladderTop = maxLadderStake({ ...botConfig, baseStake: stakeValue ?? botConfig.baseStake });
 
   // A finished analysis pops the dock open so Load and Run is reachable.
@@ -307,7 +305,11 @@ export function TradeDock({
 
   function handleLoadAndRun() {
     if (!botPlan) {
-      setTicketIssue('Run Analysis to generate a signal before loading the bot.');
+      setTicketIssue(
+        analysisEntryMissing
+          ? 'This signal has no entry from the engine analysis. Run Analysis again so the bot can load a planned entry.'
+          : 'Run Analysis to generate a signal before loading the bot.',
+      );
       return;
     }
     if (!connected) {
@@ -678,8 +680,10 @@ export function TradeDock({
                   </span>
                   <span className="text-[10px] text-slate-400">
                     {botPlan
-                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'} · ${botEntryWaits ? entryModeLabel(botPlan.entry) : 'entry next tick'}${!botPlan.entry.measured && botPlan.entry.mode !== 'immediate' && botConfig.entryMode !== 'level' ? ' (no measured gain — pick “Always wait for the level” to use it)' : ''}.`
-                      : 'Run Analysis to load a signal into the bot.'}
+                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'} · ${entryModeLabel(botPlan.entry)} · ${describeEntryEvidence(botPlan.entry)}.`
+                      : analysisEntryMissing
+                        ? 'The loaded signal has no entry from the engine analysis. Run Analysis again to plan it.'
+                        : 'Run Analysis to load a signal into the bot.'}
                   </span>
                 </div>
                 <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-5">
@@ -724,7 +728,7 @@ export function TradeDock({
                     onChange={(value) => setBotConfig((current) => ({ ...current, maxRuns: value }))}
                   />
                   <label className={fieldClass}>
-                    Entry · from analysis
+                    Entry misses · if it never comes
                     <select
                       value={botConfig.entryMode}
                       onChange={(event) =>
@@ -734,7 +738,7 @@ export function TradeDock({
                         }))
                       }
                       className={controlClass}
-                      title="Follow the entry point and entry time the analysis planned, ignore it, or skip a run whose entry never arrives."
+                      title="The entry point and entry time always come from the analysis. This only picks what the bot does on a run where the entry never arrives: buy at the signal price (the policy the replay scored) or skip that run."
                       data-testid="bot-entry-mode"
                     >
                       {SIGNAL_BOT_ENTRY_MODES.map((mode) => (
@@ -784,7 +788,7 @@ export function TradeDock({
                   ? 'Manual ticket: Use signal copies the latest analysis into the draft only. '
                   : 'Run Analysis to get a signal you can copy into this ticket. '}
                 {botPlan
-                  ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. ${botPlan.entry.mode === 'immediate' ? 'Entry: next tick — the analysis found no timing edge, so the bot buys at the signal price. ' : `${entryModeLabel(botPlan.entry)} — ${botPlan.entry.detail} `}`
+                  ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. The entry always comes from this analysis: ${entryModeLabel(botPlan.entry)}${botPlan.entry.mode === 'immediate' ? ' — ' : ` — ${botPlan.entry.detail} `}`
                   : ''}
                 {durationUnit !== 't' && (
                   <>Trade duration is {selectedDurationLabel}. </>
