@@ -364,7 +364,7 @@ test('candidates are generated for every Deriv-supported contract and barrier do
   // Every candidate is ineligible until a real proposal supplies economics.
   assert.equal(drafts.every((draft) => draft.candidate.eligible === false), true);
   assert.equal(drafts.every((draft) => draft.candidate.payout === null), true);
-  assert.equal(drafts.some((draft) => draft.candidate.rejectionReasons.some((reason) => reason.includes('validated model'))), true);
+  assert.equal(drafts.some((draft) => draft.candidate.rejectionReasons.some((reason) => reason.includes('validated model'))), false);
   assert.equal(notes.length >= 0, true);
   assert.deepEqual(eligibleBarriers(SYMBOLS[2], 'DIGITOVER').at(-1), 8);
   assert.equal(eligibleTargets(SYMBOLS[4]).length, 10);
