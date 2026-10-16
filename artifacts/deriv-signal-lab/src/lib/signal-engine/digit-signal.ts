@@ -19,6 +19,7 @@ import {
 } from '../over-under/ensemble.ts';
 import type { Forecast } from '../over-under/features.ts';
 import { familyBalancedWeights } from './consensus.ts';
+import { analyzeDigitEntry, type EntryPlan } from './entry.ts';
 import {
   confidenceScore, edgeShrinkage, strengthOf, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
@@ -61,6 +62,8 @@ export type DigitContractSignal = {
   strength: SignalStrength;
   /** Historical outcomes after the current digit (or parity) context. */
   history: { sample: number; hits: number; rate: number | null; context: string } | null;
+  /** When to enter this contract: which tick context, and how long it may take. */
+  entry: EntryPlan;
 };
 
 export type DigitMarketAnalysis = {
@@ -269,10 +272,21 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
     });
     const historical = context ? evaluateHistoricalContract(observations as unknown as DigitObservation[], contract, input.horizon, context) : null;
+    // Entry timing: which tick context this contract should be entered on. The
+    // quote never decides a digit contract, so the context (not a price level)
+    // is the entry point.
+    const entry = analyzeDigitEntry({
+      digits: fit.sequence.digits,
+      epochs: fit.sequence.epochs,
+      horizon: input.horizon,
+      wins: (digit) => contractWins(contract, digit),
+      context: input.family === 'even-odd' ? 'parity' : 'digit',
+      fairRate: fair,
+    });
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,
       votes, tally, backtest, validationSkill, verified, confidence, breakdown,
-      strength: strengthOf(confidence, tally, backtest),
+      strength: strengthOf(confidence, tally, backtest), entry,
       history: historical ? {
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,

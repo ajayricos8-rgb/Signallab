@@ -251,9 +251,12 @@ export type RankingRow = {
   total: number;
   winChance: string;
   fresh: boolean;
+  /** Entry point/entry time the analysis planned for this market. */
+  entry?: string;
 };
 
 export function MarketRankingTable({ rows, selected, onSelect, failures }: { rows: RankingRow[]; selected: string | null; onSelect: (symbol: string) => void; failures?: Array<{ symbol: string; name: string; message: string }> }) {
+  const showEntry = rows.some((row) => Boolean(row.entry));
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="market-ranking">
       <div className="flex flex-wrap items-end justify-between gap-2">
@@ -264,7 +267,7 @@ export function MarketRankingTable({ rows, selected, onSelect, failures }: { row
         <table className="w-full min-w-[560px] text-left text-xs">
           <thead>
             <tr className="border-b border-border text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
-              <th className="px-2 py-2">#</th><th className="px-2 py-2">Market</th><th className="px-2 py-2">Signal</th><th className="px-2 py-2">Confidence</th><th className="px-2 py-2">Engines</th><th className="px-2 py-2 text-right">Win chance</th>
+              <th className="px-2 py-2">#</th><th className="px-2 py-2">Market</th><th className="px-2 py-2">Signal</th>{showEntry && <th className="px-2 py-2">Entry</th>}<th className="px-2 py-2">Confidence</th><th className="px-2 py-2">Engines</th><th className="px-2 py-2 text-right">Win chance</th>
             </tr>
           </thead>
           <tbody>
@@ -279,6 +282,7 @@ export function MarketRankingTable({ rows, selected, onSelect, failures }: { row
                 <td className="px-2 py-2.5 mono text-muted-foreground">{index + 1}</td>
                 <td className="px-2 py-2.5"><div className="font-semibold">{shortMarketName(row.name)}</div><div className="mono text-[10px] text-muted-foreground">{row.symbol}{row.fresh ? '' : ' · stale'}</div></td>
                 <td className="px-2 py-2.5"><span className={`font-extrabold ${row.direction === 'up' ? 'text-emerald-500' : row.direction === 'down' ? 'text-rose-500' : 'text-primary'}`}>{row.label}</span><div className="text-[10px] text-muted-foreground">{row.duration}</div></td>
+                {showEntry && <td className="px-2 py-2.5 text-[10px] text-muted-foreground" data-testid={`ranking-entry-${row.symbol}`}>{row.entry ?? '—'}</td>}
                 <td className="px-2 py-2.5">
                   <div className="flex items-center gap-2"><span className="mono w-9 font-bold">{row.confidence}%</span><div className="h-1.5 w-16 overflow-hidden rounded-full bg-secondary"><div className={`h-full rounded-full ${row.strength === 'STRONG' ? 'bg-emerald-500' : row.strength === 'MODERATE' ? 'bg-sky-500' : 'bg-amber-500'}`} style={{ width: `${row.confidence}%` }} /></div></div>
                   <div className="mt-0.5 text-[9px] font-bold uppercase tracking-[0.08em] text-muted-foreground">{row.strength}</div>

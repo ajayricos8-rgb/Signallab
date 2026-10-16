@@ -9,9 +9,11 @@ import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner
 import type { OverUnderReport } from '@/lib/over-under/ensemble';
 import type { TradeRecommendation } from '@/lib/trade-draft';
 import { explainSignal } from '@/lib/signal-engine/confidence';
+import { entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { useMarketFeed, type MarketFeedEntry, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
 import { TradeDock } from '@/components/trade-dock';
+import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import {
@@ -282,6 +284,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         strength: signal.strength,
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
+        entry: signal.entry,
       }
     : null;
   const tradeEntry = markets.find((entry) => entry.symbol === (tradeMarket ?? detailSymbol));
@@ -388,14 +391,32 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                 { label: 'Fair odds', value: formatPercent(signal.fairProbability, 0), hint: 'Win probability with uniformly random digits' },
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: 'Held-out ticks where the engines favoured this contract: win rate and number of calls' },
                 { label: 'History', value: signal.history?.rate == null ? '—' : `${formatPercent(signal.history.rate)}`, hint: signal.history ? `${signal.history.hits}/${signal.history.sample} ${signal.history.context}` : undefined },
+                {
+                  label: 'Entry point',
+                  value: signal.entry.mode === 'immediate' ? 'Next tick' : 'Digit context',
+                  hint: `When the bot opens this contract: ${signal.entry.detail}`,
+                },
+                {
+                  label: 'Entry time',
+                  value: signal.entry.mode === 'immediate' ? 'Signal tick' : signal.entry.expectedWaitTicks <= 1 ? 'Next matches' : `~${signal.entry.expectedWaitTicks} ticks`,
+                  hint: `The entry stays valid for ${signal.entry.windowTicks} ticks; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed ticks matched`}.`,
+                },
               ]}
               onUse={() => { setTradeMarket(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+            />
+            <EntryPlanCard
+              entry={signal.entry}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={durationLabel(selectedResult.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
             />
             <MarketRankingTable
               rows={run.results.map((result) => ({
                 symbol: result.symbol, name: result.name, label: result.best.label, direction: directionOf(result.best.contract),
                 duration: durationLabel(result.horizon), confidence: result.best.confidence, strength: result.best.strength,
                 agreeing: result.best.tally.agreeing, total: result.best.tally.total, winChance: formatPercent(result.best.probability), fresh: result.fresh,
+                entry: entryModeLabel(result.best.entry),
               }))}
               selected={selectedResult.symbol}
               onSelect={setViewSymbol}

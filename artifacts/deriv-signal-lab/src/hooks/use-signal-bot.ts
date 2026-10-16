@@ -1,11 +1,14 @@
 // Trading bot that runs one finished analysis on the mini bottom trade menu.
 //
 // Rules (all of them are pure functions in `lib/signal-bot/plan.ts`):
-//   * the tick duration, market, contract and number of runs come from the
-//     analysis the user just ran on this tool;
-//   * the stake and the martingale ladder come from the trade dock;
-//   * runs are sequential — the next contract is only bought after the previous
-//     one has settled, so a single contract is ever open for the bot;
+//   * the market, contract, tick duration, number of runs AND the entry the
+//     trade should be opened on come from the analysis the user just ran;
+//   * the stake, the martingale ladder and how the entry is used (follow it,
+//     enter at market, or skip a missed entry) come from the trade dock;
+//   * every run is armed on the entry first: the bot waits for the planned
+//     quote level (or digit context) while borrowing ticks from the shared
+//     public market feed, then buys, then waits for that contract to settle
+//     before the next run — a single contract is ever open for the bot;
 //   * Stop halts new purchases immediately; a contract already bought is left
 //     to expire on Deriv and its row still fills in when Deriv reports it.
 //
@@ -13,20 +16,32 @@
 // (`useDerivTrading`): a live proposal is fetched first, then the buy is sent.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { useMarketFeed, type MarketFeedEntry } from '@/components/market-feed-provider';
 import { barrierFor, type DerivTradeRequest } from '@/lib/deriv-trading';
 import type { TradeContractType, TradeFamily } from '@/lib/trade-draft';
 import type { TradeDurationUnit } from '@/lib/trade-duration';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
 import {
+  evaluateEntry,
+  medianTickSpacingMs,
+  ticksSince,
+  type EntryEvaluation,
+  type EntryPlan,
+} from '@/lib/signal-engine/entry.ts';
+import {
+  describeEntryOutcome,
   nextRunDecision,
+  planRunEntry,
   resolveMaxRuns,
   sanitizeSignalBotConfig,
   settlementTimeoutMs,
   stakeForRun,
   summarizeBotRuns,
+  type RunEntryDecision,
 } from '@/lib/signal-bot/plan.ts';
 import type {
   SignalBotConfig,
+  SignalBotEntryWatch,
   SignalBotRun,
   SignalBotSettlement,
   SignalBotStatus,
@@ -49,6 +64,8 @@ export type SignalBotPlan = {
   strength: SignalStrength;
   /** Runs the analysis says this signal is worth. */
   recommendedRuns: number;
+  /** When and at what price the analysis says this signal should be traded. */
+  entry: EntryPlan;
   ranAt: number;
 };
 
@@ -63,6 +80,8 @@ export type SignalBotController = {
   targetRuns: number;
   /** Contract the bot is currently holding, if any. */
   activeContractId: number | null;
+  /** Entry the bot is waiting for right now, if any. */
+  entryWatch: SignalBotEntryWatch | null;
   running: boolean;
   /** True when the page has something to show and can be reset. */
   hasActivity: boolean;
@@ -76,7 +95,15 @@ type Waiter = {
   timer: number;
 };
 
+type EntryWaitResult = {
+  status: 'ready' | 'expired' | 'cancelled';
+  waitedTicks: number;
+  waitedMs: number;
+  note: string;
+};
+
 const PAUSE_BETWEEN_RUNS_MS = 600;
+const ENTRY_POLL_MS = 250;
 const UNKNOWN_RESULT = 'Deriv did not report a result for this contract.';
 
 function errorText(error: unknown): string {
@@ -89,8 +116,11 @@ function sleep(ms: number): Promise<void> {
 
 export function useSignalBot(): SignalBotController {
   const trading = useDerivTrading();
+  const feed = useMarketFeed();
   const tradingRef = useRef(trading);
   tradingRef.current = trading;
+  const feedRef = useRef(feed);
+  feedRef.current = feed;
 
   const [status, setStatus] = useState<SignalBotStatus>('idle');
   const [stopReason, setStopReason] = useState<SignalBotStopReason>(null);
@@ -99,6 +129,7 @@ export function useSignalBot(): SignalBotController {
   const [plan, setPlan] = useState<SignalBotPlan | null>(null);
   const [targetRuns, setTargetRuns] = useState(0);
   const [activeContractId, setActiveContractId] = useState<number | null>(null);
+  const [entryWatch, setEntryWatch] = useState<SignalBotEntryWatch | null>(null);
 
   const generationRef = useRef(0);
   const runningRef = useRef(false);
@@ -116,6 +147,12 @@ export function useSignalBot(): SignalBotController {
     }
     waitersRef.current.clear();
   }, []);
+
+  /** The newest feed entry for a market, straight from the live buffer. */
+  const marketEntry = useCallback(
+    (symbol: string): MarketFeedEntry | undefined => feedRef.current.getSnapshot().find((entry) => entry.symbol === symbol),
+    [],
+  );
 
   const applySettlement = useCallback((contractId: number, result: SignalBotSettlement) => {
     if (!mountedRef.current) return;
@@ -190,11 +227,82 @@ export function useSignalBot(): SignalBotController {
     return () => window.clearInterval(timer);
   }, [activeContractId, status]);
 
+  /**
+   * Waits for the entry the analysis planned on this run, reading ticks from the
+   * shared public feed. Resolves `ready` when the trigger fires, `expired` when
+   * the tick or the wall-clock window closes, and `cancelled` when the run is
+   * stopped, reset or unmounted mid-wait.
+   */
+  const waitForEntry = useCallback(
+    async (
+      generation: number,
+      decision: RunEntryDecision,
+      context: { symbol: string; runIndex: number; armedAtEpoch: number | null; wait: boolean; fallback: 'market' | 'skip' },
+    ): Promise<EntryWaitResult> => {
+      if (!context.wait) {
+        setEntryWatch(null);
+        return { status: 'ready', waitedTicks: 0, waitedMs: 0, note: '' };
+      }
+      const armedAt = Date.now();
+      const update = (evaluation: EntryEvaluation, quote: number | null) => {
+        if (!mountedRef.current || generation !== generationRef.current) return;
+        setEntryWatch({
+          runIndex: context.runIndex,
+          status: evaluation.status,
+          reason: evaluation.reason,
+          label: decision.entry.label,
+          mode: decision.entry.mode,
+          priceLevel: decision.entry.priceLevel,
+          priceCondition: decision.entry.priceCondition,
+          contextLabel: decision.entry.contextLabel,
+          quote,
+          distance: evaluation.distance,
+          elapsedTicks: evaluation.elapsedTicks,
+          remainingTicks: evaluation.remainingTicks,
+          remainingMs: evaluation.remainingMs,
+          windowTicks: decision.entry.windowTicks,
+        });
+      };
+
+      while (true) {
+        if (!mountedRef.current || generation !== generationRef.current) {
+          return { status: 'cancelled', waitedTicks: 0, waitedMs: Date.now() - armedAt, note: '' };
+        }
+        const entry = marketEntry(context.symbol);
+        const latest = entry?.ticks.at(-1) ?? null;
+        const elapsedTicks = ticksSince(entry?.ticks ?? [], context.armedAtEpoch);
+        const evaluation = evaluateEntry(
+          decision.entry,
+          { quote: latest?.quote ?? null, digit: latest?.digit ?? null, epoch: latest?.epoch ?? null },
+          { elapsedTicks, now: Date.now(), deadline: decision.deadline },
+        );
+        update(evaluation, latest?.quote ?? null);
+        if (evaluation.status === 'ready')
+          return {
+            status: 'ready',
+            waitedTicks: elapsedTicks,
+            waitedMs: Date.now() - armedAt,
+            note: evaluation.reason,
+          };
+        if (evaluation.status === 'expired')
+          return {
+            status: 'expired',
+            waitedTicks: elapsedTicks,
+            waitedMs: Date.now() - armedAt,
+            note: evaluation.reason,
+          };
+        await sleep(ENTRY_POLL_MS);
+      }
+    },
+    [marketEntry],
+  );
+
   const finish = useCallback((generation: number, reason: Exclude<SignalBotStopReason, null>) => {
     if (generation !== generationRef.current) return; // stopped, reset or replaced
     runningRef.current = false;
     if (!mountedRef.current) return;
     setActiveContractId(null);
+    setEntryWatch(null);
     setStopReason(reason);
     setStatus(reason === 'runs' ? 'completed' : reason === 'error' ? 'error' : 'stopped');
   }, []);
@@ -222,6 +330,7 @@ export function useSignalBot(): SignalBotController {
       setError('');
       setStopReason(null);
       setActiveContractId(null);
+      setEntryWatch(null);
       setStatus('running');
 
       const requestFor = (stake: number): DerivTradeRequest => ({
@@ -259,8 +368,79 @@ export function useSignalBot(): SignalBotController {
           const ladder = stakeForRun(config, streak);
           const index = started + 1;
           const request = requestFor(ladder.stake);
-          let contractId: number | null = null;
+          started += 1;
 
+          // 1. Arm the entry for this run. The level is re-based on the live
+          //    quote, so every run waits for the same measured move.
+          const feedEntry = marketEntry(nextPlan.symbol);
+          const latest = feedEntry?.ticks.at(-1) ?? null;
+          const entryDecision = planRunEntry({
+            config,
+            entry: nextPlan.entry,
+            quote: latest?.quote ?? null,
+            tickSpacingMs: medianTickSpacingMs(feedEntry?.ticks ?? []),
+            now: Date.now(),
+          });
+          setRuns((current) => [
+            ...current,
+            {
+              index,
+              contractId: null,
+              contractLabel: nextPlan.contractLabel,
+              marketCode: nextPlan.symbol,
+              stake: ladder.stake,
+              payout: null,
+              martingaleStep: ladder.step,
+              status: entryDecision.wait ? 'waiting' : 'open',
+              profit: null,
+              openedAt: entryDecision.wait ? null : Date.now(),
+              settledAt: null,
+              entryTicks: null,
+              note: entryDecision.note,
+            },
+          ]);
+
+          // 2. Wait for the entry the analysis planned.
+          const entryOutcome = await waitForEntry(generation, entryDecision, {
+            symbol: nextPlan.symbol,
+            runIndex: index,
+            armedAtEpoch: latest?.epoch ?? null,
+            wait: entryDecision.wait,
+            fallback: entryDecision.fallback,
+          });
+          if (entryOutcome.status === 'cancelled') {
+            // Stopped or reset mid-wait: the run never bought anything.
+            return;
+          }
+          if (entryOutcome.status === 'expired' && entryDecision.fallback === 'skip') {
+            setRuns((current) =>
+              current.map((run) =>
+                run.index === index && run.status === 'waiting'
+                  ? {
+                      ...run,
+                      status: 'skipped',
+                      settledAt: Date.now(),
+                      entryTicks: entryOutcome.waitedTicks,
+                      note: describeEntryOutcome({ status: 'expired', waitedTicks: entryOutcome.waitedTicks, fallback: 'skip' }),
+                    }
+                  : run,
+              ),
+            );
+            setEntryWatch(null);
+            await sleep(PAUSE_BETWEEN_RUNS_MS);
+            if (generation !== generationRef.current) return;
+            continue;
+          }
+          if (generation !== generationRef.current) return;
+
+          const entryNote = describeEntryOutcome({
+            status: entryOutcome.status,
+            waitedTicks: entryOutcome.waitedTicks,
+            fallback: entryDecision.fallback,
+          });
+
+          // 3. Buy the signal at the entry the analysis planned.
+          let contractId: number | null = null;
           try {
             const quote = await tradingRef.current.requestQuote(request);
             if (generation !== generationRef.current) return;
@@ -271,43 +451,40 @@ export function useSignalBot(): SignalBotController {
               return;
             }
             contractId = receipt.contractId;
-            const run: SignalBotRun = {
-              index,
-              contractId,
-              contractLabel: nextPlan.contractLabel,
-              marketCode: nextPlan.symbol,
-              stake: receipt.buyPrice ?? ladder.stake,
-              payout: receipt.payout,
-              martingaleStep: ladder.step,
-              status: 'open',
-              profit: null,
-              openedAt: Date.now(),
-              settledAt: null,
-              note: ladder.step > 0 ? `Martingale step ${ladder.step}.` : '',
-            };
-            started += 1;
-            setRuns((current) => [...current, run]);
+            setRuns((current) =>
+              current.map((run) =>
+                run.index === index
+                  ? {
+                      ...run,
+                      contractId,
+                      stake: receipt.buyPrice ?? ladder.stake,
+                      payout: receipt.payout,
+                      status: 'open',
+                      openedAt: Date.now(),
+                      entryTicks: entryOutcome.waitedTicks,
+                      note: [entryNote, ladder.step > 0 ? `Martingale step ${ladder.step}.` : ''].filter(Boolean).join(' '),
+                    }
+                  : run,
+              ),
+            );
             setActiveContractId(contractId);
+            setEntryWatch(null);
           } catch (cause) {
             const message = errorText(cause);
-            started += 1;
-            setRuns((current) => [
-              ...current,
-              {
-                index,
-                contractId: null,
-                contractLabel: nextPlan.contractLabel,
-                marketCode: nextPlan.symbol,
-                stake: ladder.stake,
-                payout: null,
-                martingaleStep: ladder.step,
-                status: 'failed',
-                profit: null,
-                openedAt: Date.now(),
-                settledAt: Date.now(),
-                note: message,
-              },
-            ]);
+            setRuns((current) =>
+              current.map((run) =>
+                run.index === index
+                  ? {
+                      ...run,
+                      status: 'failed',
+                      settledAt: Date.now(),
+                      entryTicks: entryOutcome.waitedTicks,
+                      note: message,
+                    }
+                  : run,
+              ),
+            );
+            setEntryWatch(null);
             setError(message);
             finish(generation, 'error');
             return;
@@ -323,7 +500,7 @@ export function useSignalBot(): SignalBotController {
         }
       })();
     },
-    [finish, waitForSettlement],
+    [finish, marketEntry, waitForEntry, waitForSettlement],
   );
 
   const stop = useCallback(() => {
@@ -334,6 +511,16 @@ export function useSignalBot(): SignalBotController {
     setActiveContractId(null);
     setStopReason('manual');
     setStatus('stopped');
+    setEntryWatch(null);
+    // A run that was still waiting for its entry never bought anything, so it
+    // is closed as skipped rather than left hanging.
+    setRuns((current) =>
+      current.map((run) =>
+        run.status === 'waiting'
+          ? { ...run, status: 'skipped', settledAt: Date.now(), note: 'Stopped before the entry arrived.' }
+          : run,
+      ),
+    );
     // Unblock the loop but keep watching: the open contract still settles and
     // its row is filled in when Deriv reports it.
     for (const [contractId, waiter] of [...waitersRef.current]) {
@@ -357,6 +544,7 @@ export function useSignalBot(): SignalBotController {
     setPlan(null);
     setTargetRuns(0);
     setActiveContractId(null);
+    setEntryWatch(null);
   }, []);
 
   const summary = useMemo(() => summarizeBotRuns(runs, configRef.current), [runs]);
@@ -370,6 +558,7 @@ export function useSignalBot(): SignalBotController {
     plan,
     targetRuns,
     activeContractId,
+    entryWatch,
     running: status === 'running',
     hasActivity: runs.length > 0 || status !== 'idle',
     start,

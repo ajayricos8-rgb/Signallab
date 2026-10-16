@@ -14,6 +14,7 @@ import {
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
 import { familyBalancedWeights } from './consensus.ts';
+import { analyzeQuoteEntry, type EntryPlan } from './entry.ts';
 
 export type RiseFallDirection = 'RISE' | 'FALL';
 export type RiseFallHorizon = { unit: 'ticks' | 'minutes'; value: number };
@@ -77,6 +78,8 @@ export type RiseFallHorizonSignal = {
   breakdown: ConfidenceBreakdown;
   strength: SignalStrength;
   historical: { sample: number; rise: number; fall: number; unchanged: number };
+  /** When and at what price this signal should be traded. */
+  entry: EntryPlan;
 };
 
 export type RiseFallMarketAnalysis = {
@@ -180,6 +183,19 @@ const sign = (value: number) => (value > 0 ? 1 : value < 0 ? -1 : 0);
 export function formatRiseFallHorizon(horizon: RiseFallHorizon): string {
   const unit = horizon.unit === 'ticks' ? (horizon.value === 1 ? 'tick' : 'ticks') : (horizon.value === 1 ? 'minute' : 'minutes');
   return `${horizon.value} ${unit}`;
+}
+
+/** Median milliseconds between ticks, used to convert minute durations to ticks. */
+function averageTickSpacingMs(epochs: readonly number[]): number {
+  const gaps: number[] = [];
+  const from = Math.max(1, epochs.length - 501);
+  for (let index = from; index < epochs.length; index += 1) {
+    const gap = epochs[index] - epochs[index - 1];
+    if (Number.isFinite(gap) && gap > 0) gaps.push(gap);
+  }
+  if (!gaps.length) return 1_000;
+  gaps.sort((left, right) => left - right);
+  return gaps[Math.floor(gaps.length / 2)];
 }
 
 function regressionScore(prices: readonly number[]): number | null {
@@ -392,6 +408,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const liveAnalysis = analyzeRiseFall(ticks.slice(-INDICATOR_WINDOW), 5);
   const liveState = stateScores(liveAnalysis, prices.slice(-INDICATOR_WINDOW), markov.score(n - 1));
   const quality = dataQuality(n, input.fresh);
+  const tickSpacingMs = averageTickSpacingMs(epochs);
 
   // 2. Evaluate every duration.
   const signals: RiseFallHorizonSignal[] = horizons.map((horizon, horizonIndex) => {
@@ -544,9 +561,24 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       recent.sample += 1;
       if (result > 0) recent.rise += 1; else if (result < 0) recent.fall += 1; else recent.unchanged += 1;
     }
+    // 7. Entry timing: replay the same fired signals for the price level and
+    //    the wait a trade should use, instead of buying at the signal tick.
+    const entry = analyzeQuoteEntry({
+      prices,
+      epochs,
+      rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })),
+      direction: directionSign > 0 ? 1 : -1,
+      averageMove: liveAnalysis.averageTickMove14,
+      horizonTicks:
+        horizon.unit === 'ticks'
+          ? horizon.value
+          : Math.round((horizon.value * 60_000) / tickSpacingMs),
+      exits,
+      fairRate: fair,
+    });
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill,
-      confidence, breakdown, strength: strengthOf(confidence, tally, backtest), historical: recent,
+      confidence, breakdown, strength: strengthOf(confidence, tally, backtest), historical: recent, entry,
     };
   });
 

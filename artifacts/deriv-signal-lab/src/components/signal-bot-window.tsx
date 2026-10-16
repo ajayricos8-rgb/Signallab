@@ -2,11 +2,12 @@
 // menu when "Load and Run" is pressed. It shows every contract the bot buys as
 // the run progresses, stops the bot on demand and resets the page for a fresh
 // run once the bot has stopped or finished its runs.
-import { AlertTriangle, Bot, CheckCircle2, CircleDashed, Loader2, Maximize2, Minimize2, RotateCcw, Square, X, XCircle } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, CircleDashed, Crosshair, Loader2, Maximize2, Minimize2, RotateCcw, SkipForward, Square, Timer, X, XCircle } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import type { SignalBotController } from '@/hooks/use-signal-bot';
 import { describeStopReason } from '@/lib/signal-bot/plan.ts';
-import type { SignalBotRun, SignalBotStatus } from '@/lib/signal-bot/types.ts';
+import type { SignalBotEntryWatch, SignalBotRun, SignalBotStatus } from '@/lib/signal-bot/types.ts';
+import { entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { formatAmount, formatSignedAmount } from '@/lib/deriv-trading';
 import type { TradeFamily } from '@/lib/trade-draft';
 import { TRADE_FAMILIES } from '@/lib/trade-draft';
@@ -30,11 +31,13 @@ const STATUS_META: Record<SignalBotStatus, { label: string; className: string }>
 };
 
 const RUN_META: Record<SignalBotRun['status'], { label: string; className: string; icon: typeof Loader2 }> = {
+  waiting: { label: 'Waiting entry', className: 'border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400', icon: Crosshair },
   open: { label: 'Open', className: 'border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400', icon: Loader2 },
   won: { label: 'Won', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', icon: CheckCircle2 },
   lost: { label: 'Lost', className: 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-400', icon: XCircle },
   unknown: { label: 'No result', className: 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400', icon: CircleDashed },
   failed: { label: 'Refused', className: 'border-destructive/40 bg-destructive/10 text-destructive', icon: AlertTriangle },
+  skipped: { label: 'Skipped', className: 'border-border bg-secondary/60 text-muted-foreground', icon: SkipForward },
 };
 
 function Stat({ label, value, tone = '' }: { label: string; value: string; tone?: string }) {
@@ -70,6 +73,7 @@ function RunRow({ run, currency, liveProfit }: { run: SignalBotRun; currency: st
           <span className="mono">Stake {formatAmount(run.stake, currency)}</span>
           {run.martingaleStep > 0 && <span className="mono">step {run.martingaleStep}</span>}
           {run.payout !== null && <span className="mono">payout {formatAmount(run.payout, currency)}</span>}
+          {run.entryTicks !== null && run.entryTicks > 0 && <span className="mono">entry +{run.entryTicks}t</span>}
           {run.note && <span className="truncate">{run.note}</span>}
         </div>
       </div>
@@ -77,9 +81,53 @@ function RunRow({ run, currency, liveProfit }: { run: SignalBotRun; currency: st
         className={`mono text-xs font-extrabold ${run.status === 'won' ? 'text-emerald-500' : run.status === 'lost' ? 'text-rose-500' : 'text-muted-foreground'}`}
         data-testid={`bot-run-profit-${run.index}`}
       >
-        {run.status === 'failed' ? '—' : formatSignedAmount(shownProfit, currency)}
+        {run.status === 'failed' || run.status === 'skipped' || run.status === 'waiting' ? '—' : formatSignedAmount(shownProfit, currency)}
       </span>
     </li>
+  );
+}
+
+/** Quote levels need more precision than a money amount. */
+function formatLevel(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  const digits = Math.abs(value) >= 1_000 ? 3 : Math.abs(value) >= 1 ? 4 : 6;
+  return value.toFixed(digits).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+}
+
+function EntryWatchBand({ watch }: { watch: SignalBotEntryWatch }) {
+  const level = watch.priceLevel === null ? null : formatLevel(watch.priceLevel);
+  const distance = watch.distance;
+  return (
+    <div
+      className="rounded-lg border border-violet-500/40 bg-violet-500/5 px-2.5 py-2 text-[11px] leading-relaxed"
+      data-testid="bot-entry-watch"
+      data-entry-status={watch.status}
+      role="status"
+    >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-1 font-bold text-violet-600 dark:text-violet-400">
+          <Crosshair size={12} /> {watch.label}
+        </span>
+        <span className="mono text-[10px] text-muted-foreground">
+          run #{watch.runIndex} · {watch.elapsedTicks}/{watch.windowTicks} ticks waited · {watch.remainingTicks} left
+        </span>
+        {level && (
+          <span className="mono text-[10px] text-muted-foreground">
+            level {level} {watch.priceCondition === 'below' ? '↓' : '↑'}
+          </span>
+        )}
+        {watch.quote !== null && <span className="mono text-[10px] text-muted-foreground">quote {formatLevel(watch.quote)}</span>}
+        {distance !== null && <span className="mono text-[10px] text-muted-foreground">gap {formatLevel(distance)}</span>}
+        {watch.contextLabel && <span className="text-[10px] text-muted-foreground">{watch.contextLabel}</span>}
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-secondary">
+        <div
+          className="h-full rounded-full bg-violet-500 transition-[width] duration-300"
+          style={{ width: `${Math.min(100, Math.max(0, (watch.elapsedTicks / Math.max(1, watch.windowTicks)) * 100))}%` }}
+        />
+      </div>
+      <p className="mt-1 text-[10px] text-muted-foreground">{watch.reason}</p>
+    </div>
   );
 }
 
@@ -92,7 +140,7 @@ export function SignalBotWindow({
   onClose,
 }: SignalBotWindowProps) {
   const trading = useDerivTrading();
-  const { plan, runs, summary, status, stopReason, error, targetRuns, activeContractId } = bot;
+  const { plan, runs, summary, status, stopReason, error, targetRuns, activeContractId, entryWatch } = bot;
   const liveProfit =
     activeContractId === null
       ? null
@@ -157,11 +205,29 @@ export function SignalBotWindow({
           </div>
         )}
         {plan ? (
-          <div className="rounded-lg border border-primary/25 bg-primary/5 px-2.5 py-2 text-[11px] leading-relaxed">
-            <span className="font-bold">{plan.label}</span> on {plan.marketName} ({plan.symbol}) ·{' '}
-            {formatTradeDuration(plan.duration, plan.durationUnit)} · {plan.confidence}% confidence ·{' '}
-            {targetRuns} run{targetRuns === 1 ? '' : 's'}
-            {plan.recommendedRuns !== targetRuns ? ` (analysis suggested ${plan.recommendedRuns})` : ' from the analysis'}
+          <div className="space-y-1.5">
+            <div className="rounded-lg border border-primary/25 bg-primary/5 px-2.5 py-2 text-[11px] leading-relaxed">
+              <span className="font-bold">{plan.label}</span> on {plan.marketName} ({plan.symbol}) ·{' '}
+              {formatTradeDuration(plan.duration, plan.durationUnit)} · {plan.confidence}% confidence ·{' '}
+              {targetRuns} run{targetRuns === 1 ? '' : 's'}
+              {plan.recommendedRuns !== targetRuns ? ` (analysis suggested ${plan.recommendedRuns})` : ' from the analysis'}
+            </div>
+            <div className="rounded-lg border border-border bg-background/40 px-2.5 py-2 text-[11px] leading-relaxed" data-testid="bot-entry-plan">
+              <span className="inline-flex items-center gap-1 font-bold">
+                <Timer size={12} /> Entry
+              </span>{' '}
+              {entryModeLabel(plan.entry)}
+              {plan.entry.measured ? '' : ' · no measured win-rate gain'}
+              {' · '}
+              {plan.entry.confidence}% entry confidence
+              {plan.entry.reachRate !== null ? ` · ${Math.round(plan.entry.reachRate * 100)}% of ${plan.entry.sample} replayed signals reached it` : ''}
+              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                {plan.entry.mode === 'immediate'
+                  ? plan.entry.detail
+                  : `Entry point ${plan.entry.mode === 'context' ? plan.entry.contextLabel ?? 'digit context' : formatLevel(plan.entry.priceLevel)} · entry time ~${plan.entry.expectedWaitTicks} tick${plan.entry.expectedWaitTicks === 1 ? '' : 's'}${plan.entry.expectedWaitMs > 0 ? ` (~${(plan.entry.expectedWaitMs / 1_000).toFixed(1)}s)` : ''} · valid ${plan.entry.windowTicks} ticks`}
+              </div>
+            </div>
+            {entryWatch && <EntryWatchBand watch={entryWatch} />}
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground">
@@ -174,6 +240,7 @@ export function SignalBotWindow({
           <Stat label="Won" value={`${summary.wins}`} tone="text-emerald-500" />
           <Stat label="Lost" value={`${summary.losses}`} tone="text-rose-500" />
           {expanded && <Stat label="Refused" value={`${summary.failed}`} />}
+          {expanded && <Stat label="Skipped" value={`${summary.skipped}`} />}
           {expanded && <Stat label="Staked" value={formatAmount(summary.staked, currency)} />}
           <Stat
             label="Profit"
@@ -212,7 +279,8 @@ export function SignalBotWindow({
           </ul>
         ) : (
           <p className="px-1 py-3 text-center text-[11px] text-muted-foreground">
-            No contracts yet. The bot buys the signal one run at a time and waits for each contract to settle.
+            No contracts yet. Each run first waits for the entry the analysis planned, then buys one contract and waits
+            for it to settle before the next run.
           </p>
         )}
       </div>

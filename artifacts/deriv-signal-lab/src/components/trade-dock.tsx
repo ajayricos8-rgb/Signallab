@@ -19,15 +19,19 @@ import {
 } from '@/lib/trade-draft';
 import { barrierFor, formatAmount, type DerivTradeRequest } from '@/lib/deriv-trading';
 import {
+  SIGNAL_BOT_ENTRY_MODES,
+  SIGNAL_BOT_ENTRY_MODE_LABELS,
   SIGNAL_BOT_LIMITS,
   defaultSignalBotConfig,
   maxLadderStake,
+  planRunEntry,
   recommendedRuns,
   resolveMaxRuns,
   sanitizeSignalBotConfig,
 } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
+import { entryModeLabel, immediateEntryPlan, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
 import {
   TRADE_DURATION_UNITS,
   draftDurationIssue,
@@ -46,6 +50,8 @@ export type SignalAnalysisBrief = {
   strength: SignalStrength;
   marketName: string;
   ranAt: number;
+  /** Entry the analysis planned for this signal (point/level + time window). */
+  entry?: EntryPlan | null;
 };
 
 type TradeDockProps = {
@@ -272,11 +278,22 @@ export function TradeDock({
       confidence,
       strength,
       recommendedRuns: recommendedRuns({ confidence, strength }),
+      entry: isEntryPlan(analysis?.entry)
+        ? (analysis.entry as EntryPlan)
+        : immediateEntryPlan({
+            reason:
+              'This analysis ran before the entry layer, so the bot buys at the signal price. Run Analysis again for a planned entry.',
+            confidence: 40,
+          }),
       ranAt: analysis?.ranAt ?? 0,
     };
   }, [analysis, expiryOptions, family, marketName, recommendation]);
 
   const botRuns = botPlan ? resolveMaxRuns(botConfig, botPlan.recommendedRuns) : 0;
+  // What the bot will actually do with the analysis entry, given the Entry box.
+  const botEntryWaits = botPlan
+    ? planRunEntry({ config: botConfig, entry: botPlan.entry, quote: null, tickSpacingMs: 1_000, now: 0 }).wait
+    : false;
   const ladderTop = maxLadderStake({ ...botConfig, baseStake: stakeValue ?? botConfig.baseStake });
 
   // A finished analysis pops the dock open so Load and Run is reachable.
@@ -446,7 +463,7 @@ export function TradeDock({
                   title={
                     bot.running
                       ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
-                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time.`
+                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.`
                   }
                   className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 text-[11px] font-extrabold text-[#052e1e] transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-55"
                   data-testid={`button-load-and-run-${family}`}
@@ -661,11 +678,11 @@ export function TradeDock({
                   </span>
                   <span className="text-[10px] text-slate-400">
                     {botPlan
-                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'}.`
+                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'} · ${botEntryWaits ? entryModeLabel(botPlan.entry) : 'entry next tick'}${!botPlan.entry.measured && botPlan.entry.mode !== 'immediate' && botConfig.entryMode !== 'level' ? ' (no measured gain — pick “Always wait for the level” to use it)' : ''}.`
                       : 'Run Analysis to load a signal into the bot.'}
                   </span>
                 </div>
-                <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-5">
                   <BotNumberField
                     label="Martingale ×"
                     value={botConfig.martingaleMultiplier}
@@ -706,6 +723,27 @@ export function TradeDock({
                     testId="bot-max-runs"
                     onChange={(value) => setBotConfig((current) => ({ ...current, maxRuns: value }))}
                   />
+                  <label className={fieldClass}>
+                    Entry · from analysis
+                    <select
+                      value={botConfig.entryMode}
+                      onChange={(event) =>
+                        setBotConfig((current) => ({
+                          ...current,
+                          entryMode: event.target.value as SignalBotConfig['entryMode'],
+                        }))
+                      }
+                      className={controlClass}
+                      title="Follow the entry point and entry time the analysis planned, ignore it, or skip a run whose entry never arrives."
+                      data-testid="bot-entry-mode"
+                    >
+                      {SIGNAL_BOT_ENTRY_MODES.map((mode) => (
+                        <option key={mode} value={mode}>
+                          {SIGNAL_BOT_ENTRY_MODE_LABELS[mode]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
                 {botConfig.martingaleMultiplier > 1 && botConfig.maxMartingaleSteps > 0 && (
                   <p className="mt-1.5 text-[10px] leading-snug text-amber-200" data-testid="bot-ladder-warning">
@@ -746,7 +784,7 @@ export function TradeDock({
                   ? 'Manual ticket: Use signal copies the latest analysis into the draft only. '
                   : 'Run Analysis to get a signal you can copy into this ticket. '}
                 {botPlan
-                  ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. `
+                  ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. ${botPlan.entry.mode === 'immediate' ? 'Entry: next tick — the analysis found no timing edge, so the bot buys at the signal price. ' : `${entryModeLabel(botPlan.entry)} — ${botPlan.entry.detail} `}`
                   : ''}
                 {durationUnit !== 't' && (
                   <>Trade duration is {selectedDurationLabel}. </>
