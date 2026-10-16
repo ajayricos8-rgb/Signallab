@@ -30,6 +30,10 @@ test('flat quotes produce finite neutral RSI, zero ROC and zero volatility', () 
   assert.equal(context.macdSignal, 0);
   assert.equal(context.macdHistogram, 0);
   assert.equal(context.swingStructure, 'insufficient swing history');
+  assert.equal(context.latestDelta, 0);
+  assert.equal(context.unchangedTickRate50, 1);
+  assert.equal(context.normalizedMomentum10, 0);
+  assert.equal(context.returnAutocorrelation1, 0);
 });
 
 test('rising prices are described by price-only momentum without becoming a digit signal', () => {
@@ -41,6 +45,17 @@ test('rising prices are described by price-only momentum without becoming a digi
   assert.ok(Number.isFinite(context.macdHistogram));
   assert.ok(context.roc14Percent > 0);
   assert.ok(context.realizedVolatility50Percent > 0);
+  assert.equal(context.latestDelta, 0.25);
+  assert.ok(context.latestSimpleReturn > 0);
+  assert.ok(context.meanReturn20 > 0);
+  assert.ok(context.returnVolatility20 > 0);
+  assert.equal(context.momentum10, 2.5);
+  assert.ok(context.normalizedMomentum10 > 0);
+  assert.equal(context.positiveTickRate50, 1);
+  assert.equal(context.negativeTickRate50, 0);
+  assert.equal(context.unchangedTickRate50, 0);
+  assert.equal(context.priceChangeQuantiles50.p50, 0.25);
+  assert.ok(context.bollinger20.upper > context.bollinger20.mid);
 });
 
 test('invalid and absent observations do not fabricate price indicators', () => {

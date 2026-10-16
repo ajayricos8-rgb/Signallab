@@ -32,6 +32,13 @@ export type DigitAnalysis = {
   weightedFrequencies: Array<number | null>;
   transitionCounts: number[][];
   transitionProbabilities: Array<Array<number | null>>;
+  secondOrderTransitionCounts: number[][][];
+  secondOrderTransitionProbabilities: Array<Array<Array<number | null>>>;
+  /** One-vs-rest Wilson intervals; not simultaneous family-wise intervals. */
+  digitIntervals95: Array<{ lower: number; upper: number } | null>;
+  bayesianDigitProbabilities: number[];
+  conditionalEntropyBits: number | null;
+  mutualInformationBits: number | null;
   parityCounts: [number, number];
   parityTransitions: number[][];
   lastDigit: number | null;
@@ -185,6 +192,16 @@ function distributionSummary(digits: number[]): {
   };
 }
 
+function wilson95(hits: number, sample: number): { lower: number; upper: number } | null {
+  if (sample <= 0) return null;
+  const z = 1.959963984540054;
+  const observed = hits / sample;
+  const denominator = 1 + z * z / sample;
+  const center = (observed + z * z / (2 * sample)) / denominator;
+  const radius = z * Math.sqrt(observed * (1 - observed) / sample + z * z / (4 * sample * sample)) / denominator;
+  return { lower: Math.max(0, center - radius), upper: Math.min(1, center + radius) };
+}
+
 export function analyzeDigits(input: Array<number | Pick<DigitObservation, 'digit'>>): DigitAnalysis {
   const digits = input
     .map((item) => typeof item === 'number' ? item : item.digit)
@@ -222,6 +239,37 @@ export function analyzeDigits(input: Array<number | Pick<DigitObservation, 'digi
     const rowSample = row.reduce((sum, count) => sum + count, 0);
     return row.map((count) => rowSample > 0 ? (count + DEFAULT_DIRICHLET_ALPHA) / (rowSample + DIGITS * DEFAULT_DIRICHLET_ALPHA) : null);
   });
+  const secondOrderTransitionCounts = Array.from({ length: DIGITS }, () =>
+    Array.from({ length: DIGITS }, () => Array.from({ length: DIGITS }, () => 0)));
+  for (let index = 2; index < digits.length; index += 1) {
+    secondOrderTransitionCounts[digits[index - 2]][digits[index - 1]][digits[index]] += 1;
+  }
+  const secondOrderTransitionProbabilities = secondOrderTransitionCounts.map((previousDigitRows) =>
+    previousDigitRows.map((row) => {
+      const rowSample = row.reduce((sum, count) => sum + count, 0);
+      // Sparse second-order contexts stay unavailable rather than looking certain.
+      return rowSample >= 5
+        ? row.map((count) => (count + DEFAULT_DIRICHLET_ALPHA) / (rowSample + DIGITS * DEFAULT_DIRICHLET_ALPHA))
+        : row.map(() => null);
+    }));
+  const transitionSampleByDigit = transitionCounts.map((row) => row.reduce((sum, count) => sum + count, 0));
+  const conditionalEntropyBits = digits.length > 1
+    ? transitionCounts.reduce((weightedEntropy, row, previousDigit) => {
+      const rowSample = transitionSampleByDigit[previousDigit];
+      if (!rowSample) return weightedEntropy;
+      const rowEntropy = row.reduce((entropy, count) => {
+        if (!count) return entropy;
+        const probability = count / rowSample;
+        return entropy - probability * Math.log2(probability);
+      }, 0);
+      return weightedEntropy + (rowSample / (digits.length - 1)) * rowEntropy;
+    }, 0)
+    : null;
+  const mutualInformationBits = conditionalEntropyBits === null || overall.entropyBits === null
+    ? null : Math.max(0, overall.entropyBits - conditionalEntropyBits);
+  const posteriorTotal = digits.length + DIGITS * DEFAULT_DIRICHLET_ALPHA;
+  const bayesianDigitProbabilities = overall.counts.map((count) => (count + DEFAULT_DIRICHLET_ALPHA) / posteriorTotal);
+  const digitIntervals95 = overall.counts.map((count) => wilson95(count, digits.length));
   const validTransitionDigits = digits;
   const currentDigitRun = validTransitionDigits.length
     ? (() => {
@@ -247,6 +295,12 @@ export function analyzeDigits(input: Array<number | Pick<DigitObservation, 'digi
     weightedFrequencies: overall.weightedFrequencies,
     transitionCounts,
     transitionProbabilities,
+    secondOrderTransitionCounts,
+    secondOrderTransitionProbabilities,
+    digitIntervals95,
+    bayesianDigitProbabilities,
+    conditionalEntropyBits,
+    mutualInformationBits,
     parityCounts: [overall.evenCount, overall.oddCount],
     parityTransitions,
     lastDigit: digits.at(-1) ?? null,
