@@ -1,0 +1,182 @@
+// Shared vote counting, out-of-sample backtest summaries and the confidence
+// score used by every signal tool (Rise/Fall, Over/Under, Even/Odd, Matches).
+//
+// Confidence is an evidence score from 1 to 99. It is NOT a win probability:
+// it blends (1) how much of the engine weight agrees with the signal, (2) how
+// large the estimated edge is relative to the contract's fair probability,
+// (3) how the same consensus rule performed on recent held-out ticks and
+// (4) out-of-sample model skill, then shrinks toward 50 when data quality is
+// weaker. Synthetic indices are random-number driven, so no score guarantees
+// an outcome.
+
+export type SignalStrength = 'STRONG' | 'MODERATE' | 'WEAK';
+export type VoteDirection = 'agree' | 'against' | 'neutral' | 'abstain';
+
+export type EngineVote = {
+  id: string;
+  label: string;
+  family: string;
+  vote: VoteDirection;
+  /** Engine estimate for the signalled outcome (a probability from 0 to 1). */
+  value: number | null;
+  /** Share of the consensus weight this engine carried (0–1). */
+  weight: number;
+  /** Out-of-sample skill used to set the weight; null when unmeasured. */
+  skill: number | null;
+  note: string;
+};
+
+export type VoteTally = {
+  agreeing: number;
+  against: number;
+  neutral: number;
+  abstained: number;
+  /** Engines that produced an estimate (agree + against + neutral). */
+  voting: number;
+  /** Every engine in the panel, including abstentions. */
+  total: number;
+  /** Agreeing weight divided by all voting weight (0–1). */
+  weightedAgreement: number;
+};
+
+export type BacktestSummary = {
+  /** Held-out occasions on which the consensus favoured this outcome. */
+  sample: number;
+  wins: number;
+  winRate: number | null;
+  /** Fair (no-edge) probability of the outcome. */
+  fair: number;
+  /** Win-rate z-score versus the fair probability, using the effective sample. */
+  zScore: number | null;
+  effectiveSample: number;
+};
+
+export type ConfidenceBreakdown = {
+  agreement: number;
+  edge: number;
+  backtest: number;
+  validation: number;
+  quality: number;
+  verified: boolean;
+};
+
+export type ConfidenceInput = {
+  weightedAgreement: number;
+  /** (Shrunk) edge divided by the outcome's standard deviation sqrt(p(1-p)). */
+  edgeRatio: number;
+  backtest: BacktestSummary | null;
+  validationSkill: number | null;
+  /** 0–1 multiplier; lower values pull the score toward 50. */
+  dataQuality: number;
+  /**
+   * Number of candidates competing for the final signal (contracts or
+   * durations × markets). The best of many noisy candidates looks better than
+   * it is, so the backtest z-score is discounted by the expected maximum.
+   */
+  selectionPool?: number;
+  /** True only when the strict research gates also passed. */
+  verified?: boolean;
+};
+
+const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+
+export const MIN_BACKTEST_SAMPLE = 20;
+
+/** Partial (correlated-candidate) correction for the expected maximum z-score. */
+export function selectionPenalty(pool: number): number {
+  return 0.6 * Math.sqrt(2 * Math.log(Math.max(2, pool)));
+}
+
+/**
+ * Shrinkage applied to model edges: estimates are trusted in proportion to the
+ * consensus's out-of-sample skill (0.3 with no skill, 1 with clear skill).
+ */
+export function edgeShrinkage(validationSkill: number | null): number {
+  return clamp(0.3 + 25 * Math.max(0, validationSkill ?? 0), 0.3, 1);
+}
+
+export function tallyVotes(votes: readonly EngineVote[]): VoteTally {
+  let agreeing = 0;
+  let against = 0;
+  let neutral = 0;
+  let abstained = 0;
+  let agreeWeight = 0;
+  let votingWeight = 0;
+  for (const vote of votes) {
+    if (vote.vote === 'abstain') { abstained += 1; continue; }
+    votingWeight += vote.weight;
+    if (vote.vote === 'agree') { agreeing += 1; agreeWeight += vote.weight; }
+    else if (vote.vote === 'against') against += 1;
+    else neutral += 1;
+  }
+  return {
+    agreeing, against, neutral, abstained,
+    voting: agreeing + against + neutral,
+    total: votes.length,
+    weightedAgreement: votingWeight > 0 ? agreeWeight / votingWeight : 0,
+  };
+}
+
+export function summarizeBacktest(wins: number, sample: number, fair: number, effectiveSample = sample): BacktestSummary {
+  const n = Math.max(0, Math.min(sample, effectiveSample));
+  const winRate = sample > 0 ? wins / sample : null;
+  const deviation = Math.sqrt(Math.max(1e-9, fair * (1 - fair)));
+  const zScore = winRate !== null && n >= 1 ? (winRate - fair) / (deviation / Math.sqrt(n)) : null;
+  return { sample, wins, winRate, fair, zScore, effectiveSample: n };
+}
+
+/**
+ * Evidence score from 1 to 99 plus its normalized components (-1 to 1).
+ * Calibrated by simulation so that scanning 13 purely random markets almost
+ * never produces STRONG, while genuinely structured streams score 85+.
+ */
+export function confidenceScore(input: ConfidenceInput): { confidence: number; breakdown: ConfidenceBreakdown } {
+  const edgeRatio = Number.isFinite(input.edgeRatio) ? input.edgeRatio : 0;
+  const magnitude = Math.abs(edgeRatio);
+  // Agreement only counts in proportion to a material edge: correlated
+  // engines agreeing on a negligible deviation is not evidence.
+  const gate = clamp((magnitude - 0.01) / 0.06, 0, 1);
+  const agreement = clamp((input.weightedAgreement - 0.5) / 0.5, -1, 1) * gate;
+  const edge = Math.sign(edgeRatio) * Math.tanh(Math.max(0, magnitude - 0.02) / 0.06);
+  // Selection inflates only the upside: discount positive z-scores by the
+  // expected best-of-pool maximum, keep poor results at full strength, and
+  // weight the term by how many held-out calls back it.
+  const penalty = selectionPenalty(input.selectionPool ?? 1);
+  const z = input.backtest?.zScore ?? null;
+  const backtest = input.backtest && z !== null && input.backtest.sample > 0
+    ? Math.tanh((z > 0 ? Math.max(0, z - penalty) : z) / 2) * (input.backtest.sample / (input.backtest.sample + MIN_BACKTEST_SAMPLE))
+    : 0;
+  const validation = input.validationSkill === null || !Number.isFinite(input.validationSkill) ? 0 : Math.tanh(25 * input.validationSkill);
+  const quality = clamp(Number.isFinite(input.dataQuality) ? input.dataQuality : 0, 0, 1);
+  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation;
+  let confidence = 50 + 50 * raw * quality;
+  // Passing every strict held-out research gate is rare and meaningful.
+  if (input.verified) confidence += 8;
+  return {
+    confidence: Math.round(clamp(confidence, 1, 99)),
+    breakdown: { agreement, edge, backtest, validation, quality, verified: Boolean(input.verified) },
+  };
+}
+
+/**
+ * STRONG needs a high score, a skill-weighted majority well above half and
+ * non-negative held-out results; MODERATE needs more engines for than against.
+ */
+export function strengthOf(confidence: number, tally: VoteTally, backtest: BacktestSummary | null): SignalStrength {
+  const backtestOk = !backtest || backtest.sample < 10 || (backtest.zScore ?? 0) >= 0;
+  if (confidence >= 70 && tally.weightedAgreement >= 0.6 && backtestOk) return 'STRONG';
+  if (confidence >= 55 && tally.agreeing > tally.against) return 'MODERATE';
+  return 'WEAK';
+}
+
+/** One plain-language sentence explaining what drives (or limits) a signal. */
+export function explainSignal(strength: SignalStrength, breakdown: ConfidenceBreakdown, tally: VoteTally): string {
+  const share = tally.voting ? tally.agreeing / tally.voting : 0;
+  if (breakdown.verified) return 'Every strict held-out research gate passed for this call — the rarest and strongest kind of evidence.';
+  if (strength === 'STRONG') return 'Engines agree, the edge over fair odds is material and the same call held up on recent unseen ticks.';
+  if (breakdown.backtest < -0.15) return 'Engines lean this way now, but recent held-out results for this call were below fair odds.';
+  if (share >= 0.6 && breakdown.edge < 0.2) return 'Most engines lean this way, but the edge over fair odds is very small — typical of a random market.';
+  if (share < 0.5) return 'Engines are split on this market; treat it as a low-conviction call.';
+  if (breakdown.backtest > 0.15) return 'Engines lean this way and recent held-out ticks were supportive, but not decisive.';
+  return 'Engines lean this way with a modest edge; no decisive evidence either way.';
+}

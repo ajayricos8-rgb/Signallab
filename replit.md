@@ -23,23 +23,30 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/deriv-signal-lab/src/components/trade-dock.tsx` — the mini bottom trade menu on every Tools tab: manual ticket, bot configuration (martingale, stop loss, runs) and the **Load and Run** button.
+- `artifacts/deriv-signal-lab/src/components/signal-bot-window.tsx` — the mini/expandable bot page that shows each taken trade, Stop and Reset.
+- `artifacts/deriv-signal-lab/src/hooks/use-signal-bot.ts` + `src/lib/signal-bot/` — the run loop and its pure rules (runs per signal, martingale ladder, stop decisions).
+- `artifacts/deriv-signal-lab/src/components/signal-bot-provider.tsx` — shared bot state, mounted above the workspace tabs so a run survives tab switches.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The four Tools tabs share one public Deriv market-data socket (`artifacts/deriv-signal-lab/src/components/market-feed-provider.tsx`) mounted above the tabs, so history survives tab switches and Run Analysis can scan every volatility index at once.
+- Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`); the 12-engine digit ensemble and the 14-engine Rise/Fall panel run per market, and results are ranked by a calibrated confidence score (`src/lib/signal-engine/confidence.ts`).
+- The strict research gates in `src/lib/over-under/ensemble.ts` are kept and surface as a "Verified edge" flag instead of blocking signals.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Run Analysis on any tool ends in a signal; the mini bottom trade menu can trade it by hand (Trade) or automatically (Load and Run), using the stake and martingale configured on that menu.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Every Run Analysis, on every tool, must start immediately across markets, show progress as a percentage and end with a signal, its confidence score and how many engines agreed — never an "Analysis blocked" / WAIT-only result.
+- The signal bot reads stake and martingale from the mini bottom trade menu and the tick duration plus run count from the analysis; it trades one contract at a time, stops immediately on request and only offers Reset once it is idle.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The signal bot lives in a provider above the workspace tabs, so leaving a tool (or the Tools tab) does **not** stop a run — the bot page is only hidden until a trade menu is mounted again. Stop is the only thing that halts purchases.
+- The bot page is rendered inside the trade menu's bottom stack, not separately, so it always sits directly above the ticket it belongs to; keep its fixed bottom offset in sync with the dock if the navigation height changes.
 
 ## Pointers
 

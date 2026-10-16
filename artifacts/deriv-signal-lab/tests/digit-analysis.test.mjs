@@ -47,6 +47,12 @@ test('digit distribution keeps all ten digits and classifies zero as even', () =
   assert.equal(analysis.digitFrequencies[7], 0);
   assert.equal(analysis.windows.find((window) => window.window === 10)?.sample, 5);
   assert.ok(analysis.normalizedEntropy >= 0 && analysis.normalizedEntropy <= 1);
+  assert.equal(analysis.digitIntervals95.length, 10);
+  assert.ok(analysis.digitIntervals95[2].lower < analysis.digitFrequencies[2]);
+  assert.ok(analysis.digitIntervals95[2].upper > analysis.digitFrequencies[2]);
+  assert.ok(Math.abs(analysis.bayesianDigitProbabilities.reduce((sum, value) => sum + value, 0) - 1) < 1e-12);
+  assert.ok(analysis.conditionalEntropyBits >= 0);
+  assert.ok(analysis.mutualInformationBits >= 0);
 });
 
 test('empty digit windows remain unavailable rather than fabricating a distribution', () => {
@@ -55,6 +61,10 @@ test('empty digit windows remain unavailable rather than fabricating a distribut
   assert.equal(analysis.lastDigit, null);
   assert.ok(analysis.digitFrequencies.every((value) => value === null));
   assert.equal(analysis.entropyBits, null);
+  assert.equal(analysis.conditionalEntropyBits, null);
+  assert.equal(analysis.mutualInformationBits, null);
+  assert.ok(analysis.digitIntervals95.every((interval) => interval === null));
+  assert.ok(analysis.secondOrderTransitionProbabilities.flat(2).every((value) => value === null));
   assert.equal(analysis.mostFrequentDigit, null);
 });
 
@@ -101,6 +111,17 @@ test('transition counts and smoothed rows preserve support counts', () => {
   assert.equal(analysis.transitionCounts[1][0], 1);
   assert.equal(analysis.transitionProbabilities[9][0], null);
   assert.ok(Math.abs(analysis.transitionProbabilities[0].reduce((sum, value) => sum + (value ?? 0), 0) - 1) < 1e-12);
+});
+
+test('second-order digit probabilities are suppressed for sparse contexts and smoothed when supported', () => {
+  const sparse = analyzeDigits([0, 1, 2]);
+  assert.ok(sparse.secondOrderTransitionProbabilities[0][1].every((value) => value === null));
+
+  const supported = analyzeDigits(Array.from({ length: 5 }, () => [1, 2, 3]).flat());
+  assert.equal(supported.secondOrderTransitionCounts[1][2][3], 5);
+  const probabilities = supported.secondOrderTransitionProbabilities[1][2];
+  assert.ok(probabilities.every((value) => value !== null && value > 0));
+  assert.ok(Math.abs(probabilities.reduce((sum, value) => sum + value, 0) - 1) < 1e-12);
 });
 
 test('duration ranges are used only when finite integer bounds are available', () => {

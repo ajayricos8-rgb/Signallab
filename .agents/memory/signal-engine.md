@@ -1,0 +1,25 @@
+---
+name: Signal engine (Tools tabs)
+description: How Run Analysis produces an always-on, cross-market signal with progress, confidence and engine agreement — and the calibration rules that keep "STRONG" meaningful.
+---
+
+User requirement (all four Tools tabs — Rise/Fall, Over/Under, Even/Odd, Matches): pressing **Run Analysis** must immediately start analysing across markets, show progress as a percentage, and finish with a signal plus its confidence score and how many engines agreed. Never return a blocked / WAIT-only result; the only non-signal outcome is "no market data arrived" (network failure).
+
+Flow: `components/market-feed-provider.tsx` (one public socket above the whole workspace: `active_symbols` → per volatility index `ticks_history` 2,000 + subscribe and `contracts_for`; buffered flushes ~1 s) → `hooks/use-signal-scan.ts` (waits for data, maps progress to %, ranks, remembers the last run per tool) → `lib/signal-engine/scan-runner.ts` (Web Worker pool running `scan.worker.ts`, main-thread fallback) → `digit-signal.ts` (12-engine `fitDigitEnsemble`, shared by all digit families) or `rise-fall-signal.ts` (14 engines incl. a logistic meta-model, 25 durations) → `confidence.ts` → `entry.ts` (the entry point/entry time every signal ships with, shown by `components/signal/entry-plan-card.tsx`).
+
+Entry layer (`lib/signal-engine/entry.ts`, pure and worker-safe): every signal carries an `EntryPlan` — mode (`immediate` | `pullback` | `breakout` | `context`), the entry point (a quote level, or the digit context for the digit families), the entry time (window in ticks, median ticks and median wall-clock wait), the reach rate and the measured win-rate change. Quote plans replay the holdout signals and compare two whole policies on the same rows — "wait for the level, else buy when the window closes" against "buy every signal at once" — so a level only earns `measured: true` when waiting actually beat not waiting and both policies cleared the contract's no-edge rate. Digit plans select the tick context on the older 60% of ticks and only keep it when the lift holds on the newer 40% with its own z-test; `tests/signal-entry.test.mjs` re-checks the calibration on noise streams.
+
+**An entry can only come out of an analysis.** Both analyzers require a `signal` context (engines agreeing/total, the analysis's probability for the traded outcome, the raw AI probability) and copy it into `EntryPlan.evidence`, so every plan names the run that produced it. Two rules follow, and both are load-bearing:
+- A wait is only ever planned for something the replay measured: `isEntryPlan` requires `measured === (trigger !== 'immediate')`, so "wait for this, but nobody measured it" is not a plan the bot accepts. A level that is reached often but adds no win rate is explained in the `immediate` plan's text, never traded.
+- A signal the analysis itself rates below the contract's no-edge rate is never timed (`analysisRejection`), because timing cannot rescue a trade with no edge.
+Nothing else may build an `EntryPlan`: the dock refuses to enable Load and Run without `isEntryPlan(analysis.entry)` (telling the user to run the analysis again) and `hooks/use-signal-bot.ts` re-checks before the first purchase.
+
+**Why:** the old tools only analysed one selected market and hid every result behind strict research gates, so users saw "Analysis blocked" on practically every RNG stream.
+
+**How to apply:**
+- Keep `runOverUnderEnsemble` and its strict gates unchanged; `report.selected` now powers the "Verified edge" flag and existing tests depend on it.
+- Confidence is evidence strength, not win probability. It shrinks model edges by out-of-sample skill, gates engine agreement on a material edge, discounts positive backtest z-scores by the size of the candidate pool (contracts or durations × markets), and weights backtests by sample size. It was calibrated by simulation so 13-market scans of pure noise essentially never show STRONG while structured streams score 85+. If you change weights or thresholds, re-run a null simulation (random digits / random walks) before shipping.
+- Engine weights are per contract (digits: exp(30 × binary Brier skill) on the tuning window) or per duration (Rise/Fall: exp(8 × (accuracy − 0.5)) on a validation slice); Rise/Fall backtests are per direction.
+- `statistical-models.ts` / `ml-models.ts` were rewritten allocation-free for speed; outputs are bit-identical to the original math. Preserve that when editing.
+- `tests/signal-engine.test.mjs`, `tests/signal-entry.test.mjs` and `tests/scan-runner.test.mjs` cover the layer; noise tests use a deterministic sfc32 generator.
+- Entry timing is calibrated the same way as confidence: on random-walk and random-digit streams the gates (`ENTRY_LIMITS.minEdgePts` / `minReach` / `minSample`, `CONTEXT_*` for digits) essentially never offer a trigger, because a signal with no timing edge must say "enter at the next tick" rather than invent a level. If you change those thresholds, re-run a null simulation (random walks / random digits) before shipping, exactly as with the confidence weights.
