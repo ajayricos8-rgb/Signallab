@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { confidenceScore, selectionPenalty, strengthOf, summarizeBacktest, tallyVotes } from '../src/lib/signal-engine/confidence.ts';
 import { analyzeDigitMarket, DIGIT_SIGNAL_CONTRACTS, fairProbability } from '../src/lib/signal-engine/digit-signal.ts';
-import { analyzeRiseFallMarket, RISE_FALL_ENGINES, RISE_FALL_HORIZONS } from '../src/lib/signal-engine/rise-fall-signal.ts';
+import {
+  analyzeRiseFallMarket, countNonOverlappingOutcomes, normalizeRiseFallTicks,
+  resolveRiseFallHorizons, RISE_FALL_ENGINES, RISE_FALL_HORIZONS, selectNonOverlappingOutcomes, splitPurgedReplay,
+} from '../src/lib/signal-engine/rise-fall-signal.ts';
+import { familyBalancedWeights } from '../src/lib/signal-engine/consensus.ts';
 import { rankScanResults } from '../src/lib/signal-engine/scan-protocol.ts';
 import {
   FALLBACK_SCAN_MARKETS, digitTicksOf, historyToTicks, marketFreshness, mergeTicks, pipSizeFromResponse, resolvePipSize, selectScanMarkets,
@@ -63,6 +67,51 @@ test('strength labels need confidence, more engines for than against, and a non-
   assert.equal(strengthOf(50, tally(0.9), null), 'WEAK');
 });
 
+test('family-balanced weights combine independent groups without letting correlated engine count dominate', () => {
+  const engines = [
+    ...Array.from({ length: 4 }, () => ({ family: 'trend', reliability: 1 })),
+    { family: 'momentum', reliability: 1 },
+    { family: 'structure', reliability: 1 },
+    { family: 'statistical', reliability: 1 },
+    { family: 'ml', reliability: 1 },
+    { family: 'unavailable', reliability: 10, available: false },
+  ];
+  const weights = familyBalancedWeights(engines);
+  assert.ok(Math.abs(weights.reduce((sum, weight) => sum + weight, 0) - 1) < 1e-12);
+  const trendShare = weights.slice(0, 4).reduce((sum, weight) => sum + weight, 0);
+  assert.ok(trendShare <= 0.400000001, `trend family received ${trendShare}`);
+  assert.equal(weights[8], 0);
+  assert.ok(weights.slice(0, 8).every((weight) => weight > 0));
+  assert.deepEqual(familyBalancedWeights([{ family: 'x', reliability: 1, available: false }]), [0]);
+});
+
+test('purged replay splits exclude labels that cross validation or holdout boundaries', () => {
+  const rows = [
+    { origin: 1, exit: 2, label: 1 },
+    { origin: 3, exit: 5, label: -1 }, // crosses training boundary
+    { origin: 5, exit: 7, label: 1 },
+    { origin: 8, exit: 10, label: -1 }, // crosses holdout boundary
+    { origin: 10, exit: 12, label: 1 },
+    { origin: 11, exit: 12, label: null },
+  ];
+  const split = splitPurgedReplay(rows, 5, 10);
+  assert.deepEqual(split.training.map(({ origin }) => origin), [1]);
+  assert.deepEqual(split.validation.map(({ origin }) => origin), [5]);
+  assert.deepEqual(split.holdout.map(({ origin }) => origin), [10]);
+  assert.throws(() => splitPurgedReplay(rows, 10, 5), /strictly increasing/);
+});
+
+test('effective replay sample counts only non-overlapping outcome intervals', () => {
+  const rows = [
+    { origin: 1, exit: 4 },
+    { origin: 2, exit: 5 },
+    { origin: 4, exit: 7 },
+    { origin: 8, exit: 9 },
+  ];
+  assert.equal(countNonOverlappingOutcomes(rows), 3);
+  assert.deepEqual(selectNonOverlappingOutcomes(rows).map(({ origin }) => origin), [1, 4, 8]);
+});
+
 test('every digit family always returns a signal with 12 engine votes on random digits', () => {
   for (const family of ['over-under', 'even-odd', 'matches']) {
     const result = analyzeDigitMarket({ family, symbol: 'R_100', name: 'Volatility 100 Index', horizon: 1, ticks: digitTicks(randomDigits(family.length)), fresh: true, marketsInScan: 13 });
@@ -75,6 +124,10 @@ test('every digit family always returns a signal with 12 engine votes on random 
     assert.ok(Number.isInteger(signal.confidence) && signal.confidence >= 1 && signal.confidence <= 99);
     assert.equal(signal.votes.length, 12);
     assert.equal(signal.tally.agreeing + signal.tally.against + signal.tally.neutral + signal.tally.abstained, 12);
+    const familyWeights = new Map();
+    for (const engine of signal.votes) familyWeights.set(engine.family, (familyWeights.get(engine.family) ?? 0) + engine.weight);
+    for (const [engineFamily, weight] of familyWeights) assert.ok(weight <= 0.400000001, `${engineFamily} family received ${weight}`);
+    assert.ok(Math.abs(signal.votes.reduce((sum, engine) => sum + engine.weight, 0) - 1) < 1e-9);
     assert.ok(signal.probability > 0 && signal.probability < 1);
     assert.equal(signal.fairProbability, fairProbability(signal.contract));
     // Pure noise across a 13-market scan must not be labelled STRONG.
@@ -125,16 +178,30 @@ function pricePath(seed, drift = 0, length = 2000) {
   return Array.from({ length }, (_, index) => { price += (gauss(random) + drift) * 0.3; return { epoch: 1_700_000_000 + index * 2, quote: Number(price.toFixed(3)) }; });
 }
 
-test('Rise/Fall always returns a direction, a duration and 14 engine votes', () => {
+test('Rise/Fall returns a direction and combines the full engine panel by independent family', () => {
   const result = analyzeRiseFallMarket({ symbol: 'R_75', name: 'Volatility 75 Index', ticks: pricePath(9), fresh: true, marketsInScan: 13 });
   assert.equal(result.kind, 'rise-fall');
   assert.equal(result.horizons.length, RISE_FALL_HORIZONS.length);
   assert.ok(['RISE', 'FALL'].includes(result.best.direction));
   assert.equal(result.best.votes.length, RISE_FALL_ENGINES.length);
-  assert.equal(result.best.tally.total, 14);
+  assert.equal(result.best.tally.total, RISE_FALL_ENGINES.length);
   assert.ok(result.best.confidence >= 1 && result.best.confidence <= 99);
   assert.notEqual(result.best.strength, 'STRONG');
+  const familyWeight = new Map();
+  for (const engine of result.best.votes) familyWeight.set(engine.family, (familyWeight.get(engine.family) ?? 0) + engine.weight);
+  for (const [family, weight] of familyWeight) assert.ok(weight <= 0.400000001, `${family} family received ${weight}`);
   assert.throws(() => analyzeRiseFallMarket({ symbol: 'R_75', name: 'Volatility 75 Index', ticks: pricePath(9, 0, 300), fresh: true }), /600/);
+});
+
+test('Rise/Fall input sanitation de-duplicates chronologically and validates durations', () => {
+  const normalized = normalizeRiseFallTicks([
+    { epoch: 3, quote: 102 }, { epoch: 1, quote: 100 }, { epoch: 2, quote: 101 },
+    { epoch: 2, quote: 101.5 }, { epoch: 4, quote: Number.NaN }, { epoch: 5, quote: -1 },
+  ]);
+  assert.deepEqual(normalized, [{ epoch: 1, quote: 100 }, { epoch: 2, quote: 101.5 }, { epoch: 3, quote: 102 }]);
+  assert.deepEqual(resolveRiseFallHorizons([{ unit: 'ticks', value: 2 }, { unit: 'ticks', value: 2 }]), [{ unit: 'ticks', value: 2 }]);
+  assert.throws(() => resolveRiseFallHorizons([{ unit: 'ticks', value: 0 }]), /1–10 ticks/);
+  assert.throws(() => resolveRiseFallHorizons([{ unit: 'seconds', value: 5 }]), /1–10 ticks/);
 });
 
 test('Rise/Fall follows a clear trend in either direction', () => {

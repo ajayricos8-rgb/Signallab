@@ -18,6 +18,7 @@ import {
   type DigitEnsembleFit, type DigitEnsembleReport, type EnsembleProgress,
 } from '../over-under/ensemble.ts';
 import type { Forecast } from '../over-under/features.ts';
+import { familyBalancedWeights } from './consensus.ts';
 import {
   confidenceScore, edgeShrinkage, strengthOf, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
@@ -191,9 +192,11 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       }
       return count >= 30 ? (engineTotal - baselineTotal) / count : 0;
     });
-    const corrected = (forecast: Forecast, index: number) => forecast.probabilities
-      ? clamp(digitContractProbability(forecast.probabilities, contract) - bias[index], 0.0005, 0.9995)
-      : null;
+    const corrected = (forecast: Forecast, index: number) => {
+      if (!forecast.probabilities) return null;
+      const probability = digitContractProbability(forecast.probabilities, contract) - bias[index];
+      return Number.isFinite(probability) ? clamp(probability, 0.0005, 0.9995) : null;
+    };
     // Contract-level tuning skill of each engine versus rolling frequency.
     const skills = fit.engines.map((_, index) => {
       let engineLoss = 0;
@@ -211,14 +214,17 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     });
     const factors = skills.map(skillFactor);
     const weighted = (forecasts: readonly Forecast[]) => {
-      let total = 0;
-      let weight = 0;
-      const values = forecasts.map((forecast, index) => {
-        const value = corrected(forecast, index);
-        if (value !== null) { total += factors[index] * value; weight += factors[index]; }
-        return value;
-      });
-      return { values, weight, estimate: weight > 0 ? total / weight : fair };
+      const values = forecasts.map((forecast, index) => corrected(forecast, index));
+      // The same family-aware weighting is used for the live estimate, engine
+      // votes and every held-out replay. Correlated models share one family
+      // budget instead of gaining influence just by being more numerous.
+      const weights = familyBalancedWeights(fit.engines.map((engine, index) => ({
+        family: engine.family,
+        reliability: factors[index],
+        available: values[index] !== null,
+      })));
+      const estimate = values.reduce<number>((total, value, index) => total + (value === null ? 0 : weights[index] * value), 0);
+      return { values, weights, estimate: weights.some((weight) => weight > 0) ? estimate : fair };
     };
 
     const live = weighted(fit.liveForecasts);
@@ -229,7 +235,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       const vote = value === null ? 'abstain' : value - fair > margin ? 'agree' : value - fair < -margin ? 'against' : 'neutral';
       return {
         id: engine.id, label: engine.label, family: engine.family, vote, value,
-        weight: value === null || live.weight <= 0 ? 0 : factors[index] / live.weight,
+        weight: value === null ? 0 : live.weights[index],
         skill: skills[index],
         note: fit.liveForecasts[index].note ?? '',
       };
