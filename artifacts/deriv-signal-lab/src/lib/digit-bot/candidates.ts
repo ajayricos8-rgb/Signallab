@@ -184,10 +184,6 @@ export function buildCandidateDrafts(input: CandidateBuildInput): { drafts: Cand
       const key = candidateKey(domain.contractType, barrier);
       const reasons: string[] = [];
       const reasonCodes: ReasonCode[] = [];
-      if (!source.validated) {
-        reasons.push('No walk-forward validated model currently supports this contract family.');
-        reasonCodes.push('MODEL_UNVALIDATED');
-      }
       if (input.effectiveSample < input.minimumEffectiveSample) {
         reasons.push(`The effective sample of ${Math.round(input.effectiveSample)} digits is below the required ${input.minimumEffectiveSample}.`);
         reasonCodes.push('DATA_INSUFFICIENT');

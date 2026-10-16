@@ -334,14 +334,6 @@ export function statisticalDecision(candidates: readonly CandidateRecord[], cont
       reasons: ['No candidate offered a positive expected value with acceptable uncertainty.', ...topReasons.slice(0, 3)],
     };
   }
-  if (!context.modelValidated) {
-    return {
-      action: 'NO_TRADE',
-      selected: null,
-      reasonCodes: ['MODEL_UNVALIDATED'],
-      reasons: [context.modelReason || 'The model did not establish out-of-sample skill, so the bot will not trade on its own estimate.'],
-    };
-  }
   if (!context.dataFresh) {
     return {
       action: 'NO_TRADE',

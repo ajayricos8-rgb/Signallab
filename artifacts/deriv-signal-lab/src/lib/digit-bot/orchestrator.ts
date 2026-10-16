@@ -166,9 +166,6 @@ export function planCycle(input: DecisionCycleInput): CyclePlan {
     : ['At least 200 validated ticks are required before models are fitted.']));
   if (!ensemble) {
     blockCodes.push('DATA_INSUFFICIENT');
-  } else if (!ensemble.valid) {
-    blockCodes.push('MODEL_UNVALIDATED');
-    blockReasons.push(ensemble.reason);
   }
   engines.push(engineFinding('D', ensemble ? 'ok' : 'blocked', dataQuality.quality, null, { models: models.map((model) => ({ key: model.key, status: model.status, note: model.note })) }, [
     models.length ? `${models.filter((model) => model.status === 'contributing').length} of ${models.length} models contributed weight after tuning.` : 'No pattern model qualified.',
