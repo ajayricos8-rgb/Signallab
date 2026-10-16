@@ -2,12 +2,14 @@ import { useMemo, useState } from 'react';
 import { AlertTriangle, BarChart3, Clock3, Play, Radio, ShieldAlert, Square, TrendingDown, Wifi, WifiOff, Zap } from 'lucide-react';
 import { TradeDock } from '@/components/trade-dock';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
+import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
 import {
   AnalysisProgressPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
 } from '@/components/signal/signal-ui';
 import { analyzeRiseFall, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
+import { analyzePriceContext } from '@/lib/price-context';
 import {
   RISE_FALL_ENGINES, RISE_FALL_MIN_TICKS, formatRiseFallHorizon,
   type RiseFallHorizonSignal, type RiseFallMarketAnalysis,
@@ -185,6 +187,7 @@ export function RiseFallTool() {
   const chartEntry = markets.find((entry) => entry.symbol === chartSymbol);
   const chartTicks = chartEntry?.ticks ?? [];
   const liveAnalysis = useMemo(() => analyzeRiseFall(chartTicks.slice(-500), 5), [chartTicks]);
+  const priceContext = useMemo(() => analyzePriceContext(chartTicks), [chartTicks]);
   const recommendation = selectedResult && signal ? recommendationFor(selectedResult, signal) : null;
   // Passed to the trade dock so it can pop open and offer Load and Run.
   const analysis = selectedResult && signal
@@ -344,6 +347,8 @@ export function RiseFallTool() {
         </article>
         <div className="space-y-3"><div className="flex items-center gap-2"><TrendingDown size={16} className="text-primary" /><h3 className="text-sm font-bold">Rolling-window trend</h3></div><WindowTable analysis={liveAnalysis} /></div>
       </section>
+
+      <PriceContextPanel precision={chartEntry?.precision ?? null} analysis={priceContext} />
 
       <RiseFallDeepPanel prices={chartTicks.map((tick) => tick.quote)} />
 

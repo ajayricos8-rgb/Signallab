@@ -120,6 +120,7 @@ function DigitFrequencyPanel({ analysis, marketName }: { analysis: DigitAnalysis
   const currentParity = analysis.lastDigit === null ? null : analysis.lastDigit % 2;
   const parityCounts = currentParity === null ? null : analysis.parityTransitions[currentParity];
   const parityTransitionSample = parityCounts?.reduce((sum, count) => sum + count, 0) ?? 0;
+  const secondOrderContexts = analysis.secondOrderTransitionProbabilities.flat().filter((row) => row.some((probability) => probability !== null)).length;
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="digit-frequency-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -132,9 +133,9 @@ function DigitFrequencyPanel({ analysis, marketName }: { analysis: DigitAnalysis
           const rate = analysis.digitFrequencies[digit];
           const gap = window1000.gapsSinceAppearance[digit];
           return (
-            <div key={digit} className="grid grid-cols-[22px_70px_46px_minmax(0,1fr)] items-center gap-2 text-[10px]" data-testid={`digit-frequency-${digit}`}>
+            <div key={digit} className="grid grid-cols-[22px_112px_46px_minmax(0,1fr)] items-center gap-2 text-[10px]" data-testid={`digit-frequency-${digit}`}>
               <span className="mono font-bold">{digit}</span>
-              <span className="mono text-muted-foreground">{count} · {formatPercent(rate)}</span>
+              <div className="leading-tight"><span className="mono text-muted-foreground">{count} · {formatPercent(rate)}</span><span className="mono block text-[8px] text-muted-foreground">95% Wilson {analysis.digitIntervals95[digit] ? `${formatPercent(analysis.digitIntervals95[digit]!.lower)}–${formatPercent(analysis.digitIntervals95[digit]!.upper)}` : '—'}</span></div>
               <span className="mono text-muted-foreground" title="Ticks since last appearance">{gap === null ? 'gap —' : `gap ${gap}`}</span>
               <div className="h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary" style={{ width: `${rate === null ? 0 : Math.min(100, rate * 500)}%` }} /></div>
             </div>
@@ -146,13 +147,16 @@ function DigitFrequencyPanel({ analysis, marketName }: { analysis: DigitAnalysis
         <div><div className="eyebrow">Parity count</div><div className="mono mt-1 text-xs font-semibold">Even {analysis.parityCounts[0]} · Odd {analysis.parityCounts[1]}</div></div>
         <div><div className="eyebrow">Current runs</div><div className="mono mt-1 text-xs font-semibold">Digit {analysis.currentDigitRun} · parity {analysis.currentParityRun}</div></div>
         <div><div className="eyebrow">Parity after current</div><div className="mono mt-1 text-[10px] font-semibold">{parityTransitionSample ? `from ${currentParity === 0 ? 'even' : 'odd'} · E ${formatPercent(parityCounts![0] / parityTransitionSample)} · O ${formatPercent(parityCounts![1] / parityTransitionSample)}` : '—'}</div></div>
+        <div><div className="eyebrow">Conditional entropy</div><div className="mono mt-1 text-[10px] font-semibold">{analysis.conditionalEntropyBits === null ? '—' : `${analysis.conditionalEntropyBits.toFixed(3)} bits`} · MI {analysis.mutualInformationBits === null ? '—' : `${analysis.mutualInformationBits.toFixed(3)} bits`}</div></div>
+        <div><div className="eyebrow">Second-order contexts</div><div className="mono mt-1 text-[10px] font-semibold">{secondOrderContexts}/100 with ≥5 observations</div></div>
       </div>
       <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-muted-foreground"><span>Most frequent: {analysis.mostFrequentDigit ?? '—'}</span><span>Least observed: {analysis.leastObservedDigit ?? '—'}</span><span>Bars are scaled so 20% fills the bar.</span></div>
+      <p className="mt-2 text-[9px] leading-relaxed text-muted-foreground">Intervals are one-vs-rest Wilson estimates, not simultaneous intervals across all digits; observed hot/cold frequencies and entropy describe history, not a next-tick guarantee.</p>
     </section>
   );
 }
 
-function PriceContextPanel({ precision, analysis }: { precision: number | null; analysis: ReturnType<typeof analyzePriceContext> }) {
+export function PriceContextPanel({ precision, analysis }: { precision: number | null; analysis: ReturnType<typeof analyzePriceContext> }) {
   const asOf = analysis.asOfEpoch === null ? '—' : new Date(analysis.asOfEpoch * 1_000).toLocaleTimeString();
   const priceMetrics = [
     { label: 'EMA 9', value: formatQuote(analysis.ema9 ?? undefined, precision) },
@@ -161,11 +165,19 @@ function PriceContextPanel({ precision, analysis }: { precision: number | null; 
     { label: 'RSI 14', value: analysis.rsi14 === null ? '—' : `${formatMetric(analysis.rsi14, 1)} / 100` },
     { label: 'ROC · 14 ticks', value: analysis.roc14Percent === null ? '—' : `${formatMetric(analysis.roc14Percent, 3)}%` },
     { label: 'Volatility · 50 ticks', value: analysis.realizedVolatility50Percent === null ? '—' : `${formatMetric(analysis.realizedVolatility50Percent, 4)}%` },
+    { label: 'Latest Δ price', value: analysis.latestDelta === null ? '—' : formatIndicator(analysis.latestDelta) },
+    { label: 'Latest simple return', value: analysis.latestSimpleReturn === null ? '—' : `${formatMetric(analysis.latestSimpleReturn * 100, 4)}%` },
+    { label: 'Mean return · 20 ticks', value: analysis.meanReturn20 === null ? '—' : `${formatMetric(analysis.meanReturn20 * 100, 4)}%` },
+    { label: 'Return volatility · 20 ticks', value: analysis.returnVolatility20 === null ? '—' : `${formatMetric(analysis.returnVolatility20 * 100, 4)}%` },
+    { label: 'Momentum · 10 ticks', value: analysis.momentum10 === null ? '—' : formatIndicator(analysis.momentum10) },
+    { label: 'Normalized momentum · 10', value: formatMetric(analysis.normalizedMomentum10, 2) },
+    { label: 'MAD of price changes · 50', value: formatIndicator(analysis.medianAbsoluteDeviation50) },
+    { label: 'Return autocorrelation · lag 1', value: formatMetric(analysis.returnAutocorrelation1, 3) },
   ];
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="price-context-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><div className="eyebrow">Price context</div><h3 className="mt-1 text-sm font-bold">Tick-price technical context</h3><p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">From validated quotes in the latest 1,000 ticks. Shown for context; digit signals come from the digit engines.</p></div>
+        <div><div className="eyebrow">Price context</div><h3 className="mt-1 text-sm font-bold">Tick-price technical context</h3><p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Calculated from validated quotes in the latest 1,000 ticks. These describe recent price behaviour; they do not by themselves establish a profitable next-outcome signal.</p></div>
         <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-[10px] text-muted-foreground">N <span className="mono ml-1 font-semibold text-foreground">{analysis.sampleSize}</span><span className="ml-2">as of {asOf}</span></div>
       </div>
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -176,6 +188,10 @@ function PriceContextPanel({ precision, analysis }: { precision: number | null; 
       <div className="mt-3 grid gap-2 lg:grid-cols-2">
         <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">MACD · 12 / 26 / 9</div><div className="mono mt-1 text-[10px] font-semibold">Line {formatIndicator(analysis.macdLine)} · Signal {formatIndicator(analysis.macdSignal)} · Hist {formatIndicator(analysis.macdHistogram)}</div></div>
         <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Confirmed tick swings · 3-tick pivot</div><div className="mt-1 text-[10px] font-semibold">{analysis.swingStructure}</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Price-change quantiles · last 50</div><div className="mono mt-1 text-[10px] font-semibold">P05 {formatIndicator(analysis.priceChangeQuantiles50?.p05 ?? null)} · Median {formatIndicator(analysis.priceChangeQuantiles50?.p50 ?? null)} · P95 {formatIndicator(analysis.priceChangeQuantiles50?.p95 ?? null)}</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Tick direction · last 50</div><div className="mono mt-1 text-[10px] font-semibold">↑ {formatMetric(analysis.positiveTickRate50 === null ? null : analysis.positiveTickRate50 * 100, 1)}% · ↓ {formatMetric(analysis.negativeTickRate50 === null ? null : analysis.negativeTickRate50 * 100, 1)}% · flat {formatMetric(analysis.unchangedTickRate50 === null ? null : analysis.unchangedTickRate50 * 100, 1)}%</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Return shape · last 50</div><div className="mono mt-1 text-[10px] font-semibold">Skew {formatMetric(analysis.returnSkewness50, 2)} · lag-1 autocorrelation {formatMetric(analysis.returnAutocorrelation1, 2)}</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Bollinger bands · 20 ticks ±2σ</div><div className="mono mt-1 text-[10px] font-semibold">{analysis.bollinger20 ? `Lower ${formatQuote(analysis.bollinger20.lower, precision)} · Mid ${formatQuote(analysis.bollinger20.mid, precision)} · Upper ${formatQuote(analysis.bollinger20.upper, precision)}` : 'Need 20 valid quotes'}</div></div>
       </div>
     </section>
   );
