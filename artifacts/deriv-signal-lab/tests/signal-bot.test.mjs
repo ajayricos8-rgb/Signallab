@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  SIGNAL_BOT_ENTRY_MODES,
   SIGNAL_BOT_LIMITS,
   SIGNAL_BOT_RUNS_BY_STRENGTH,
   defaultSignalBotConfig,
+  describeEntryOutcome,
+  describeEntryWatch,
   maxLadderStake,
   nextRunDecision,
+  planRunEntry,
   recommendedRuns,
   resolveMaxRuns,
   sanitizeSignalBotConfig,
@@ -13,6 +17,7 @@ import {
   stakeForRun,
   summarizeBotRuns,
 } from '../src/lib/signal-bot/plan.ts';
+import { immediateEntryPlan } from '../src/lib/signal-engine/entry.ts';
 
 // ---- runs the analysis is worth -------------------------------------------
 
@@ -99,6 +104,162 @@ test('a missing or broken configuration falls back to the defaults', () => {
   });
 });
 
+test('the entry setting only accepts the documented modes', () => {
+  assert.equal(defaultSignalBotConfig().entryMode, 'analysis');
+  assert.deepEqual(SIGNAL_BOT_ENTRY_MODES, ['analysis', 'level', 'market', 'skip']);
+  for (const mode of SIGNAL_BOT_ENTRY_MODES) {
+    assert.equal(sanitizeSignalBotConfig({ entryMode: mode }).entryMode, mode);
+  }
+  assert.equal(sanitizeSignalBotConfig({ entryMode: 'chase' }).entryMode, 'analysis');
+  assert.equal(sanitizeSignalBotConfig({ entryMode: 7 }).entryMode, 'analysis');
+});
+
+// ---- the entry each run waits for -----------------------------------------
+
+function pullbackPlan(overrides = {}) {
+  return {
+    ...immediateEntryPlan({ reason: 'test' }),
+    mode: 'pullback',
+    trigger: 'quote',
+    label: 'Pullback entry',
+    priceLevel: 999.5,
+    priceCondition: 'below',
+    distance: 0.5,
+    referenceQuote: 1_000,
+    windowTicks: 8,
+    expectedWaitTicks: 4,
+    expectedWaitMs: 4_000,
+    reachRate: 0.7,
+    edgeGainPts: 2.4,
+    sample: 90,
+    confidence: 72,
+    measured: true,
+    ...overrides,
+  };
+}
+
+test('the analysis entry is re-based on the live quote for every run', () => {
+  const decision = planRunEntry({
+    config: defaultSignalBotConfig(),
+    entry: pullbackPlan(),
+    quote: 1_200,
+    tickSpacingMs: 1_000,
+    now: 5_000,
+  });
+  assert.equal(decision.wait, true);
+  assert.equal(decision.fallback, 'market');
+  assert.equal(decision.entry.distance, 0.5);
+  assert.equal(decision.entry.priceLevel, 1_199.5);
+  assert.equal(decision.entry.referenceQuote, 1_200);
+  assert.equal(decision.deadline, 5_000 + 8_000);
+  assert.match(decision.note, /Pullback entry/);
+});
+
+test('the market entry setting ignores the planned entry entirely', () => {
+  const decision = planRunEntry({
+    config: { ...defaultSignalBotConfig(), entryMode: 'market' },
+    entry: pullbackPlan(),
+    quote: 1_200,
+    tickSpacingMs: 1_000,
+    now: 5_000,
+  });
+  assert.equal(decision.wait, false);
+  assert.equal(decision.entry.trigger, 'immediate');
+  assert.equal(decision.entry.priceLevel, null);
+  assert.equal(decision.fallback, 'market');
+  assert.equal(decision.deadline, 5_000);
+});
+
+test('the skip setting keeps the entry and drops a run that never gets there', () => {
+  const decision = planRunEntry({
+    config: { ...defaultSignalBotConfig(), entryMode: 'skip' },
+    entry: pullbackPlan(),
+    quote: 1_200,
+    tickSpacingMs: 1_000,
+    now: 5_000,
+  });
+  assert.equal(decision.wait, true);
+  assert.equal(decision.fallback, 'skip');
+  assert.equal(decision.entry.priceLevel, 1_199.5);
+});
+
+test('an analysis with no timing edge never makes the bot wait', () => {
+  const decision = planRunEntry({
+    config: defaultSignalBotConfig(),
+    entry: immediateEntryPlan({ reason: 'no timing edge' }),
+    quote: 1_200,
+    tickSpacingMs: 1_000,
+    now: 5_000,
+  });
+  assert.equal(decision.wait, false);
+  assert.equal(decision.fallback, 'market');
+});
+
+test('the default setting only waits for a level the replay measured a gain for', () => {
+  const structural = pullbackPlan({ measured: false, edgeGainPts: -0.4, confidence: 52 });
+  const analysis = planRunEntry({
+    config: defaultSignalBotConfig(),
+    entry: structural,
+    quote: 1_200,
+    tickSpacingMs: 1_000,
+    now: 5_000,
+  });
+  assert.equal(analysis.wait, false);
+  assert.equal(analysis.fallback, 'market');
+  assert.match(analysis.note, /next tick/);
+  // The user can still ask for the structural level explicitly.
+  const level = planRunEntry({
+    config: { ...defaultSignalBotConfig(), entryMode: 'level' },
+    entry: structural,
+    quote: 1_200,
+    tickSpacingMs: 1_000,
+    now: 5_000,
+  });
+  assert.equal(level.wait, true);
+  assert.equal(level.entry.priceLevel, 1_199.5);
+  assert.equal(level.deadline, 5_000 + 8_000);
+  assert.match(level.note, /no measured gain/);
+});
+
+test('a context entry from the digit engines is always followed', () => {
+  const context = {
+    ...pullbackPlan({ measured: true, mode: 'context', trigger: 'digit', priceLevel: null, priceCondition: null, contextDigits: [2, 7], contextLabel: 'after digit 2 or 7' }),
+  };
+  const decision = planRunEntry({
+    config: { ...defaultSignalBotConfig(), entryMode: 'skip' },
+    entry: context,
+    quote: 1_200,
+    tickSpacingMs: 1_000,
+    now: 5_000,
+  });
+  assert.equal(decision.wait, true);
+  assert.equal(decision.fallback, 'skip');
+  assert.match(decision.note, /after digit 2 or 7/);
+});
+
+test('the entry lines the bot page prints explain the wait and its outcome', () => {
+  const watch = describeEntryWatch({
+    label: 'Pullback entry',
+    status: 'waiting',
+    reason: 'Waiting for the quote to move down 0.5 to the entry level.',
+    elapsedTicks: 3,
+    remainingTicks: 5,
+  });
+  assert.match(watch, /Waited 3 ticks, 5 left/);
+  assert.match(
+    describeEntryWatch({ label: 'Pullback entry', status: 'ready', reason: '', elapsedTicks: 3, remainingTicks: 5 }),
+    /buying now/,
+  );
+  assert.match(
+    describeEntryWatch({ label: 'Pullback entry', status: 'expired', reason: 'window closed', elapsedTicks: 9, remainingTicks: 0 }),
+    /window closed/,
+  );
+  assert.match(describeEntryOutcome({ status: 'ready', waitedTicks: 4, fallback: 'market' }), /after 4 ticks/);
+  assert.match(describeEntryOutcome({ status: 'ready', waitedTicks: 0, fallback: 'market' }), /Entered on the analysis entry\./);
+  assert.match(describeEntryOutcome({ status: 'expired', waitedTicks: 8, fallback: 'skip' }), /run skipped/);
+  assert.match(describeEntryOutcome({ status: 'expired', waitedTicks: 8, fallback: 'market' }), /market price instead/);
+});
+
 // ---- when the bot may buy again -------------------------------------------
 
 test('the bot stops once the runs from the analysis are used up', () => {
@@ -159,6 +320,7 @@ function run(status, profit, overrides = {}) {
     profit,
     openedAt: 1_000,
     settledAt: 2_000,
+    entryTicks: null,
     note: '',
     ...overrides,
   };
@@ -175,12 +337,40 @@ test('the summary counts settled runs, money and the win rate', () => {
   assert.equal(summary.wins, 2);
   assert.equal(summary.losses, 1);
   assert.equal(summary.failed, 1);
+  assert.equal(summary.skipped, 0);
   assert.equal(summary.open, 1);
   assert.equal(summary.profit, 0.8);
   // Every bought contract is staked (including the open one); a refused order
   // never reached Deriv, so its stake is not counted.
   assert.equal(summary.staked, 4);
   assert.equal(summary.winRate, 2 / 3);
+});
+
+test('runs waiting for their entry count as in progress, never as money at risk', () => {
+  const config = defaultSignalBotConfig();
+  const summary = summarizeBotRuns([run('won', 0.9), run('waiting', null, { contractId: null, openedAt: null })], config);
+  assert.equal(summary.started, 2);
+  assert.equal(summary.open, 1);
+  assert.equal(summary.settled, 1);
+  // The waiting run has not bought anything yet, so it is not staked.
+  assert.equal(summary.staked, 1);
+});
+
+test('a run skipped for a missed entry costs nothing and keeps the ladder step', () => {
+  const config = { ...defaultSignalBotConfig(), baseStake: 1, martingaleMultiplier: 2, maxMartingaleSteps: 3 };
+  const summary = summarizeBotRuns(
+    [run('lost', -1), run('skipped', null, { contractId: null, stake: 4, entryTicks: 8 }), run('lost', -2)],
+    config,
+  );
+  assert.equal(summary.skipped, 1);
+  assert.equal(summary.losses, 2);
+  // The two losses charged 1 each; the skipped run never bought anything, so
+  // its 4 is not staked.
+  assert.equal(summary.staked, 2);
+  // The skipped run never risked money, so the losing streak is what the two
+  // losses left behind.
+  assert.equal(summary.lossStreak, 2);
+  assert.equal(summary.nextMartingaleStep, 2);
 });
 
 test('the losing streak survives open runs and sizes the next stake', () => {

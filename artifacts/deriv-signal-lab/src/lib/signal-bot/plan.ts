@@ -1,11 +1,14 @@
 // Signal bot rules: how many runs a signal is worth, how the martingale ladder
-// sizes each stake, and when the bot must stop.
+// sizes each stake, which entry each run waits for, and when the bot must stop.
 //
 // Pure functions only — the React hook in `hooks/use-signal-bot.ts` owns the
-// ordering, quoting and purchasing so these rules can be tested in isolation.
+// ordering, waiting, quoting and purchasing so these rules can be tested in
+// isolation.
 import type { SignalStrength } from '../signal-engine/confidence.ts';
+import { entryWindowMs, immediateEntryPlan, rebaseEntryPlan, type EntryPlan } from '../signal-engine/entry.ts';
 import type {
   SignalBotConfig,
+  SignalBotEntryMode,
   SignalBotRun,
   SignalBotStopReason,
   SignalBotSummary,
@@ -18,6 +21,15 @@ export const SIGNAL_BOT_LIMITS = {
   stopLossStreak: { min: 0, max: 20 },
   maxRuns: { min: 0, max: 100 },
 } as const;
+
+export const SIGNAL_BOT_ENTRY_MODES: SignalBotEntryMode[] = ['analysis', 'level', 'market', 'skip'];
+
+export const SIGNAL_BOT_ENTRY_MODE_LABELS: Record<SignalBotEntryMode, string> = {
+  analysis: 'Follow the analysis entry',
+  level: 'Always wait for the level',
+  market: 'Enter at the signal price',
+  skip: 'Skip a missed entry',
+};
 
 /** Baseline runs per signal strength, nudged by the confidence score. */
 export const SIGNAL_BOT_RUNS_BY_STRENGTH: Record<SignalStrength, number> = {
@@ -35,7 +47,14 @@ export function defaultSignalBotConfig(): SignalBotConfig {
     maxMartingaleSteps: 3,
     stopLossStreak: 3,
     maxRuns: 0,
+    entryMode: 'analysis',
   };
+}
+
+function sanitizeEntryMode(value: unknown): SignalBotEntryMode {
+  return typeof value === 'string' && (SIGNAL_BOT_ENTRY_MODES as string[]).includes(value)
+    ? (value as SignalBotEntryMode)
+    : 'analysis';
 }
 
 function clampNumber(value: unknown, bounds: { min: number; max: number }, fallback: number): number {
@@ -65,6 +84,7 @@ export function sanitizeSignalBotConfig(input: Partial<SignalBotConfig> | null |
       clampNumber(input.stopLossStreak, SIGNAL_BOT_LIMITS.stopLossStreak, base.stopLossStreak),
     ),
     maxRuns: Math.round(clampNumber(input.maxRuns, SIGNAL_BOT_LIMITS.maxRuns, base.maxRuns)),
+    entryMode: sanitizeEntryMode(input.entryMode),
   };
 }
 
@@ -142,6 +162,75 @@ export function nextRunDecision(input: {
   return { buy: true, reason: null };
 }
 
+export type RunEntryDecision = {
+  /** The entry this run waits for, already re-based on the live quote. */
+  entry: EntryPlan;
+  /** False when the bot buys straight away (market entries). */
+  wait: boolean;
+  /** What happens when the window closes without an entry. */
+  fallback: 'market' | 'skip';
+  /** Wall-clock moment the entry window closes. */
+  deadline: number;
+  /** Line for the ledger while the bot waits. */
+  note: string;
+};
+
+/**
+ * Turns the entry the analysis planned plus the dock's Entry setting into the
+ * decision for one run.
+ *
+ * The level is re-based on the live quote every run, so run 12 waits for the
+ * same measured pullback run 1 did instead of an absolute price that has gone
+ * stale. `analysis` only waits for a trigger the replay measured a gain for;
+ * `level` also waits for a structural level the analysis flagged as unmeasured;
+ * `market` ignores the plan entirely; `skip` keeps the analysis rules and drops
+ * a run whose entry never arrives.
+ */
+export function planRunEntry(input: {
+  config: SignalBotConfig;
+  entry: EntryPlan;
+  /** Latest quote of the plan's market, when the feed has one. */
+  quote: number | null;
+  /** Median milliseconds between ticks on that market. */
+  tickSpacingMs: number;
+  now: number;
+}): RunEntryDecision {
+  const mode = sanitizeEntryMode(input.config.entryMode);
+  if (mode === 'market') {
+    return {
+      entry: immediateEntryPlan({
+        reason:
+          'The Entry setting on the trade menu is "Enter at the signal price", so the bot buys at the first price Deriv quotes.',
+        sample: input.entry.sample,
+      }),
+      wait: false,
+      fallback: 'market',
+      deadline: input.now,
+      note: 'Entry setting: market.',
+    };
+  }
+  const entry = rebaseEntryPlan(input.entry, input.quote);
+  const fallback: 'market' | 'skip' = mode === 'skip' ? 'skip' : 'market';
+  const wait = entry.trigger !== 'immediate' && (mode === 'level' || entry.measured);
+  return {
+    entry,
+    wait,
+    fallback,
+    deadline: wait ? input.now + entryWindowMs(entry, input.tickSpacingMs) : input.now,
+    note:
+      entry.mode === 'immediate'
+        ? 'Entry: next tick.'
+        : wait
+          ? `${entry.measured ? entry.label : `${entry.label} (no measured gain)`}: ${entry.contextLabel ?? entryNoteTarget(entry)}.`
+          : `Entry: next tick — the analysis found ${entry.label.toLowerCase()} but measured no win-rate gain for it.`,
+  };
+}
+
+function entryNoteTarget(entry: EntryPlan): string {
+  if (entry.priceLevel === null) return 'waiting for the planned entry';
+  return `waiting for the quote ${entry.priceCondition === 'below' ? 'to fall to' : 'to rise to'} the entry level`;
+}
+
 /** How long to wait for one contract to settle before giving up on its result. */
 export function settlementTimeoutMs(duration: number, unit: 't' | 's' | 'm'): number {
   const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 1;
@@ -154,13 +243,17 @@ export function summarizeBotRuns(runs: readonly SignalBotRun[], config: SignalBo
   let wins = 0;
   let losses = 0;
   let failed = 0;
+  let skipped = 0;
   let open = 0;
   let unknown = 0;
   let staked = 0;
   let profit = 0;
 
   for (const run of runs) {
-    staked += run.contractId === null && run.status === 'failed' ? 0 : run.stake;
+    // Only a run that actually got a contract out of Deriv charged the account:
+    // a refused order, a skipped entry and a run still waiting for its entry
+    // have no contract id yet.
+    if (run.contractId !== null) staked += run.stake;
     if (run.status === 'won') {
       wins += 1;
       profit += run.profit ?? 0;
@@ -169,7 +262,9 @@ export function summarizeBotRuns(runs: readonly SignalBotRun[], config: SignalBo
       profit += run.profit ?? 0;
     } else if (run.status === 'failed') {
       failed += 1;
-    } else if (run.status === 'open') {
+    } else if (run.status === 'skipped') {
+      skipped += 1;
+    } else if (run.status === 'open' || run.status === 'waiting') {
       open += 1;
     } else {
       unknown += 1;
@@ -181,8 +276,9 @@ export function summarizeBotRuns(runs: readonly SignalBotRun[], config: SignalBo
   for (const run of [...runs].reverse()) {
     if (run.status === 'lost') streak += 1;
     else if (run.status === 'won' || run.status === 'failed') break;
-    // 'open' / 'unknown' runs do not break the streak: the next stake is
-    // decided by the last known result.
+    // 'open' / 'waiting' / 'unknown' / 'skipped' runs do not break the streak:
+    // no contract was decided by them, so the next stake is still decided by
+    // the last known result.
   }
 
   return {
@@ -191,6 +287,7 @@ export function summarizeBotRuns(runs: readonly SignalBotRun[], config: SignalBo
     wins,
     losses,
     failed,
+    skipped,
     open: open + unknown,
     staked: Math.round(staked * 100) / 100,
     profit: Math.round(profit * 1e6) / 1e6,
@@ -207,4 +304,35 @@ export function describeStopReason(reason: SignalBotStopReason): string {
   if (reason === 'manual') return 'Stopped by you. Contracts already bought keep running to expiry.';
   if (reason === 'error') return 'Stopped because Deriv refused an order.';
   return '';
+}
+
+/**
+ * What the bot page prints about the entry it is waiting for: the trigger, how
+ * long it has waited and what the plan says will happen.
+ */
+export function describeEntryWatch(watch: {
+  label: string;
+  status: 'waiting' | 'ready' | 'expired';
+  reason: string;
+  elapsedTicks: number;
+  remainingTicks: number;
+}): string {
+  if (watch.status === 'ready') return `${watch.label} met — buying now.`;
+  if (watch.status === 'expired') return `${watch.label}: ${watch.reason}`;
+  return `${watch.label}: ${watch.reason} Waited ${watch.elapsedTicks} tick${watch.elapsedTicks === 1 ? '' : 's'}, ${watch.remainingTicks} left.`;
+}
+
+/** Line describing how the run's entry finally resolved, for the run log. */
+export function describeEntryOutcome(input: {
+  status: 'ready' | 'expired';
+  waitedTicks: number;
+  fallback: 'market' | 'skip';
+}): string {
+  if (input.status === 'ready')
+    return input.waitedTicks > 0
+      ? `Entered on the analysis entry after ${input.waitedTicks} tick${input.waitedTicks === 1 ? '' : 's'}.`
+      : 'Entered on the analysis entry.';
+  return input.fallback === 'skip'
+    ? 'Entry window closed — run skipped because the Entry setting says not to chase it.'
+    : 'Entry window closed — entered at the market price instead.';
 }

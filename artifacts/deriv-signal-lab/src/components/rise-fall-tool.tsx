@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { AlertTriangle, BarChart3, Clock3, Play, Radio, ShieldAlert, Square, TrendingDown, Wifi, WifiOff, Zap } from 'lucide-react';
 import { TradeDock } from '@/components/trade-dock';
+import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
@@ -17,6 +18,7 @@ import {
 import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner';
 import type { TradeRecommendation } from '@/lib/trade-draft';
 import { explainSignal } from '@/lib/signal-engine/confidence';
+import { entryModeLabel } from '@/lib/signal-engine/entry.ts';
 
 const ALL_MARKETS = 'all';
 const ENGINE_COUNT = RISE_FALL_ENGINES.length;
@@ -197,6 +199,7 @@ export function RiseFallTool() {
         strength: signal.strength,
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
+        entry: signal.entry,
       }
     : null;
   const draftMarket = draftMarketCode ?? chartSymbol ?? null;
@@ -297,14 +300,32 @@ export function RiseFallTool() {
                 { label: 'AI P(rise)', value: formatPercent(signal.aiProbability), hint: 'Raw logistic-regression meta-model output' },
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: `Held-out ${signal.direction} calls at this duration: win rate and number of calls` },
                 { label: 'Consensus', value: formatSigned(signal.consensusScore), hint: 'Skill-weighted engine score from -1 (fall) to +1 (rise)' },
+                {
+                  label: 'Entry point',
+                  value: signal.entry.mode === 'immediate' ? 'Next tick' : signal.entry.mode === 'pullback' ? `Pullback ${signal.entry.priceCondition === 'below' ? '↓' : '↑'}` : `Breakout ${signal.entry.priceCondition === 'above' ? '↑' : '↓'}`,
+                  hint: `Where the bot waits to open the trade: ${signal.entry.detail}`,
+                },
+                {
+                  label: 'Entry time',
+                  value: signal.entry.mode === 'immediate' ? 'Signal tick' : `~${signal.entry.expectedWaitTicks} tick${signal.entry.expectedWaitTicks === 1 ? '' : 's'}${signal.entry.expectedWaitMs > 0 ? ` · ~${(signal.entry.expectedWaitMs / 1_000).toFixed(1)}s` : ''}`,
+                  hint: `The entry stays valid for ${signal.entry.windowTicks} ticks; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed signals got there`}.`,
+                },
               ]}
               onUse={() => { setDraftMarketCode(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+            />
+            <EntryPlanCard
+              entry={signal.entry}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={formatRiseFallHorizon(signal.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
             />
             <MarketRankingTable
               rows={run.results.map((result) => ({
                 symbol: result.symbol, name: result.name, label: result.best.direction, direction: result.best.direction === 'RISE' ? 'up' : 'down',
                 duration: formatRiseFallHorizon(result.best.horizon), confidence: result.best.confidence, strength: result.best.strength,
                 agreeing: result.best.tally.agreeing, total: result.best.tally.total, winChance: formatPercent(result.best.winEstimate), fresh: result.fresh,
+                entry: entryModeLabel(result.best.entry),
               }))}
               selected={selectedResult.symbol}
               onSelect={setViewSymbol}

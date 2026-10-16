@@ -220,13 +220,12 @@ function ToolsWorkspace({
           );
         })}
       </div>
-      {/* One shared multi-market feed for all four tools: switching tabs keeps
-          the loaded history, so Run Analysis can start scanning immediately. */}
-      <MarketFeedProvider>
-        <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
-          {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
-        </div>
-      </MarketFeedProvider>
+      {/* One shared multi-market feed for all four tools. It is mounted app-wide
+          (see App below) so the loaded history, and the ticks the signal bot
+          waits on for its entry, survive switching tools or workspace tabs. */}
+      <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
+        {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
+      </div>
     </section>
   );
 }
@@ -302,11 +301,16 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <DerivTradingProvider>
-          <SignalBotProvider>
-            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-              <Router />
-            </WouterRouter>
-          </SignalBotProvider>
+          {/* Above the bot because every run waits for the entry the analysis
+              planned, and that wait reads live ticks even while the user is on
+              another workspace tab. */}
+          <MarketFeedProvider>
+            <SignalBotProvider>
+              <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+                <Router />
+              </WouterRouter>
+            </SignalBotProvider>
+          </MarketFeedProvider>
         </DerivTradingProvider>
         <Toaster />
       </TooltipProvider>
