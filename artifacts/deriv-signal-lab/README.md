@@ -94,3 +94,22 @@ Rise/Fall bot specifics:
 - `POST /trading/v1/options/accounts/{accountId}/otp` — single-use WebSocket URL, valid 120 seconds.
 - Authenticated socket requests: `balance`, `portfolio` (open positions), `profit_table` (closed positions; the v1 schema reports `sell_price`, so profit is `sell_price - buy_price` when Deriv omits it), `proposal_open_contract` (live contract stream), `proposal`, `buy`, `sell`.
 - Field naming follows the v1 schemas: requests use `underlying_symbol` (not the legacy `symbol`), and responses such as portfolio/profit-table rows use it too.
+
+
+## 300-engine research library
+
+All four Tools tabs now evaluate a common, auditable research catalog. Read
+[the research and implementation guide](docs/engine-library.md) and
+[the complete numbered catalog](docs/engine-catalog.md).
+
+The inspector separates measurements, context, unavailable inputs and aliases.
+An independent 10-model digit / 12-model quote audit uses chronological, purged
+validation; unvalidated research cannot boost the main signal. Automatic signal-bot
+execution requires the evidence gates and a favourable actual proposal payout.
+A ranked candidate remains visible even when automation is observation-only.
+
+- `pnpm run test:engine-lab` — library formulas, causality, null simulations and integration.
+- `pnpm run test:digit-analysis` — complete regression suite, including the library.
+- `pnpm run docs:engines` — regenerate the 300-entry reference from the UI registry.
+
+No confidence score or backtest guarantees profitable live results.

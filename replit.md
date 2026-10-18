@@ -52,3 +52,12 @@ _Replace the heading above with the project's name, and this line with one sente
 ## Pointers
 
 - See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+
+## 300-engine research library (2026-10-18)
+
+- `src/lib/engine-lab/` adds an explicit, data-aware registry for all 300 requested entries. These are measurements, predictors, policies and performance metrics, not 300 independent votes. #166 and #228 are transparent aliases.
+- Both signal analyzers run a separate causal research forecast audit for every candidate/duration. Tuning, calibration and final test rows are chronological, purged and non-overlapping. A validated contradiction can only reduce the original edge; unvalidated/supportive research cannot boost it.
+- The shared `components/signal/engine-lab-panel.tsx` inspector is on every tool, searchable by ID/name/group/status, with formulas, sources, model weights, real readings and JSON export. One full audit is attached to the selected market result, not copied to every horizon.
+- Run Analysis still always returns a ranked candidate. **Automatic execution is now separately gated**: missing research reports, stale/unconfirmed/thin/weak/contradicted evidence stay observation-only. The signal bot also checks actual quoted total payout against estimated probability before `confirmBuy`. Manual trading is not automatically enabled or disabled by this research report.
+- #265–270 use only active-account loaded closed positions matching market, family and currency; otherwise unavailable. No fabricated payout/Sharpe/drawdown values.
+- Research, formulas and limitations: `artifacts/deriv-signal-lab/docs/engine-library.md` and generated `docs/engine-catalog.md`. Run `test:engine-lab`, the existing full `test:digit-analysis`, typecheck and build when changing this layer.

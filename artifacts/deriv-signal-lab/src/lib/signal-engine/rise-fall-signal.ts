@@ -19,6 +19,10 @@ import { analyzeQuoteState, type QuoteMarketState } from './market-state.ts';
 import { pairedImprovementZ } from './stats.ts';
 import { confirmRiseFall, type ConfirmationReport, type QuoteConfirmationRow } from './confirmation.ts';
 
+import { createForecastFactory, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
+import { buildEngineLabReport } from '../engine-lab/report.ts';
+import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
+
 export type RiseFallDirection = 'RISE' | 'FALL';
 export type RiseFallHorizon = { unit: 'ticks' | 'minutes'; value: number };
 export type ProgressCallback = (fraction: number, stage: string) => void;
@@ -82,6 +86,7 @@ export type RiseFallHorizonSignal = {
   confidence: number;
   breakdown: ConfidenceBreakdown;
   strength: SignalStrength;
+  researchDecision: ResearchDecision;
   historical: { sample: number; rise: number; fall: number; unchanged: number };
   /** When and at what price this signal should be traded. */
   entry: EntryPlan;
@@ -113,6 +118,7 @@ export type RiseFallMarketAnalysis = {
   state: QuoteMarketState;
   /** Number of analysis engines that ran (separate from the 14 prediction engines). */
   analysisEngineCount: number;
+  engineLab: EngineLabReport;
   notes: string[];
   durationMs: number;
 };
@@ -125,6 +131,10 @@ export type RiseFallMarketInput = {
   horizons?: readonly RiseFallHorizon[];
   /** Markets competing in the same scan (for the selection penalty). */
   marketsInScan?: number;
+  /** Optional verified digits for contextual digit engines, never guessed from quote formatting. */
+  digitTicks?: readonly { epoch: number; digit: number }[];
+  settlements?: readonly SettledReturn[];
+  settlementCurrency?: string;
 };
 
 type EngineDef = { id: string; label: string; family: string };
@@ -431,6 +441,8 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const quality = dataQuality(n, input.fresh);
   const tickSpacingMs = averageTickSpacingMs(epochs);
 
+  const researchFactory = createForecastFactory(ticks, 'quote');
+  const researchAudits = new Map<string, ResearchAudit>();
   // 2. Evaluate every duration.
   const signals: RiseFallHorizonSignal[] = horizons.map((horizon, horizonIndex) => {
     if (horizonIndex % 3 === 0) onProgress?.(0.4 + 0.55 * (horizonIndex / horizons.length), `Training the AI meta-model and backtesting ${formatRiseFallHorizon(horizon)}`);
@@ -601,7 +613,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const votes = directionSign === consensusDirection ? provisionalVotes : buildVotes(directionSign);
     const tally = directionSign === consensusDirection ? provisionalTally : tallyVotes(votes);
     const aiForDirection = aiProbability === null ? null : directionSign > 0 ? aiProbability : 1 - aiProbability;
-    const winEstimate = confirmation.winProbability;
+    let winEstimate = confirmation.winProbability;
     const side = direction === 'RISE' ? 'rise' : 'fall';
     const independentCalls = countNonOverlappingOutcomes(firedRows[side]);
     const backtest = summarizeBacktest(wins[side], fired[side], fair, independentCalls);
@@ -611,8 +623,23 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       confirmation.engines = { agreeing: tally.agreeing, total: tally.total, weightedAgreement: tally.weightedAgreement };
       confirmation.decisive = confirmation.decisive && backtest.sample >= 10;
     }
+    const audit = auditForecastBank(researchFactory(horizon), { family: 'rise-fall', direction }, fair, horizons.length * Math.max(1, input.marketsInScan ?? 1));
+    researchAudits.set(`${horizon.unit}:${horizon.value}`, audit);
+    const researchDecision = decideResearch({ audit, fresh: input.fresh, probability: winEstimate, fair,
+      confirmed: confirmation.decisive, independentSample: backtest.effectiveSample });
+    if (researchDecision.edgeMultiplier < 1) {
+      winEstimate = fair + researchDecision.edgeMultiplier * (winEstimate - fair);
+      confirmation.probability = winEstimate;
+      confirmation.winProbability = winEstimate;
+      const conditionalWin = winEstimate / Math.max(0.001, 1 - flatRate);
+      confirmation.probabilityRise = directionSign > 0 ? conditionalWin : 1 - conditionalWin;
+      confirmation.edgePts = 100 * (winEstimate - fair);
+      confirmation.status = 'contradicted';
+      confirmation.decisive = false;
+      confirmation.reasons.push('The independent research ensemble validated a contrary estimate; the master guard reduced the remaining edge by 75%.');
+    }
     const horizonQuality = quality * clamp(0.6 + 0.4 * reliability, 0.6, 1);
-    const { confidence, breakdown } = confidenceScore({
+    const { confidence: baseConfidence, breakdown } = confidenceScore({
       weightedAgreement: tally.weightedAgreement,
       edgeRatio: (winEstimate - fair) / 0.5,
       backtest,
@@ -627,6 +654,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
     });
+    const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
     const recent = { sample: 0, rise: 0, fall: 0, unchanged: 0 };
     // Report the latest 500 completed outcomes (not 500 start ticks) so the
     // historical panel uses comparable sample sizes across every duration.
@@ -668,7 +696,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const strength = winEstimate - fair < Math.max(0.005, 0.01 * fair) ? 'WEAK' : labelled;
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
-      confidence, breakdown, strength, historical: recent, entry,
+      confidence, breakdown, strength, historical: recent, entry, researchDecision,
       deep: { confirmation },
     };
   });
@@ -681,12 +709,24 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const best = signals[0];
   if (best?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best duration; treat it as a contradicted call, not a verified edge.');
   else if (best?.deep.confirmation.status === 'confirmed') notes.push(`Confirmation layer: ${best.deep.confirmation.reasons.at(-1)}`);
-  onProgress?.(1, 'Signal ready');
+  onProgress?.(0.98, 'Explaining all 300 registered engines for the selected duration');
+  const digitByEpoch = new Map((input.digitTicks ?? []).map((tick) => [tick.epoch, tick.digit]));
+  const engineLab = buildEngineLabReport({
+    symbol: input.symbol, family: 'rise-fall', ticks: ticks.map((tick) => ({ ...tick, digit: digitByEpoch.get(tick.epoch) })),
+    contract: { family: 'rise-fall', direction: best.direction }, horizon: best.horizon, fresh: input.fresh,
+    audit: researchAudits.get(`${best.horizon.unit}:${best.horizon.value}`)!, decision: best.researchDecision,
+    legacy: { probability: best.winEstimate, fair: best.fairProbability, confidence: best.confidence, votes: best.votes,
+      confirmationStatus: best.deep.confirmation.status, confirmed: best.deep.confirmation.decisive, entry: best.entry },
+    candidates: signals.map((signal) => ({ label: `${signal.direction} · ${formatRiseFallHorizon(signal.horizon)}`, probability: signal.winEstimate, fair: signal.fairProbability, confidence: signal.confidence })),
+    settlements: input.settlements, settlementCurrency: input.settlementCurrency,
+  });
+  if (!best.researchDecision.eligible) notes.push(`Research execution guard: ${best.researchDecision.reasons.join(' ')}`);
+  onProgress?.(1, 'Signal and 300-engine audit ready');
   return {
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
     lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
     engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
-    state, analysisEngineCount: state.engines.length, notes,
+    state, analysisEngineCount: state.engines.length, engineLab, notes,
     durationMs: Date.now() - started,
   };
 }

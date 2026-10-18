@@ -29,6 +29,8 @@ import {
   sanitizeSignalBotConfig,
 } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
+import { researchExecutionIssue } from '@/lib/engine-lab/execution';
+import type { ResearchDecision } from '@/lib/engine-lab/types';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
 import { describeEntryEvidence, entryModeLabel, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
 import {
@@ -51,6 +53,7 @@ export type SignalAnalysisBrief = {
   ranAt: number;
   /** Entry the analysis planned for this signal (point/level + time window). */
   entry?: EntryPlan | null;
+  researchDecision?: ResearchDecision | null;
   /** Layer-3 verdict the bot page shows next to the loaded signal. */
   confirmation?: {
     status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
@@ -288,11 +291,13 @@ export function TradeDock({
       strength,
       recommendedRuns: recommendedRuns({ confidence, strength }),
       entry: loadedEntry,
+      researchDecision: analysis?.researchDecision ?? null,
       ranAt: analysis?.ranAt ?? 0,
       confirmation: analysis?.confirmation ?? null,
     };
   }, [analysis, analysisEntryReady, expiryOptions, family, loadedEntry, marketName, recommendation]);
 
+  const botResearchIssue = botPlan ? researchExecutionIssue(botPlan.researchDecision) : null;
   const botRuns = botPlan ? resolveMaxRuns(botConfig, botPlan.recommendedRuns) : 0;
   // The bot always waits for the analysis entry; immediate is the analysis's own
   // conclusion that there is no timing edge to wait for.
@@ -317,6 +322,10 @@ export function TradeDock({
           ? 'This signal has no entry from the engine analysis. Run Analysis again so the bot can load a planned entry.'
           : 'Run Analysis to generate a signal before loading the bot.',
       );
+      return;
+    }
+    if (botResearchIssue) {
+      setTicketIssue(botResearchIssue);
       return;
     }
     if (!connected) {
@@ -458,7 +467,7 @@ export function TradeDock({
                 {contractLabel} · {selectedDurationLabel}
               </span>
             )}
-            <span className="ml-auto flex items-center gap-2">
+            <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               {canUseAnalysis && recommendation && <button
                 type="button" onClick={applyAnalysis} data-testid="trade-use-analysis"
                 title={recommendationTitle}
@@ -468,17 +477,17 @@ export function TradeDock({
                 <button
                   type="button"
                   onClick={handleLoadAndRun}
-                  disabled={bot.running || !stakeValid}
+                  disabled={bot.running || !stakeValid || Boolean(botResearchIssue)}
                   title={
-                    bot.running
+                    botResearchIssue ?? (bot.running
                       ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
-                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.`
+                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.`)
                   }
-                  className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 text-[11px] font-extrabold text-[#052e1e] transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-55"
+                  className={`focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-extrabold transition-colors disabled:cursor-not-allowed ${botResearchIssue ? 'border border-amber-400/30 bg-amber-400/10 text-amber-200' : 'bg-emerald-400 text-[#052e1e] hover:bg-emerald-300 disabled:opacity-55'}`}
                   data-testid={`button-load-and-run-${family}`}
                 >
                   {bot.running ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
-                  {bot.running ? 'Running…' : 'Load and Run'}
+                  {bot.running ? 'Running…' : botResearchIssue ? 'Observation only' : 'Load and Run'}
                 </button>
               )}
               {bot.hasActivity && !signalBot.open && (
