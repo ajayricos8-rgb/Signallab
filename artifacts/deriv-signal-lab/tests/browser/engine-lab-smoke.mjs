@@ -114,7 +114,9 @@ try {
     assert.equal(await page.getByTestId('engine-228').isVisible(), true);
     await page.getByTestId('engine-status').selectOption('all');
 
-    if (audit.decision.action === 'observe') assert.equal(await page.getByTestId(`button-load-and-run-${family}`).isDisabled(), true);
+    // Load and Run is a real button: the research gates are advice, never a veto.
+    assert.equal(await page.getByTestId(`button-load-and-run-${family}`).isEnabled(), true, `${family} Load and Run must be usable after an analysis`);
+    assert.equal(await page.getByTestId(`button-load-and-run-${family}`).innerText(), 'Load and Run');
     if (await page.getByTestId('trade-dock-body').isVisible()) await page.getByTestId('trade-dock-toggle').click();
     await page.getByText('Model weights, contribution and held-out performance', { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });

@@ -104,9 +104,11 @@ All four Tools tabs now evaluate a common, auditable research catalog. Read
 
 The inspector separates measurements, context, unavailable inputs and aliases.
 An independent 10-model digit / 12-model quote audit uses chronological, purged
-validation; unvalidated research cannot boost the main signal. Automatic signal-bot
-execution requires the evidence gates and a favourable actual proposal payout.
-A ranked candidate remains visible even when automation is observation-only.
+validation and is **folded into the signal itself**: a validated research estimate
+moves the traded probability, the evidence score and the entry, while an
+unvalidated one can only lower them. The evidence gates and the quoted payout are
+reported as advice on the run — they never hide the ranked signal and never turn
+**Load and Run** into an observation-only button.
 
 - `pnpm run test:engine-lab` — library formulas, causality, null simulations and integration.
 - `pnpm run test:digit-analysis` — complete regression suite, including the library.

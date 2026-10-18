@@ -206,6 +206,7 @@ export function RiseFallTool() {
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
         researchDecision: signal.researchDecision,
+        research: signal.research,
         confirmation: {
           status: signal.deep.confirmation.status,
           edgePts: signal.deep.confirmation.edgePts,
@@ -312,6 +313,11 @@ export function RiseFallTool() {
                 { label: 'AI P(rise)', value: formatPercent(signal.aiProbability), hint: 'Raw logistic-regression meta-model output' },
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: `Held-out ${signal.direction} calls at this duration: win rate and number of calls` },
                 { label: 'Consensus', value: formatSigned(signal.consensusScore), hint: 'Skill-weighted engine score from -1 (fall) to +1 (rise)' },
+                {
+                  label: 'Research library',
+                  value: signal.research.total ? `${signal.research.agreeing}/${signal.research.total}${signal.research.weight > 0 ? ` · ${signal.research.contributionPts >= 0 ? '+' : ''}${signal.research.contributionPts.toFixed(1)} pts` : ''}` : '—',
+                  hint: signal.research.note,
+                },
                 {
                   label: 'Entry point',
                   value: signal.entry.mode === 'immediate' ? 'Next tick' : signal.entry.mode === 'pullback' ? `Pullback ${signal.entry.priceCondition === 'below' ? '↓' : '↑'}` : `Breakout ${signal.entry.priceCondition === 'above' ? '↑' : '↓'}`,

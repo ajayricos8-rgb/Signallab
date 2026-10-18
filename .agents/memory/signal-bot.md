@@ -18,6 +18,8 @@ State lives in `components/signal-bot-provider.tsx`, mounted above the workspace
 
 **Why:** the user asked for a bot that mirrors the ticket they configured by hand, so the stake and martingale must be read from the dock rather than duplicated in a separate bot form, while the tradeable terms must come from the analysis so the bot can never drift from the signal it was started on.
 
+**Load and Run always trades.** The research library's execution gates used to relabel the button **Observation only** and disable it (`researchExecutionIssue`), and `quoteEconomics` used to throw before `confirmBuy` whenever the live payout did not clear break-even. Both were removed: a finished analysis with an entry plan must be tradeable. `researchAdvisory` returns one sentence that is printed on the trade menu and on the bot page (`bot-research-advisory`), and the payout check is recorded in the run's `note` (`economicsNote`). Everything else that can refuse a run is still a real refusal: not connected, invalid stake, an entry that did not come out of an analysis, or an analysis older than 15 minutes.
+
 **How to apply:**
 - Stop only blocks new purchases and closes a run that is still waiting for its entry as `skipped`. A contract Deriv already accepted keeps running to expiry, and its row still fills in when Deriv reports it (the settlement watcher is detached, not dropped).
 - Reset clears the page (runs, totals, error) and returns the bot to `idle`; it is only offered when the bot is not running.
@@ -25,3 +27,4 @@ State lives in `components/signal-bot-provider.tsx`, mounted above the workspace
 - Never let the bot trade an entry that did not come out of a run: the dock and the hook both check `isEntryPlan(plan.entry)`, and the plan carries `evidence` (engines, AI probability, the analysis's rating vs the no-edge rate, the replay rule) that the tools and the bot page print so the user can see where the entry came from.
 - Add new order types by extending `lib/deriv-trading.ts` and the plan types — never by sending ad-hoc messages from the hook.
 - `tests/signal-bot.test.mjs` covers the run count, the ladder, the entry decisions, the stop decisions and the summary.
+- `plan.research` carries the fusion (`agreeing/total` models, weight, probability points, validated) from the analysis into the bot page; `plan.researchDecision` is advisory only.

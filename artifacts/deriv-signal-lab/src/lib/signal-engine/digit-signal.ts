@@ -30,6 +30,7 @@ import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
 
 import { buildForecastBank, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
 import { buildEngineLabReport } from '../engine-lab/report.ts';
+import { fuseResearch, researchEvidence, type ResearchFusion } from '../engine-lab/fusion.ts';
 import { normalizeTicks } from '../engine-lab/math.ts';
 import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
 
@@ -70,8 +71,10 @@ export type DigitContractSignal = {
   confidence: number;
   breakdown: ConfidenceBreakdown;
   strength: SignalStrength;
-  /** Execution gate from the 300-entry research library; a candidate is still always returned. */
+  /** Execution advice from the 300-entry research library; a candidate is still always returned. */
   researchDecision: ResearchDecision;
+  /** What the research library's own forecast contributed to the probability above. */
+  research: ResearchFusion;
   /** Historical outcomes after the current digit (or parity) context. */
   history: { sample: number; hits: number; rate: number | null; context: string } | null;
   /** When to enter this contract: which tick context, and how long it may take. */
@@ -341,6 +344,17 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       confirmation.decisive = false;
       confirmation.reasons.push('The independent research ensemble validated a contrary estimate; the master guard reduced the remaining edge by 75%.');
     }
+    // Layer 4: the research library stops being a side report. Its validated
+    // ensemble is folded into the probability every tool ranks, confirms, plans
+    // an entry for and trades — it can raise the estimate when it passed its own
+    // holdout, and otherwise only pull it down.
+    const fused = fuseResearch({ audit, probability: confirmation.probability, fair });
+    const research = fused.fusion;
+    if (research.weight > 0) {
+      confirmation.probability = fused.probability;
+      confirmation.edgePts = 100 * (fused.probability - fair);
+      confirmation.reasons.push(`Research library: ${research.note}`);
+    }
     const probability = clamp(confirmation.probability, 0.0005, 0.9995);
     const edge = probability - fair;
     const edgeRatio = edge / deviation;
@@ -354,6 +368,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         statePredictability: state.predictability,
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
+      research: researchEvidence(research),
     });
     const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
     const historical = context ? evaluateHistoricalContract(observations as unknown as DigitObservation[], contract, input.horizon, context) : null;
@@ -383,7 +398,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,
       votes, tally, backtest, validationSkill, validationZ, verified, confidence, breakdown,
-      strength, entry, researchDecision,
+      strength, entry, researchDecision, research,
       history: historical ? {
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,
@@ -405,13 +420,14 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   const labTicks = ticks.map((tick) => ({ ...tick, quote: quotes.get(tick.epoch) }));
   const engineLab = buildEngineLabReport({
     symbol: input.symbol, family: input.family, ticks: labTicks, contract: best.contract, horizon: { unit: 'ticks', value: input.horizon }, fresh: input.fresh,
-    audit: researchAudits.get(digitContractKey(best.contract))!, decision: best.researchDecision,
+    audit: researchAudits.get(digitContractKey(best.contract))!, decision: best.researchDecision, fusion: best.research,
     legacy: { probability: best.probability, fair: best.fairProbability, confidence: best.confidence, votes: best.votes,
       confirmationStatus: best.deep.confirmation.status, confirmed: best.deep.confirmation.decisive, entry: best.entry },
     candidates: signals.map((signal) => ({ label: signal.label, probability: signal.probability, fair: signal.fairProbability, confidence: signal.confidence })),
     settlements: input.settlements, settlementCurrency: input.settlementCurrency,
   });
-  if (!best.researchDecision.eligible) notes.push(`Research execution guard: ${best.researchDecision.reasons.join(' ')}`);
+  if (best.research.weight > 0) notes.push(`Research library: ${best.research.note}`);
+  if (!best.researchDecision.eligible) notes.push(`Research advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
   onProgress?.(1, 'Signal and 300-engine audit ready');
   return {
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,

@@ -29,7 +29,8 @@ import {
   sanitizeSignalBotConfig,
 } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
-import { researchExecutionIssue } from '@/lib/engine-lab/execution';
+import { researchAdvisory } from '@/lib/engine-lab/execution';
+import type { ResearchFusion } from '@/lib/engine-lab/fusion';
 import type { ResearchDecision } from '@/lib/engine-lab/types';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
 import { describeEntryEvidence, entryModeLabel, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
@@ -54,6 +55,8 @@ export type SignalAnalysisBrief = {
   /** Entry the analysis planned for this signal (point/level + time window). */
   entry?: EntryPlan | null;
   researchDecision?: ResearchDecision | null;
+  /** What the 300-engine library contributed to this signal's probability. */
+  research?: ResearchFusion | null;
   /** Layer-3 verdict the bot page shows next to the loaded signal. */
   confirmation?: {
     status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
@@ -292,12 +295,15 @@ export function TradeDock({
       recommendedRuns: recommendedRuns({ confidence, strength }),
       entry: loadedEntry,
       researchDecision: analysis?.researchDecision ?? null,
+      research: analysis?.research ?? null,
       ranAt: analysis?.ranAt ?? 0,
       confirmation: analysis?.confirmation ?? null,
     };
   }, [analysis, analysisEntryReady, expiryOptions, family, loadedEntry, marketName, recommendation]);
 
-  const botResearchIssue = botPlan ? researchExecutionIssue(botPlan.researchDecision) : null;
+  // Advice only: the research library never blocks Load and Run any more. The
+  // bot trades the signal the analysis produced; warnings travel with the run.
+  const botResearchNote = botPlan ? researchAdvisory(botPlan.researchDecision) : null;
   const botRuns = botPlan ? resolveMaxRuns(botConfig, botPlan.recommendedRuns) : 0;
   // The bot always waits for the analysis entry; immediate is the analysis's own
   // conclusion that there is no timing edge to wait for.
@@ -322,10 +328,6 @@ export function TradeDock({
           ? 'This signal has no entry from the engine analysis. Run Analysis again so the bot can load a planned entry.'
           : 'Run Analysis to generate a signal before loading the bot.',
       );
-      return;
-    }
-    if (botResearchIssue) {
-      setTicketIssue(botResearchIssue);
       return;
     }
     if (!connected) {
@@ -477,17 +479,17 @@ export function TradeDock({
                 <button
                   type="button"
                   onClick={handleLoadAndRun}
-                  disabled={bot.running || !stakeValid || Boolean(botResearchIssue)}
+                  disabled={bot.running || !stakeValid}
                   title={
-                    botResearchIssue ?? (bot.running
+                    bot.running
                       ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
-                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.`)
+                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.`
                   }
-                  className={`focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-extrabold transition-colors disabled:cursor-not-allowed ${botResearchIssue ? 'border border-amber-400/30 bg-amber-400/10 text-amber-200' : 'bg-emerald-400 text-[#052e1e] hover:bg-emerald-300 disabled:opacity-55'}`}
+                  className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 text-[11px] font-extrabold text-[#052e1e] transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-55"
                   data-testid={`button-load-and-run-${family}`}
                 >
                   {bot.running ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
-                  {bot.running ? 'Running…' : botResearchIssue ? 'Observation only' : 'Load and Run'}
+                  {bot.running ? 'Running…' : 'Load and Run'}
                 </button>
               )}
               {bot.hasActivity && !signalBot.open && (
@@ -696,7 +698,7 @@ export function TradeDock({
                   </span>
                   <span className="text-[10px] text-slate-400">
                     {botPlan
-                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'} · ${entryModeLabel(botPlan.entry)} · ${describeEntryEvidence(botPlan.entry)}${botPlan.confirmation ? ` · confirmation ${botPlan.confirmation.status} (${botPlan.confirmation.edgePts >= 0 ? '+' : ''}${botPlan.confirmation.edgePts.toFixed(1)} pts${botPlan.confirmation.decisive ? ', decisive' : ''})` : ''}.`
+                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'} · ${entryModeLabel(botPlan.entry)} · ${describeEntryEvidence(botPlan.entry)}${botPlan.confirmation ? ` · confirmation ${botPlan.confirmation.status} (${botPlan.confirmation.edgePts >= 0 ? '+' : ''}${botPlan.confirmation.edgePts.toFixed(1)} pts${botPlan.confirmation.decisive ? ', decisive' : ''})` : ''}${botPlan.research && botPlan.research.total ? ` · research ${botPlan.research.agreeing}/${botPlan.research.total} models${botPlan.research.weight > 0 ? `, folded in at ${Math.round(botPlan.research.weight * 100)}% (${botPlan.research.contributionPts >= 0 ? '+' : ''}${botPlan.research.contributionPts.toFixed(1)} pts)` : ' (checked, no change)'}` : ''}.`
                       : analysisEntryMissing
                         ? 'The loaded signal has no entry from the engine analysis. Run Analysis again to plan it.'
                         : 'Run Analysis to load a signal into the bot.'}
@@ -806,6 +808,9 @@ export function TradeDock({
                 {botPlan
                   ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. The entry always comes from this analysis: ${entryModeLabel(botPlan.entry)}${botPlan.entry.mode === 'immediate' ? ' — ' : ` — ${botPlan.entry.detail} `}`
                   : ''}
+                {botResearchNote ? (
+                  <span className="font-semibold text-amber-200">{botResearchNote} </span>
+                ) : null}
                 {durationUnit !== 't' && (
                   <>Trade duration is {selectedDurationLabel}. </>
                 )}

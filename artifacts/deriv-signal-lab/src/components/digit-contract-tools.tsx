@@ -290,6 +290,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
         researchDecision: signal.researchDecision,
+        research: signal.research,
         confirmation: {
           status: signal.deep.confirmation.status,
           edgePts: signal.deep.confirmation.edgePts,
@@ -406,6 +407,11 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                   label: 'Entry point',
                   value: signal.entry.mode === 'immediate' ? 'Next tick' : 'Digit context',
                   hint: `When the bot opens this contract: ${signal.entry.detail}`,
+                },
+                {
+                  label: 'Research library',
+                  value: signal.research.total ? `${signal.research.agreeing}/${signal.research.total}${signal.research.weight > 0 ? ` · ${signal.research.contributionPts >= 0 ? '+' : ''}${signal.research.contributionPts.toFixed(1)} pts` : ''}` : '—',
+                  hint: signal.research.note,
                 },
                 {
                   label: 'Entry time',

@@ -8,7 +8,7 @@ All 300 requested names have stable IDs, explicit operational definitions, sourc
 
 This is **not 300 independent prediction models**. The list mixes descriptive measurements, related features, predictions, validation, accounting and execution policies. Two exact repeated names are explicit aliases: **#166 → #23** (Volatility Regime) and **#228 → #28** (Signal Stability). Related entries also share model-family budgets instead of adding votes.
 
-The existing 12 digit / 14 Rise/Fall predictors, strict research gates, cross-market progress and ranked signals remain. The new library adds a separate **10-model digit / 12-model quote forecast audit**, a searchable inspector, exportable JSON, actual-settlement performance metrics and execution safeguards. Unvalidated research estimates **cannot raise the main signal's probability or confidence**.
+The existing 12 digit / 14 Rise/Fall predictors, strict research gates, cross-market progress and ranked signals remain. The new library adds a **10-model digit / 12-model quote forecast audit**, a searchable inspector, exportable JSON, actual-settlement performance metrics and execution advice. The audit is no longer only a side report: its validated forecast is **folded into the probability, confidence and entry every tool trades** (see “Layer 4”). Unvalidated research estimates still **cannot raise the main signal's probability or confidence**.
 
 Terms such as “barrier pressure,” “exhaustion,” “liquidity sweep,” “market-adaptive” and “master synthesis” are not standardized statistical algorithms. Their formulas here are explicitly **application-defined measurements or policies**. They are not claims that an externally validated proprietary engine exists under each name. The complete numbered definitions are in [engine-catalog.md](engine-catalog.md), generated from the same registry as the UI.
 
@@ -51,8 +51,9 @@ A 90% raw success rate on an easy contract is not a 90% profitable strategy. Quo
 4. Learn contract-specific, family-balanced model weights on tuning data only.
 5. Fit probability calibration on a later slice; score a still-later chronological holdout.
 6. Run noise, contradiction, weak-edge, freshness and execution policies.
-7. Attach one full 300-reading snapshot to the selected candidate. Keep lightweight execution decisions on the other candidates; do not duplicate the full inspector for every barrier/duration.
-8. Show a ranked signal even if execution is **Observation only**. The library never manufactures “300 engines agree.”
+7. Fold the validated research estimate into the traded probability, the evidence score and the entry evidence for **every** candidate — not only the selected one.
+8. Attach one full 300-reading snapshot to the selected candidate. Keep lightweight execution decisions on the other candidates; do not duplicate the full inspector for every barrier/duration.
+9. Show a ranked signal that **Load and Run can always trade**. The library never manufactures “300 engines agree” and never disables automatic execution.
 
 ### Matches
 
@@ -100,6 +101,30 @@ These are transparent empirical research models, **not claims of new LSTMs, boos
 - Bayesian likelihood weighting, regime-specific model selection and ablation are **reported diagnostic alternatives**. They do not get stacked as extra correlated votes.
 - A validated contrary research estimate reduces the base edge by **75%**, marks confirmation contradicted, and reduces confidence. Entry evidence is generated from that adjusted probability. Supportive/unvalidated research never increases the base estimate.
 
+## Layer 4: the research library folded into the signal
+
+Every candidate (contract or duration) now carries the research ensemble into the
+number the tools actually rank, confirm, plan an entry for and trade. `src/lib/engine-lab/fusion.ts`
+is pure, worker-safe and deterministic:
+
+1. Both estimates are expressed as an edge over the same no-edge rate:
+   `baseEdge = probability − fair` (after confirmation) and `researchEdge = audit.probability − audit.fair`.
+2. A validated ensemble earns weight `clamp(0.35 × sampleFactor × skillFactor, 0.05, 0.35)`, where
+   `sampleFactor = clamp(holdout / 200, 0.25, 1)` and `skillFactor = clamp(4 × max(0, holdout Brier skill), 0.1, 1)`.
+   It may then move the estimate in either direction.
+3. An unvalidated ensemble earns weight only when its own estimate is materially lower than the base
+   one (`researchEdge < baseEdge − max(0.005, 0.01 × fair)`), capped at `0.15 × sampleFactor`. It can
+   therefore only pull the estimate down, never inflate an edge.
+4. The blend is a convex combination of the two edges, so the result always lies inside the range the
+   two estimates already spanned: research is a second opinion, not a multiplier.
+5. The ensemble also contributes to the evidence score (`researchTerm` in `confidence.ts`, ≤6% of the
+   raw score) with the same rule — a validated ensemble can add or remove evidence, an unvalidated one
+   can only remove it. Callers that pass no research evidence keep a **bit-identical** confidence.
+6. A missing, non-finite or model-less audit returns the base estimate unchanged.
+
+On the ten seeded null streams used by the regression suite, no candidate is ever boosted: noise does
+not validate, so the fusion can only leave the estimate alone or lower it.
+
 ## Candles, units and unavailable states
 
 - Candles are timestamp-aligned **60-second observed OHLC**, not fabricated “tick candles.” The open last bucket and an initial partial bucket are excluded. Missing buckets are not forward-filled. Intra-bucket missing ticks remain a data limitation.
@@ -118,7 +143,7 @@ Research win/loss rates, streaks and calibration are based on **called, non-over
 
 Engines #265–270 use only the account active at scan time's **loaded closed positions**, scoped to the selected market, contract family and currency. Duplicate contracts and invalid stake/time rows are excluded. They describe provider-reported realized P&L; external charges, absent history, equity funding, unrealized exposure, the particular selected barrier/horizon and causal strategy attribution are **not inferred**. The snapshot retains its currency and does not silently refresh with another account: rerun analysis after switching accounts. Mixed trade durations make per-trade ratios especially limited. Zero denominator ratios are unavailable, not infinity. If no qualifying account history exists, all six metrics abstain.
 
-Automatic execution fails closed for:
+These same checks are reported as **advice, not vetoes**. Automatic execution used to fail closed for:
 
 - a missing/older research audit;
 - stale source data;
@@ -128,7 +153,13 @@ Automatic execution fails closed for:
 - independently validated contradictory research;
 - missing/unfavourable actual proposal economics.
 
-These checks do not place trades, change stakes or enable a bot automatically. Manual ticket control remains available. The signal bot still requires an explicit **Load and Run**, a connected account, valid entry evidence and existing freshness/risk limits. The research panel and disabled **Observation only** button explain why automation was filtered; the ranked candidate remains visible.
+That behaviour was removed: it left a finished analysis with a **Load and Run** button the user could
+not press. The gates now produce one advisory sentence that travels with the run (the mini trade menu
+and the bot page both show it), the quoted payout economics are recorded on the run row instead of
+blocking the purchase, and the ranked candidate is traded as analysed. The checks never place trades,
+change stakes or enable a bot automatically. Manual ticket control remains available. The signal bot
+still requires an explicit **Load and Run**, a connected account, valid entry evidence from the
+analysis and the existing freshness/risk limits.
 
 ## Files and maintenance
 
@@ -136,8 +167,9 @@ These checks do not place trades, change stakes or enable a bot automatically. M
 - `src/lib/engine-lab/math.ts`: indicator/statistical primitives, complete candle aggregation and exact exit lookup.
 - `src/lib/engine-lab/measurements.ts`: explicit evaluations for #1–218.
 - `src/lib/engine-lab/forecast.ts`: causal feature bank, replay, weights, calibration, audit and decisions.
+- `src/lib/engine-lab/fusion.ts`: layer 4 — folding the validated research estimate into the traded signal.
 - `src/lib/engine-lab/report.ts`: #219–300, aliases, report completeness checks and actual-return accounting.
-- `src/lib/engine-lab/execution.ts`: scoped settled positions and fail-closed bot/quote checks.
+- `src/lib/engine-lab/execution.ts`: scoped settled positions, advisory research text and quote economics.
 - `src/lib/signal-engine/{digit-signal,rise-fall-signal}.ts`: production scan integration.
 - `src/components/signal/engine-lab-panel.tsx`: common searchable/paginated inspector and JSON export.
 - `tests/engine-lab.test.mjs`: formula fixtures, all-ID coverage, semantics, causality, leakage, null/structured streams and integration tests.
@@ -155,7 +187,7 @@ pnpm --filter @workspace/deriv-signal-lab run docs:engines
 pnpm --filter @workspace/deriv-signal-lab run docs:engines:check
 ```
 
-The full test suite includes the existing signal, entry, bot and contract tests. Browser verification should use a mocked **public market-data socket**, not a connected real trading account: run every tool, check worker progress/results, inspect/export all 300 entries, switch markets, exercise filters/pagination, and verify observation-only automatic execution and mobile wrapping. No live-money results are claimed by those tests.
+The full test suite includes the existing signal, entry, bot, fusion and contract tests. Browser verification should use a mocked **public market-data socket**, not a connected real trading account: run every tool, check worker progress/results, inspect/export all 300 entries, switch markets, exercise filters/pagination, verify that **Load and Run is always enabled after an analysis** and mobile wrapping. No live-money results are claimed by those tests.
 
 ### Reproducible browser smoke test
 

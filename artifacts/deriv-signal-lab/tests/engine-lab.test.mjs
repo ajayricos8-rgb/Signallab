@@ -5,10 +5,12 @@ import { measureEngines } from '../src/lib/engine-lab/measurements.ts';
 import { buildEngineLabReport, settledPerformance } from '../src/lib/engine-lab/report.ts';
 import { auditForecastBank, buildForecastBank, decideResearch, forecastAt } from '../src/lib/engine-lab/forecast.ts';
 import { atr, closedCandles, correlation, distribution, ema, eventWins, horizonExits, kpss, macd, normalizeTicks, project, rsi, weightedDistribution } from '../src/lib/engine-lab/math.ts';
-import { quoteEconomics, researchExecutionIssue, scopeSettlements } from '../src/lib/engine-lab/execution.ts';
+import { quoteEconomics, researchAdvisory, scopeSettlements } from '../src/lib/engine-lab/execution.ts';
+import { fuseResearch, researchEvidence } from '../src/lib/engine-lab/fusion.ts';
 import { analyzeDigitMarket } from '../src/lib/signal-engine/digit-signal.ts';
 import { analyzeRiseFallMarket } from '../src/lib/signal-engine/rise-fall-signal.ts';
 import { analyzeDigitEntry } from '../src/lib/signal-engine/entry.ts';
+import { confidenceScore } from '../src/lib/signal-engine/confidence.ts';
 
 function random(seed = 1) {
   let a = 0x9e3779b9; let b = 0x243f6a88 + seed; let c = 0xb7e15162; let d = 0x12345678 ^ (seed * 7919);
@@ -371,10 +373,10 @@ test('performance scope excludes other markets, families, currencies, invalid pr
   assert.deepEqual(scopeSettlements([base], 'R_100', 'matches', ''), []);
 });
 
-test('execution fails closed without a research audit or a sufficiently favourable actual payout', () => {
-  assert.ok(researchExecutionIssue(null));
-  assert.ok(researchExecutionIssue({ eligible: false, action: 'observe', reasons: ['Stale'] }));
-  assert.equal(researchExecutionIssue({ eligible: true, action: 'candidate', reasons: [] }), null);
+test('research advice is reported but never blocks a purchase, and payout economics stay measurable', () => {
+  assert.ok(researchAdvisory(null));
+  assert.ok(researchAdvisory({ eligible: false, action: 'observe', reasons: ['Live data freshness is not confirmed.'] }));
+  assert.equal(researchAdvisory({ eligible: true, action: 'candidate', reasons: ['Evidence gates passed; compare the live proposal payout with the estimated probability before any purchase.'] }), null);
   const good = quoteEconomics(0.6, 1, 1.9);
   assert.equal(good.allowed, true);
   close(good.breakEven, 1 / 1.9);
@@ -398,6 +400,10 @@ for (const family of ['matches', 'even-odd', 'over-under']) test(`${family} prod
   close(result.best.deep.confirmation.probability, result.best.probability);
   assert.ok(result.engineLab.sample.quotes > 0);
   assert.equal(result.best.researchDecision.action, 'observe');
+  assert.deepEqual(result.engineLab.fusion, result.best.research);
+  assert.ok(result.best.research.total >= 10, 'every contract carries the research ensemble into the analysis');
+  assert.ok(Math.abs(result.best.research.contributionPts) <= 35);
+  assert.ok(result.best.research.weight <= 0.35);
   assertFiniteTree(result.engineLab);
 });
 
@@ -412,5 +418,84 @@ test('Rise/Fall production scan runs all 300 entries on the selected exact durat
   close(result.best.entry.evidence.signalProbability, result.best.winEstimate);
   assert.equal(result.engineLab.sample.digits, data.length);
   assert.equal(result.best.researchDecision.action, 'observe');
+  assert.deepEqual(result.engineLab.fusion, result.best.research);
+  assert.ok(result.best.research.total >= 12);
   assertFiniteTree(result.engineLab);
+});
+
+const baseAudit = (overrides = {}) => ({
+  probability: 0.30, rawProbability: 0.30, nextTickProbability: 0.30, fair: 0.1,
+  sample: 200, tuningSample: 300, calibrationSample: 150, brier: 0.06, baselineBrier: 0.09, skill: 0.33,
+  improvementZ: 3, correctedP: 0.001, validated: true, calibrationMethod: 'isotonic-shrinkage', calibrationError: 0.01,
+  bins: [], weights: [0.5, 0.5], correlations: [[1, 0.2], [0.2, 1]], redundantPairs: [],
+  models: [
+    { id: 'a', name: 'A', family: 'frequency', engines: [1], probability: 0.32, weight: 0.5, bayesianWeight: 0.5, tuningBrier: 0.08, holdoutBrier: 0.08, skill: 0.2, contribution: 1, ablation: 0.01 },
+    { id: 'b', name: 'B', family: 'dependence', engines: [2], probability: 0.28, weight: 0.5, bayesianWeight: 0.5, tuningBrier: 0.08, holdoutBrier: 0.08, skill: 0.2, contribution: 1, ablation: 0.01 },
+  ],
+  rows: [], boundaries: { tuningStart: 600, calibrationStart: 1100, holdoutStart: 1500, lastOrigin: 1999 },
+  selectedModel: 'a', regimeModel: 'a', regimeSample: 120, selectionPool: 130,
+  ...overrides,
+});
+
+test('the research library is folded into the traded estimate when it validated out of sample', () => {
+  const supportive = fuseResearch({ audit: baseAudit(), probability: 0.2, fair: 0.1 });
+  assert.ok(supportive.fusion.weight > 0 && supportive.fusion.weight <= 0.35);
+  assert.ok(supportive.probability > 0.2, `${supportive.probability} should exceed the base estimate`);
+  assert.ok(supportive.probability <= 0.30 + 1e-12, 'a convex blend can never exceed either estimate');
+  close(supportive.fusion.contributionPts, 100 * (supportive.probability - 0.2));
+  assert.equal(supportive.fusion.validated, true);
+  assert.equal(supportive.fusion.agreeing, 2);
+  assert.equal(researchEvidence(supportive.fusion).validated, true);
+  assert.equal(researchEvidence(supportive.fusion).contradicted, false);
+});
+
+test('unvalidated research can pull an estimate down but never inflate it', () => {
+  const unvalidated = baseAudit({ validated: false, probability: 0.05 });
+  const lowered = fuseResearch({ audit: unvalidated, probability: 0.2, fair: 0.1 });
+  assert.ok(lowered.probability < 0.2);
+  assert.ok(lowered.probability >= 0.05 - 1e-12);
+  assert.ok(lowered.fusion.weight > 0 && lowered.fusion.weight <= 0.15);
+  assert.equal(lowered.fusion.stance, 'contradicting');
+  assert.equal(researchEvidence(lowered.fusion).contradicted, true);
+  // Higher than the base estimate, but unvalidated: no boost is allowed.
+  const flattering = fuseResearch({ audit: baseAudit({ validated: false, probability: 0.4 }), probability: 0.2, fair: 0.1 });
+  assert.equal(flattering.probability, 0.2);
+  assert.equal(flattering.fusion.weight, 0);
+  // A small difference inside the dead band is not a signal either way.
+  const noise = fuseResearch({ audit: baseAudit({ validated: false, probability: 0.195 }), probability: 0.2, fair: 0.1 });
+  assert.equal(noise.probability, 0.2);
+});
+
+test('an unusable research audit leaves the analysis estimate untouched', () => {
+  for (const audit of [undefined, null, {}, { ...baseAudit(), probability: Number.NaN }, { ...baseAudit(), models: [] }]) {
+    const result = fuseResearch({ audit, probability: 0.2, fair: 0.1 });
+    assert.equal(result.probability, 0.2);
+    assert.equal(result.fusion.weight, 0);
+    assert.equal(result.fusion.contributionPts, 0);
+  }
+  assertFiniteTree(fuseResearch({ audit: baseAudit(), probability: 0.2, fair: 0.1 }));
+});
+
+test('the research term moves the evidence score only through measured, validated skill', () => {
+  const base = { weightedAgreement: 0.8, edgeRatio: 0.4, backtest: null, validationSkill: 0.1, dataQuality: 1, selectionPool: 208 };
+  const without = confidenceScore(base).confidence;
+  assert.equal(confidenceScore({ ...base, research: null }).confidence, without, 'absent research keeps the score bit-identical');
+  assert.equal(confidenceScore({ ...base, research: researchEvidence(fuseResearch({ audit: baseAudit({ validated: false, probability: 0.05 }), probability: 0.2, fair: 0.1 }).fusion) }).confidence, without, 'unvalidated agreement cannot add confidence');
+  const supported = confidenceScore({ ...base, research: researchEvidence(fuseResearch({ audit: baseAudit(), probability: 0.2, fair: 0.1 }).fusion) });
+  assert.ok(supported.confidence >= without, 'validated, agreeing research does not reduce the score');
+  assert.ok(supported.breakdown.research > 0);
+  const opposed = confidenceScore({ ...base, research: { agreement: 0, skill: 0.3, sample: 200, validated: true, contradicted: true } });
+  assert.ok(opposed.confidence < without, 'a validated contradiction costs evidence');
+  assert.ok(opposed.confidence >= 1 && opposed.confidence <= 99);
+});
+
+test('multi-market null scans do not let research manufacture an edge', () => {
+  let boosted = 0;
+  for (let seed = 80; seed <= 89; seed += 1) {
+    const data = ticks(seed);
+    const result = analyzeDigitMarket({ family: 'matches', symbol: 'R_100', name: 'Volatility 100', horizon: 2,
+      ticks: data.map(({ epoch, digit }) => ({ epoch, digit })), fresh: true, marketsInScan: 13 });
+    for (const signal of result.contracts) if (signal.research.contributionPts > 0.01) boosted += 1;
+  }
+  assert.equal(boosted, 0, 'noise never validates, so the fusion can only leave the estimate alone or lower it');
 });

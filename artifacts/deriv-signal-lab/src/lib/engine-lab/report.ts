@@ -5,6 +5,7 @@ import { wilsonInterval } from '../signal-engine/stats.ts';
 import type { EngineVote } from '../signal-engine/confidence.ts';
 import type { EntryPlan } from '../signal-engine/entry.ts';
 import type { EngineLabReport, EngineStatus, LabContract, LabHorizon, LabTick, ResearchAudit, ResearchDecision, SettledReturn, ToolFamily } from './types.ts';
+import type { ResearchFusion } from './fusion.ts';
 
 export type EngineLabInput = {
   symbol: string;
@@ -28,6 +29,8 @@ export type EngineLabInput = {
   /** Actual settled returns, prefiltered to this market/family/account. Never simulated 1:1 payouts. */
   settlements?: readonly SettledReturn[];
   settlementCurrency?: string;
+  /** What the research ensemble contributed to the traded signal, when it ran. */
+  fusion?: ResearchFusion | null;
 };
 
 /** Accounting-only metrics; undefined denominators stay null, never fake perfect scores. */
@@ -178,7 +181,7 @@ export function buildEngineLabReport(input: EngineLabInput): EngineLabReport {
   put(294, regimeModel.probability, audit.tuningSample, `Causal regime-conditioned research probability. ${validatedNote}`);
   put(295, audit.tuningSample ? 'tuning-only reweighting' : null, audit.tuningSample, 'Bounded tuning-reliability reweighting, frozen for calibration and holdout. No continuous learning from unsettled trades.');
   put(296, Number(audit.validated), n, 'Needs ≥40 non-overlapping test rows, ≥30 tuning rows, Brier skill >0.005 and corrected one-sided loss p<0.05.');
-  put(297, input.fresh ? 'fresh; validation still required' : 'stale; automatic entry blocked', n, 'Anomalies are descriptive and never increase confidence without validated forecasts. The fresh-data gate controls automatic entry.', { anomalyScore: readings.get(19)?.value ?? null, outlierFraction: readings.get(20)?.value ?? null });
+  put(297, input.fresh ? 'fresh; validation still required' : 'stale; flagged as advice on the run, execution is not blocked', n, 'Anomalies are descriptive and never increase confidence without validated forecasts. The fresh-data gate controls automatic entry.', { anomalyScore: readings.get(19)?.value ?? null, outlierFraction: readings.get(20)?.value ?? null });
   put(298, regimeModel.probability, n, `Regime model holdout skill ${regimeModel.skill === null ? 'unavailable' : (regimeModel.skill * 100).toFixed(2) + '%'}. Same model as #294, not another vote.`);
   put(299, audit.validated ? contradicted ? 'validated conflict' : 'no validated conflict' : 'research unvalidated', n, 'Unvalidated research support does not strengthen the legacy prediction.');
   put(300, decision.action, n, `${decision.reasons.join(' ')} Estimated probability is not profitability; actual proposal economics and account risk limits remain separate.`);
@@ -210,5 +213,5 @@ export function buildEngineLabReport(input: EngineLabInput): EngineLabReport {
   if (!sample.digits) warnings.push('Digit engines abstain because verified digit precision is unavailable.');
   return { version: '1.0.0', family: input.family, symbol: input.symbol, asOfEpoch: ticks.at(-1)?.epoch ?? null,
     horizon: input.horizon, contract: input.contract, registered: ENGINE_CATALOG.length, counts, readings: ordered,
-    research: audit, decision, warnings, sample, accounting: { sample: accounting.sample, currency: accounting.sample ? input.settlementCurrency || null : null } };
+    research: audit, decision, fusion: input.fusion ?? null, warnings, sample, accounting: { sample: accounting.sample, currency: accounting.sample ? input.settlementCurrency || null : null } };
 }
