@@ -74,7 +74,7 @@ export type SignalBotRun = {
 /** Live state of the entry the bot is waiting for on the run in progress. */
 export type SignalBotEntryWatch = {
   runIndex: number;
-  status: 'waiting' | 'ready' | 'expired';
+  status: 'waiting' | 'ready' | 'expired' | 'missed';
   /** One-line reason straight from the entry check. */
   reason: string;
   /** Entry plan label, e.g. "Pullback entry". */

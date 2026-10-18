@@ -7,7 +7,7 @@ import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
 import {
-  AnalysisProgressPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
+  AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
 } from '@/components/signal/signal-ui';
 import { analyzeRiseFall, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
 import { analyzePriceContext } from '@/lib/price-context';
@@ -200,6 +200,11 @@ export function RiseFallTool() {
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
+        confirmation: {
+          status: signal.deep.confirmation.status,
+          edgePts: signal.deep.confirmation.edgePts,
+          decisive: signal.deep.confirmation.decisive,
+        },
       }
     : null;
   const draftMarket = draftMarketCode ?? chartSymbol ?? null;
@@ -237,9 +242,9 @@ export function RiseFallTool() {
     <div className="animate-rise-in space-y-5 pt-5" data-testid="rise-fall-analysis">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <div className="eyebrow">Rise/Fall · {ENGINE_COUNT}-engine cross-market scan</div>
+          <div className="eyebrow">Rise/Fall · {ENGINE_COUNT} prediction engines + analysis layer</div>
           <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">Rise/Fall signals</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">Run Analysis scans every volatility market across 25 durations (1–10 ticks, 1–15 minutes). Trend, swing structure, momentum, RSI, MACD, EMA, breadth, ROC, regression, Markov, variance-ratio and drift engines vote, and an AI meta-model learns how far to trust them on each market.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">Run Analysis scans every volatility market across 25 durations (1–10 ticks, 1–15 minutes). Analysis engines first measure the market regime, trend, Hurst/variance-ratio structure and volatility. The trend, swing, momentum, RSI, MACD, EMA, breadth, ROC, regression, Markov, variance-ratio and drift engines then vote, an AI meta-model learns how far to trust them per duration, and a confirmation layer calibrates the result out of sample before the entry engine times it.</p>
         </div>
         <FeedBadge feed={feed} />
       </div>
@@ -266,7 +271,7 @@ export function RiseFallTool() {
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
           <span>{feed.loadedCount}/{markets.length} markets loaded</span>
           <span>{feed.freshCount} currently live</span>
-          <span>{ENGINE_COUNT} engines × 25 durations per market</span>
+          <span>{ENGINE_COUNT} prediction engines + {scan.run?.results[0]?.analysisEngineCount ?? 11} analysis engines × 25 durations per market</span>
           <span>{feed.usingTestAppId ? 'Deriv test app ID' : 'Configured Deriv app ID'}</span>
           {run && <span>Last scan {new Date(run.ranAt).toLocaleTimeString()} · {run.marketsScanned} markets · {(run.durationMs / 1000).toFixed(1)}s</span>}
         </div>
@@ -296,7 +301,8 @@ export function RiseFallTool() {
               now={feed.now}
               notes={selectedResult.notes}
               metrics={[
-                { label: 'Win chance', value: formatPercent(signal.winEstimate), hint: 'AI meta-model probability for this direction, trusted only as far as it validated on held-out ticks' },
+                { label: 'Win chance', value: formatPercent(signal.winEstimate), hint: 'Confirmed probability for this direction after calibration, stacking and the analysis check' },
+                { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
                 { label: 'AI P(rise)', value: formatPercent(signal.aiProbability), hint: 'Raw logistic-regression meta-model output' },
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: `Held-out ${signal.direction} calls at this duration: win rate and number of calls` },
                 { label: 'Consensus', value: formatSigned(signal.consensusScore), hint: 'Skill-weighted engine score from -1 (fall) to +1 (rise)' },
@@ -313,6 +319,7 @@ export function RiseFallTool() {
               ]}
               onUse={() => { setDraftMarketCode(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
             />
+            <ConfirmationPanel report={signal.deep.confirmation} />
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}
@@ -334,6 +341,7 @@ export function RiseFallTool() {
           </div>
           <div className="space-y-4">
             <EngineVotesPanel votes={signal.votes} title={`Why ${signal.direction} · ${formatRiseFallHorizon(signal.horizon)} on ${shortMarketName(selectedResult.name)}`} valueKind="score" />
+            <AnalysisEnginePanel state={selectedResult.state} marketName={selectedResult.name} />
             <DurationTable result={selectedResult} />
           </div>
         </section>

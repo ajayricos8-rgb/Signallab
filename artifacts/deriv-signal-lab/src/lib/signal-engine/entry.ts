@@ -43,6 +43,12 @@ export type EntrySignalContext = {
   probability: number | null;
   /** Raw AI meta-model probability for the same outcome (0–1), when there is one. */
   aiProbability?: number | null;
+  /** Layer-3 verdict for the same trade, when the analysis produced one. */
+  confirmation?: {
+    status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
+    edgePts: number;
+    decisive: boolean;
+  } | null;
 };
 
 /** Where an entry came from: the engine analysis, its AI and its replay. */
@@ -58,12 +64,39 @@ export type EntryEvidence = {
   fairRate: number;
   /** The replay the entry numbers were measured on. */
   rule: string;
+  /** Confirmation layer verdict that travelled with the signal. */
+  confirmation: {
+    status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
+    edgePts: number;
+    decisive: boolean;
+  } | null;
 };
 
 /** The replay rule behind each family's entry numbers. */
 const ENTRY_RULES: Record<EntrySignalContext['source'], string> = {
   'rise-fall': "the signal's consensus rule replayed tick by tick on this market",
   digit: "the contract's held-out ensemble rule replayed tick by tick",
+};
+
+export type EntryValidation = {
+  /** Rows the entry rule was validated on (the newer part of the replay). */
+  sample: number;
+  /** Win-rate gain over buying at the signal, in points, on those rows. */
+  gainPts: number;
+  /** Share of validated signals that reached the trigger inside the window. */
+  reachRate: number;
+  /** Win rate of the whole entry policy on the validation rows. */
+  rate: number;
+  /** No-edge rate the policy had to clear. */
+  fairRate: number;
+  /** True when the validation rows independently confirmed the rule. */
+  passed: boolean;
+  /**
+   * `out-of-sample` when the level/window were selected on older rows and
+   * scored on newer ones; `in-sample` only when there were too few rows to
+   * split (never presented as validated).
+   */
+  phase: 'out-of-sample' | 'in-sample';
 };
 
 export type EntryPlan = {
@@ -100,6 +133,16 @@ export type EntryPlan = {
   /** 0–100 strength of the ENTRY evidence (not of the direction). */
   confidence: number;
   /**
+   * How far beyond the measured level the quote may print and still count as
+   * the planned entry. A larger gap means the trigger arrived faster than the
+   * replay measured, so the bot treats it as a missed entry instead of chasing.
+   */
+  tolerance: number | null;
+  /** Out-of-sample validation of the timing rule, when there was enough data. */
+  validation: EntryValidation | null;
+  /** How the order should be filled at the trigger. */
+  fill: 'market' | 'level-or-better' | 'limit-with-tolerance' | 'context';
+  /**
    * True when the replay measured a win-rate gain for this trigger (and, for the
    * digit families, when the context survived its held-out slice). Only a
    * measured trigger is ever offered to the bot; `false` always means "the
@@ -132,7 +175,7 @@ export type EntryState = {
 };
 
 export type EntryEvaluation = {
-  status: 'waiting' | 'ready' | 'expired';
+  status: 'waiting' | 'ready' | 'expired' | 'missed';
   /** One line for the bot ledger. */
   reason: string;
   /** How far the quote still is from the level (price units). */
@@ -146,11 +189,15 @@ export const ENTRY_LIMITS = {
   /** Entry window, in ticks. Below two ticks "waiting" is meaningless. */
   windowTicks: { min: 2, max: 60 },
   /** Replayed signals sampled for the timing statistics. */
-  maxSample: 120,
+  maxSample: 240,
   /** Most ticks a replay may scan forward for an entry trigger. */
   scanTicks: 120,
   /** Rows, reach and lift needed before a trigger is offered at all. */
   minSample: 40,
+  /** Newer rows needed to independently confirm a trigger out of sample. */
+  minValidationSample: 30,
+  /** Paired z-score the validation rows must clear (better vs worse entries). */
+  minValidationZ: 0.5,
   minReach: 0.55,
   /** Points of win rate a trigger must add before it beats buying at the signal. */
   minEdgePts: 0.5,
@@ -176,10 +223,14 @@ const CONTEXT_MIN_VALIDATION_ROWS = 40;
 const CONTEXT_MIN_VALIDATION_PTS = 1;
 const CONTEXT_VALIDATION_Z = 1.64;
 
-/** Pullback depth percentile: the level about 65% of replayed signals reached. */
-const PULLBACK_PERCENTILE = 0.35;
-/** Breakout depth percentile: above the noise of about 60% of replayed signals. */
-const BREAKOUT_PERCENTILE = 0.4;
+/**
+ * Depth grid. The entry engine does not pick one arbitrary percentile: it
+ * measures a few shallow-to-deep levels on the selection slice and keeps the
+ * one whose policy (wait for the level, else enter at market) added the most
+ * win rate there — subject to the same rule holding on the newer slice.
+ */
+const PULLBACK_PERCENTILES = [0.3, 0.35, 0.4, 0.45] as const;
+const BREAKOUT_PERCENTILES = [0.35, 0.45] as const;
 /** Wait percentile the window has to cover. */
 const WAIT_WINDOW_PERCENTILE = 0.85;
 
@@ -254,6 +305,9 @@ export function immediateEntryPlan(options: {
     edgeGainPts: 0,
     sample: Math.max(0, Math.round(options.sample ?? 0)),
     confidence: clamp(Math.round(options.confidence ?? 50), 0, 100),
+    tolerance: null,
+    validation: null,
+    fill: 'market',
     measured: false,
     evidence: options.evidence,
   };
@@ -275,6 +329,7 @@ function buildEvidence(signal: EntrySignalContext, fairRate: number): EntryEvide
         : null,
     fairRate,
     rule: ENTRY_RULES[signal.source],
+    confirmation: signal.confirmation ? { ...signal.confirmation } : null,
   };
 }
 
@@ -354,6 +409,12 @@ type RowPlan = {
   wait: number;
   /** Wall-clock wait of the trigger, -1 when unknown. */
   waitedMs: number;
+  /**
+   * How far past the level the quote printed when the trigger fired (≥ 0).
+   * This is the slippage the replay actually saw, and it sets the plan's
+   * no-chase tolerance.
+   */
+  overshoot: number;
 };
 
 type CandidateAssessment = {
@@ -438,6 +499,10 @@ function assessTrigger(
       trigger,
       wait: trigger >= 0 ? trigger - row.origin : -1,
       waitedMs: trigger >= 0 ? epochs[trigger] - epochs[row.origin] : -1,
+      overshoot:
+        trigger >= 0
+          ? Math.max(0, (side === 'adverse' ? -1 : 1) * (prices[trigger] - prices[row.origin]) - depth)
+          : 0,
     });
   }
 
@@ -550,11 +615,7 @@ function usableCandidate(
     policy.reached >= ENTRY_LIMITS.minSample &&
     policy.reachRate >= ENTRY_LIMITS.minReach &&
     policy.gainPts >= ENTRY_LIMITS.minEdgePts &&
-    policy.settled >= ENTRY_LIMITS.minSample &&
-    // Timing is not a rescue: the signal must already have replay support and
-    // the entry policy must clear the contract's no-edge rate on its own.
-    policy.baselineRate >= fairRate &&
-    policy.policyRate >= fairRate
+    policy.settled >= ENTRY_LIMITS.minSample
   );
 }
 
@@ -610,69 +671,140 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
   }
 
   const minDepth = ENTRY_LIMITS.minDepthRatio * averageMove;
-  const pullbackDepth = percentile(
-    stats.map((row) => row.adverse).filter((depth) => depth > 0),
-    PULLBACK_PERCENTILE,
-  );
-  const breakoutDepth = percentile(
-    stats.map((row) => row.favourable).filter((depth) => depth > 0),
-    BREAKOUT_PERCENTILE,
-  );
-  const candidates = [
-    pullbackDepth !== null && pullbackDepth >= minDepth
-      ? assessTrigger({ ...input, rows: stats, side: 'adverse', depth: pullbackDepth, stopDepth: null })
-      : null,
-    breakoutDepth !== null && breakoutDepth >= minDepth
+  // Walk-forward split: the level and window are chosen on the older 60% of the
+  // replay and only accepted when they hold on the newer 40%. This is the
+  // difference between a measured entry and a curve-fitted one.
+  const split = Math.floor(stats.length * 0.6);
+  const selectionStats = stats.slice(0, split);
+  const validationStats = stats.slice(split);
+  const canValidate = validationStats.length >= ENTRY_LIMITS.minValidationSample;
+  const adverseDepths = selectionStats.map((row) => row.adverse).filter((depth) => depth > 0);
+  const favourableDepths = selectionStats.map((row) => row.favourable).filter((depth) => depth > 0);
+  const pullbackDepths = PULLBACK_PERCENTILES.map((fraction) => percentile(adverseDepths, fraction))
+    .filter((depth): depth is number => depth !== null && depth >= minDepth);
+  const breakoutDepths = BREAKOUT_PERCENTILES.map((fraction) => percentile(favourableDepths, fraction))
+    .filter((depth): depth is number => depth !== null && depth >= minDepth);
+  const shallowestPullback = pullbackDepths.length ? Math.min(...pullbackDepths) : minDepth;
+  const candidateSpecs: Array<{
+    side: 'adverse' | 'favourable';
+    depth: number;
+    stopDepth: number | null;
+  }> = [];
+  const seen = new Set<string>();
+  for (const depth of pullbackDepths) {
+    const key = `a:${depth.toFixed(6)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidateSpecs.push({ side: 'adverse', depth, stopDepth: null });
+  }
+  for (const depth of breakoutDepths) {
+    const key = `f:${depth.toFixed(6)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidateSpecs.push({ side: 'favourable', depth, stopDepth: Math.max(minDepth, shallowestPullback) });
+  }
+
+  const assessed = candidateSpecs.map((spec) => {
+    const selectionTrigger = assessTrigger({
+      ...input,
+      rows: selectionStats,
+      side: spec.side,
+      depth: spec.depth,
+      stopDepth: spec.stopDepth,
+    });
+    const windowTicks = windowTicksFor(selectionTrigger.waits, horizonTicks);
+    const selectionPolicy = assessPolicy(input, selectionTrigger, windowTicks);
+    const validationTrigger = canValidate
       ? assessTrigger({
           ...input,
-          rows: stats,
-          side: 'favourable',
-          depth: breakoutDepth,
-          stopDepth: Math.max(minDepth, pullbackDepth ?? minDepth),
+          rows: validationStats,
+          side: spec.side,
+          depth: spec.depth,
+          stopDepth: spec.stopDepth,
         })
-      : null,
-  ].filter((candidate): candidate is CandidateAssessment => candidate !== null);
-
-  const assessed = candidates.map((candidate) => {
-    const windowTicks = windowTicksFor(candidate.waits, horizonTicks);
-    return { candidate, windowTicks, policy: assessPolicy(input, candidate, windowTicks) };
+      : null;
+    const validationPolicy = validationTrigger ? assessPolicy(input, validationTrigger, windowTicks) : null;
+    const overshoots = validationTrigger
+      ? validationTrigger.rows.filter((row) => row.trigger >= 0).map((row) => row.overshoot)
+      : selectionTrigger.rows.filter((row) => row.trigger >= 0).map((row) => row.overshoot);
+    const tolerance = clamp(
+      Math.max(averageMove * 0.5, percentile(overshoots, 0.9) ?? 0),
+      averageMove * 0.1,
+      spec.depth * 0.5,
+    );
+    const validation = validationPolicy
+      ? validationReport(validationPolicy, fairRate)
+      : null;
+    return { candidate: selectionTrigger, windowTicks, selectionPolicy, validationPolicy, validation, tolerance };
   });
-  // Only a trigger the replay actually scored as an improvement is offered: the
-  // bot trades the analysis, so a level that is merely reached often (with no
-  // measured win-rate gain) stays a number in the explanation, never an entry.
+
+  // Selection gates use a minimum that scales with the split: with 40+ rows a
+  // 60/40 split still has to show dozens of reached triggers, not five.
+  const selectionMin = Math.min(
+    ENTRY_LIMITS.minSample,
+    Math.max(20, Math.round(selectionStats.length * 0.35)),
+  );
+  // The selection slice picks the depth by its absolute policy win rate; the
+  // newer slice then has to show that waiting beat buying at the signal. The
+  // depth is never chosen on the slice that scores it.
+  const selectionPass = (policy: PolicyAssessment): boolean =>
+    policy.reached >= selectionMin &&
+    policy.reachRate >= ENTRY_LIMITS.minReach &&
+    policy.settled >= selectionMin &&
+    policy.policyRate >= fairRate;
+  // Absolute edge is the analysis layer's job: `analysisRejection` already
+  // refuses a signal rated below fair.
   const rejection = analysisRejection(evidence);
-  const promising = assessed.filter((item) => usableCandidate(item.policy, fairRate) && rejection === null);
+  const promising = assessed.filter((item) => {
+    if (rejection !== null) return false;
+    if (!selectionPass(item.selectionPolicy)) return false;
+    if (canValidate) return item.validation !== null && item.validation.passed;
+    // Not enough newer rows to hold out a validation slice. The old gates still
+    // apply, and the plan is explicitly marked in-sample.
+    return usableCandidate(item.selectionPolicy, fairRate);
+  });
 
   if (!promising.length) {
-    const best = [...assessed].sort((left, right) => right.policy.gainPts - left.policy.gainPts)[0];
+    const best = [...assessed].sort(
+      (left, right) => right.selectionPolicy.policyRate - left.selectionPolicy.policyRate,
+    )[0];
     // The level the price usually returns to, for the explanation only.
     const reached = [...assessed]
       .filter(
         (item) =>
-          item.policy.reached >= ENTRY_LIMITS.minSample && item.policy.reachRate >= ENTRY_LIMITS.minReach,
+          item.selectionPolicy.reached >= selectionMin &&
+          item.selectionPolicy.reachRate >= ENTRY_LIMITS.minReach,
       )
-      .sort((left, right) => right.policy.reachRate - left.policy.reachRate)[0];
+      .sort((left, right) => right.selectionPolicy.reachRate - left.selectionPolicy.reachRate)[0];
     const reachedNote = reached
-      ? ` The ${reached.candidate.side === 'adverse' ? 'pullback' : 'breakout'} level itself was reached by ${Math.round(reached.policy.reachRate * 100)}% of those signals inside ${reached.windowTicks} ticks, but being reached is not the same as winning more often.`
+      ? ` The ${reached.candidate.side === 'adverse' ? 'pullback' : 'breakout'} level itself was reached by ${Math.round(reached.selectionPolicy.reachRate * 100)}% of the selection signals inside ${reached.windowTicks} ticks, but being reached is not the same as winning more often.`
       : '';
     let reason = `Replayed ${rows.length} signals and found no price level that improved the win rate, so the bot enters at the next tick.${reachedNote}`;
     if (rejection !== null)
       reason = `The analysis rates this signal at ${rejection}, so there is no edge to time and the bot enters at the next tick.`;
+    else if (best && canValidate && best.validation && !best.validation.passed)
+      reason = `Replayed ${rows.length} signals: the best ${best.candidate.side === 'adverse' ? 'pullback' : 'breakout'} level was chosen on the older ${selectionStats.length} signals but did not hold on the newer ${validationStats.length} (${(best.validation.rate * 100).toFixed(1)}% win rate at a ${(fairRate * 100).toFixed(1)}% no-edge rate, ${best.validation.gainPts >= 0 ? '+' : ''}${best.validation.gainPts.toFixed(1)} points against buying at the signal), so the bot enters at the next tick.${reachedNote}`;
     else if (best) {
-      if (best.policy.baselineRate < fairRate)
-        reason = `Replayed ${rows.length} signals: buying at the signal only won ${(best.policy.baselineRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so waiting cannot add a timing edge — the bot enters at the next tick.${reachedNote}`;
-      else if (best.policy.policyRate < fairRate)
-        reason = `Replayed ${rows.length} signals: entering on the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level won only ${(best.policy.policyRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so the bot enters at the next tick.${reachedNote}`;
-      else if (best.policy.gainPts < ENTRY_LIMITS.minEdgePts)
-        reason = `Replayed ${rows.length} signals: waiting at the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level did not beat buying at the signal (${describeRates(best.policy)}), so the bot enters at the next tick.${reachedNote}`;
+      const policy = canValidate && best.validationPolicy ? best.validationPolicy : best.selectionPolicy;
+      if (policy.baselineRate < fairRate)
+        reason = `Replayed ${rows.length} signals: buying at the signal only won ${(policy.baselineRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so waiting cannot add a timing edge — the bot enters at the next tick.${reachedNote}`;
+      else if (policy.policyRate < fairRate)
+        reason = `Replayed ${rows.length} signals: entering on the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level won only ${(policy.policyRate * 100).toFixed(1)}%, below this contract's ${(fairRate * 100).toFixed(1)}% no-edge rate, so the bot enters at the next tick.${reachedNote}`;
+      else if (policy.gainPts < ENTRY_LIMITS.minEdgePts)
+        reason = `Replayed ${rows.length} signals: waiting at the ${best.candidate.side === 'adverse' ? 'typical pullback' : 'typical breakout'} level did not beat buying at the signal (${describeRates(policy)}), so the bot enters at the next tick.${reachedNote}`;
       else
         reason = `Replayed ${rows.length} signals: no entry level was reached often enough to be worth waiting for, so the bot enters at the next tick.${reachedNote}`;
     }
     return immediateEntryPlan({ reason, sample: rows.length, evidence });
   }
 
-  const best = [...promising].sort((left, right) => right.policy.gainPts - left.policy.gainPts)[0];
-  const { candidate, windowTicks, policy } = best;
+  const best = [...promising].sort(
+    (left, right) =>
+      right.selectionPolicy.policyRate - left.selectionPolicy.policyRate ||
+      right.selectionPolicy.gainPts - left.selectionPolicy.gainPts,
+  )[0];
+  const { candidate, windowTicks } = best;
+  const policy = canValidate && best.validationPolicy ? best.validationPolicy : best.selectionPolicy;
   const mode: EntryMode = candidate.side === 'adverse' ? 'pullback' : 'breakout';
   const expectedWaitTicks = Math.round(median(policy.waitTicks) ?? 0);
   const expectedWaitMs = Math.max(0, Math.round(median(policy.waits) ?? expectedWaitTicks * 1_000));
@@ -683,11 +815,15 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
   const priceLevel =
     referenceQuote === null ? null : priceCondition === 'below' ? referenceQuote - distance : referenceQuote + distance;
   const level = `${priceText(distance)} (${(distance / averageMove).toFixed(1)} average ticks)`;
-  const replayNote = `the entry must fire within ${windowTicks} ticks: ${Math.round(policy.reachRate * 100)}% of the ${rows.length} replayed signals got there, in a median of ${expectedWaitTicks} tick${expectedWaitTicks === 1 ? '' : 's'}${expectedWaitMs > 0 ? ` (~${(expectedWaitMs / 1_000).toFixed(1)}s)` : ''}, and ${describeRates(policy)} (fair ${(fairRate * 100).toFixed(1)}%).`;
+  const splitNote = canValidate
+    ? `the level and window were chosen on the older ${selectionStats.length} signals and confirmed on the newer ${validationStats.length}: `
+    : `too few signals to hold out a validation slice, so this is measured in-sample on ${selectionStats.length} signals: `;
+  const replayNote = `${splitNote}the entry must fire within ${windowTicks} ticks: ${Math.round(policy.reachRate * 100)}% got there, in a median of ${expectedWaitTicks} tick${expectedWaitTicks === 1 ? '' : 's'}${expectedWaitMs > 0 ? ` (~${(expectedWaitMs / 1_000).toFixed(1)}s)` : ''}, and ${describeRates(policy)} (fair ${(fairRate * 100).toFixed(1)}%).`;
+  const noChase = `The quote must not gap more than ${priceText(best.tolerance)} past the level, or the entry is missed rather than chased.`;
   const detail =
     mode === 'pullback'
-      ? `Waits for the price to pull ${level} against the signal before buying the ${direction === 1 ? 'rise' : 'fall'}, and buys at the market price if the level never arrives before the window closes — ${replayNote}`
-      : `Waits for the price to break ${level} further in the signal's direction (a continuation entry) before buying, and buys at the market price if the level never arrives before the window closes — ${replayNote}`;
+      ? `Waits for the price to pull ${level} against the signal before buying the ${direction === 1 ? 'rise' : 'fall'}, and buys at the market price if the level never arrives before the window closes — ${replayNote} ${noChase}`
+      : `Waits for the price to break ${level} further in the signal's direction (a continuation entry) before buying, and buys at the market price if the level never arrives before the window closes — ${replayNote} ${noChase}`;
 
   return {
     mode,
@@ -707,8 +843,37 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
     edgeGainPts: Math.round(policy.gainPts * 10) / 10,
     sample: rows.length,
     confidence,
+    tolerance: best.tolerance,
+    validation: best.validation ?? {
+      sample: policy.settled,
+      gainPts: policy.gainPts,
+      reachRate: policy.reachRate,
+      rate: policy.policyRate,
+      fairRate,
+      passed: false,
+      phase: 'in-sample',
+    },
+    fill: 'limit-with-tolerance',
     measured: true,
     evidence,
+  };
+}
+
+/** Out-of-sample report for one candidate's entry policy. */
+function validationReport(policy: PolicyAssessment, fairRate: number): EntryValidation {
+  const passed =
+    policy.settled >= ENTRY_LIMITS.minValidationSample &&
+    policy.reached >= ENTRY_LIMITS.minValidationSample &&
+    policy.reachRate >= ENTRY_LIMITS.minReach &&
+    policy.gainPts >= ENTRY_LIMITS.minEdgePts;
+  return {
+    sample: policy.settled,
+    gainPts: policy.gainPts,
+    reachRate: policy.reachRate,
+    rate: policy.policyRate,
+    fairRate,
+    passed,
+    phase: 'out-of-sample',
   };
 }
 
@@ -924,6 +1089,17 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
     edgeGainPts: Math.round(edgeGainPts * 10) / 10,
     sample: total,
     confidence,
+    tolerance: null,
+    validation: {
+      sample: total,
+      gainPts: edgeGainPts,
+      reachRate: reachRate ?? 0,
+      rate: insideRate,
+      fairRate,
+      passed: true,
+      phase: 'out-of-sample',
+    },
+    fill: 'context',
     measured: true,
     evidence,
   };
@@ -992,13 +1168,24 @@ export function evaluateEntry(plan: EntryPlan, observation: EntryObservation, st
     return { ...base, status: 'waiting', distance: null, reason: 'Waiting for the entry level.' };
   const distance =
     plan.priceCondition === 'below' ? observation.quote - plan.priceLevel : plan.priceLevel - observation.quote;
-  if (distance <= 0)
+  if (distance <= 0) {
+    // A quote that prints far past the level is not the entry the replay
+    // measured: the move arrived in one gap. Never chase it.
+    const overshoot = -distance;
+    if (plan.tolerance !== null && Number.isFinite(plan.tolerance) && overshoot > plan.tolerance)
+      return {
+        ...base,
+        status: 'missed',
+        distance: 0,
+        reason: `The quote gapped ${priceText(overshoot)} past the entry level, more than the ${priceText(plan.tolerance)} the replay allowed, so this entry was not chased.`,
+      };
     return {
       ...base,
       status: 'ready',
       distance: 0,
       reason: `Entering on the ${plan.mode} trigger: the quote reached the entry level after ${state.elapsedTicks} tick${state.elapsedTicks === 1 ? '' : 's'}.`,
     };
+  }
   return {
     ...base,
     status: 'waiting',
@@ -1048,6 +1235,10 @@ export function describeEntryEvidence(plan: EntryPlan): string {
   const { evidence } = plan;
   const parts = [`${evidence.agreeing}/${evidence.total} engines agree`];
   if (evidence.aiProbability !== null) parts.push(`AI ${(evidence.aiProbability * 100).toFixed(1)}%`);
+  if (evidence.confirmation)
+    parts.push(
+      `confirmation ${evidence.confirmation.status} (${evidence.confirmation.edgePts >= 0 ? '+' : ''}${evidence.confirmation.edgePts.toFixed(1)} pts edge${evidence.confirmation.decisive ? ', decisive' : ''})`,
+    );
   if (evidence.signalProbability !== null)
     parts.push(`the analysis rates the trade ${(evidence.signalProbability * 100).toFixed(1)}% against a ${(evidence.fairRate * 100).toFixed(1)}% no-edge rate`);
   else parts.push(`no-edge rate ${(evidence.fairRate * 100).toFixed(1)}%`);

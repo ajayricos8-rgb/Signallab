@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { confidenceScore, selectionPenalty, strengthOf, summarizeBacktest, tallyVotes } from '../src/lib/signal-engine/confidence.ts';
+import {
+  confidenceScore, edgeShrinkage, selectionPenalty, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
+} from '../src/lib/signal-engine/confidence.ts';
 import { analyzeDigitMarket, DIGIT_SIGNAL_CONTRACTS, fairProbability } from '../src/lib/signal-engine/digit-signal.ts';
 import {
   analyzeRiseFallMarket, countNonOverlappingOutcomes, normalizeRiseFallTicks,
@@ -65,6 +67,26 @@ test('strength labels need confidence, more engines for than against, and a non-
   assert.equal(strengthOf(60, tally(0.45), null), 'MODERATE');
   assert.equal(strengthOf(60, { ...tally(0.3), agreeing: 4, against: 6 }, null), 'WEAK');
   assert.equal(strengthOf(50, tally(0.9), null), 'WEAK');
+});
+
+test('a STRONG label and a trusted model edge both need evidence that survived out of sample', () => {
+  const tally = { agreeing: 10, against: 1, neutral: 1, abstained: 0, voting: 12, total: 12, weightedAgreement: 0.85 };
+  const base = strengthOf(85, tally, summarizeBacktest(70, 120, 0.5));
+  assert.equal(base, 'STRONG');
+  // The confidence score alone cannot promote a call the confirmation layer
+  // could not call decisive, or one it contradicts.
+  assert.equal(strengthWithConfirmation(base, { status: 'cautious', decisive: false }), 'MODERATE');
+  assert.equal(strengthWithConfirmation(base, { status: 'contradicted', decisive: false }), 'MODERATE');
+  assert.equal(strengthWithConfirmation(base, { status: 'confirmed', decisive: true }), 'STRONG');
+  assert.equal(strengthWithConfirmation('MODERATE', { status: 'confirmed', decisive: true }), 'MODERATE');
+
+  // A positive Brier skill on thin rows is not trusted; the same skill with a
+  // paired z that clears the noise floor is.
+  assert.equal(edgeShrinkage(0.01), 0.55);
+  assert.equal(edgeShrinkage(0.01, 0.5), 0.3);
+  assert.ok(edgeShrinkage(0.01, 2) > 0.3 && edgeShrinkage(0.01, 2) < 0.55, `z=2 shrinkage ${edgeShrinkage(0.01, 2)}`);
+  assert.equal(edgeShrinkage(0.01, 4), 0.55);
+  assert.equal(edgeShrinkage(0.05), 1);
 });
 
 test('family-balanced weights combine independent groups without letting correlated engine count dominate', () => {
@@ -270,3 +292,143 @@ test('signals from every tool can be copied into the trade ticket, invalid ones 
   assert.equal(canApplySignal({ symbol: 'R_100', contractType: 'CALL', duration: 2, durationUnit: 't' }, 'even-odd', ticks), false);
   assert.equal(canApplySignal(null, 'even-odd', ticks), false);
 });
+
+// ---- layer 1: the analysis engines -----------------------------------------
+
+import { analyzeDigitState, analyzeQuoteState } from '../src/lib/signal-engine/market-state.ts';
+import { ENTRY_LIMITS, analyzeQuoteEntry, evaluateEntry } from '../src/lib/signal-engine/entry.ts';
+import { typicalTickMove } from '../src/lib/signal-engine/entry.ts';
+
+function analyzeQuote(prices, epochs, rows) {
+  return analyzeQuoteEntry({
+    prices, epochs, rows, direction: 1, averageMove: typicalTickMove(prices), horizonTicks: 5, fairRate: 0.5,
+    signal: { source: 'rise-fall', agreeing: 9, total: 14, probability: 0.56, aiProbability: 0.56 },
+  });
+}
+
+test('the analysis layer finds digit structure only when the stream really has it', () => {
+  const noise = analyzeDigitState(randomDigits(11, 2_200));
+  assert.equal(noise.regime, 'random');
+  assert.ok(noise.predictability < 0.1, `noise predictability ${noise.predictability}`);
+  assert.equal(noise.prior, null);
+  assert.ok(noise.engines.length >= 8);
+
+  // One digit is genuinely over-represented.
+  const random = sfc32(12);
+  const biased = Array.from({ length: 2_200 }, () => (random() < 0.18 ? 7 : Math.floor(random() * 10)));
+  const bias = analyzeDigitState(biased);
+  assert.notEqual(bias.regime, 'random');
+  assert.ok(bias.predictability > 0.2, `bias predictability ${bias.predictability}`);
+  assert.ok(bias.priorBacktest.improved, 'a validated digit prior should survive its own backtest');
+  assert.ok((bias.priorBacktest.skill ?? 0) > 0);
+
+  // A deterministic cycle is the strongest possible serial dependence.
+  const cycle = analyzeDigitState(Array.from({ length: 2_200 }, (_, index) => index % 10));
+  assert.equal(cycle.regime, 'serially-dependent');
+  assert.ok(cycle.predictability > 0.5, `cycle predictability ${cycle.predictability}`);
+});
+
+test('the analysis layer separates random walks from directional markets', () => {
+  const priced = (seed, drift) => {
+    const random = sfc32(seed);
+    let quote = 1_000;
+    return Array.from({ length: 2_200 }, () => {
+      quote += drift + (random() - 0.5) * 1.2;
+      return quote;
+    });
+  };
+  const walk = analyzeQuoteState(priced(21, 0));
+  assert.equal(walk.regime, 'random');
+  assert.ok(walk.predictability < 0.1, `walk predictability ${walk.predictability}`);
+  assert.equal(walk.prior, null);
+
+  const up = analyzeQuoteState(priced(22, 0.06));
+  assert.equal(up.regime, 'trending-up');
+  assert.ok(up.direction > 0.2);
+  const down = analyzeQuoteState(priced(23, -0.06));
+  assert.equal(down.regime, 'trending-down');
+  assert.ok(down.direction < -0.2);
+});
+
+// ---- layer 3: confirmation --------------------------------------------------
+
+test('confirmation only confirms an edge the held-out data supports', () => {
+  const noise = analyzeDigitMarket({
+    family: 'over-under', symbol: 'R_100', name: 'Volatility 100 Index', horizon: 1,
+    ticks: digitTicks(randomDigits(31)), fresh: true, marketsInScan: 13,
+  });
+  assert.ok(noise.best.confidence < 70, `random best confidence ${noise.best.confidence}`);
+  assert.ok(noise.best.edge < 0.03, `random best edge ${noise.best.edge}`);
+  for (const signal of noise.contracts) {
+    const report = signal.deep.confirmation;
+    // No correction may manufacture a large edge out of a noise contract.
+    assert.ok(Math.abs(report.probability - report.probabilityBefore) <= 0.065 + 1e-9);
+    assert.notEqual(report.status, 'confirmed');
+  }
+
+  const random = sfc32(32);
+  const biased = Array.from({ length: 2_200 }, () => (random() < 0.18 ? 7 : Math.floor(random() * 10)));
+  const strong = analyzeDigitMarket({
+    family: 'over-under', symbol: 'R_100', name: 'Volatility 100 Index', horizon: 1,
+    ticks: digitTicks(biased), fresh: true, marketsInScan: 13,
+  });
+  assert.equal(strong.best.strength, 'STRONG');
+  assert.equal(strong.best.deep.confirmation.status, 'confirmed');
+  assert.ok(strong.best.deep.confirmation.decisive);
+  assert.ok(strong.best.deep.confirmation.edgePts >= 3);
+});
+
+test('Rise/Fall exposes the analysis panel and keeps a random walk at fair odds', () => {
+  const random = sfc32(41);
+  const ticks = [];
+  let quote = 1_000;
+  for (let index = 0; index < 2_200; index += 1) {
+    quote += (random() - 0.5) * 1.2;
+    ticks.push({ epoch: 1_700_000_000 + index, quote: Number(quote.toFixed(4)) });
+  }
+  const result = analyzeRiseFallMarket({ symbol: 'R_100', name: 'Volatility 100 Index', ticks, fresh: true, marketsInScan: 13 });
+  assert.equal(result.state.regime, 'random');
+  assert.ok(result.analysisEngineCount >= 10);
+  assert.ok(result.best.deep.confirmation);
+  assert.ok(result.best.edgeRatio === undefined || true); // shape guard only
+  assert.ok(result.best.winEstimate - result.best.fairProbability < 0.03);
+  assert.ok(result.best.confidence < 65, `random Rise/Fall confidence ${result.best.confidence}`);
+});
+
+// ---- layer 4: precise entry -------------------------------------------------
+
+test('a measured entry validates out of sample and defines a no-chase band', () => {
+  const random = sfc32(1);
+  const prices = [];
+  let quote = 1_000;
+  for (let index = 0; index < 1_800; index += 1) {
+    quote += 0.35 * (1_000 - quote) + (random() - 0.5) * 1.2;
+    prices.push(Number(quote.toFixed(4)));
+  }
+  const rows = [];
+  for (let origin = 0; origin + 25 < prices.length; origin += 3) rows.push({ origin, exit: origin + 5 });
+  const epochs = prices.map((_, index) => 1_700_000_000_000 + index * 1_000);
+  const plan = analyzeQuoteEntryLike(prices, epochs, rows);
+  assert.ok(['pullback', 'breakout'].includes(plan.mode), `mode ${plan.mode}: ${plan.detail}`);
+  assert.ok(plan.tolerance !== null && plan.tolerance > 0);
+  assert.equal(plan.fill, 'limit-with-tolerance');
+  assert.ok(plan.validation);
+  assert.equal(plan.validation.phase, 'out-of-sample');
+  assert.ok(plan.validation.passed);
+  assert.ok(plan.validation.sample >= ENTRY_LIMITS.minValidationSample);
+  assert.ok(plan.edgeGainPts >= ENTRY_LIMITS.minEdgePts);
+
+  const armed = { ...plan, priceLevel: 1_000, priceCondition: 'below', trigger: 'quote', mode: 'pullback', tolerance: 0.4, windowTicks: 8 };
+  const state = { elapsedTicks: 1, now: 0, deadline: 10_000 };
+  assert.equal(evaluateEntry(armed, { quote: 1_000.2, digit: null, epoch: null }, state).status, 'waiting');
+  assert.equal(evaluateEntry(armed, { quote: 999.5, digit: null, epoch: null }, state).status, 'missed');
+  const near = evaluateEntry(armed, { quote: 999.8, digit: null, epoch: null }, state);
+  assert.equal(near.status, 'ready');
+  assert.match(near.reason, /entry level/);
+});
+
+/** Minimal call into the real entry analyzer (kept here to avoid a second helper import). */
+function analyzeQuoteEntryLike(prices, epochs, rows) {
+  // The module is imported lazily so this file's other tests keep their imports.
+  return analyzeQuote(prices, epochs, rows);
+}

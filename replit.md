@@ -31,8 +31,9 @@ _Replace the heading above with the project's name, and this line with one sente
 ## Architecture decisions
 
 - The four Tools tabs share one public Deriv market-data socket (`artifacts/deriv-signal-lab/src/components/market-feed-provider.tsx`) mounted above the tabs, so history survives tab switches and Run Analysis can scan every volatility index at once.
-- Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`); the 12-engine digit ensemble and the 14-engine Rise/Fall panel run per market, and results are ranked by a calibrated confidence score (`src/lib/signal-engine/confidence.ts`).
+- Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`). Every analysis is layered: **analysis engines** (`market-state.ts`) measure structure/regime, **prediction engines** (the 12-engine digit ensemble / 14-engine Rise/Fall panel) produce probabilities, a **confirmation layer** (`confirmation.ts`) calibrates them out of sample and checks the analysis prior, and the **entry layer** (`entry.ts`) measures the entry level/window on an older slice and validates it on a newer one. Results are ranked by a calibrated confidence score (`confidence.ts`).
 - The strict research gates in `src/lib/over-under/ensemble.ts` are kept and surface as a "Verified edge" flag instead of blocking signals.
+- Each tool shows the analysis-engine panel (`AnalysisEnginePanel`) and the confirmation report (`ConfirmationPanel`) next to the signal card, so every probability can be traced to the engines, the calibration and the replay that produced it.
 
 ## Product
 

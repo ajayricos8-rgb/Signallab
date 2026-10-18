@@ -1,3 +1,3 @@
 - [Artifact build environment](artifact-build-environment.md) — workspace builds of Vite artifacts require `PORT` and `BASE_PATH` to be set.
 - [Deriv trading flow](deriv-trading-flow.md) — PAT → accounts → OTP → authenticated socket; the public feed and `VITE_DERIV_APP_ID` stay frozen.
-- [Signal engine](signal-engine.md) — Run Analysis always ends in a cross-market signal with % progress, confidence and engines agreeing; calibration keeps STRONG meaningful.
+- [Signal engine](signal-engine.md) — Run Analysis always ends in a cross-market signal with % progress, confidence and engines agreeing; analysis, prediction, confirmation and entry are separate layers.
