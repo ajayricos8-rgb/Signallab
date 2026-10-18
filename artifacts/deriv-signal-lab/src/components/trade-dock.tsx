@@ -51,6 +51,12 @@ export type SignalAnalysisBrief = {
   ranAt: number;
   /** Entry the analysis planned for this signal (point/level + time window). */
   entry?: EntryPlan | null;
+  /** Layer-3 verdict the bot page shows next to the loaded signal. */
+  confirmation?: {
+    status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
+    edgePts: number;
+    decisive: boolean;
+  } | null;
 };
 
 type TradeDockProps = {
@@ -283,6 +289,7 @@ export function TradeDock({
       recommendedRuns: recommendedRuns({ confidence, strength }),
       entry: loadedEntry,
       ranAt: analysis?.ranAt ?? 0,
+      confirmation: analysis?.confirmation ?? null,
     };
   }, [analysis, analysisEntryReady, expiryOptions, family, loadedEntry, marketName, recommendation]);
 
@@ -680,7 +687,7 @@ export function TradeDock({
                   </span>
                   <span className="text-[10px] text-slate-400">
                     {botPlan
-                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'} · ${entryModeLabel(botPlan.entry)} · ${describeEntryEvidence(botPlan.entry)}.`
+                      ? `Signal ready: ${botPlan.contractLabel} on ${botPlan.symbol} · ${botRuns} run${botRuns === 1 ? '' : 's'}${botConfig.maxRuns > 0 ? ' (your runs box)' : ' from the analysis'} · ${entryModeLabel(botPlan.entry)} · ${describeEntryEvidence(botPlan.entry)}${botPlan.confirmation ? ` · confirmation ${botPlan.confirmation.status} (${botPlan.confirmation.edgePts >= 0 ? '+' : ''}${botPlan.confirmation.edgePts.toFixed(1)} pts${botPlan.confirmation.decisive ? ', decisive' : ''})` : ''}.`
                       : analysisEntryMissing
                         ? 'The loaded signal has no entry from the engine analysis. Run Analysis again to plan it.'
                         : 'Run Analysis to load a signal into the bot.'}

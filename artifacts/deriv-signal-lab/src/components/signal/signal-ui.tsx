@@ -3,6 +3,8 @@
 // cross-market ranking.
 import { ArrowDownRight, ArrowUpRight, BadgeCheck, CheckCircle2, CircleDashed, Cpu, Loader2, MinusCircle, ShieldAlert, Sparkles, XCircle } from 'lucide-react';
 import type { EngineVote, SignalStrength, VoteTally } from '@/lib/signal-engine/confidence';
+import type { ConfirmationReport } from '@/lib/signal-engine/confirmation';
+import type { DigitMarketState, QuoteMarketState } from '@/lib/signal-engine/market-state';
 
 export type MarketProgressState = 'queued' | 'running' | 'done' | 'failed' | 'waiting';
 
@@ -297,6 +299,94 @@ export function MarketRankingTable({ rows, selected, onSelect, failures }: { row
       {failures && failures.length > 0 && (
         <div className="mt-2 text-[10px] text-muted-foreground">Skipped: {failures.map((failure) => `${shortMarketName(failure.name)} (${failure.message})`).join('; ')}</div>
       )}
+    </section>
+  );
+}
+
+const CONFIRMATION_TONE: Record<ConfirmationReport['status'], string> = {
+  confirmed: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500',
+  adjusted: 'border-sky-500/40 bg-sky-500/10 text-sky-500',
+  cautious: 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  contradicted: 'border-rose-500/40 bg-rose-500/10 text-rose-500',
+};
+
+/** Layer 1: every analysis engine, by its own measured work. */
+export function AnalysisEnginePanel({
+  state,
+  marketName,
+}: {
+  state: DigitMarketState | QuoteMarketState;
+  marketName: string;
+}) {
+  const significant = state.engines.filter((engine) => engine.strength > 0 || (engine.pValue !== null && engine.pValue < 0.05));
+  return (
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="analysis-engines-panel">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="eyebrow flex items-center gap-1.5"><Cpu size={12} /> Layer 1 · analysis engines</div>
+          <h3 className="mt-1 text-sm font-bold">{state.engines.length} engines measured {shortMarketName(marketName)}</h3>
+        </div>
+        <span className="rounded-full border border-border bg-background/50 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.1em]">{state.regime}</span>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Predictability</div><div className="mono mt-1 text-sm font-bold">{formatPercent(state.predictability, 0)}</div></div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Analysis confidence</div><div className="mono mt-1 text-sm font-bold">{formatPercent(state.confidence, 0)}</div></div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Significant tests</div><div className="mono mt-1 text-sm font-bold">{significant.length}/{state.engines.length}</div></div>
+      </div>
+      <p className="mt-3 rounded-lg border border-border bg-background/30 px-3 py-2 text-[11px] leading-relaxed text-foreground/80">{state.summary}</p>
+      <div className="mt-3 divide-y divide-border/60">
+        {state.engines.map((engine) => (
+          <div key={engine.id} className="py-2" data-testid={`analysis-engine-${engine.id}`}>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div className="text-xs font-semibold">{engine.label}</div>
+              <div className={`text-[10px] font-bold uppercase ${engine.strength > 0 ? 'text-primary' : 'text-muted-foreground'}`}>
+                {engine.pValue === null ? 'descriptive' : `p ${engine.pValue.toFixed(4)}`}
+              </div>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{engine.verdict}</div>
+            <div className="mt-1 flex items-center gap-2">
+              <div className="h-1 w-24 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary/70" style={{ width: `${Math.round(engine.strength * 100)}%` }} /></div>
+              <span className="text-[9px] text-muted-foreground">strength {formatPercent(engine.strength, 0)} · sample {engine.sample}</span>
+            </div>
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Calculation detail</summary>
+              <p className="mono mt-1 text-[10px] leading-relaxed text-muted-foreground">{engine.detail}</p>
+            </details>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">The analysis layer only measures structure; it does not vote on a contract. Its validated prior is handed to the confirmation layer, which may move a probability by at most a couple of points.</p>
+    </section>
+  );
+}
+
+/** Layer 3: the calculation + AI confirmation of a prediction. */
+export function ConfirmationPanel({ report }: { report: ConfirmationReport }) {
+  return (
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="confirmation-panel">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="eyebrow flex items-center gap-1.5"><Sparkles size={12} /> Layer 3 · calculation + AI confirmation</div>
+          <h3 className="mt-1 text-sm font-bold">Does the edge survive out of sample?</h3>
+        </div>
+        <span className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.1em] ${CONFIRMATION_TONE[report.status]}`} data-testid="confirmation-status">
+          {report.status}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Probability</div><div className="mono mt-1 text-sm font-bold">{formatPercent(report.probabilityBefore)} → {formatPercent(report.probability)}</div></div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Confirmed edge</div><div className="mono mt-1 text-sm font-bold">{report.edgePts >= 0 ? '+' : ''}{report.edgePts.toFixed(1)} pts</div></div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Calibration</div><div className="mono mt-1 text-sm font-bold">{report.calibration.method === 'none' ? 'kept raw' : report.calibration.method}</div></div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Decisive</div><div className={`mono mt-1 text-sm font-bold ${report.decisive ? 'text-emerald-500' : 'text-amber-500'}`}>{report.decisive ? 'yes' : 'not yet'}</div></div>
+      </div>
+      <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3">
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><span className="text-muted-foreground">Brier skill</span> <span className="mono font-semibold">{report.calibration.skill === null ? '—' : `${report.calibration.skill >= 0 ? '+' : ''}${(report.calibration.skill * 100).toFixed(1)}%`}</span><div className="text-[9px] text-muted-foreground">{report.calibration.evaluationSample} unseen rows</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><span className="text-muted-foreground">AI stack</span> <span className="mono font-semibold">{report.ai.stackSkill === null ? '—' : `${report.ai.stackSkill >= 0 ? '+' : ''}${(report.ai.stackSkill * 100).toFixed(1)}%`}</span><div className="text-[9px] text-muted-foreground">{report.ai.agreement > 0 ? 'agrees with the engines' : report.ai.agreement < 0 ? 'opposes the engines' : 'neutral'}</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><span className="text-muted-foreground">Analysis check</span> <span className="mono font-semibold">{report.state.agreement > 0 ? 'supports' : report.state.agreement < 0 ? 'opposes' : 'neutral'}</span><div className="text-[9px] text-muted-foreground">{report.state.regime} · {formatPercent(report.state.predictability, 0)} predictability</div></div>
+      </div>
+      <ul className="mt-3 space-y-1 text-[11px] leading-relaxed text-muted-foreground">
+        {report.reasons.map((reason) => <li key={reason}>• {reason}</li>)}
+      </ul>
     </section>
   );
 }

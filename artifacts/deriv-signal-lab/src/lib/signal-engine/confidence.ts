@@ -51,6 +51,21 @@ export type BacktestSummary = {
   effectiveSample: number;
 };
 
+export type ConfirmationStatus = 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
+
+/** What the calculation + AI confirmation layer measured for this signal. */
+export type ConfirmationEvidence = {
+  status: ConfirmationStatus;
+  /** Out-of-sample Brier skill of the calibration (0.05 = 5% better than raw). */
+  calibrationSkill: number | null;
+  /** −1 the analysis opposes the trade, +1 supports it, 0 no measured opinion. */
+  stateAgreement: number;
+  /** 0–1 strength of the measured market structure. */
+  statePredictability: number;
+  /** Probability points the confirmation layer added or removed. */
+  adjustmentPts: number;
+};
+
 export type ConfidenceBreakdown = {
   agreement: number;
   edge: number;
@@ -58,6 +73,8 @@ export type ConfidenceBreakdown = {
   validation: number;
   quality: number;
   verified: boolean;
+  /** Contribution of the confirmation layer (0 when none was supplied). */
+  confirmation: number;
 };
 
 export type ConfidenceInput = {
@@ -76,6 +93,12 @@ export type ConfidenceInput = {
   selectionPool?: number;
   /** True only when the strict research gates also passed. */
   verified?: boolean;
+  /**
+   * Evidence from the calibration/AI confirmation layer. Only supplied when a
+   * real out-of-sample calibration and analysis check were run; when absent the
+   * score is identical to the original calibrated formula.
+   */
+  confirmation?: ConfirmationEvidence | null;
 };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -89,10 +112,17 @@ export function selectionPenalty(pool: number): number {
 
 /**
  * Shrinkage applied to model edges: estimates are trusted in proportion to the
- * consensus's out-of-sample skill (0.3 with no skill, 1 with clear skill).
+ * consensus's out-of-sample skill (0.3 with no skill, 1 with clear skill) and
+ * only once that skill is statistically distinguishable from luck. A positive
+ * Brier skill on a few dozen rows is not evidence; a positive skill whose
+ * paired z clears the noise floor is.
  */
-export function edgeShrinkage(validationSkill: number | null): number {
-  return clamp(0.3 + 25 * Math.max(0, validationSkill ?? 0), 0.3, 1);
+export function edgeShrinkage(validationSkill: number | null, validationZ: number | null = null): number {
+  const skill = Math.max(0, validationSkill ?? 0);
+  const reliability = validationZ === null || !Number.isFinite(validationZ)
+    ? (skill > 0 ? 1 : 0)
+    : clamp((validationZ - 1) / 1.5, 0, 1);
+  return clamp(0.3 + 25 * skill * reliability, 0.3, 1);
 }
 
 export function tallyVotes(votes: readonly EngineVote[]): VoteTally {
@@ -148,13 +178,24 @@ export function confidenceScore(input: ConfidenceInput): { confidence: number; b
     : 0;
   const validation = input.validationSkill === null || !Number.isFinite(input.validationSkill) ? 0 : Math.tanh(25 * input.validationSkill);
   const quality = clamp(Number.isFinite(input.dataQuality) ? input.dataQuality : 0, 0, 1);
-  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation;
+  // Confirmation only counts when it was actually measured: a calibration that
+  // beat its raw probability out of sample, and/or a validated analysis prior
+  // that agrees (or disagrees) with the trade.
+  const confirmationSkill = input.confirmation?.calibrationSkill;
+  const calibrationTerm = confirmationSkill === null || confirmationSkill === undefined || !Number.isFinite(confirmationSkill)
+    ? 0
+    : Math.tanh(20 * confirmationSkill);
+  const stateTerm = input.confirmation
+    ? clamp(input.confirmation.stateAgreement, -1, 1) * clamp(input.confirmation.statePredictability, 0, 1)
+    : 0;
+  const confirmation = 0.07 * calibrationTerm + 0.05 * stateTerm;
+  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation;
   let confidence = 50 + 50 * raw * quality;
   // Passing every strict held-out research gate is rare and meaningful.
   if (input.verified) confidence += 8;
   return {
     confidence: Math.round(clamp(confidence, 1, 99)),
-    breakdown: { agreement, edge, backtest, validation, quality, verified: Boolean(input.verified) },
+    breakdown: { agreement, edge, backtest, validation, quality, verified: Boolean(input.verified), confirmation },
   };
 }
 
@@ -167,6 +208,21 @@ export function strengthOf(confidence: number, tally: VoteTally, backtest: Backt
   if (confidence >= 70 && tally.weightedAgreement >= 0.6 && backtestOk) return 'STRONG';
   if (confidence >= 55 && tally.agreeing > tally.against) return 'MODERATE';
   return 'WEAK';
+}
+
+/**
+ * STRONG is a promise that the evidence survived out of sample. If the
+ * confirmation layer could not call the same signal decisive — or it actively
+ * contradicts it — the label is capped at MODERATE even when the confidence
+ * score is high.
+ */
+export function strengthWithConfirmation(
+  base: SignalStrength,
+  confirmation: { status: string; decisive: boolean } | null | undefined,
+): SignalStrength {
+  if (base !== 'STRONG' || !confirmation) return base;
+  if (!confirmation.decisive || confirmation.status === 'contradicted') return 'MODERATE';
+  return base;
 }
 
 /** One plain-language sentence explaining what drives (or limits) a signal. */

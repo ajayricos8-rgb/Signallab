@@ -10,11 +10,14 @@
 // replayed on a later held-out slice (backtest) before the live vote.
 import { analyzeRiseFall, type MarketTick, type RiseFallAnalysis } from '../rise-fall-analysis.ts';
 import {
-  confidenceScore, strengthOf, summarizeBacktest, tallyVotes,
+  confidenceScore, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
 import { familyBalancedWeights } from './consensus.ts';
 import { analyzeQuoteEntry, type EntryPlan } from './entry.ts';
+import { analyzeQuoteState, type QuoteMarketState } from './market-state.ts';
+import { pairedImprovementZ } from './stats.ts';
+import { confirmRiseFall, type ConfirmationReport, type QuoteConfirmationRow } from './confirmation.ts';
 
 export type RiseFallDirection = 'RISE' | 'FALL';
 export type RiseFallHorizon = { unit: 'ticks' | 'minutes'; value: number };
@@ -74,12 +77,23 @@ export type RiseFallHorizonSignal = {
   tally: VoteTally;
   backtest: BacktestSummary;
   validationSkill: number | null;
+  /** Paired z-score of that skill against the fair-rate baseline. */
+  validationZ: number | null;
   confidence: number;
   breakdown: ConfidenceBreakdown;
   strength: SignalStrength;
   historical: { sample: number; rise: number; fall: number; unchanged: number };
   /** When and at what price this signal should be traded. */
   entry: EntryPlan;
+  /**
+   * Layer 1 (analysis engines) and layer 3 (out-of-sample confirmation) behind
+   * this duration. Exposed so the tools can show every engine by its own work.
+   */
+  deep: {
+    /** The market-level analysis state lives once on the result; each duration
+     * carries only its own confirmation report. */
+    confirmation: ConfirmationReport;
+  };
 };
 
 export type RiseFallMarketAnalysis = {
@@ -95,6 +109,10 @@ export type RiseFallMarketAnalysis = {
   best: RiseFallHorizonSignal;
   horizons: RiseFallHorizonSignal[];
   analysis: RiseFallAnalysis;
+  /** Layer 1: the full analysis-engine panel for this market. */
+  state: QuoteMarketState;
+  /** Number of analysis engines that ran (separate from the 14 prediction engines). */
+  analysisEngineCount: number;
   notes: string[];
   durationMs: number;
 };
@@ -388,6 +406,9 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const epochs = ticks.map((tick) => tick.epoch);
   const n = ticks.length;
   const horizons = resolveRiseFallHorizons(input.horizons);
+  // Layer 1 runs once per market: the analysis engines measure structure, then
+  // every duration's prediction engines and confirmation model build on it.
+  const state = analyzeQuoteState(prices, epochs);
   onProgress?.(0.02, 'Replaying 12 indicator engines over recent history');
 
   // 1. Replay every state engine at past origins (no look-ahead: each origin
@@ -484,10 +505,13 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const firedRows: { rise: typeof setC; fall: typeof setC } = { rise: [], fall: [] };
     const independentHoldoutOrigins = new Set(selectNonOverlappingOutcomes(setC).map((row) => row.origin));
     const wins = { rise: 0, fall: 0 };
+    const calibrationRows: QuoteConfirmationRow[] = [];
     let flats = 0;
     let aiLoss = 0;
     let fairLoss = 0;
     let aiRows = 0;
+    const aiErrors: number[] = [];
+    const fairErrors: number[] = [];
     for (const row of setC) {
       if (row.label === 0) flats += 1;
       const scores = withAi(row.scores);
@@ -500,7 +524,10 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         const y = row.label === 1 ? 1 : 0;
         aiLoss += (p - y) ** 2;
         fairLoss += 0.25;
+        aiErrors.push((p - y) ** 2);
+        fairErrors.push(0.25);
         aiRows += 1;
+        calibrationRows.push({ ai: p, score, won: (row.label === 1 ? 1 : 0) as 0 | 1 });
       }
     }
     const flatRate = setC.length ? flats / setC.length : 0;
@@ -512,38 +539,79 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const reliability = clamp(independentOutcomes / 40, 0, 1);
     const rawSkill = aiRows >= 30 && fairLoss > 0 ? 1 - aiLoss / fairLoss : null;
     const validationSkill = rawSkill === null ? null : rawSkill * reliability;
+    // The same paired test the calibration uses: is the meta-model's per-row
+    // Brier loss actually lower than the coin-flip baseline? Without this a
+    // thin positive skill on a random walk would be trusted at face value.
+    const validationZ = aiErrors.length >= 30 ? pairedImprovementZ(fairErrors, aiErrors) : null;
 
-    // 6. Live vote. Family budgets prevent correlated indicators from
-    // outvoting independent evidence just because that family has more models.
+    // 6. Live vote, then layer 3 confirmation. Family budgets prevent
+    //    correlated indicators from outvoting independent evidence just
+    //    because that family has more models.
     const liveScores = withAi([...liveState, liveDrift]);
     const liveConsensus = consensus(liveScores);
     const consensusScore = liveConsensus.score;
-    const directionSign = consensusScore !== 0 ? sign(consensusScore) : sign(liveAnalysis.trendScore) || 1;
-    const direction: RiseFallDirection = directionSign > 0 ? 'RISE' : 'FALL';
-    const votes: EngineVote[] = RISE_FALL_ENGINES.map((engine, index) => {
+    const consensusDirection = (consensusScore !== 0 ? sign(consensusScore) : sign(liveAnalysis.trendScore) || 1) as 1 | -1;
+    const aiProbability = liveScores[AI_INDEX] === null ? null : 0.5 + (liveScores[AI_INDEX] as number) / 2;
+    // Trust the raw AI probability only as far as its meta-model validated on
+    // independent held-out outcomes. This is the same shrinkage the prediction
+    // layer has always applied; confirmation can then adjust the shrunk number,
+    // but it cannot reintroduce an unvalidated edge.
+    const validationReliability = validationZ === null
+      ? (validationSkill !== null && validationSkill > 0 ? 1 : 0)
+      : clamp((validationZ - 1) / 1.5, 0, 1);
+    const aiTrust = clamp(25 * Math.max(0, validationSkill ?? 0), 0, 1) * validationReliability;
+    const aiForConfirmation =
+      aiProbability === null ? null : 0.5 + aiTrust * (aiProbability - 0.5);
+    const buildVotes = (directionForVotes: 1 | -1): EngineVote[] => RISE_FALL_ENGINES.map((engine, index) => {
       const score = liveScores[index];
-      const vote = score === null ? 'abstain' : Math.abs(score) <= VOTE_THRESHOLD ? 'neutral' : sign(score) === directionSign ? 'agree' : 'against';
+      const vote = score === null ? 'abstain' : Math.abs(score) <= VOTE_THRESHOLD ? 'neutral' : sign(score) === directionForVotes ? 'agree' : 'against';
       const measured = accuracy[index];
       return {
         id: engine.id, label: engine.label, family: engine.family, vote,
-        value: score === null ? null : score * directionSign,
+        value: score === null ? null : score * directionForVotes,
         weight: score === null ? 0 : liveConsensus.weights[index],
         skill: measured.rate === null ? null : measured.rate - 0.5,
         note: measured.rate === null ? 'Too few validation outcomes to measure accuracy' : `Validation accuracy ${(measured.rate * 100).toFixed(1)}% on ${measured.total} outcomes`,
       };
     });
-    const tally = tallyVotes(votes);
-    const aiProbability = liveScores[AI_INDEX] === null ? null : 0.5 + (liveScores[AI_INDEX] as number) / 2;
+    const provisionalVotes = buildVotes(consensusDirection);
+    const provisionalTally = tallyVotes(provisionalVotes);
+    const provisionalSide = consensusDirection > 0 ? 'rise' : 'fall';
+    const provisionalCalls = countNonOverlappingOutcomes(firedRows[provisionalSide]);
+    const provisionalBacktest = summarizeBacktest(wins[provisionalSide], fired[provisionalSide], fair, provisionalCalls);
+
+    // Confirmation: calibrate the AI probability on held-out, non-overlapping
+    // outcomes, try a logistic stack, and let the validated analysis prior move
+    // the result by at most two points. Direction is only overridden by a
+    // validated model that disagrees materially.
+    const confirmation = confirmRiseFall({
+      aiProbability: aiForConfirmation,
+      holdout: calibrationRows,
+      consensusDirection,
+      consensusScore,
+      state,
+      tally: provisionalTally,
+      backtest: provisionalBacktest,
+      validationSkill,
+      flatRate,
+      selectionPool: horizons.length * Math.max(1, input.marketsInScan ?? 1),
+    });
+    const directionSign = confirmation.direction;
+    const direction: RiseFallDirection = directionSign > 0 ? 'RISE' : 'FALL';
+    const votes = directionSign === consensusDirection ? provisionalVotes : buildVotes(directionSign);
+    const tally = directionSign === consensusDirection ? provisionalTally : tallyVotes(votes);
+    const aiForDirection = aiProbability === null ? null : directionSign > 0 ? aiProbability : 1 - aiProbability;
+    const winEstimate = confirmation.winProbability;
     const side = direction === 'RISE' ? 'rise' : 'fall';
     const independentCalls = countNonOverlappingOutcomes(firedRows[side]);
     const backtest = summarizeBacktest(wins[side], fired[side], fair, independentCalls);
+    // If confirmation flipped the direction, keep the report's engine counts in
+    // step with the direction it actually chose.
+    if (directionSign !== consensusDirection) {
+      confirmation.engines = { agreeing: tally.agreeing, total: tally.total, weightedAgreement: tally.weightedAgreement };
+      confirmation.decisive = confirmation.decisive && backtest.sample >= 10;
+    }
     const horizonQuality = quality * clamp(0.6 + 0.4 * reliability, 0.6, 1);
-    // Indicator alignment is not an edge by itself (trend tools agree whenever a
-    // random path drifts). The edge comes from the AI meta-model's probability
-    // for this direction, trusted only as far as it validated out of sample.
-    const aiForDirection = aiProbability === null ? null : direction === 'RISE' ? aiProbability : 1 - aiProbability;
-    const trust = clamp(25 * Math.max(0, validationSkill ?? 0), 0, 1);
-    const winEstimate = aiForDirection === null ? fair : fair + trust * (aiForDirection - 0.5);
     const { confidence, breakdown } = confidenceScore({
       weightedAgreement: tally.weightedAgreement,
       edgeRatio: (winEstimate - fair) / 0.5,
@@ -551,6 +619,13 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       validationSkill,
       dataQuality: horizonQuality,
       selectionPool: horizons.length * Math.max(1, input.marketsInScan ?? 1),
+      confirmation: {
+        status: confirmation.status,
+        calibrationSkill: confirmation.calibration.skill,
+        stateAgreement: confirmation.state.agreement,
+        statePredictability: state.predictability,
+        adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
+      },
     });
     const recent = { sample: 0, rise: 0, fall: 0, unchanged: 0 };
     // Report the latest 500 completed outcomes (not 500 start ticks) so the
@@ -564,8 +639,8 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // 7. Entry timing: replay the same fired signals for the price level and
     //    the wait a trade should use, instead of buying at the signal tick.
     //    The analysis's own numbers (engine agreement, the AI probability for
-    //    this direction, the its win estimate against the no-edge rate) travel
-    //    with the entry as its evidence.
+    //    this direction, the confirmed win estimate against the no-edge rate)
+    //    travel with the entry as its evidence.
     const entry = analyzeQuoteEntry({
       prices,
       epochs,
@@ -584,11 +659,17 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         total: tally.total,
         probability: winEstimate,
         aiProbability: aiForDirection,
+        confirmation: { status: confirmation.status, edgePts: confirmation.edgePts, decisive: confirmation.decisive },
       },
     });
+    // A label is a claim: without a material edge the call is WEAK, however
+    // much confidence the evidence score accumulated.
+    const labelled = strengthWithConfirmation(strengthOf(confidence, tally, backtest), confirmation);
+    const strength = winEstimate - fair < Math.max(0.005, 0.01 * fair) ? 'WEAK' : labelled;
     return {
-      horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill,
-      confidence, breakdown, strength: strengthOf(confidence, tally, backtest), historical: recent, entry,
+      horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
+      confidence, breakdown, strength, historical: recent, entry,
+      deep: { confirmation },
     };
   });
 
@@ -596,11 +677,16 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const notes: string[] = [];
   if (!input.fresh) notes.push('Live tick freshness was not confirmed; confidence is reduced.');
   if (n < 1_500) notes.push(`Only ${n} ticks of history; longer minute durations have little validation data.`);
+  notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
+  const best = signals[0];
+  if (best?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best duration; treat it as a contradicted call, not a verified edge.');
+  else if (best?.deep.confirmation.status === 'confirmed') notes.push(`Confirmation layer: ${best.deep.confirmation.reasons.at(-1)}`);
   onProgress?.(1, 'Signal ready');
   return {
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
     lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
-    engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis, notes,
+    engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
+    state, analysisEngineCount: state.engines.length, notes,
     durationMs: Date.now() - started,
   };
 }

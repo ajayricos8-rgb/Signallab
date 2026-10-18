@@ -17,7 +17,7 @@ import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import {
-  AnalysisProgressPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
+  AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
 } from '@/components/signal/signal-ui';
 
 const ALL_MARKETS = 'all';
@@ -285,6 +285,11 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
+        confirmation: {
+          status: signal.deep.confirmation.status,
+          edgePts: signal.deep.confirmation.edgePts,
+          decisive: signal.deep.confirmation.decisive,
+        },
       }
     : null;
   const tradeEntry = markets.find((entry) => entry.symbol === (tradeMarket ?? detailSymbol));
@@ -325,7 +330,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid={`${family}-analysis`}>
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div><div className="eyebrow">{details.eyebrow} · 12-engine cross-market scan</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{details.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{details.description}</p></div>
+        <div><div className="eyebrow">{details.eyebrow} · {ENGINE_COUNT} prediction engines + analysis layer</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{details.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{details.description}</p></div>
         <FeedStatusBadge feed={feed} />
       </div>
 
@@ -356,7 +361,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         </div>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
           <span>{feed.loadedCount}/{markets.length} markets loaded</span>
-          <span>{ENGINE_COUNT} engines per market, run in parallel</span>
+          <span>{ENGINE_COUNT} prediction engines + {scan.run?.results[0]?.analysisEngineCount ?? 9} analysis engines per market, run in parallel</span>
           <span>{feed.usingTestAppId ? 'Deriv test app ID' : 'Configured Deriv app ID'}</span>
           {run && <span>Last scan {new Date(run.ranAt).toLocaleTimeString()} · {run.marketsScanned} markets · {(run.durationMs / 1000).toFixed(1)}s</span>}
         </div>
@@ -387,7 +392,8 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
               now={feed.now}
               notes={selectedResult.notes}
               metrics={[
-                { label: 'Win chance', value: formatPercent(signal.probability), hint: 'Consensus probability after out-of-sample shrinkage' },
+                { label: 'Win chance', value: formatPercent(signal.probability), hint: 'Confirmed probability after out-of-sample calibration, stacking and the analysis check' },
+                { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
                 { label: 'Fair odds', value: formatPercent(signal.fairProbability, 0), hint: 'Win probability with uniformly random digits' },
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: 'Held-out ticks where the engines favoured this contract: win rate and number of calls' },
                 { label: 'History', value: signal.history?.rate == null ? '—' : `${formatPercent(signal.history.rate)}`, hint: signal.history ? `${signal.history.hits}/${signal.history.sample} ${signal.history.context}` : undefined },
@@ -404,6 +410,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
               ]}
               onUse={() => { setTradeMarket(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
             />
+            <ConfirmationPanel report={signal.deep.confirmation} />
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}
@@ -425,6 +432,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
           </div>
           <div className="space-y-4">
             <EngineVotesPanel votes={signal.votes} title={`Why ${signal.label} on ${shortMarketName(selectedResult.name)}`} valueKind="probability" fair={signal.fairProbability} />
+            <AnalysisEnginePanel state={selectedResult.state} marketName={selectedResult.name} />
             <ContractTable result={selectedResult} />
           </div>
         </section>

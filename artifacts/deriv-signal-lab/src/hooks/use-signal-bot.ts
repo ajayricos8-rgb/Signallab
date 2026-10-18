@@ -69,6 +69,8 @@ export type SignalBotPlan = {
   /** When and at what price the analysis says this signal should be traded. */
   entry: EntryPlan;
   ranAt: number;
+  /** Confirmation-layer verdict for this signal, for the bot page. */
+  confirmation?: { status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted'; edgePts: number; decisive: boolean } | null;
 };
 
 export type SignalBotController = {
@@ -98,7 +100,7 @@ type Waiter = {
 };
 
 type EntryWaitResult = {
-  status: 'ready' | 'expired' | 'cancelled';
+  status: 'ready' | 'expired' | 'missed' | 'cancelled';
   waitedTicks: number;
   waitedMs: number;
   note: string;
@@ -106,6 +108,10 @@ type EntryWaitResult = {
 
 const PAUSE_BETWEEN_RUNS_MS = 600;
 const ENTRY_POLL_MS = 250;
+/** A quote older than this cannot trigger an entry (seconds). */
+const ENTRY_STALE_AFTER_MS = 5_000;
+/** An analysis older than this must be re-run before the bot trades it. */
+const MAX_ANALYSIS_AGE_MS = 15 * 60_000;
 const UNKNOWN_RESULT = 'Deriv did not report a result for this contract.';
 
 function errorText(error: unknown): string {
@@ -273,6 +279,24 @@ export function useSignalBot(): SignalBotController {
         const entry = marketEntry(context.symbol);
         const latest = entry?.ticks.at(-1) ?? null;
         const elapsedTicks = ticksSince(entry?.ticks ?? [], context.armedAtEpoch);
+        // A stale quote is not a live trigger. Waiting on the last known print
+        // would enter at a level the market may have left long ago, so the bot
+        // holds its fire until the feed proves the price again.
+        if (entry && entry.receiveAgeMs !== null && Math.abs(entry.receiveAgeMs) > ENTRY_STALE_AFTER_MS) {
+          update(
+            {
+              status: 'waiting',
+              reason: `Waiting for a fresh tick — the last quote is ${(Math.abs(entry.receiveAgeMs) / 1_000).toFixed(1)}s old.`,
+              distance: null,
+              elapsedTicks,
+              remainingTicks: Math.max(0, decision.entry.windowTicks - elapsedTicks),
+              remainingMs: Math.max(0, decision.deadline - Date.now()),
+            },
+            latest?.quote ?? null,
+          );
+          await sleep(ENTRY_POLL_MS);
+          continue;
+        }
         const evaluation = evaluateEntry(
           decision.entry,
           { quote: latest?.quote ?? null, digit: latest?.digit ?? null, epoch: latest?.epoch ?? null },
@@ -286,9 +310,9 @@ export function useSignalBot(): SignalBotController {
             waitedMs: Date.now() - armedAt,
             note: evaluation.reason,
           };
-        if (evaluation.status === 'expired')
+        if (evaluation.status === 'expired' || evaluation.status === 'missed')
           return {
-            status: 'expired',
+            status: evaluation.status,
             waitedTicks: elapsedTicks,
             waitedMs: Date.now() - armedAt,
             note: evaluation.reason,
@@ -326,6 +350,15 @@ export function useSignalBot(): SignalBotController {
         setStatus('error');
         setStopReason('error');
         setError('This signal carries no entry from the engine analysis. Run Analysis again, then Load and Run.');
+        return;
+      }
+      // An analysis is a snapshot: its measured level and window age with the
+      // market. The bot refuses to trade numbers that old instead of silently
+      // re-using them.
+      if (Number.isFinite(nextPlan.ranAt) && nextPlan.ranAt > 0 && Date.now() - nextPlan.ranAt > MAX_ANALYSIS_AGE_MS) {
+        setStatus('error');
+        setStopReason('error');
+        setError(`This analysis is ${Math.round((Date.now() - nextPlan.ranAt) / 60_000)} minutes old. Run Analysis again so the bot trades a current entry.`);
         return;
       }
       const config = sanitizeSignalBotConfig(rawConfig);
@@ -423,7 +456,7 @@ export function useSignalBot(): SignalBotController {
             // Stopped or reset mid-wait: the run never bought anything.
             return;
           }
-          if (entryOutcome.status === 'expired' && entryDecision.fallback === 'skip') {
+          if ((entryOutcome.status === 'expired' || entryOutcome.status === 'missed') && entryDecision.fallback === 'skip') {
             setRuns((current) =>
               current.map((run) =>
                 run.index === index && run.status === 'waiting'
@@ -432,7 +465,7 @@ export function useSignalBot(): SignalBotController {
                       status: 'skipped',
                       settledAt: Date.now(),
                       entryTicks: entryOutcome.waitedTicks,
-                      note: describeEntryOutcome({ status: 'expired', waitedTicks: entryOutcome.waitedTicks, fallback: 'skip' }),
+                      note: describeEntryOutcome({ status: entryOutcome.status as 'expired' | 'missed', waitedTicks: entryOutcome.waitedTicks, fallback: 'skip' }),
                     }
                   : run,
               ),
@@ -443,12 +476,37 @@ export function useSignalBot(): SignalBotController {
             continue;
           }
           if (generation !== generationRef.current) return;
-
+          const resolvedStatus = entryOutcome.status;
           const entryNote = describeEntryOutcome({
-            status: entryOutcome.status,
+            status: resolvedStatus,
             waitedTicks: entryOutcome.waitedTicks,
             fallback: entryDecision.fallback,
           });
+
+          // The feed can die between the trigger and the purchase. Buying on a
+          // quote the platform can no longer verify is worse than missing the
+          // run, so the run is failed without a contract.
+          const freshEntry = marketEntry(nextPlan.symbol);
+          const freshTick = freshEntry?.ticks.at(-1) ?? null;
+          if (freshEntry && freshEntry.receiveAgeMs !== null && Math.abs(freshEntry.receiveAgeMs) > ENTRY_STALE_AFTER_MS) {
+            setRuns((current) =>
+              current.map((run) =>
+                run.index === index && run.status === 'waiting'
+                  ? {
+                      ...run,
+                      status: 'failed',
+                      settledAt: Date.now(),
+                      entryTicks: entryOutcome.waitedTicks,
+                      note: 'The live feed went stale before the order, so no contract was bought. Run Analysis again.',
+                    }
+                  : run,
+              ),
+            );
+            setEntryWatch(null);
+            await sleep(PAUSE_BETWEEN_RUNS_MS);
+            if (generation !== generationRef.current) return;
+            continue;
+          }
 
           // 3. Buy the signal at the entry the analysis planned.
           let contractId: number | null = null;

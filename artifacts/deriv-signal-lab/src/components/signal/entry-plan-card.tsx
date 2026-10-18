@@ -142,6 +142,20 @@ export function EntryPlanCard({
             ? `${entry.sample} replayed signal${entry.sample === 1 ? '' : 's'}${entry.edgeGainPts !== null ? ` · ${entry.edgeGainPts >= 0 ? '+' : ''}${entry.edgeGainPts.toFixed(1)} pts vs buying at the signal` : ''}`
             : 'not enough replayed signals to measure timing'}
         </span>
+        {entry.validation && (
+          <span className="inline-flex items-center gap-1" data-testid="entry-validation">
+            <Crosshair size={11} />
+            {entry.validation.phase === 'out-of-sample'
+              ? `out-of-sample check: ${entry.validation.passed ? 'confirmed' : 'not confirmed'} on ${entry.validation.sample} newer signals`
+              : `in-sample only (${entry.validation.sample} signals — too few to hold out a validation slice)`}
+          </span>
+        )}
+        {entry.tolerance !== null && (
+          <span className="inline-flex items-center gap-1" data-testid="entry-tolerance">
+            <Timer size={11} />
+            no-chase band {formatPrice(entry.tolerance)} past the level
+          </span>
+        )}
         <span className="inline-flex items-center gap-1">
           <Clock3 size={11} />
           planned {ago}
@@ -154,7 +168,7 @@ export function EntryPlanCard({
       <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
         {entry.mode === 'immediate'
           ? 'The analysis measured no timing edge from this signal, so Load and Run enters at the signal price: there is no level to wait for and nothing is guessed.'
-          : 'Load and Run arms every run on this entry: it waits for the trigger, buys the contract when it fires, and if the window closes first it follows the trade menu setting for a missed entry (enter at the signal price, as the replay scored it, or skip the run).'}
+          : 'Load and Run arms every run on this entry: it waits for the trigger and buys the contract when it fires. If the window closes first, or the quote gaps more than the measured no-chase band, it follows the trade menu setting for a missed entry (enter at the market price the replay scored, or skip the run) instead of chasing a worse price.'}
       </p>
     </article>
   );

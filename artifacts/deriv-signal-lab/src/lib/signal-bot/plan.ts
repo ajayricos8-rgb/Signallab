@@ -296,19 +296,19 @@ export function describeStopReason(reason: SignalBotStopReason): string {
  */
 export function describeEntryWatch(watch: {
   label: string;
-  status: 'waiting' | 'ready' | 'expired';
+  status: 'waiting' | 'ready' | 'expired' | 'missed';
   reason: string;
   elapsedTicks: number;
   remainingTicks: number;
 }): string {
   if (watch.status === 'ready') return `${watch.label} met — buying now.`;
-  if (watch.status === 'expired') return `${watch.label}: ${watch.reason}`;
+  if (watch.status === 'expired' || watch.status === 'missed') return `${watch.label}: ${watch.reason}`;
   return `${watch.label}: ${watch.reason} Waited ${watch.elapsedTicks} tick${watch.elapsedTicks === 1 ? '' : 's'}, ${watch.remainingTicks} left.`;
 }
 
 /** Line describing how the run's entry finally resolved, for the run log. */
 export function describeEntryOutcome(input: {
-  status: 'ready' | 'expired';
+  status: 'ready' | 'expired' | 'missed';
   waitedTicks: number;
   fallback: 'market' | 'skip';
 }): string {
@@ -316,7 +316,10 @@ export function describeEntryOutcome(input: {
     return input.waitedTicks > 0
       ? `Entered on the analysis entry after ${input.waitedTicks} tick${input.waitedTicks === 1 ? '' : 's'}.`
       : 'Entered on the analysis entry.';
+  const why = input.status === 'missed'
+    ? 'The quote gapped past the entry level, so the exact entry the replay measured was missed'
+    : 'Entry window closed';
   return input.fallback === 'skip'
-    ? 'Entry window closed — run skipped because the Entry setting says not to chase it.'
-    : 'Entry window closed — entered at the market price instead.';
+    ? `${why} — run skipped because the Entry setting says not to chase it.`
+    : `${why} — entered at the market price instead.`;
 }

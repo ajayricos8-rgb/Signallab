@@ -21,9 +21,12 @@ import type { Forecast } from '../over-under/features.ts';
 import { familyBalancedWeights } from './consensus.ts';
 import { analyzeDigitEntry, type EntryPlan } from './entry.ts';
 import {
-  confidenceScore, edgeShrinkage, strengthOf, summarizeBacktest, tallyVotes,
+  confidenceScore, edgeShrinkage, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
+import { analyzeDigitState, type DigitMarketState } from './market-state.ts';
+import { confirmDigitContract, type ConfirmationReport } from './confirmation.ts';
+import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
 
 export type DigitSignalFamily = 'over-under' | 'even-odd' | 'matches';
 export type DigitTick = { epoch: number; digit: number };
@@ -55,6 +58,8 @@ export type DigitContractSignal = {
   backtest: BacktestSummary;
   /** Held-out Brier skill of the consensus versus the fair probability. */
   validationSkill: number | null;
+  /** Paired z-score of that skill against the fair-rate baseline. */
+  validationZ: number | null;
   /** All strict research gates passed for this contract. */
   verified: boolean;
   confidence: number;
@@ -64,6 +69,16 @@ export type DigitContractSignal = {
   history: { sample: number; hits: number; rate: number | null; context: string } | null;
   /** When to enter this contract: which tick context, and how long it may take. */
   entry: EntryPlan;
+  /**
+   * The two layers behind the probability: the analysis engines that measured
+   * the market and the out-of-sample confirmation that adjusted it. Exposed so
+   * the tools can show every engine by its own work instead of one opaque score.
+   */
+  deep: {
+    /** The market-level analysis state lives once on the result; each contract
+     * carries only its own confirmation report. */
+    confirmation: ConfirmationReport;
+  };
 };
 
 export type DigitMarketAnalysis = {
@@ -82,6 +97,10 @@ export type DigitMarketAnalysis = {
   best: DigitContractSignal;
   contracts: DigitContractSignal[];
   report: DigitEnsembleReport;
+  /** Layer 1: the full analysis-engine panel for this market. */
+  state: DigitMarketState;
+  /** Number of analysis engines that ran (separate from the 12 prediction engines). */
+  analysisEngineCount: number;
   notes: string[];
   durationMs: number;
 };
@@ -162,7 +181,11 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   if (ticks.length < DIGIT_SIGNAL_MIN_TICKS) throw new Error(`${input.name} has ${ticks.length} valid ticks; ${DIGIT_SIGNAL_MIN_TICKS} are needed.`);
   const observations = ticks.map((tick) => ({ symbol: input.symbol, epoch: tick.epoch, digit: tick.digit }));
   const fit = fitDigitEnsemble(observations, input.horizon, (fraction, stage) => onProgress?.(fraction * 0.93, stage));
-  onProgress?.(0.94, 'Counting engine votes and replaying held-out ticks');
+  onProgress?.(0.94, 'Measuring the market with the analysis engines');
+  // Layer 1 runs on the same validated tick stream the 12 prediction engines
+  // saw. It measures structure; it never votes on a contract by itself.
+  const state = analyzeDigitState(fit.sequence.digits);
+  onProgress?.(0.96, 'Confirming every contract out of sample');
 
   const requested = input.contracts?.length ? input.contracts : DIGIT_SIGNAL_CONTRACTS[input.family];
   const contracts = [...new Map(requested.filter((contract) => contract.family === input.family).map((contract) => [digitContractKey(contract), contract])).values()];
@@ -251,25 +274,59 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     let wins = 0;
     let modelLoss = 0;
     let fairLoss = 0;
+    const modelErrors: number[] = [];
+    const fairErrors: number[] = [];
+    const holdout: CalibrationPoint[] = [];
     for (const row of fit.checked) {
       const estimate = weighted(row.forecasts).estimate;
       const won = contractWins(contract, row.target) ? 1 : 0;
+      holdout.push({ probability: estimate, won: won as 0 | 1 });
       modelLoss += (estimate - won) ** 2;
       fairLoss += (fair - won) ** 2;
+      modelErrors.push((estimate - won) ** 2);
+      fairErrors.push((fair - won) ** 2);
       if (estimate - fair > margin) { fired += 1; wins += won; }
     }
     const validationSkill = fit.checked.length >= 30 && fairLoss > 1e-9 ? 1 - modelLoss / fairLoss : null;
+    // A positive Brier skill on overlapping or thin rows can be luck. The
+    // paired z tests the model's per-row loss against the fair-rate baseline,
+    // and only a skill that clears it is allowed to move the probability.
+    const validationZ = fit.checked.length >= 30 ? pairedImprovementZ(fairErrors, modelErrors) : null;
     const backtest = summarizeBacktest(wins, fired, fair);
     const strictScore = strictByKey.get(digitContractKey(contract));
     const verified = Boolean(strictScore?.eligible);
     // Trust the raw consensus edge only as far as it validated out of sample.
-    const shrunk = fair + edgeShrinkage(validationSkill) * (rawProbability - fair);
-    const probability = clamp(shrunk, 0.0005, 0.9995);
+    const shrunk = fair + edgeShrinkage(validationSkill, validationZ) * (rawProbability - fair);
+    const beforeConfirmation = clamp(shrunk, 0.0005, 0.9995);
+    // Layer 3: calibrate that estimate on held-out ticks, let a small logistic
+    // stack try to beat it, and fold in the validated analysis prior. Nothing
+    // can move the probability more than six points.
+    const statePriorProbability = state.prior ? digitContractProbability(state.prior, contract) : null;
+    const confirmation = confirmDigitContract({
+      contractLabel: candidateLabel(contract),
+      probability: beforeConfirmation,
+      fairRate: fair,
+      holdout,
+      state,
+      tally,
+      backtest,
+      validationSkill,
+      statePriorProbability,
+      selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
+    });
+    const probability = clamp(confirmation.probability, 0.0005, 0.9995);
     const edge = probability - fair;
     const edgeRatio = edge / deviation;
     const { confidence, breakdown } = confidenceScore({
       weightedAgreement: tally.weightedAgreement, edgeRatio, backtest, validationSkill, dataQuality: quality, verified,
       selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
+      confirmation: {
+        status: confirmation.status,
+        calibrationSkill: confirmation.calibration.skill,
+        stateAgreement: confirmation.state.agreement,
+        statePredictability: state.predictability,
+        adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
+      },
     });
     const historical = context ? evaluateHistoricalContract(observations as unknown as DigitObservation[], contract, input.horizon, context) : null;
     // Entry timing: which tick context this contract should be entered on. The
@@ -288,16 +345,22 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         total: tally.total,
         probability,
         aiProbability: rawProbability,
+        confirmation: { status: confirmation.status, edgePts: confirmation.edgePts, decisive: confirmation.decisive },
       },
     });
+    // A label is a claim: without a material edge the call is WEAK, however
+    // much confidence the evidence score accumulated.
+    const labelled = strengthWithConfirmation(strengthOf(confidence, tally, backtest), confirmation);
+    const strength = edge < Math.max(0.005, 0.01 * fair) ? 'WEAK' : labelled;
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,
-      votes, tally, backtest, validationSkill, verified, confidence, breakdown,
-      strength: strengthOf(confidence, tally, backtest), entry,
+      votes, tally, backtest, validationSkill, validationZ, verified, confidence, breakdown,
+      strength, entry,
       history: historical ? {
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,
       } : null,
+      deep: { confirmation },
     };
   }).sort((a, b) => b.confidence - a.confidence || b.edgeRatio - a.edgeRatio || contractOrder(a.contract) - contractOrder(b.contract));
 
@@ -305,11 +368,15 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   if (!input.fresh) notes.push('Live tick freshness was not confirmed; confidence is reduced.');
   if (fit.structure.status === 'shifted') notes.push('Recent digit behaviour has shifted from the training window; confidence is reduced.');
   if (fit.structure.status === 'insufficient') notes.push('Too few recent ticks to check market structure.');
+  if (state.regime === 'random') notes.push('Analysis engines: the digit stream is statistically indistinguishable from random; confirmed edges are kept small and the entry is usually immediate.');
+  else notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
+  if (signals[0]?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best contract; treat it as a contradicted call, not a verified edge.');
   onProgress?.(1, 'Signal ready');
   return {
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,
     sample: fit.sequence.digits.length, lastDigit, asOfEpoch: fit.sequence.epochs.at(-1)!, fresh: input.fresh,
     dataQuality: quality, structure: fit.structure.status, engineCount: fit.engines.length,
-    best: signals[0], contracts: signals, report, notes, durationMs: Date.now() - started,
+    best: signals[0], contracts: signals, report, state, analysisEngineCount: state.engines.length,
+    notes, durationMs: Date.now() - started,
   };
 }
