@@ -1,6 +1,10 @@
 import { useMemo, useState } from 'react';
 import { AlertTriangle, BarChart3, Clock3, Play, Radio, ShieldAlert, Square, TrendingDown, Wifi, WifiOff, Zap } from 'lucide-react';
 import { TradeDock } from '@/components/trade-dock';
+import { EngineLabPanel } from '@/components/signal/engine-lab-panel';
+import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { scopeSettlements } from '@/lib/engine-lab/execution';
+import { digitTicksOf } from '@/lib/market-feed';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 import { PriceContextPanel } from '@/components/digit-contract-tools';
@@ -172,6 +176,7 @@ function DurationTable({ result }: { result: RiseFallMarketAnalysis }) {
 }
 
 export function RiseFallTool() {
+  const trading = useDerivTrading();
   const feed = useMarketFeed();
   const scan = useSignalScan<RiseFallMarketAnalysis, RiseFallRunMeta>('rise-fall');
   const [scope, setScope] = useState<string>(ALL_MARKETS);
@@ -200,6 +205,7 @@ export function RiseFallTool() {
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
+        researchDecision: signal.researchDecision,
         confirmation: {
           status: signal.deep.confirmation.status,
           edgePts: signal.deep.confirmation.edgePts,
@@ -226,7 +232,7 @@ export function RiseFallTool() {
           if (entry.tradingSuspended === true) { skipped.push({ symbol: entry.symbol, name: entry.name, message: 'trading suspended' }); continue; }
           jobs.push({
             kind: 'rise-fall', symbol: entry.symbol, name: entry.name,
-            input: { symbol: entry.symbol, name: entry.name, ticks: entry.ticks.map(({ epoch, quote }) => ({ epoch, quote })), fresh: entry.fresh, marketsInScan: usable.length },
+            input: { symbol: entry.symbol, name: entry.name, ticks: entry.ticks.map(({ epoch, quote }) => ({ epoch, quote })), digitTicks: digitTicksOf(entry.ticks), settlements: scopeSettlements(trading.closedPositions, entry.symbol, 'rise-fall', trading.currency), settlementCurrency: trading.currency, fresh: entry.fresh, marketsInScan: usable.length },
           });
         }
         return { jobs, skipped };
@@ -242,15 +248,15 @@ export function RiseFallTool() {
     <div className="animate-rise-in space-y-5 pt-5" data-testid="rise-fall-analysis">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <div className="eyebrow">Rise/Fall · {ENGINE_COUNT} prediction engines + analysis layer</div>
+          <div className="eyebrow">Rise/Fall · {ENGINE_COUNT} base predictors · 300-entry research library</div>
           <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">Rise/Fall signals</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">Run Analysis scans every volatility market across 25 durations (1–10 ticks, 1–15 minutes). Analysis engines first measure the market regime, trend, Hurst/variance-ratio structure and volatility. The trend, swing, momentum, RSI, MACD, EMA, breadth, ROC, regression, Markov, variance-ratio and drift engines then vote, an AI meta-model learns how far to trust them per duration, and a confirmation layer calibrates the result out of sample before the entry engine times it.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">Scan every volatility market across 25 durations (1–10 ticks, 1–15 minutes). The 300-entry library measures trend, momentum, completed candles, volatility, price structure and sequence statistics. It independently audits the existing 14-model predictor with purged chronological validation, explains every reading and filters automatic entry when evidence is weak. Flat expiry loses both strict directions.</p>
         </div>
         <FeedBadge feed={feed} />
       </div>
 
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <label className="block min-w-0">
             <span className="eyebrow">Markets to scan · duration is chosen automatically</span>
             <select value={scope} onChange={(event) => setScope(event.target.value)} disabled={scan.scanning} className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary disabled:opacity-60" data-testid="rise-fall-scope-select" aria-label="Markets to scan">
@@ -271,7 +277,7 @@ export function RiseFallTool() {
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
           <span>{feed.loadedCount}/{markets.length} markets loaded</span>
           <span>{feed.freshCount} currently live</span>
-          <span>{ENGINE_COUNT} prediction engines + {scan.run?.results[0]?.analysisEngineCount ?? 11} analysis engines × 25 durations per market</span>
+          <span>{ENGINE_COUNT} base predictors · 300 registered research entries · 12-model audit across 25 durations</span>
           <span>{feed.usingTestAppId ? 'Deriv test app ID' : 'Configured Deriv app ID'}</span>
           {run && <span>Last scan {new Date(run.ranAt).toLocaleTimeString()} · {run.marketsScanned} markets · {(run.durationMs / 1000).toFixed(1)}s</span>}
         </div>
@@ -284,7 +290,7 @@ export function RiseFallTool() {
       )}
 
       {run && selectedResult && signal ? (
-        <section className={`grid gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined} data-testid="analysis-summary">
+        <section className={`grid grid-cols-1 gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined} data-testid="analysis-summary">
           <div className="space-y-4">
             <SignalCard
               eyebrow={isBest ? `Best signal · ${run.marketsScanned} markets × 25 durations` : `Signal · ${selectedResult.name}`}
@@ -353,7 +359,9 @@ export function RiseFallTool() {
         </section>
       )}
 
-      <section className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+      <EngineLabPanel report={selectedResult?.engineLab} />
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-[1.3fr_0.7fr]">
         <article className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow">Validated tick price path</div><h3 className="mt-1 text-base font-bold">{chartEntry?.name ?? 'Waiting for markets'}</h3></div><div className="text-xs text-muted-foreground">{chartEntry?.fresh ? 'Live' : 'Waiting for live ticks'} · quote {formatQuote(chartTicks.at(-1)?.quote)}</div></div>
           <PricePath ticks={chartTicks} marketName={chartEntry?.name ?? ''} />
@@ -361,7 +369,7 @@ export function RiseFallTool() {
         <HistoricalOutcomeCard marketName={chartEntry?.name ?? '—'} signal={selectedResult?.symbol === chartSymbol ? signal : null} />
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[0.8fr_1.2fr]">
         <article className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
           <div className="eyebrow">Rolling technical detail</div><h3 className="mt-1 text-base font-bold">{chartEntry?.name ?? '—'}</h3>
           <div className="mt-4 grid grid-cols-2 gap-3 text-xs">

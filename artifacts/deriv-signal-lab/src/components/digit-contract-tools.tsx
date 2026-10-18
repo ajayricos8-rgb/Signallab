@@ -13,6 +13,9 @@ import { entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { useMarketFeed, type MarketFeedEntry, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
 import { TradeDock } from '@/components/trade-dock';
+import { EngineLabPanel } from '@/components/signal/engine-lab-panel';
+import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { scopeSettlements } from '@/lib/engine-lab/execution';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
@@ -31,17 +34,17 @@ const FAMILY_DETAILS: Record<DigitFamily, { title: string; eyebrow: string; desc
   'over-under': {
     title: 'Over/Under signals',
     eyebrow: 'DIGITOVER · DIGITUNDER',
-    description: 'Run Analysis scans every volatility market with 12 engines — Markov, n-gram, hidden-Markov, frequency, entropy, streak, trend, pattern, ARIMA, GARCH, an LSTM neural network and gradient-boosted trees — and returns the strongest Over/Under barrier (1–8).',
+    description: 'Scan every volatility market for the strongest Over/Under barrier (1–8). The 12-model predictor is now audited by a 300-entry research library: strict barrier probabilities, frequency and transition models, chronological validation, transparent diagnostics and execution filters. Equality always loses.',
   },
   'even-odd': {
     title: 'Even/Odd signals',
     eyebrow: 'DIGITEVEN · DIGITODD',
-    description: 'Run Analysis scans every volatility market with the same 12 digit engines, including the LSTM and gradient-boosted models, and returns the strongest Even or Odd call. Zero counts as even.',
+    description: 'Scan every volatility market for an Even or Odd candidate. The 300-entry library adds parity frequency, runs, alternation, transitions and independent forecast validation to the existing 12-model predictor. Zero is even; price trends are context, not proof of a parity edge.',
   },
   matches: {
     title: 'Matches signals',
     eyebrow: 'DIGITMATCH',
-    description: 'Run Analysis scans every volatility market with 12 digit engines, including the LSTM and gradient-boosted models, and returns the target digit (0–9) with the strongest evidence.',
+    description: 'Find the target digit (0–9) with the strongest measured evidence. A 300-entry research library audits the existing predictor with digit distributions, recurrence, conditional probabilities and chronological tests. A missing or overdue digit is not automatically more likely.',
   },
 };
 
@@ -243,6 +246,7 @@ function LiveMarketPanel({ entry }: { entry: MarketFeedEntry | undefined }) {
 }
 
 function DigitContractTool({ family }: { family: DigitFamily }) {
+  const trading = useDerivTrading();
   const feed = useMarketFeed();
   const scan = useSignalScan<DigitMarketAnalysis, DigitRunMeta>(`digit:${family}`);
   const [scope, setScope] = useState<string>(ALL_MARKETS);
@@ -285,6 +289,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
+        researchDecision: signal.researchDecision,
         confirmation: {
           status: signal.deep.confirmation.status,
           edgePts: signal.deep.confirmation.edgePts,
@@ -315,7 +320,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
           if (entry.tradingSuspended === true) { skipped.push({ symbol: entry.symbol, name: entry.name, message: 'trading suspended' }); continue; }
           const support = contractsFor(entry, family, duration);
           if (support.skip) { skipped.push({ symbol: entry.symbol, name: entry.name, message: support.skip }); continue; }
-          jobs.push({ kind: 'digit', symbol: entry.symbol, name: entry.name, input: { family, symbol: entry.symbol, name: entry.name, horizon: duration, ticks, fresh: entry.fresh, contracts: support.contracts, marketsInScan: usable.length } });
+          jobs.push({ kind: 'digit', symbol: entry.symbol, name: entry.name, input: { family, symbol: entry.symbol, name: entry.name, horizon: duration, ticks, quoteTicks: entry.ticks.map(({ epoch, quote }) => ({ epoch, quote })), settlements: scopeSettlements(trading.closedPositions, entry.symbol, family, trading.currency), settlementCurrency: trading.currency, fresh: entry.fresh, contracts: support.contracts, marketsInScan: usable.length } });
         }
         return { jobs, skipped };
       },
@@ -330,12 +335,12 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid={`${family}-analysis`}>
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div><div className="eyebrow">{details.eyebrow} · {ENGINE_COUNT} prediction engines + analysis layer</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{details.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{details.description}</p></div>
+        <div><div className="eyebrow">{details.eyebrow} · {ENGINE_COUNT} base predictors · 300-entry research library</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{details.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{details.description}</p></div>
         <FeedStatusBadge feed={feed} />
       </div>
 
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,1.3fr)_minmax(0,0.8fr)_auto] sm:items-end">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1.3fr)_minmax(0,0.8fr)_auto] sm:items-end">
           <label className="block min-w-0">
             <span className="eyebrow">Markets to scan</span>
             <select value={scope} onChange={(event) => setScope(event.target.value)} disabled={scan.scanning} className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary disabled:opacity-60" data-testid={`${family}-scope-select`} aria-label="Markets to scan">
@@ -361,7 +366,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         </div>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
           <span>{feed.loadedCount}/{markets.length} markets loaded</span>
-          <span>{ENGINE_COUNT} prediction engines + {scan.run?.results[0]?.analysisEngineCount ?? 9} analysis engines per market, run in parallel</span>
+          <span>{ENGINE_COUNT} base predictors · 300 registered research entries · 10-model independent audit per market</span>
           <span>{feed.usingTestAppId ? 'Deriv test app ID' : 'Configured Deriv app ID'}</span>
           {run && <span>Last scan {new Date(run.ranAt).toLocaleTimeString()} · {run.marketsScanned} markets · {(run.durationMs / 1000).toFixed(1)}s</span>}
         </div>
@@ -374,7 +379,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
       )}
 
       {run && selectedResult && signal ? (
-        <section className={`grid gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined}>
+        <section className={`grid grid-cols-1 gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined}>
           <div className="space-y-4">
             <SignalCard
               eyebrow={isBest ? `Best signal · ${run.marketsScanned} markets scanned` : `Signal · ${selectedResult.name}`}
@@ -444,7 +449,9 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         </section>
       )}
 
-      <section className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+      <EngineLabPanel report={selectedResult?.engineLab} />
+
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[0.9fr_1.1fr]">
         <LiveMarketPanel entry={detailEntry} />
         <DigitFrequencyPanel analysis={detailAnalysis} marketName={detailEntry ? shortMarketName(detailEntry.name) : '—'} />
       </section>

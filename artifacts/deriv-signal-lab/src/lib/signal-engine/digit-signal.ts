@@ -28,6 +28,11 @@ import { analyzeDigitState, type DigitMarketState } from './market-state.ts';
 import { confirmDigitContract, type ConfirmationReport } from './confirmation.ts';
 import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
 
+import { buildForecastBank, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
+import { buildEngineLabReport } from '../engine-lab/report.ts';
+import { normalizeTicks } from '../engine-lab/math.ts';
+import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
+
 export type DigitSignalFamily = 'over-under' | 'even-odd' | 'matches';
 export type DigitTick = { epoch: number; digit: number };
 
@@ -65,6 +70,8 @@ export type DigitContractSignal = {
   confidence: number;
   breakdown: ConfidenceBreakdown;
   strength: SignalStrength;
+  /** Execution gate from the 300-entry research library; a candidate is still always returned. */
+  researchDecision: ResearchDecision;
   /** Historical outcomes after the current digit (or parity) context. */
   history: { sample: number; hits: number; rate: number | null; context: string } | null;
   /** When to enter this contract: which tick context, and how long it may take. */
@@ -101,6 +108,8 @@ export type DigitMarketAnalysis = {
   state: DigitMarketState;
   /** Number of analysis engines that ran (separate from the 12 prediction engines). */
   analysisEngineCount: number;
+  /** Full audit stored once for the winning contract, not duplicated across candidates. */
+  engineLab: EngineLabReport;
   notes: string[];
   durationMs: number;
 };
@@ -116,6 +125,10 @@ export type DigitMarketInput = {
   contracts?: readonly DigitContractCandidate[];
   /** Markets competing in the same scan (for the selection penalty). */
   marketsInScan?: number;
+  /** Real quotes allow contextual candle/price engines; never reconstruct quotes from digits. */
+  quoteTicks?: readonly { epoch: number; quote: number }[];
+  settlements?: readonly SettledReturn[];
+  settlementCurrency?: string;
 };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -177,7 +190,7 @@ function historyContext(family: DigitSignalFamily, lastDigit: number | null): { 
 export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: EnsembleProgress): DigitMarketAnalysis {
   const started = Date.now();
   if (!Number.isInteger(input.horizon) || input.horizon < 1 || input.horizon > 10) throw new Error('Digit signals use a tick duration from 1 to 10.');
-  const ticks = input.ticks.filter((tick) => Number.isInteger(tick.digit) && tick.digit >= 0 && tick.digit <= 9 && Number.isFinite(tick.epoch));
+  const ticks = normalizeTicks(input.ticks).filter((tick): tick is DigitTick => tick.digit != null);
   if (ticks.length < DIGIT_SIGNAL_MIN_TICKS) throw new Error(`${input.name} has ${ticks.length} valid ticks; ${DIGIT_SIGNAL_MIN_TICKS} are needed.`);
   const observations = ticks.map((tick) => ({ symbol: input.symbol, epoch: tick.epoch, digit: tick.digit }));
   const fit = fitDigitEnsemble(observations, input.horizon, (fraction, stage) => onProgress?.(fraction * 0.93, stage));
@@ -197,6 +210,9 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   const lastDigit = fit.sequence.digits.at(-1) ?? null;
   const quality = dataQuality(fit.sequence.digits.length, input.fresh, fit.structure.status);
   const context = historyContext(input.family, lastDigit);
+  onProgress?.(0.965, 'Replaying research engines with purged chronological validation');
+  const researchBank = buildForecastBank(ticks, 'digit', { unit: 'ticks', value: input.horizon });
+  const researchAudits = new Map<string, ResearchAudit>();
   const signals = contracts.map((contract): DigitContractSignal => {
     const fair = fairProbability(contract);
     const deviation = Math.sqrt(fair * (1 - fair));
@@ -314,10 +330,21 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       statePriorProbability,
       selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
     });
+    const audit = auditForecastBank(researchBank, contract, fair, contracts.length * Math.max(1, input.marketsInScan ?? 1));
+    researchAudits.set(digitContractKey(contract), audit);
+    const researchDecision = decideResearch({ audit, fresh: input.fresh, probability: confirmation.probability, fair,
+      confirmed: confirmation.decisive, independentSample: backtest.effectiveSample });
+    if (researchDecision.edgeMultiplier < 1) {
+      confirmation.probability = fair + researchDecision.edgeMultiplier * (confirmation.probability - fair);
+      confirmation.edgePts = 100 * (confirmation.probability - fair);
+      confirmation.status = 'contradicted';
+      confirmation.decisive = false;
+      confirmation.reasons.push('The independent research ensemble validated a contrary estimate; the master guard reduced the remaining edge by 75%.');
+    }
     const probability = clamp(confirmation.probability, 0.0005, 0.9995);
     const edge = probability - fair;
     const edgeRatio = edge / deviation;
-    const { confidence, breakdown } = confidenceScore({
+    const { confidence: baseConfidence, breakdown } = confidenceScore({
       weightedAgreement: tally.weightedAgreement, edgeRatio, backtest, validationSkill, dataQuality: quality, verified,
       selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
       confirmation: {
@@ -328,6 +355,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
     });
+    const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
     const historical = context ? evaluateHistoricalContract(observations as unknown as DigitObservation[], contract, input.horizon, context) : null;
     // Entry timing: which tick context this contract should be entered on. The
     // quote never decides a digit contract, so the context (not a price level)
@@ -355,7 +383,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,
       votes, tally, backtest, validationSkill, validationZ, verified, confidence, breakdown,
-      strength, entry,
+      strength, entry, researchDecision,
       history: historical ? {
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,
@@ -371,12 +399,25 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   if (state.regime === 'random') notes.push('Analysis engines: the digit stream is statistically indistinguishable from random; confirmed edges are kept small and the entry is usually immediate.');
   else notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
   if (signals[0]?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best contract; treat it as a contradicted call, not a verified edge.');
-  onProgress?.(1, 'Signal ready');
+  onProgress?.(0.99, 'Explaining all 300 registered engines for the selected contract');
+  const best = signals[0];
+  const quotes = new Map((input.quoteTicks ?? []).map((tick) => [tick.epoch, tick.quote]));
+  const labTicks = ticks.map((tick) => ({ ...tick, quote: quotes.get(tick.epoch) }));
+  const engineLab = buildEngineLabReport({
+    symbol: input.symbol, family: input.family, ticks: labTicks, contract: best.contract, horizon: { unit: 'ticks', value: input.horizon }, fresh: input.fresh,
+    audit: researchAudits.get(digitContractKey(best.contract))!, decision: best.researchDecision,
+    legacy: { probability: best.probability, fair: best.fairProbability, confidence: best.confidence, votes: best.votes,
+      confirmationStatus: best.deep.confirmation.status, confirmed: best.deep.confirmation.decisive, entry: best.entry },
+    candidates: signals.map((signal) => ({ label: signal.label, probability: signal.probability, fair: signal.fairProbability, confidence: signal.confidence })),
+    settlements: input.settlements, settlementCurrency: input.settlementCurrency,
+  });
+  if (!best.researchDecision.eligible) notes.push(`Research execution guard: ${best.researchDecision.reasons.join(' ')}`);
+  onProgress?.(1, 'Signal and 300-engine audit ready');
   return {
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,
     sample: fit.sequence.digits.length, lastDigit, asOfEpoch: fit.sequence.epochs.at(-1)!, fresh: input.fresh,
     dataQuality: quality, structure: fit.structure.status, engineCount: fit.engines.length,
-    best: signals[0], contracts: signals, report, state, analysisEngineCount: state.engines.length,
+    best, contracts: signals, report, state, analysisEngineCount: state.engines.length, engineLab,
     notes, durationMs: Date.now() - started,
   };
 }

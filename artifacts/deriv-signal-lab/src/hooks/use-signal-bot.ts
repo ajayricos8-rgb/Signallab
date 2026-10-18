@@ -50,6 +50,9 @@ import type {
   SignalBotStopReason,
 } from '@/lib/signal-bot/types.ts';
 
+import { quoteEconomics, researchExecutionIssue } from '@/lib/engine-lab/execution';
+import type { ResearchDecision } from '@/lib/engine-lab/types';
+
 export type SignalBotPlan = {
   family: TradeFamily;
   symbol: string;
@@ -69,6 +72,7 @@ export type SignalBotPlan = {
   /** When and at what price the analysis says this signal should be traded. */
   entry: EntryPlan;
   ranAt: number;
+  researchDecision?: ResearchDecision | null;
   /** Confirmation-layer verdict for this signal, for the bot page. */
   confirmation?: { status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted'; edgePts: number; decisive: boolean } | null;
 };
@@ -361,6 +365,13 @@ export function useSignalBot(): SignalBotController {
         setError(`This analysis is ${Math.round((Date.now() - nextPlan.ranAt) / 60_000)} minutes old. Run Analysis again so the bot trades a current entry.`);
         return;
       }
+      const researchIssue = researchExecutionIssue(nextPlan.researchDecision);
+      if (researchIssue) {
+        setStatus('error');
+        setStopReason('error');
+        setError(researchIssue);
+        return;
+      }
       const config = sanitizeSignalBotConfig(rawConfig);
       configRef.current = config;
       generationRef.current += 1;
@@ -513,6 +524,9 @@ export function useSignalBot(): SignalBotController {
           try {
             const quote = await tradingRef.current.requestQuote(request);
             if (generation !== generationRef.current) return;
+            const economics = quoteEconomics(nextPlan.entry.evidence.signalProbability, quote.askPrice, quote.payout);
+            if (!economics.allowed) throw new Error(economics.reason);
+            // No purchase is submitted when the actual payout fails break-even.
             const receipt = await tradingRef.current.confirmBuy(quote, request);
             if (generation !== generationRef.current) {
               // Stop was pressed mid-purchase: the contract exists and is left
