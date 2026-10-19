@@ -8,11 +8,13 @@ export type ScanJob =
   | { kind: 'rise-fall'; input: RiseFallMarketInput };
 export type ScanJobResult = DigitMarketAnalysis | RiseFallMarketAnalysis;
 
-export type WorkerRequest = { jobId: number; job: ScanJob };
+/** `handshake` is sent right after construction to prove the worker script loaded. */
+export type WorkerRequest = { jobId: number; job: ScanJob } | { handshake: true };
 export type WorkerResponse =
   | { jobId: number; type: 'progress'; fraction: number; stage: string }
   | { jobId: number; type: 'result'; result: ScanJobResult }
-  | { jobId: number; type: 'error'; message: string };
+  | { jobId: number; type: 'error'; message: string }
+  | { type: 'pong' };
 
 export function runScanJob(job: ScanJob, onProgress?: (fraction: number, stage: string) => void): ScanJobResult {
   return job.kind === 'digit' ? analyzeDigitMarket(job.input, onProgress) : analyzeRiseFallMarket(job.input, onProgress);

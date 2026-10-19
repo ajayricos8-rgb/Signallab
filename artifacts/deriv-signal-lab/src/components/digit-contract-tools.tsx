@@ -20,7 +20,7 @@ import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import {
-  AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
+  AiSynthesisCard, AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
 } from '@/components/signal/signal-ui';
 
 const ALL_MARKETS = 'all';
@@ -422,6 +422,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
               onUse={() => { setTradeMarket(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
             />
             <ConfirmationPanel report={signal.deep.confirmation} />
+            {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}
