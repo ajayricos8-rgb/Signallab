@@ -41,3 +41,88 @@ Nothing else may build an `EntryPlan`: the dock refuses to enable Load and Run w
 - The bot now refuses an analysis older than 15 minutes and does not act on a feed tick older than 5 s (`ENTRY_STALE_AFTER_MS` / `MAX_ANALYSIS_AGE_MS` in `hooks/use-signal-bot.ts`). A gapped entry resolves as `missed` and follows the Entry setting (market or skip), never chases the level.
 - UI: `components/signal/signal-ui.tsx` exports `AnalysisEnginePanel` and `ConfirmationPanel`; both are rendered on the Rise/Fall and all digit tools. `components/signal/entry-plan-card.tsx` prints the validation phase and the no-chase band.
 - Tests: `tests/signal-engine.test.mjs` (23) covers the analysis null/structured cases, confirmation bounds and precise entry; `tests/signal-entry.test.mjs` (25) covers the walk-forward entry; the full suite is 284 tests and must stay green.
+
+---
+
+## Layer 4: precision — the measured error bar (2026-10-19)
+
+A fifth layer sits between confirmation (layer 3) and entry. New files:
+`lib/signal-engine/precision.ts`, `recalibration.ts`, `stacking.ts`. Both
+`digit-signal.ts` and `rise-fall-signal.ts` now build every candidate as a
+**draft** first, fit one pool-wide shrinkage across the whole candidate set,
+then publish and re-rank.
+
+**What it does:**
+
+1. `heterogeneity(candidates)` — DerSimonian–Laird Q test on the pool's edges
+   with a Wilson–Hilferty 90th percentile bar. `Q > df` means one candidate is
+   genuinely different from the rest, not just the luckiest.
+2. `shrinkEdges` — empirical-Bayes shrinkage `τ²/(τ²+SE²)` using a **trimmed**
+   random-effects τ² (the middle 60% of candidates fit τ²; one real edge does
+   not inflate τ² for everyone). A candidate is a **standout** only when
+   `z ≥ standoutThreshold(count) = max(2.5, Φ⁻¹(1−(1−0.95^(1/count))/2))`,
+   a Šidák-corrected bar that grows with the pool.
+3. Winner's curse — the winner is charged `min(0.35·|edge|, 0.6·√(2 ln m)·SE)`
+   **only if it is not a standout**, then re-ranked, so a candidate whose whole
+   lead was selection luck loses the top slot.
+4. `confidence.ts` gains `+0.08 · tanh((|edge| − SE)/(1.5·SE))` (SE floor
+   0.002) via `PrecisionEvidence {edge, standardError, intervalHalfWidth}`.
+5. `recalibration.ts` improves the calibration machinery Purge-aware
+   walk-forward CV folds (gap = the longest forecast horizon), a pooled
+   noise-subtracted `miscalibration` in probability units (raw reliability is
+   inflated by each bin's own sampling noise — enough to make a perfectly
+   calibrated model look 7 points off), and a Murphy(1973) decomposition that
+   closes to machine precision via
+   `withinBinResidual = Var(f|bin) − 2·Cov(f,y|bin)`.
+
+**Measured effect** (24 seeded digit runs × 2,000 ticks; 16 Rise/Fall runs;
+`tests/signal-accuracy.test.mjs` is the regression lock):
+
+| Ground truth | Before | After |
+|---|---|---|
+| Digit, fair stream | 0.0012 MAE | **0.0000** MAE |
+| Digit, large real edge | 0.0186 MAE | 0.0187 MAE |
+| Digit, small real edge | 0.0320 MAE | **0.0161** MAE |
+| Digit, share of true edge captured | 77% | **92%** |
+| Rise/Fall, random walk | 0.0027 MAE | **0.0000** MAE |
+| Rise/Fall, drift (0.06/tick) | 0.0484 MAE | 0.0494 MAE |
+
+**Hard-won rules — do not undo these:**
+
+- **Never compound two shrinkages on the same number.** Three layers each
+  rescaling the edge (Platt `ak` × 0.75, `aiTrust` pre-shrink, 0.35 unconfirmed
+  shrink) multiplied to 0.20 and threw away 80% of every real edge. Shrinkage
+  must be *measured*, not *applied*: the only surviving mechanism is the one
+  empirical-Bayes factor, and it is reported as `precision.shrinkFactor`.
+- **Degenerate models must collapse, not survive.** A 12-engine pool trained on
+  a locked base rate (e.g. `MATCHES 1`) produces a near-constant forecast, so
+  every bin has the same probability and Platt/isotonic fits are unidentifiable.
+  Guard: if `sharpness` is tiny relative to the forecast spread, return the
+  identity calibrator. Without it the old code invented 12-point swings on a
+  model that had said the same thing 400 times.
+- **Calibrate with CV, but select the strength with the one-SE rule.** A plain
+  CV minimum is a badly biased selector for ridge strength; pick the smallest
+  λ within one standard error of the best.
+- **`residualMiscalibration` must be noise-subtracted *and* pooled.** Per-bin
+  `max(0, gap − noise)` leaves ~half the noise as a positive floor. It is also
+  only charged to a model that has *not* proven itself out of sample
+  (`validationZ < 2`); a model that beat the no-edge rate on held-out rows has
+  already disproven the miscalibration it is being charged.
+- **The reliability report must always be returned**, even when no calibrator
+  could be fitted (few evaluation rows). Too few rows to fit a calibrator is
+  never too few rows to measure one.
+- **`edgeShrinkage`'s floor of 0.3 is what disciplines an anti-skilled model.**
+  At 0.95 a Rise/Fall run with `validationZ = −3.37` still published 0.7331.
+  Raising the floor costs ~0.018 MAE on drifting Rise/Fall; do not raise it.
+- Do not patch `reliabilityReport` incrementally — two in-place edits corrupted
+  it. Regenerate the whole function.
+
+**UI:** `components/signal/signal-ui.tsx` exports `PrecisionPanel` (renders the
+95% interval against the fair-odds marker, edge kept, sample, std error, pool
+size, edge z, calibration error and the winner's-curse charge). Both tools show
+it after `ConfirmationPanel`, and both signal cards carry a `95% range` metric.
+
+**Tests:** `tests/signal-calibration.test.mjs` (18) covers the recalibration
+machinery; `tests/signal-accuracy.test.mjs` (7) is the end-to-end ground-truth
+audit whose thresholds are the measured numbers above with a small margin. Full
+suite: **309 tests**.

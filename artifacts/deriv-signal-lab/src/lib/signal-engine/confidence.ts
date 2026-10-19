@@ -83,12 +83,29 @@ export type ResearchEvidence = {
   contradicted: boolean;
 };
 
+/**
+ * How well the published probability is pinned down. An edge smaller than its
+ * own measurement error is not evidence of anything, however many engines
+ * agreed on it, so this term is negative until the edge clears one standard
+ * error and only saturates once it is several times larger than the noise.
+ */
+export type PrecisionEvidence = {
+  /** Published edge over the no-edge rate, in probability units. */
+  edge: number;
+  /** Standard error of that edge, measured out of sample. */
+  standardError: number | null;
+  /** Half-width of the 95% interval for the published probability. */
+  intervalHalfWidth: number | null;
+};
+
 export type ConfidenceBreakdown = {
   agreement: number;
   edge: number;
   backtest: number;
   validation: number;
   quality: number;
+  /** Contribution of the precision layer (0 when none was supplied). */
+  precision: number;
   verified: boolean;
   /** Contribution of the confirmation layer (0 when none was supplied). */
   confirmation: number;
@@ -124,6 +141,11 @@ export type ConfidenceInput = {
    * keep a bit-identical score.
    */
   research?: ResearchEvidence | null;
+  /**
+   * How precisely the probability is known. Optional: callers that do not
+   * measure a standard error keep the original score to the last bit.
+   */
+  precision?: PrecisionEvidence | null;
 };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -136,11 +158,17 @@ export function selectionPenalty(pool: number): number {
 }
 
 /**
- * Shrinkage applied to model edges: estimates are trusted in proportion to the
- * consensus's out-of-sample skill (0.3 with no skill, 1 with clear skill) and
- * only once that skill is statistically distinguishable from luck. A positive
- * Brier skill on a few dozen rows is not evidence; a positive skill whose
- * paired z clears the noise floor is.
+ * How much of a model's claimed edge historically survived out of sample: 0.3
+ * with no demonstrated skill, 1 with clear skill, and only once that skill is
+ * statistically distinguishable from luck (a positive Brier skill on a few
+ * dozen rows is not evidence; one whose paired z clears the noise floor is).
+ *
+ * This is no longer applied as a multiplier on the published probability —
+ * three layers used to each multiply their own trust factor in, which
+ * compounded into an order-of-magnitude understatement of every real edge. It
+ * now inflates the STANDARD ERROR the precision layer prices (see
+ * `digit-signal.ts` / `rise-fall-signal.ts`), so an unvalidated model is
+ * charged a wider error bar rather than silently rescaled.
  */
 export function edgeShrinkage(validationSkill: number | null, validationZ: number | null = null): number {
   const skill = Math.max(0, validationSkill ?? 0);
@@ -200,6 +228,19 @@ export function researchTerm(evidence: ResearchEvidence): number {
 }
 
 /**
+ * −1 when the edge is buried in its own measurement error, +1 when it stands
+ * several standard errors clear of it. Zero is "one standard error", which is
+ * exactly the point at which an edge stops being indistinguishable from noise.
+ */
+export function precisionTerm(evidence: PrecisionEvidence): number {
+  const magnitude = Math.abs(Number.isFinite(evidence.edge) ? evidence.edge : 0);
+  const raw = Number.isFinite(evidence.standardError) ? (evidence.standardError as number) : null;
+  const interval = Number.isFinite(evidence.intervalHalfWidth) ? (evidence.intervalHalfWidth as number) : null;
+  const sigma = clamp(raw ?? interval ?? 0.02, 0.002, 0.08);
+  return Math.tanh((magnitude - sigma) / (1.5 * sigma));
+}
+
+/**
  * Evidence score from 1 to 99 plus its normalized components (-1 to 1).
  * Calibrated by simulation so that scanning 13 purely random markets almost
  * never produces STRONG, while genuinely structured streams score 85+.
@@ -236,13 +277,20 @@ export function confidenceScore(input: ConfidenceInput): { confidence: number; b
   // The research library contributes at most a few points, and only through
   // measured skill: callers without an audit keep the original score.
   const research = input.research ? 0.06 * researchTerm(input.research) : 0;
-  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation + research;
+  // Precision is the newest layer and deliberately the smallest: it decides
+  // between two otherwise identical signals by how well their edge was
+  // measured, it does not redefine what the evidence is worth.
+  const precision = input.precision ? 0.08 * precisionTerm(input.precision) : 0;
+  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation + research + precision;
   let confidence = 50 + 50 * raw * quality;
   // Passing every strict held-out research gate is rare and meaningful.
   if (input.verified) confidence += 8;
   return {
     confidence: Math.round(clamp(confidence, 1, 99)),
-    breakdown: { agreement, edge, backtest, validation, quality, verified: Boolean(input.verified), confirmation, research },
+    breakdown: {
+      agreement, edge, backtest, validation, quality, precision,
+      verified: Boolean(input.verified), confirmation, research,
+    },
   };
 }
 

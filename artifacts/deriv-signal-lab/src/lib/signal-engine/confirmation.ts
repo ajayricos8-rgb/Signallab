@@ -43,6 +43,14 @@ export type ConfirmationReport = {
     brierAfter: number | null;
     skill: number | null;
     improved: boolean;
+    /**
+     * How far the probabilities have actually been from the frequencies they
+     * claimed, in probability units, measured on rows no calibrator saw and
+     * after subtracting the sampling noise of the bins that measured it. This
+     * is the part of the error bar that variance alone cannot see: a model can
+     * be tightly clustered and still be badly wrong.
+     */
+    residualMiscalibration: number | null;
   };
   ai: {
     /** Probability produced by the calibrated model (null when none improved). */
@@ -88,6 +96,13 @@ function boundedShift(base: number, target: number, limit: number): number {
 }
 
 function calibrationReport(result: CalibrationResult) {
+  // The residual is taken from the CALIBRATED side when a calibrator was
+  // accepted and from the raw side otherwise, so it always describes what the
+  // published number is actually worth. `reliability` is a mean squared gap, so
+  // the square root converts it into probability units.
+  const report = result.reliability
+    ? (result.improved ? result.reliability.calibrated : result.reliability.raw)
+    : null;
   return {
     method: result.method,
     sample: result.sample,
@@ -96,6 +111,7 @@ function calibrationReport(result: CalibrationResult) {
     brierAfter: result.brierAfter,
     skill: result.skill,
     improved: result.improved,
+    residualMiscalibration: report && report.sample >= 8 ? report.miscalibration : null,
   };
 }
 
@@ -197,9 +213,13 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
   // Every correction is bounded: confirmation may not manufacture an edge.
   const adjusted = boundedShift(base, source, 0.06) + stateAdjustment;
   // No validation and no confirming backtest means the raw model is only a
-  // hypothesis. Halve its distance from fair instead of presenting it as an
-  // edge; a confirmation layer that changes nothing is not a confirmation.
-  const confirmed = clamp(confirmedEvidence ? adjusted : fair + 0.35 * (adjusted - fair), 0.001, 0.999);
+  // hypothesis. That is reported, not silently rescaled: the STATUS, the
+  // `decisive` flag and the strength label all say so, and the precision layer
+  // prices the estimate with a standard error inflated for exactly this. It
+  // used to also shrink the probability by 65% here, which compounded with the
+  // prediction layer's own shrinkage and the precision layer's into a number
+  // that understated every real edge by an order of magnitude.
+  const confirmed = clamp(adjusted, 0.001, 0.999);
   const edgeBefore = base - fair;
   const edge = confirmed - fair;
 
@@ -213,7 +233,7 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
   if (!confirmedEvidence) confidenceDelta -= 3;
   confidenceDelta = clamp(confidenceDelta, -10, 10);
   if (!confirmedEvidence)
-    reasons.push('Neither the out-of-sample calibration nor the held-out backtest (after the best-of-pool bar) confirmed this edge, so the probability was shrunk most of the way to the fair rate.');
+    reasons.push('Neither the out-of-sample calibration nor the held-out backtest (after the best-of-pool bar) confirmed this edge; it is published at its measured size and marked cautious, with a wider error bar.');
 
   // Calibration is one confirmation tool, not the only one. A held-out
   // backtest that clears its own z-test also confirms a real edge; without
@@ -389,7 +409,11 @@ export function confirmRiseFall(input: QuoteConfirmationInput): QuoteConfirmatio
   // Without validation or a confirming backtest, keep the AI's edge as a
   // hypothesis: halve its distance from fair instead of showing an 8-point
   // "win chance" that nothing out of sample supports.
-  const confirmedRise = clamp(confirmedEvidence ? adjusted : 0.5 + 0.35 * (adjusted - 0.5), 0.01, 0.99);
+  // As in the digit panel: an unconfirmed estimate is REPORTED as unconfirmed
+  // (status, `decisive` and the strength label all carry it, and the precision
+  // layer prices it with a wider error bar) rather than silently rescaled a
+  // second time on top of the prediction layer's own shrinkage.
+  const confirmedRise = clamp(adjusted, 0.01, 0.99);
 
   // Only a validated model may override the engines, and only by a material
   // margin. Noise-level disagreement leaves the consensus in place.
@@ -398,11 +422,21 @@ export function confirmRiseFall(input: QuoteConfirmationInput): QuoteConfirmatio
   const directionChanged = validated && Math.abs(modelMargin) >= 0.03 && Math.sign(modelMargin) !== Math.sign(consensusMargin);
   const direction: 1 | -1 = directionChanged ? (modelMargin > 0 ? 1 : -1) : input.consensusDirection;
   const directionConditional = direction === 1 ? confirmedRise : 1 - confirmedRise;
-  const winProbability = clamp(directionConditional * (1 - flatRate), 0.001, 0.999);
+  // A published signal may not claim that the direction it recommends loses
+  // more often than the no-edge rate. When the model preferred the other side
+  // but was not validated enough to override the consensus, the honest number
+  // is "no measured edge", not a self-contradicting probability. (The old code
+  // hid this by shrinking everything toward a coin flip, which also destroyed
+  // every real edge.)
+  const flooredConditional = directionChanged ? directionConditional : Math.max(directionConditional, 0.5);
+  const winProbability = clamp(flooredConditional * (1 - flatRate), 0.001, 0.999);
   const probabilityBefore = clamp((input.consensusDirection === 1 ? baseConditional : 1 - baseConditional) * (1 - flatRate), 0.001, 0.999);
   const edgeBefore = probabilityBefore - fair;
   const edge = winProbability - fair;
 
+  if (!directionChanged && directionConditional < 0.5 - 1e-9 && Math.abs(modelMargin) >= 0.03) {
+    reasons.push('The validated model preferred the other direction but was not strong enough to override the engine consensus, so this call is published with no measured edge rather than a number that contradicts the direction it recommends.');
+  }
   if (directionChanged) {
     reasons.push(`Direction overridden from ${input.consensusDirection === 1 ? 'RISE' : 'FALL'} to ${direction === 1 ? 'RISE' : 'FALL'}: the validated model put the other side at ${percent(directionConditional)} against ${percent(fair)} fair odds.`);
   }
@@ -417,7 +451,7 @@ export function confirmRiseFall(input: QuoteConfirmationInput): QuoteConfirmatio
   if (!confirmedEvidence) confidenceDelta -= 3;
   confidenceDelta = clamp(confidenceDelta, -10, 10);
   if (!confirmedEvidence)
-    reasons.push('Neither calibration nor the held-out direction backtest (after the best-of-pool bar) confirmed the AI estimate, so its edge was shrunk most of the way to fair odds.');
+    reasons.push('Neither calibration nor the held-out direction backtest (after the best-of-pool bar) confirmed the AI estimate; it is published at its measured size and marked cautious, with a wider error bar.');
 
   const backtestConfirmed = backtestStrong && edge >= Math.max(0.005, 0.015 * fair);
   const status: ConfirmationStatus = stateAgreement !== 0 && stateAgreement !== direction && edge <= 0.005

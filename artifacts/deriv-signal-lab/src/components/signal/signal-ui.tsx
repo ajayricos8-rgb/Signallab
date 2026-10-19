@@ -1,7 +1,7 @@
 // Shared signal UI for every tool: scan progress, the signal card with its
 // confidence score and engine agreement, the engine vote list and the
 // cross-market ranking.
-import { ArrowDownRight, ArrowUpRight, BadgeCheck, BrainCircuit, CheckCircle2, CircleDashed, Cpu, Loader2, MinusCircle, ShieldAlert, Sparkles, XCircle } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, BadgeCheck, BrainCircuit, CheckCircle2, CircleDashed, Cpu, Gauge, Loader2, MinusCircle, ShieldAlert, Sparkles, XCircle } from 'lucide-react';
 import type { EngineVote, SignalStrength, VoteTally } from '@/lib/signal-engine/confidence';
 import type { ConfirmationReport } from '@/lib/signal-engine/confirmation';
 import type { DigitMarketState, QuoteMarketState } from '@/lib/signal-engine/market-state';
@@ -388,6 +388,101 @@ export function ConfirmationPanel({ report }: { report: ConfirmationReport }) {
       <ul className="mt-3 space-y-1 text-[11px] leading-relaxed text-muted-foreground">
         {report.reasons.map((reason) => <li key={reason}>• {reason}</li>)}
       </ul>
+    </section>
+  );
+}
+
+/**
+ * Layer 4: the measured error bar. This is the honest counterpart to the
+ * headline probability -- it is the number a user should read before sizing a
+ * stake, because it says how far the point estimate could plausibly move.
+ */
+export type PrecisionView = {
+  standardError: number | null;
+  interval: { probability: number; lower: number; upper: number } | null;
+  reliability: { sample: number; miscalibration: number; expectedCalibrationError: number | null; brierSkillScore: number | null };
+  shrinkFactor: number;
+  beforePrecision?: number;
+  selectionDebitPts: number;
+  edgeZ: number | null;
+};
+
+export function PrecisionPanel({ block, candidates, fair }: { block: PrecisionView; candidates?: number; fair?: number }) {
+  const se = block.standardError;
+  const low = block.interval ? block.interval.lower : se === null ? null : (block.interval?.probability ?? 0) - 2 * se;
+  const high = block.interval ? block.interval.upper : se === null ? null : (block.interval?.probability ?? 0) + 2 * se;
+  const suppressed = block.shrinkFactor < 0.35;
+  const clears = fair !== undefined && low !== null && low > fair;
+  return (
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="precision-panel">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="eyebrow flex items-center gap-1.5"><Gauge size={12} /> Layer 4 · measured precision</div>
+          <h3 className="mt-1 text-sm font-bold">How far could this estimate move?</h3>
+        </div>
+        <span className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.1em] ${suppressed ? 'border-amber-500/40 bg-amber-500/10 text-amber-500' : clears ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' : 'border-border bg-background/40 text-muted-foreground'}`} data-testid="precision-status">
+          {suppressed ? 'not measurable' : clears ? 'clears fair odds' : 'measured'}
+        </span>
+      </div>
+      {low !== null && high !== null ? (
+        <div className="mt-3 rounded-lg border border-border bg-background/40 p-3">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[11px] text-muted-foreground">95% range for the true win rate</span>
+            <span className="mono text-lg font-bold" data-testid="precision-interval">
+              {formatPercent(low)} – {formatPercent(high)}
+            </span>
+          </div>
+          <div className="relative mt-2 h-2 overflow-hidden rounded-full bg-border/60">
+            <div
+              className="absolute inset-y-0 rounded-full bg-primary/70"
+              style={{
+                left: `${Math.max(0, Math.min(100, low * 100))}%`,
+                right: `${Math.max(0, Math.min(100, 100 - high * 100))}%`,
+              }}
+            />
+            {fair !== undefined ? (
+              <div className="absolute inset-y-0 w-px bg-emerald-500" style={{ left: `${Math.max(0, Math.min(100, fair * 100))}%` }} title={`Fair odds ${formatPercent(fair, 0)}`} />
+            ) : null}
+          </div>
+          <div className="mono mt-1.5 text-center text-[11px] font-semibold">{formatPercent(block.interval?.probability ?? 0)}</div>
+        </div>
+      ) : (
+        <p className="mt-3 rounded-lg border border-border bg-background/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          Not enough held-out rows behind this contract to put a number on how far it could move. Treat the probability as unmeasured.
+        </p>
+      )}
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2" title="How much of the raw edge survived out of sample">
+          <div className="eyebrow">Edge kept</div>
+          <div className="mono mt-1 text-sm font-bold">{formatPercent(block.shrinkFactor, 0)}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2" title="Held-out ticks used to measure this">
+          <div className="eyebrow">Sample</div>
+          <div className="mono mt-1 text-sm font-bold">{block.reliability.sample} ticks</div>
+        </div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2" title="Per-tick standard error of the estimate">
+          <div className="eyebrow">Std error</div>
+          <div className="mono mt-1 text-sm font-bold">{se === null ? '—' : se.toFixed(4)}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2" title="How many contracts or durations the scan ranked before picking this one">
+          <div className="eyebrow">Ranked</div>
+          <div className="mono mt-1 text-sm font-bold">{candidates ?? 1}</div>
+        </div>
+      </div>
+      <div className="mt-2 grid gap-2 text-[11px] sm:grid-cols-3">
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><span className="text-muted-foreground">Edge z</span> <span className="mono font-semibold">{block.edgeZ === null ? '—' : block.edgeZ.toFixed(2)}</span><div className="text-[9px] text-muted-foreground">edge ÷ its own error</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><span className="text-muted-foreground">Calibration error</span> <span className="mono font-semibold">{block.reliability.expectedCalibrationError === null ? '—' : formatPercent(block.reliability.expectedCalibrationError)}</span><div className="text-[9px] text-muted-foreground">{block.reliability.brierSkillScore === null ? 'no holdout score' : `${(block.reliability.brierSkillScore * 100).toFixed(1)}% Brier skill`}</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><span className="text-muted-foreground">Winner's curse</span> <span className="mono font-semibold">{block.selectionDebitPts > 0.05 ? `−${block.selectionDebitPts.toFixed(1)} pts` : 'none'}</span><div className="text-[9px] text-muted-foreground">{block.selectionDebitPts > 0.05 ? 'charged for winning the ranking' : 'stood out on its own'}</div></div>
+      </div>
+      <p className="mt-3 rounded-lg border border-border bg-background/30 px-3 py-2 text-[11px] leading-relaxed text-foreground/80" data-testid="precision-note">
+        {suppressed
+          ? 'This contract did not clear the pool-wide bar, so the precision layer pulled it back toward no edge. Trade it only if you accept that the measured edge is inside the noise.'
+          : clears && fair !== undefined
+            ? `Even the bottom of the range sits above the ${formatPercent(fair, 0)} fair odds, so the edge is not an artefact of how it was measured.`
+            : block.selectionDebitPts > 0.05
+              ? `The published number is already net of a ${block.selectionDebitPts.toFixed(1)} point charge for having been picked out of ${candidates ?? 1} candidates.`
+              : `The published number stands on its own measured error bar, not on winning a ranking.`}
+      </p>
     </section>
   );
 }

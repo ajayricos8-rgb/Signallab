@@ -20,7 +20,7 @@ import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import {
-  AiSynthesisCard, AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
+  AiSynthesisCard, AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, PrecisionPanel, SignalCard, StrengthBadge, formatPercent, shortMarketName,
 } from '@/components/signal/signal-ui';
 
 const ALL_MARKETS = 'all';
@@ -401,6 +401,11 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                 { label: 'Win chance', value: formatPercent(signal.probability), hint: 'Confirmed probability after out-of-sample calibration, stacking and the analysis check' },
                 { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
                 { label: 'Fair odds', value: formatPercent(signal.fairProbability, 0), hint: 'Win probability with uniformly random digits' },
+                ...(signal.precision.interval ? [{
+                  label: '95% range',
+                  value: `${formatPercent(signal.precision.interval.lower, 0)}–${formatPercent(signal.precision.interval.upper, 0)}`,
+                  hint: `Measured on ${signal.precision.reliability.sample} held-out ticks. If the bottom of this range still clears the fair odds, the edge is real enough to trade.`,
+                }] : []),
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: 'Held-out ticks where the engines favoured this contract: win rate and number of calls' },
                 { label: 'History', value: signal.history?.rate == null ? '—' : `${formatPercent(signal.history.rate)}`, hint: signal.history ? `${signal.history.hits}/${signal.history.sample} ${signal.history.context}` : undefined },
                 {
@@ -422,6 +427,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
               onUse={() => { setTradeMarket(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
             />
             <ConfirmationPanel report={signal.deep.confirmation} />
+            {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={signal.fairProbability} /> : null}
             {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
             <EntryPlanCard
               entry={signal.entry}
