@@ -80,6 +80,9 @@ try {
     const started = Date.now();
     await page.getByTestId('button-run-analysis').click();
     await page.getByTestId('export-engine-audit').waitFor({ timeout: 90_000 });
+    // Layer 5: the quant measurement suite and its AI verdict ship with every signal.
+    assert.equal(await page.getByTestId('ai-synthesis-card').isVisible(), true, `${family} must show the AI synthesis card`);
+    assert.match(await page.getByTestId('ai-synthesis-verdict').innerText(), /\w/);
     const downloaded = page.waitForEvent('download');
     await page.getByTestId('export-engine-audit').click();
     const download = await downloaded;

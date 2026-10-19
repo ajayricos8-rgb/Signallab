@@ -25,6 +25,7 @@ import {
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
 import { analyzeDigitState, type DigitMarketState } from './market-state.ts';
+import { synthesizeDigitAi, type AiSynthesis } from './ai-synthesis.ts';
 import { confirmDigitContract, type ConfirmationReport } from './confirmation.ts';
 import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
 
@@ -109,6 +110,8 @@ export type DigitMarketAnalysis = {
   report: DigitEnsembleReport;
   /** Layer 1: the full analysis-engine panel for this market. */
   state: DigitMarketState;
+  /** Layer 5: quant measurement engines synthesised into one AI verdict. */
+  aiSynthesis: AiSynthesis;
   /** Number of analysis engines that ran (separate from the 12 prediction engines). */
   analysisEngineCount: number;
   /** Full audit stored once for the winning contract, not duplicated across candidates. */
@@ -201,6 +204,8 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // Layer 1 runs on the same validated tick stream the 12 prediction engines
   // saw. It measures structure; it never votes on a contract by itself.
   const state = analyzeDigitState(fit.sequence.digits);
+  onProgress?.(0.945, 'Ensembling quant measurement engines with AI synthesis');
+  const aiSynthesis = synthesizeDigitAi(input.family, fit.sequence.digits);
   onProgress?.(0.96, 'Confirming every contract out of sample');
 
   const requested = input.contracts?.length ? input.contracts : DIGIT_SIGNAL_CONTRACTS[input.family];
@@ -413,6 +418,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   if (fit.structure.status === 'insufficient') notes.push('Too few recent ticks to check market structure.');
   if (state.regime === 'random') notes.push('Analysis engines: the digit stream is statistically indistinguishable from random; confirmed edges are kept small and the entry is usually immediate.');
   else notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
+  notes.push(`AI synthesis: ${aiSynthesis.verdict}. ${aiSynthesis.consensus.detail}`);
   if (signals[0]?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best contract; treat it as a contradicted call, not a verified edge.');
   onProgress?.(0.99, 'Explaining all 300 registered engines for the selected contract');
   const best = signals[0];
@@ -433,7 +439,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,
     sample: fit.sequence.digits.length, lastDigit, asOfEpoch: fit.sequence.epochs.at(-1)!, fresh: input.fresh,
     dataQuality: quality, structure: fit.structure.status, engineCount: fit.engines.length,
-    best, contracts: signals, report, state, analysisEngineCount: state.engines.length, engineLab,
+    best, contracts: signals, report, state, aiSynthesis, analysisEngineCount: state.engines.length, engineLab,
     notes, durationMs: Date.now() - started,
   };
 }

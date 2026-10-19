@@ -16,6 +16,7 @@ import {
 import { familyBalancedWeights } from './consensus.ts';
 import { analyzeQuoteEntry, type EntryPlan } from './entry.ts';
 import { analyzeQuoteState, type QuoteMarketState } from './market-state.ts';
+import { synthesizeRiseFallAi, type AiSynthesis } from './ai-synthesis.ts';
 import { pairedImprovementZ } from './stats.ts';
 import { confirmRiseFall, type ConfirmationReport, type QuoteConfirmationRow } from './confirmation.ts';
 
@@ -119,6 +120,8 @@ export type RiseFallMarketAnalysis = {
   analysis: RiseFallAnalysis;
   /** Layer 1: the full analysis-engine panel for this market. */
   state: QuoteMarketState;
+  /** Layer 5: quant measurement engines synthesised into one AI verdict. */
+  aiSynthesis: AiSynthesis;
   /** Number of analysis engines that ran (separate from the 14 prediction engines). */
   analysisEngineCount: number;
   engineLab: EngineLabReport;
@@ -422,6 +425,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   // Layer 1 runs once per market: the analysis engines measure structure, then
   // every duration's prediction engines and confirmation model build on it.
   const state = analyzeQuoteState(prices, epochs);
+  const aiSynthesis = synthesizeRiseFallAi(prices);
   onProgress?.(0.02, 'Replaying 12 indicator engines over recent history');
 
   // 1. Replay every state engine at past origins (no look-ahead: each origin
@@ -725,6 +729,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   if (!input.fresh) notes.push('Live tick freshness was not confirmed; confidence is reduced.');
   if (n < 1_500) notes.push(`Only ${n} ticks of history; longer minute durations have little validation data.`);
   notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
+  notes.push(`AI synthesis: ${aiSynthesis.verdict}. ${aiSynthesis.consensus.detail}`);
   const best = signals[0];
   if (best?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best duration; treat it as a contradicted call, not a verified edge.');
   else if (best?.deep.confirmation.status === 'confirmed') notes.push(`Confirmation layer: ${best.deep.confirmation.reasons.at(-1)}`);
@@ -746,7 +751,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
     lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
     engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
-    state, analysisEngineCount: state.engines.length, engineLab, notes,
+    state, aiSynthesis, analysisEngineCount: state.engines.length, engineLab, notes,
     durationMs: Date.now() - started,
   };
 }

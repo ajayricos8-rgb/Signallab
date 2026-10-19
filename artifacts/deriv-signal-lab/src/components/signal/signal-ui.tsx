@@ -1,10 +1,11 @@
 // Shared signal UI for every tool: scan progress, the signal card with its
 // confidence score and engine agreement, the engine vote list and the
 // cross-market ranking.
-import { ArrowDownRight, ArrowUpRight, BadgeCheck, CheckCircle2, CircleDashed, Cpu, Loader2, MinusCircle, ShieldAlert, Sparkles, XCircle } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, BadgeCheck, BrainCircuit, CheckCircle2, CircleDashed, Cpu, Loader2, MinusCircle, ShieldAlert, Sparkles, XCircle } from 'lucide-react';
 import type { EngineVote, SignalStrength, VoteTally } from '@/lib/signal-engine/confidence';
 import type { ConfirmationReport } from '@/lib/signal-engine/confirmation';
 import type { DigitMarketState, QuoteMarketState } from '@/lib/signal-engine/market-state';
+import type { AiSynthesis } from '@/lib/signal-engine/ai-synthesis';
 
 export type MarketProgressState = 'queued' | 'running' | 'done' | 'failed' | 'waiting';
 
@@ -387,6 +388,43 @@ export function ConfirmationPanel({ report }: { report: ConfirmationReport }) {
       <ul className="mt-3 space-y-1 text-[11px] leading-relaxed text-muted-foreground">
         {report.reasons.map((reason) => <li key={reason}>• {reason}</li>)}
       </ul>
+    </section>
+  );
+}
+
+/** Layer 5: the quant measurement suite and its rule-based AI verdict. */
+export function AiSynthesisCard({ synthesis }: { synthesis: AiSynthesis }) {
+  const stable = synthesis.consensus.direction !== null && synthesis.consensus.agreeing >= Math.ceil(synthesis.consensus.windows / 2);
+  return (
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="ai-synthesis-card">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="eyebrow flex items-center gap-1.5"><BrainCircuit size={12} /> Layer 5 · quant engines + AI synthesis</div>
+          <h3 className="mt-1 text-sm font-bold">Every angle, one verdict</h3>
+        </div>
+        <span
+          className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.1em] ${stable ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' : 'border-amber-500/40 bg-amber-500/10 text-amber-500'}`}
+          data-testid="ai-synthesis-verdict"
+        >
+          {synthesis.verdict}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2">
+          <div className="eyebrow">Cross-window stability</div>
+          <div className="mono mt-1 text-sm font-bold">{synthesis.consensus.agreeing}/{synthesis.consensus.windows} windows</div>
+          <div className="text-[9px] text-muted-foreground">{synthesis.consensus.direction ?? 'no stable direction'}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2">
+          <div className="eyebrow">Measurement suite</div>
+          <div className="mono mt-1 text-sm font-bold">{synthesis.family}</div>
+          <div className="text-[9px] text-muted-foreground">distribution · runs · recurrence · spectrum · regime</div>
+        </div>
+      </div>
+      <ul className="mt-3 space-y-1 text-[11px] leading-relaxed text-muted-foreground">
+        {synthesis.bullets.map((bullet) => <li key={bullet}>• {bullet}</li>)}
+      </ul>
+      <p className="mt-2 text-[10px] text-muted-foreground">{synthesis.risk}</p>
     </section>
   );
 }
