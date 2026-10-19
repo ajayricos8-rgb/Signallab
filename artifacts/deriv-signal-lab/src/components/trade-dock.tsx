@@ -185,6 +185,7 @@ export function TradeDock({
   const [durationUnit, setDurationUnit] = useState<TradeDurationUnit>('t');
   const [timeDurationText, setTimeDurationText] = useState('');
   const [botConfig, setBotConfig] = useState<SignalBotConfig>(readBotConfig);
+  const [botSpeed, setBotSpeed] = useState<'fast' | 'normal'>('normal');
   const titleId = useId();
   const noteId = useId();
   const bodyId = useId();
@@ -341,7 +342,7 @@ export function TradeDock({
     }
     setTicketIssue('');
     setCollapsed(false);
-    signalBot.loadAndRun(botPlan, { ...botConfig, baseStake: stakeValue });
+    signalBot.loadAndRun(botPlan, { ...botConfig, baseStake: stakeValue }, botSpeed);
   }
 
   function applyAnalysis() {
@@ -476,6 +477,14 @@ export function TradeDock({
                 className="focus-ring rounded-lg border border-sky-300/50 bg-sky-300/10 px-2.5 py-2 text-[11px] font-bold text-sky-200"
               >Use signal{recommendation.label ? ` · ${recommendation.label}` : ''}</button>}
               {botPlan && (
+                <>
+                <div className="inline-flex h-8 items-center rounded-lg border border-[#385677] bg-[#162f50] p-0.5" role="group" aria-label="Bot execution speed">
+                  {(['normal', 'fast'] as const).map((speed) => (
+                    <button key={speed} type="button" onClick={() => setBotSpeed(speed)} aria-pressed={botSpeed === speed}
+                      className={`h-7 rounded-md px-2 text-[10px] font-bold capitalize transition-colors ${botSpeed === speed ? 'bg-sky-300 text-[#08233c]' : 'text-slate-300 hover:text-white'}`}
+                      title={speed === 'fast' ? 'Reduce local polling and between-run delay; network and Deriv execution latency still apply.' : 'Standard polling and run spacing.'}>{speed}</button>
+                  ))}
+                </div>
                 <button
                   type="button"
                   onClick={handleLoadAndRun}
@@ -491,6 +500,7 @@ export function TradeDock({
                   {bot.running ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
                   {bot.running ? 'Running…' : 'Load and Run'}
                 </button>
+                </>
               )}
               {bot.hasActivity && !signalBot.open && (
                 <button

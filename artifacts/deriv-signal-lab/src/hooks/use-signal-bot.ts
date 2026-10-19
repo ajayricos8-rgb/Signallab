@@ -100,7 +100,7 @@ export type SignalBotController = {
   running: boolean;
   /** True when the page has something to show and can be reset. */
   hasActivity: boolean;
-  start: (plan: SignalBotPlan, config: SignalBotConfig) => void;
+  start: (plan: SignalBotPlan, config: SignalBotConfig, speed?: 'fast' | 'normal') => void;
   stop: () => void;
   reset: () => void;
 };
@@ -117,8 +117,10 @@ type EntryWaitResult = {
   note: string;
 };
 
-const PAUSE_BETWEEN_RUNS_MS = 600;
-const ENTRY_POLL_MS = 250;
+const NORMAL_PAUSE_BETWEEN_RUNS_MS = 600;
+const FAST_PAUSE_BETWEEN_RUNS_MS = 100;
+const NORMAL_ENTRY_POLL_MS = 250;
+const FAST_ENTRY_POLL_MS = 50;
 /** A quote older than this cannot trigger an entry (seconds). */
 const ENTRY_STALE_AFTER_MS = 5_000;
 /** An analysis older than this must be re-run before the bot trades it. */
@@ -256,7 +258,7 @@ export function useSignalBot(): SignalBotController {
     async (
       generation: number,
       decision: RunEntryDecision,
-      context: { symbol: string; runIndex: number; armedAtEpoch: number | null; wait: boolean; fallback: 'market' | 'skip' },
+      context: { symbol: string; runIndex: number; armedAtEpoch: number | null; wait: boolean; fallback: 'market' | 'skip'; pollMs: number },
     ): Promise<EntryWaitResult> => {
       if (!context.wait) {
         setEntryWatch(null);
@@ -305,7 +307,7 @@ export function useSignalBot(): SignalBotController {
             },
             latest?.quote ?? null,
           );
-          await sleep(ENTRY_POLL_MS);
+          await sleep(context.pollMs);
           continue;
         }
         const evaluation = evaluateEntry(
@@ -328,7 +330,7 @@ export function useSignalBot(): SignalBotController {
             waitedMs: Date.now() - armedAt,
             note: evaluation.reason,
           };
-        await sleep(ENTRY_POLL_MS);
+        await sleep(context.pollMs);
       }
     },
     [marketEntry],
@@ -345,7 +347,7 @@ export function useSignalBot(): SignalBotController {
   }, []);
 
   const start = useCallback(
-    (nextPlan: SignalBotPlan, rawConfig: SignalBotConfig) => {
+    (nextPlan: SignalBotPlan, rawConfig: SignalBotConfig, speed: 'fast' | 'normal' = 'normal') => {
       const session = tradingRef.current;
       if (runningRef.current) return;
       if (session.status !== 'connected') {
@@ -373,6 +375,9 @@ export function useSignalBot(): SignalBotController {
         return;
       }
       const config = sanitizeSignalBotConfig(rawConfig);
+      // Fast mode reduces local scheduling delay only; feed, proposal and buy latency remain network/Deriv-bound.
+      const pollMs = speed === 'fast' ? FAST_ENTRY_POLL_MS : NORMAL_ENTRY_POLL_MS;
+      const pauseBetweenRunsMs = speed === 'fast' ? FAST_PAUSE_BETWEEN_RUNS_MS : NORMAL_PAUSE_BETWEEN_RUNS_MS;
       configRef.current = config;
       generationRef.current += 1;
       const generation = generationRef.current;
@@ -464,6 +469,7 @@ export function useSignalBot(): SignalBotController {
             armedAtEpoch: latest?.epoch ?? null,
             wait: entryDecision.wait,
             fallback: entryDecision.fallback,
+            pollMs,
           });
           if (entryOutcome.status === 'cancelled') {
             // Stopped or reset mid-wait: the run never bought anything.
@@ -484,7 +490,7 @@ export function useSignalBot(): SignalBotController {
               ),
             );
             setEntryWatch(null);
-            await sleep(PAUSE_BETWEEN_RUNS_MS);
+            await sleep(pauseBetweenRunsMs);
             if (generation !== generationRef.current) return;
             continue;
           }
@@ -516,7 +522,7 @@ export function useSignalBot(): SignalBotController {
               ),
             );
             setEntryWatch(null);
-            await sleep(PAUSE_BETWEEN_RUNS_MS);
+            await sleep(pauseBetweenRunsMs);
             if (generation !== generationRef.current) return;
             continue;
           }
@@ -585,7 +591,7 @@ export function useSignalBot(): SignalBotController {
           if (generation !== generationRef.current) return;
           if (result.status === 'lost') streak += 1;
           else if (result.status === 'won') streak = 0;
-          await sleep(PAUSE_BETWEEN_RUNS_MS);
+          await sleep(pauseBetweenRunsMs);
           if (generation !== generationRef.current) return;
         }
       })();
