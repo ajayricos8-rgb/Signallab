@@ -17,7 +17,7 @@ type SignalBotContextValue = {
   expanded: boolean;
   currency: string;
   /** Opens the bot page and starts trading `plan` with the dock's settings. */
-  loadAndRun: (plan: SignalBotPlan, config: SignalBotConfig) => void;
+  loadAndRun: (plan: SignalBotPlan, config: SignalBotConfig, speed?: 'fast' | 'normal') => void;
   show: () => void;
   hide: () => void;
   setExpanded: (expanded: boolean) => void;
@@ -32,9 +32,9 @@ export function SignalBotProvider({ children }: { children: ReactNode }) {
   const [expanded, setExpanded] = useState(false);
 
   const loadAndRun = useCallback(
-    (plan: SignalBotPlan, config: SignalBotConfig) => {
+    (plan: SignalBotPlan, config: SignalBotConfig, speed: 'fast' | 'normal' = 'normal') => {
       setOpen(true);
-      bot.start(plan, config);
+      bot.start(plan, config, speed);
     },
     [bot],
   );
