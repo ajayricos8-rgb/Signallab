@@ -2,10 +2,10 @@
 // menu when "Load and Run" is pressed. It shows every contract the bot buys as
 // the run progresses, stops the bot on demand and resets the page for a fresh
 // run once the bot has stopped or finished its runs.
-import { AlertTriangle, Bot, CheckCircle2, CircleDashed, Crosshair, Loader2, Maximize2, Minimize2, RotateCcw, SkipForward, Square, Timer, X, XCircle } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, CircleDashed, Crosshair, Loader2, Maximize2, Minimize2, RotateCcw, SkipForward, Square, Target, Timer, X, XCircle } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import type { SignalBotController } from '@/hooks/use-signal-bot';
-import { describeStopReason } from '@/lib/signal-bot/plan.ts';
+import { describeStopReason, takeProfitState } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotEntryWatch, SignalBotRun, SignalBotStatus } from '@/lib/signal-bot/types.ts';
 import { describeEntryEvidence, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { researchAdvisory } from '@/lib/engine-lab/execution';
@@ -150,6 +150,17 @@ export function SignalBotWindow({
   const stopNote = describeStopReason(stopReason);
   const showReset = !bot.running && (runs.length > 0 || Boolean(error));
   const progress = `${summary.started}/${targetRuns || 0}`;
+  // Take profit progress for this run: winning runs banked and realised profit,
+  // against whichever targets the dock was set to.
+  const takeProfit = takeProfitState(bot.config, summary);
+  const takeProfitStopNote =
+    stopReason !== 'take-profit'
+      ? ''
+      : takeProfit.reached === 'profit'
+        ? `Take profit reached: ${formatSignedAmount(summary.profit, currency)} realised against a ${formatAmount(takeProfit.profitTarget, currency)} target. No new contracts were bought.`
+        : takeProfit.reached === 'wins'
+          ? `Take profit reached: ${takeProfit.wins} winning run${takeProfit.wins === 1 ? '' : 's'} against a ${takeProfit.winsTarget}-win target. No new contracts were bought.`
+          : stopNote;
 
   return (
     <section
@@ -271,6 +282,36 @@ export function SignalBotWindow({
           {!expanded && <Stat label="Streak" value={`${summary.lossStreak}`} />}
         </div>
 
+        {takeProfit.enabled && plan && (
+          <div
+            className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-2.5 py-2 text-[10px] leading-snug ${
+              takeProfit.reached
+                ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400'
+                : 'border-border bg-background/40 text-muted-foreground'
+            }`}
+            data-testid="bot-take-profit"
+            data-tp-reached={takeProfit.reached ?? 'false'}
+          >
+            <span className="inline-flex items-center gap-1 font-bold">
+              <Target size={12} /> Take profit
+            </span>
+            {takeProfit.profitTarget > 0 && (
+              <span className="mono">
+                {formatSignedAmount(summary.profit, currency)} / {formatAmount(takeProfit.profitTarget, currency)}
+                {takeProfit.profitRemaining > 0
+                  ? ` · ${formatAmount(takeProfit.profitRemaining, currency)} to go`
+                  : ' · reached'}
+              </span>
+            )}
+            {takeProfit.winsTarget > 0 && (
+              <span className="mono">
+                wins {takeProfit.wins} / {takeProfit.winsTarget}
+                {takeProfit.winsRemaining > 0 ? ` · ${takeProfit.winsRemaining} to go` : ' · reached'}
+              </span>
+            )}
+          </div>
+        )}
+
         {expanded && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
             <span>Next martingale step {summary.nextMartingaleStep}</span>
@@ -308,8 +349,10 @@ export function SignalBotWindow({
       <footer className="shrink-0 space-y-1.5 border-t border-border bg-background/40 px-3 py-2">
         {stopNote && (
           <p className="text-[10px] leading-snug text-muted-foreground" data-testid="bot-stop-note">
-            {stopNote}
-            {stopReason === 'manual' || stopReason === 'stop-loss' ? ' Reset clears this page for a fresh run.' : ''}
+            {takeProfitStopNote || stopNote}
+            {stopReason === 'manual' || stopReason === 'stop-loss' || stopReason === 'take-profit'
+              ? ' Reset clears this page for a fresh run.'
+              : ''}
           </p>
         )}
         <div className="flex items-center gap-2">

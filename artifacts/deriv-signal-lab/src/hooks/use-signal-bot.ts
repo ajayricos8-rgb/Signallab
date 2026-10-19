@@ -10,6 +10,9 @@
 //     quote level (or digit context) while borrowing ticks from the shared
 //     public market feed, then buys, then waits for that contract to settle
 //     before the next run — a single contract is ever open for the bot;
+//   * the bot stops itself when the runs run out, when the stop loss trips, or
+//     when either take profit target is reached (a number of winning runs or a
+//     realised profit amount, both set on the dock and 0 = off);
 //   * Stop halts new purchases immediately; a contract already bought is left
 //     to expire on Deriv and its row still fills in when Deriv reports it;
 //   * the bot trades the signal it was loaded with. The research library's
@@ -91,6 +94,8 @@ export type SignalBotController = {
   runs: SignalBotRun[];
   summary: ReturnType<typeof summarizeBotRuns>;
   plan: SignalBotPlan | null;
+  /** Settings the current (or last) run was started with. */
+  config: SignalBotConfig;
   /** Runs the bot will attempt for this signal. */
   targetRuns: number;
   /** Contract the bot is currently holding, if any. */
@@ -148,6 +153,7 @@ export function useSignalBot(): SignalBotController {
   const [error, setError] = useState('');
   const [runs, setRuns] = useState<SignalBotRun[]>([]);
   const [plan, setPlan] = useState<SignalBotPlan | null>(null);
+  const [config, setConfig] = useState<SignalBotConfig>(sanitizeSignalBotConfig(null));
   const [targetRuns, setTargetRuns] = useState(0);
   const [activeContractId, setActiveContractId] = useState<number | null>(null);
   const [entryWatch, setEntryWatch] = useState<SignalBotEntryWatch | null>(null);
@@ -343,7 +349,9 @@ export function useSignalBot(): SignalBotController {
     setActiveContractId(null);
     setEntryWatch(null);
     setStopReason(reason);
-    setStatus(reason === 'runs' ? 'completed' : reason === 'error' ? 'error' : 'stopped');
+    // Hitting the run count or a take profit target is a finished run; the
+    // stop loss and a manual stop are not.
+    setStatus(reason === 'runs' || reason === 'take-profit' ? 'completed' : reason === 'error' ? 'error' : 'stopped');
   }, []);
 
   const start = useCallback(
@@ -385,6 +393,7 @@ export function useSignalBot(): SignalBotController {
 
       const target = resolveMaxRuns(config, nextPlan.recommendedRuns);
       setPlan(nextPlan);
+      setConfig(config);
       setTargetRuns(target);
       setRuns([]);
       setError('');
@@ -408,12 +417,18 @@ export function useSignalBot(): SignalBotController {
       void (async () => {
         let streak = 0;
         let started = 0;
+        // Take profit progress is tracked on the loop's own settlement results
+        // (not React state) so the decision before the next purchase is exact.
+        let wins = 0;
+        let realisedProfit = 0;
         while (true) {
           const decision = nextRunDecision({
             status: 'running',
             runsStarted: started,
             targetRuns: target,
             lossStreak: streak,
+            profit: realisedProfit,
+            wins,
             config,
           });
           if (!decision.buy) {
@@ -590,7 +605,15 @@ export function useSignalBot(): SignalBotController {
           setActiveContractId(null);
           if (generation !== generationRef.current) return;
           if (result.status === 'lost') streak += 1;
-          else if (result.status === 'won') streak = 0;
+          else if (result.status === 'won') {
+            streak = 0;
+            wins += 1;
+          }
+          // An unknown result has no profit to bank; only what Deriv reported
+          // moves the take profit total.
+          if (result.profit !== null && Number.isFinite(result.profit)) {
+            realisedProfit = Math.round((realisedProfit + result.profit) * 1e6) / 1e6;
+          }
           await sleep(pauseBetweenRunsMs);
           if (generation !== generationRef.current) return;
         }
@@ -652,6 +675,7 @@ export function useSignalBot(): SignalBotController {
     runs,
     summary,
     plan,
+    config,
     targetRuns,
     activeContractId,
     entryWatch,

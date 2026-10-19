@@ -1,5 +1,6 @@
 // Signal bot rules: how many runs a signal is worth, how the martingale ladder
-// sizes each stake, which entry each run waits for, and when the bot must stop.
+// sizes each stake, which entry each run waits for, and when the bot must stop
+// (run count, stop loss, or either take profit target — winning runs / profit).
 //
 // Pure functions only — the React hook in `hooks/use-signal-bot.ts` owns the
 // ordering, waiting, quoting and purchasing so these rules can be tested in
@@ -19,6 +20,10 @@ export const SIGNAL_BOT_LIMITS = {
   martingaleMultiplier: { min: 1, max: 5 },
   maxMartingaleSteps: { min: 0, max: 10 },
   stopLossStreak: { min: 0, max: 20 },
+  /** Take profit by runs: winning runs banked before the bot stops. */
+  takeProfitWins: { min: 0, max: 100 },
+  /** Take profit by profit: realised profit in the account currency. */
+  takeProfitAmount: { min: 0, max: 100_000 },
   maxRuns: { min: 0, max: 100 },
 } as const;
 
@@ -44,6 +49,10 @@ export function defaultSignalBotConfig(): SignalBotConfig {
     martingaleMultiplier: 2,
     maxMartingaleSteps: 3,
     stopLossStreak: 3,
+    // Both take profit targets start off: the run count the analysis suggests
+    // is the default exit, and a goal the user did not set never stops a run.
+    takeProfitWins: 0,
+    takeProfitAmount: 0,
     maxRuns: 0,
     entryMode: 'analysis',
   };
@@ -61,7 +70,7 @@ function clampNumber(value: unknown, bounds: { min: number; max: number }, fallb
   return Math.min(bounds.max, Math.max(bounds.min, parsed));
 }
 
-function roundStake(value: number): number {
+function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
@@ -69,7 +78,7 @@ export function sanitizeSignalBotConfig(input: Partial<SignalBotConfig> | null |
   const base = defaultSignalBotConfig();
   if (!input) return base;
   return {
-    baseStake: roundStake(clampNumber(input.baseStake, SIGNAL_BOT_LIMITS.stake, base.baseStake)),
+    baseStake: roundMoney(clampNumber(input.baseStake, SIGNAL_BOT_LIMITS.stake, base.baseStake)),
     martingaleMultiplier: clampNumber(
       input.martingaleMultiplier,
       SIGNAL_BOT_LIMITS.martingaleMultiplier,
@@ -80,6 +89,12 @@ export function sanitizeSignalBotConfig(input: Partial<SignalBotConfig> | null |
     ),
     stopLossStreak: Math.round(
       clampNumber(input.stopLossStreak, SIGNAL_BOT_LIMITS.stopLossStreak, base.stopLossStreak),
+    ),
+    takeProfitWins: Math.round(
+      clampNumber(input.takeProfitWins, SIGNAL_BOT_LIMITS.takeProfitWins, base.takeProfitWins),
+    ),
+    takeProfitAmount: roundMoney(
+      clampNumber(input.takeProfitAmount, SIGNAL_BOT_LIMITS.takeProfitAmount, base.takeProfitAmount),
     ),
     maxRuns: Math.round(clampNumber(input.maxRuns, SIGNAL_BOT_LIMITS.maxRuns, base.maxRuns)),
     entryMode: sanitizeEntryMode(input.entryMode),
@@ -125,14 +140,14 @@ export type StakePlan = {
  * resets to the base stake instead of growing without limit.
  */
 export function stakeForRun(config: SignalBotConfig, lossStreak: number): StakePlan {
-  const base = roundStake(clampNumber(config.baseStake, SIGNAL_BOT_LIMITS.stake, 1));
+  const base = roundMoney(clampNumber(config.baseStake, SIGNAL_BOT_LIMITS.stake, 1));
   const steps = Math.round(clampNumber(config.maxMartingaleSteps, SIGNAL_BOT_LIMITS.maxMartingaleSteps, 0));
   const multiplier = clampNumber(config.martingaleMultiplier, SIGNAL_BOT_LIMITS.martingaleMultiplier, 1);
   const streak = Number.isFinite(lossStreak) ? Math.max(0, Math.round(lossStreak)) : 0;
   if (steps <= 0 || multiplier <= 1) return { stake: base, step: 0, exhausted: false };
   if (streak === 0) return { stake: base, step: 0, exhausted: false };
   if (streak > steps) return { stake: base, step: 0, exhausted: true };
-  return { stake: roundStake(base * multiplier ** streak), step: streak, exhausted: false };
+  return { stake: roundMoney(base * multiplier ** streak), step: streak, exhausted: false };
 }
 
 /** Highest stake the configured ladder can reach, for the dock's warning line. */
@@ -141,10 +156,70 @@ export function maxLadderStake(config: SignalBotConfig): number {
   return plan.stake;
 }
 
+export type TakeProfitTarget = 'profit' | 'wins';
+
+/**
+ * Live state of the two take profit targets the dock configures.
+ *
+ * A run can aim at either one, both, or neither: `takeProfitWins` banks a
+ * number of winning runs, `takeProfitAmount` banks a realised profit amount in
+ * the account currency. Both start at 0, which turns that target off.
+ */
+export type TakeProfitState = {
+  /** True when at least one target is configured. */
+  enabled: boolean;
+  /** Which target the run has reached, if any. */
+  reached: TakeProfitTarget | null;
+  /** Configured money target (0 = off). */
+  profitTarget: number;
+  /** Configured winning-run target (0 = off). */
+  winsTarget: number;
+  /** Realised profit of settled runs. */
+  profit: number;
+  /** Winning runs settled so far. */
+  wins: number;
+  /** Money still needed for the profit target (0 once reached or off). */
+  profitRemaining: number;
+  /** Winning runs still needed for the runs target (0 once reached or off). */
+  winsRemaining: number;
+};
+
+export function takeProfitState(
+  config: SignalBotConfig,
+  progress: { profit: number; wins: number },
+): TakeProfitState {
+  const profitTarget = roundMoney(
+    clampNumber(config.takeProfitAmount, SIGNAL_BOT_LIMITS.takeProfitAmount, 0),
+  );
+  const winsTarget = Math.round(
+    clampNumber(config.takeProfitWins, SIGNAL_BOT_LIMITS.takeProfitWins, 0),
+  );
+  const profit = Number.isFinite(progress.profit) ? roundMoney(progress.profit) : 0;
+  const wins = Number.isFinite(progress.wins) ? Math.max(0, Math.round(progress.wins)) : 0;
+  const profitReached = profitTarget > 0 && profit >= profitTarget;
+  const winsReached = winsTarget > 0 && wins >= winsTarget;
+  return {
+    enabled: profitTarget > 0 || winsTarget > 0,
+    // When both targets are met the money target is named, because it is the
+    // one configured in cash; either way the run stops buying.
+    reached: profitReached ? 'profit' : winsReached ? 'wins' : null,
+    profitTarget,
+    winsTarget,
+    profit,
+    wins,
+    profitRemaining: profitTarget > 0 ? Math.max(0, roundMoney(profitTarget - profit)) : 0,
+    winsRemaining: winsTarget > 0 ? Math.max(0, winsTarget - wins) : 0,
+  };
+}
+
 /**
  * Decides whether the bot may buy another contract.
  *
- * `runsStarted` counts runs already attempted (open, settled or failed).
+ * `runsStarted` counts runs already attempted (open, settled or failed),
+ * `profit` is the realised profit of settled runs and `wins` the winning runs
+ * settled so far. The risk stops are evaluated before the targets: a losing
+ * streak that trips the stop loss ends the run even if an earlier win streak
+ * already banked the take profit.
  */
 export function nextRunDecision(input: {
   status: 'running' | 'stopped' | 'completed' | 'error' | 'idle';
@@ -152,11 +227,20 @@ export function nextRunDecision(input: {
   targetRuns: number;
   lossStreak: number;
   config: SignalBotConfig;
+  /** Realised profit of settled runs; defaults to 0 (profit target unfed). */
+  profit?: number;
+  /** Winning runs settled so far; defaults to 0 (runs target unfed). */
+  wins?: number;
 }): { buy: boolean; reason: SignalBotStopReason } {
   if (input.status !== 'running') return { buy: false, reason: input.status === 'idle' ? null : (input.status as SignalBotStopReason) };
-  if (input.runsStarted >= input.targetRuns) return { buy: false, reason: 'runs' };
   if (input.config.stopLossStreak > 0 && input.lossStreak >= input.config.stopLossStreak)
     return { buy: false, reason: 'stop-loss' };
+  const takeProfit = takeProfitState(input.config, {
+    profit: input.profit ?? 0,
+    wins: input.wins ?? 0,
+  });
+  if (takeProfit.reached) return { buy: false, reason: 'take-profit' };
+  if (input.runsStarted >= input.targetRuns) return { buy: false, reason: 'runs' };
   return { buy: true, reason: null };
 }
 
@@ -285,6 +369,7 @@ export function summarizeBotRuns(runs: readonly SignalBotRun[], config: SignalBo
 export function describeStopReason(reason: SignalBotStopReason): string {
   if (reason === 'runs') return 'Finished every run from the analysis.';
   if (reason === 'stop-loss') return 'Stopped by the stop loss: too many losses in a row.';
+  if (reason === 'take-profit') return 'Stopped by take profit: the run reached the target you set.';
   if (reason === 'manual') return 'Stopped by you. Contracts already bought keep running to expiry.';
   if (reason === 'error') return 'Stopped because Deriv refused an order.';
   return '';
