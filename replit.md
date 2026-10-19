@@ -23,7 +23,7 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-- `artifacts/deriv-signal-lab/src/components/trade-dock.tsx` — the mini bottom trade menu on every Tools tab: manual ticket, bot configuration (martingale, stop loss, runs) and the **Load and Run** button.
+- `artifacts/deriv-signal-lab/src/components/trade-dock.tsx` — the mini bottom trade menu on every Tools tab: manual ticket, bot configuration (martingale, stop loss, take profit by winning runs or realised profit, runs) and the **Load and Run** button.
 - `artifacts/deriv-signal-lab/src/components/signal-bot-window.tsx` — the mini/expandable bot page that shows each taken trade, Stop and Reset.
 - `artifacts/deriv-signal-lab/src/hooks/use-signal-bot.ts` + `src/lib/signal-bot/` — the run loop and its pure rules (runs per signal, martingale ladder, stop decisions).
 - `artifacts/deriv-signal-lab/src/lib/engine-lab/fusion.ts` — layer 4: how the 300-engine research ensemble is folded into the traded probability and evidence score.
@@ -47,7 +47,7 @@ _Replace the heading above with the project's name, and this line with one sente
 ## User preferences
 
 - Every Run Analysis, on every tool, must start immediately across markets, show progress as a percentage and end with a signal, its confidence score and how many engines agreed — never an "Analysis blocked" / WAIT-only result.
-- The signal bot reads stake and martingale from the mini bottom trade menu and the tick duration plus run count from the analysis; it trades one contract at a time, stops immediately on request and only offers Reset once it is idle.
+- The signal bot reads stake, martingale and the exit limits from the mini bottom trade menu (stop loss, take profit by winning runs, take profit by realised profit) and the tick duration plus run count from the analysis; both take profit targets are optional (0 = off), either one ends the run as **Completed**, it trades one contract at a time, stops immediately on request and only offers Reset once it is idle.
 - The bot trades every signal it is loaded with. No research gate, evidence status or quoted payout may turn Load and Run into an observation-only state: they are shown as advice on the run (and in the bot page) instead.
 
 ## Gotchas

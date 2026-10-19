@@ -7,6 +7,7 @@ import {
   defaultSignalBotConfig,
   describeEntryOutcome,
   describeEntryWatch,
+  describeStopReason,
   maxLadderStake,
   nextRunDecision,
   planRunEntry,
@@ -16,6 +17,7 @@ import {
   settlementTimeoutMs,
   stakeForRun,
   summarizeBotRuns,
+  takeProfitState,
 } from '../src/lib/signal-bot/plan.ts';
 import { immediateEntryPlan, isEntryPlan } from '../src/lib/signal-engine/entry.ts';
 
@@ -102,6 +104,20 @@ test('a missing or broken configuration falls back to the defaults', () => {
     ...defaultSignalBotConfig(),
     baseStake: defaultSignalBotConfig().baseStake,
   });
+});
+
+test('both take profit targets start off and are clamped into their limits', () => {
+  assert.equal(defaultSignalBotConfig().takeProfitWins, 0);
+  assert.equal(defaultSignalBotConfig().takeProfitAmount, 0);
+  // A config saved before take profit existed is still a valid config.
+  const restored = sanitizeSignalBotConfig({ baseStake: 2, stopLossStreak: 4 });
+  assert.equal(restored.takeProfitWins, 0);
+  assert.equal(restored.takeProfitAmount, 0);
+  const clamped = sanitizeSignalBotConfig({ takeProfitWins: 1e9, takeProfitAmount: -20 });
+  assert.equal(clamped.takeProfitWins, SIGNAL_BOT_LIMITS.takeProfitWins.max);
+  assert.equal(clamped.takeProfitAmount, SIGNAL_BOT_LIMITS.takeProfitAmount.min);
+  // The money target keeps two decimals like every other amount.
+  assert.equal(sanitizeSignalBotConfig({ takeProfitAmount: 12.3456 }).takeProfitAmount, 12.35);
 });
 
 test('the entry setting only picks what happens to a missed entry', () => {
@@ -298,6 +314,98 @@ test('the stop loss trips on the configured losing streak and only then', () => 
   // A disabled stop loss never stops the bot.
   const off = { ...config, stopLossStreak: 0 };
   assert.equal(nextRunDecision({ status: 'running', runsStarted: 4, targetRuns: 20, lossStreak: 9, config: off }).buy, true);
+});
+
+// ---- take profit -----------------------------------------------------------
+
+test('take profit by profit stops the next purchase once realised profit reaches the amount', () => {
+  const config = { ...defaultSignalBotConfig(), stopLossStreak: 0, takeProfitAmount: 10 };
+  const before = nextRunDecision({
+    status: 'running',
+    runsStarted: 3,
+    targetRuns: 20,
+    lossStreak: 0,
+    profit: 9.99,
+    wins: 3,
+    config,
+  });
+  assert.deepEqual(before, { buy: true, reason: null });
+  const reached = nextRunDecision({
+    status: 'running',
+    runsStarted: 4,
+    targetRuns: 20,
+    lossStreak: 0,
+    profit: 10,
+    wins: 4,
+    config,
+  });
+  assert.deepEqual(reached, { buy: false, reason: 'take-profit' });
+  // Realised profit is what counts: running above the target after a loss is
+  // still above it.
+  assert.equal(
+    nextRunDecision({ status: 'running', runsStarted: 4, targetRuns: 20, lossStreak: 1, profit: 13.5, wins: 4, config: { ...config, stopLossStreak: 3 } }).reason,
+    'take-profit',
+  );
+});
+
+test('take profit by runs stops once the configured winning runs are banked', () => {
+  const config = { ...defaultSignalBotConfig(), stopLossStreak: 0, takeProfitWins: 3 };
+  assert.equal(
+    nextRunDecision({ status: 'running', runsStarted: 5, targetRuns: 20, lossStreak: 0, profit: -1, wins: 2, config }).reason,
+    null,
+  );
+  assert.equal(
+    nextRunDecision({ status: 'running', runsStarted: 6, targetRuns: 20, lossStreak: 0, profit: 1.7, wins: 3, config }).reason,
+    'take-profit',
+  );
+});
+
+test('a disabled take profit target never stops the bot', () => {
+  const config = { ...defaultSignalBotConfig(), stopLossStreak: 0, takeProfitWins: 0, takeProfitAmount: 0 };
+  assert.equal(
+    nextRunDecision({ status: 'running', runsStarted: 2, targetRuns: 20, lossStreak: 0, profit: 5_000, wins: 19, config }).buy,
+    true,
+  );
+  // The caller that does not track progress (older call sites) still works and
+  // simply cannot reach a target.
+  assert.equal(nextRunDecision({ status: 'running', runsStarted: 2, targetRuns: 20, lossStreak: 0, config }).buy, true);
+});
+
+test('the stop loss is checked before the take profit target', () => {
+  const config = { ...defaultSignalBotConfig(), stopLossStreak: 2, takeProfitAmount: 5 };
+  assert.deepEqual(
+    nextRunDecision({ status: 'running', runsStarted: 6, targetRuns: 20, lossStreak: 2, profit: 8, wins: 4, config }),
+    { buy: false, reason: 'stop-loss' },
+  );
+});
+
+test('the take profit state reports progress, what is left and which target tripped', () => {
+  const config = { ...defaultSignalBotConfig(), takeProfitWins: 4, takeProfitAmount: 12.5 };
+
+  const off = takeProfitState(defaultSignalBotConfig(), { profit: 3, wins: 2 });
+  assert.equal(off.enabled, false);
+  assert.equal(off.reached, null);
+
+  const running = takeProfitState(config, { profit: 4.25, wins: 2 });
+  assert.equal(running.enabled, true);
+  assert.equal(running.reached, null);
+  assert.equal(running.profitRemaining, 8.25);
+  assert.equal(running.winsRemaining, 2);
+
+  const byProfit = takeProfitState(config, { profit: 12.5, wins: 1 });
+  assert.equal(byProfit.reached, 'profit');
+  assert.equal(byProfit.profitRemaining, 0);
+  assert.equal(byProfit.winsRemaining, 3);
+
+  const byWins = takeProfitState({ ...defaultSignalBotConfig(), takeProfitWins: 4 }, { profit: -2, wins: 4 });
+  assert.equal(byWins.reached, 'wins');
+  assert.equal(byWins.profitRemaining, 0);
+  assert.equal(byWins.winsRemaining, 0);
+});
+
+test('the stop reason line names the take profit exit', () => {
+  assert.match(describeStopReason('take-profit'), /take profit/i);
+  assert.match(describeStopReason('stop-loss'), /stop loss/i);
 });
 
 test('a bot that is not running never buys', () => {

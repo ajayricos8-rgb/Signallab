@@ -312,6 +312,15 @@ export function TradeDock({
   // A finished signal whose analysis has no engine entry (restored, older runs).
   const analysisEntryMissing = Boolean(recommendation && canApplySignal(recommendation, family, expiryOptions) && !analysisEntryReady);
   const ladderTop = maxLadderStake({ ...botConfig, baseStake: stakeValue ?? botConfig.baseStake });
+  // The two take profit targets, phrased for the dock's warning line.
+  const takeProfitTargets = [
+    botConfig.takeProfitWins > 0
+      ? `${botConfig.takeProfitWins} winning run${botConfig.takeProfitWins === 1 ? '' : 's'}`
+      : '',
+    botConfig.takeProfitAmount > 0
+      ? `${formatAmount(botConfig.takeProfitAmount, currency)} realised profit`
+      : '',
+  ].filter(Boolean);
 
   // A finished analysis pops the dock open so Load and Run is reachable.
   const lastAnalysisRunId = useRef(analysis?.runId ?? 0);
@@ -714,7 +723,7 @@ export function TradeDock({
                         : 'Run Analysis to load a signal into the bot.'}
                   </span>
                 </div>
-                <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-5">
+                <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
                   <BotNumberField
                     label="Martingale ×"
                     value={botConfig.martingaleMultiplier}
@@ -744,6 +753,30 @@ export function TradeDock({
                     hint="Consecutive losing trades that stop the bot immediately. 0 disables the stop loss."
                     testId="bot-stop-loss"
                     onChange={(value) => setBotConfig((current) => ({ ...current, stopLossStreak: value }))}
+                  />
+                  <BotNumberField
+                    label="Take profit · wins"
+                    value={botConfig.takeProfitWins}
+                    min={SIGNAL_BOT_LIMITS.takeProfitWins.min}
+                    max={SIGNAL_BOT_LIMITS.takeProfitWins.max}
+                    step={1}
+                    hint="Stop the bot once this many runs have won. 0 turns this target off."
+                    testId="bot-take-profit-wins"
+                    onChange={(value) => setBotConfig((current) => ({ ...current, takeProfitWins: value }))}
+                  />
+                  <BotNumberField
+                    label="Take profit · amount"
+                    value={botConfig.takeProfitAmount}
+                    min={SIGNAL_BOT_LIMITS.takeProfitAmount.min}
+                    max={SIGNAL_BOT_LIMITS.takeProfitAmount.max}
+                    step={0.5}
+                    hint={
+                      currency
+                        ? `Stop the bot once realised profit reaches this amount in ${currency}. 0 turns this target off.`
+                        : 'Stop the bot once realised profit reaches this amount in your account currency. 0 turns this target off.'
+                    }
+                    testId="bot-take-profit-amount"
+                    onChange={(value) => setBotConfig((current) => ({ ...current, takeProfitAmount: value }))}
                   />
                   <BotNumberField
                     label="Runs · 0 = analysis"
@@ -784,6 +817,12 @@ export function TradeDock({
                     {botConfig.maxMartingaleSteps === 1 ? '' : 'es'} in a row, then back to the base stake.
                   </p>
                 )}
+                {takeProfitTargets.length > 0 && (
+                  <p className="mt-1.5 text-[10px] leading-snug text-emerald-200" data-testid="bot-take-profit-warning">
+                    Take profit targets: {takeProfitTargets.join(' or ')}. No new contract is bought once a target is
+                    reached; the contract already open is left to settle.
+                  </p>
+                )}
               </div>
               <p
                 id={noteId}
@@ -816,7 +855,7 @@ export function TradeDock({
                   ? 'Manual ticket: Use signal copies the latest analysis into the draft only. '
                   : 'Run Analysis to get a signal you can copy into this ticket. '}
                 {botPlan
-                  ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. The entry always comes from this analysis: ${entryModeLabel(botPlan.entry)}${botPlan.entry.mode === 'immediate' ? ' — ' : ` — ${botPlan.entry.detail} `}`
+                  ? `Load and Run trades this signal ${botRuns} time${botRuns === 1 ? '' : 's'}, one contract at a time, with the stake and martingale set above. The entry always comes from this analysis: ${entryModeLabel(botPlan.entry)}${botPlan.entry.mode === 'immediate' ? ' — ' : ` — ${botPlan.entry.detail} `}${takeProfitTargets.length > 0 ? `It also stops at its take profit target${takeProfitTargets.length === 1 ? '' : 's'}: ${takeProfitTargets.join(' or ')}. ` : ''}`
                   : ''}
                 {botResearchNote ? (
                   <span className="font-semibold text-amber-200">{botResearchNote} </span>
