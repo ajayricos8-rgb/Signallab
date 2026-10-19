@@ -11,7 +11,11 @@
 //     public market feed, then buys, then waits for that contract to settle
 //     before the next run — a single contract is ever open for the bot;
 //   * Stop halts new purchases immediately; a contract already bought is left
-//     to expire on Deriv and its row still fills in when Deriv reports it.
+//     to expire on Deriv and its row still fills in when Deriv reports it;
+//   * the bot trades the signal it was loaded with. The research library's
+//     execution gates are advice that travels with the run (and the quoted
+//     payout is reported on it) — neither may refuse the purchase, so an
+//     analysis always ends in a tradeable Load and Run.
 //
 // Purchases go through the authenticated Deriv session
 // (`useDerivTrading`): a live proposal is fetched first, then the buy is sent.
@@ -50,8 +54,9 @@ import type {
   SignalBotStopReason,
 } from '@/lib/signal-bot/types.ts';
 
-import { quoteEconomics, researchExecutionIssue } from '@/lib/engine-lab/execution';
+import { quoteEconomics, researchAdvisory } from '@/lib/engine-lab/execution';
 import type { ResearchDecision } from '@/lib/engine-lab/types';
+import type { ResearchFusion } from '@/lib/engine-lab/fusion';
 
 export type SignalBotPlan = {
   family: TradeFamily;
@@ -73,6 +78,8 @@ export type SignalBotPlan = {
   entry: EntryPlan;
   ranAt: number;
   researchDecision?: ResearchDecision | null;
+  /** What the 300-engine library contributed to the traded probability. */
+  research?: ResearchFusion | null;
   /** Confirmation-layer verdict for this signal, for the bot page. */
   confirmation?: { status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted'; edgePts: number; decisive: boolean } | null;
 };
@@ -365,13 +372,6 @@ export function useSignalBot(): SignalBotController {
         setError(`This analysis is ${Math.round((Date.now() - nextPlan.ranAt) / 60_000)} minutes old. Run Analysis again so the bot trades a current entry.`);
         return;
       }
-      const researchIssue = researchExecutionIssue(nextPlan.researchDecision);
-      if (researchIssue) {
-        setStatus('error');
-        setStopReason('error');
-        setError(researchIssue);
-        return;
-      }
       const config = sanitizeSignalBotConfig(rawConfig);
       configRef.current = config;
       generationRef.current += 1;
@@ -397,6 +397,8 @@ export function useSignalBot(): SignalBotController {
         durationUnit: nextPlan.durationUnit,
         barrier: barrierFor(nextPlan.contractType, nextPlan.barrierDigit),
       });
+
+      const researchNote = researchAdvisory(nextPlan.researchDecision) ?? '';
 
       void (async () => {
         let streak = 0;
@@ -524,9 +526,11 @@ export function useSignalBot(): SignalBotController {
           try {
             const quote = await tradingRef.current.requestQuote(request);
             if (generation !== generationRef.current) return;
+            // The quoted payout is reported, never a veto: the bot trades the
+            // signal it was loaded with and the estimate below break-even is
+            // shown on the run so the user can judge it.
             const economics = quoteEconomics(nextPlan.entry.evidence.signalProbability, quote.askPrice, quote.payout);
-            if (!economics.allowed) throw new Error(economics.reason);
-            // No purchase is submitted when the actual payout fails break-even.
+            const economicsNote = economics.allowed ? '' : economics.reason;
             const receipt = await tradingRef.current.confirmBuy(quote, request);
             if (generation !== generationRef.current) {
               // Stop was pressed mid-purchase: the contract exists and is left
@@ -545,7 +549,10 @@ export function useSignalBot(): SignalBotController {
                       status: 'open',
                       openedAt: Date.now(),
                       entryTicks: entryOutcome.waitedTicks,
-                      note: [entryNote, ladder.step > 0 ? `Martingale step ${ladder.step}.` : ''].filter(Boolean).join(' '),
+                      // The research advice is constant for the run, so it is
+                      // printed once (on the first contract) instead of on
+                      // every row; the payout check can differ per proposal.
+                      note: [entryNote, ladder.step > 0 ? `Martingale step ${ladder.step}.` : '', economicsNote, index === 1 ? researchNote : ''].filter(Boolean).join(' '),
                     }
                   : run,
               ),

@@ -118,6 +118,8 @@ export type ResearchDecision = {
   confidencePenalty: number;
   requiresPayout: true;
 };
+import type { ResearchFusion } from './fusion.ts';
+
 export type EngineLabReport = {
   version: '1.0.0';
   family: ToolFamily;
@@ -130,6 +132,8 @@ export type EngineLabReport = {
   readings: EngineReading[];
   research: ResearchAudit;
   decision: ResearchDecision;
+  /** How the research ensemble was folded into the signal the tools trade. */
+  fusion: ResearchFusion | null;
   warnings: string[];
   /** Loaded history of the account active at scan time; not automatically refreshed. */
   accounting: { sample: number; currency: string | null };

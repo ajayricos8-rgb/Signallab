@@ -21,6 +21,7 @@ import { confirmRiseFall, type ConfirmationReport, type QuoteConfirmationRow } f
 
 import { createForecastFactory, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
 import { buildEngineLabReport } from '../engine-lab/report.ts';
+import { fuseResearch, researchEvidence, type ResearchFusion } from '../engine-lab/fusion.ts';
 import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
 
 export type RiseFallDirection = 'RISE' | 'FALL';
@@ -87,6 +88,8 @@ export type RiseFallHorizonSignal = {
   breakdown: ConfidenceBreakdown;
   strength: SignalStrength;
   researchDecision: ResearchDecision;
+  /** What the research library's own forecast contributed to `winEstimate`. */
+  research: ResearchFusion;
   historical: { sample: number; rise: number; fall: number; unchanged: number };
   /** When and at what price this signal should be traded. */
   entry: EntryPlan;
@@ -638,6 +641,21 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       confirmation.decisive = false;
       confirmation.reasons.push('The independent research ensemble validated a contrary estimate; the master guard reduced the remaining edge by 75%.');
     }
+    // Layer 4: the research library stops being a side report. Its validated
+    // ensemble is folded into the win estimate every tool ranks, confirms,
+    // plans an entry for and trades — a validated ensemble can raise it, an
+    // unvalidated one can only pull it down.
+    const fused = fuseResearch({ audit, probability: winEstimate, fair });
+    const research = fused.fusion;
+    if (research.weight > 0) {
+      winEstimate = fused.probability;
+      confirmation.probability = winEstimate;
+      confirmation.winProbability = winEstimate;
+      const conditionalWin = winEstimate / Math.max(0.001, 1 - flatRate);
+      confirmation.probabilityRise = directionSign > 0 ? conditionalWin : 1 - conditionalWin;
+      confirmation.edgePts = 100 * (winEstimate - fair);
+      confirmation.reasons.push(`Research library: ${research.note}`);
+    }
     const horizonQuality = quality * clamp(0.6 + 0.4 * reliability, 0.6, 1);
     const { confidence: baseConfidence, breakdown } = confidenceScore({
       weightedAgreement: tally.weightedAgreement,
@@ -653,6 +671,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         statePredictability: state.predictability,
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
+      research: researchEvidence(research),
     });
     const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
     const recent = { sample: 0, rise: 0, fall: 0, unchanged: 0 };
@@ -696,7 +715,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const strength = winEstimate - fair < Math.max(0.005, 0.01 * fair) ? 'WEAK' : labelled;
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
-      confidence, breakdown, strength, historical: recent, entry, researchDecision,
+      confidence, breakdown, strength, historical: recent, entry, researchDecision, research,
       deep: { confirmation },
     };
   });
@@ -714,13 +733,14 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const engineLab = buildEngineLabReport({
     symbol: input.symbol, family: 'rise-fall', ticks: ticks.map((tick) => ({ ...tick, digit: digitByEpoch.get(tick.epoch) })),
     contract: { family: 'rise-fall', direction: best.direction }, horizon: best.horizon, fresh: input.fresh,
-    audit: researchAudits.get(`${best.horizon.unit}:${best.horizon.value}`)!, decision: best.researchDecision,
+    audit: researchAudits.get(`${best.horizon.unit}:${best.horizon.value}`)!, decision: best.researchDecision, fusion: best.research,
     legacy: { probability: best.winEstimate, fair: best.fairProbability, confidence: best.confidence, votes: best.votes,
       confirmationStatus: best.deep.confirmation.status, confirmed: best.deep.confirmation.decisive, entry: best.entry },
     candidates: signals.map((signal) => ({ label: `${signal.direction} · ${formatRiseFallHorizon(signal.horizon)}`, probability: signal.winEstimate, fair: signal.fairProbability, confidence: signal.confidence })),
     settlements: input.settlements, settlementCurrency: input.settlementCurrency,
   });
-  if (!best.researchDecision.eligible) notes.push(`Research execution guard: ${best.researchDecision.reasons.join(' ')}`);
+  if (best.research.weight > 0) notes.push(`Research library: ${best.research.note}`);
+  if (!best.researchDecision.eligible) notes.push(`Research advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
   onProgress?.(1, 'Signal and 300-engine audit ready');
   return {
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,

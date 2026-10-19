@@ -80,8 +80,20 @@ export function EngineLabPanel({ report }: { report?: EngineLabReport | null }) 
           </div>
           <div className={`mt-4 flex gap-2.5 rounded-lg border p-3 ${eligible ? 'border-emerald-500/25 bg-emerald-500/5' : 'border-amber-500/25 bg-amber-500/5'}`} data-testid="research-decision">
             {eligible ? <ShieldCheck size={17} className="mt-0.5 shrink-0 text-emerald-500" /> : <ShieldAlert size={17} className="mt-0.5 shrink-0 text-amber-500" />}
-            <div><div className="text-xs font-bold">{eligible ? 'Evidence-qualified candidate · payout check still required' : 'Observation only · automatic execution filtered'}</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{report.decision.reasons.join(' ')}</p><p className="mt-1 text-[10px] text-muted-foreground">The ranked signal remains visible. A favourable estimated probability is not a guarantee of profit.</p></div>
+            <div><div className="text-xs font-bold">{eligible ? 'Evidence-qualified candidate · Load and Run can trade it' : 'Research advice · Load and Run still trades this signal'}</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{report.decision.reasons.join(' ')}</p><p className="mt-1 text-[10px] text-muted-foreground">Advice only: the gates below never hide the ranked signal and never disable automatic execution. A favourable estimated probability is not a guarantee of profit.</p></div>
           </div>
+          {report.fusion && report.fusion.total > 0 && (
+            <div className="mt-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-[10px] leading-relaxed" data-testid="research-fusion">
+              <span className="font-bold text-foreground">Folded into the signal: </span>
+              {report.fusion.weight > 0
+                ? `${Math.round(report.fusion.weight * 100)}% of the traded edge came from this ensemble (${report.fusion.contributionPts >= 0 ? '+' : ''}${report.fusion.contributionPts.toFixed(2)} probability points).`
+                : 'this ensemble was checked and left the traded estimate unchanged.'}{' '}
+              {report.fusion.agreeing}/{report.fusion.total} models favour the outcome ·{' '}
+              {report.fusion.validated
+                ? `validated on ${report.fusion.sample} independent holdout rows, so it can raise or lower the estimate`
+                : 'not independently validated, so it can only lower the estimate'}
+            </div>
+          )}
           {report.accounting && report.accounting.sample > 0 && <p className="mt-3 text-[10px] text-muted-foreground">P&amp;L snapshot: {report.accounting.sample} loaded settlements · {report.accounting.currency ?? 'currency not specified'} · account active at scan time. Rerun after switching accounts.</p>}
           <div className="mt-3 text-[10px] text-muted-foreground">{report.symbol} · {report.horizon.value} {report.horizon.unit} · snapshot {report.asOfEpoch ? new Date(report.asOfEpoch * 1000).toISOString().replace('T', ' ').replace('.000Z', ' UTC') : '—'} · {report.sample.digits.toLocaleString()} digits / {report.sample.quotes.toLocaleString()} quotes / {report.sample.candles} closed 1m candles</div>
         </> : <div className="mt-4 rounded-lg border border-dashed border-border p-3 text-[11px] text-muted-foreground">Browse the complete library now. Run Analysis to evaluate all entries, reveal data gaps and inspect the evidence behind a specific contract.</div>}

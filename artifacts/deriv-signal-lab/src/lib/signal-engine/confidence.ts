@@ -66,6 +66,23 @@ export type ConfirmationEvidence = {
   adjustmentPts: number;
 };
 
+/**
+ * What the 300-engine research library's forecast contributed to a signal.
+ * Handed to the score by the analyzers; unvalidated research can only lower it.
+ */
+export type ResearchEvidence = {
+  /** Share of research-model weight favouring the traded outcome (0–1). */
+  agreement: number;
+  /** Holdout Brier skill of the research ensemble; null when unmeasured. */
+  skill: number | null;
+  /** Independent holdout rows behind that skill. */
+  sample: number;
+  /** True only when the ensemble passed independent holdout validation. */
+  validated: boolean;
+  /** True when a validated ensemble contradicts the traded outcome. */
+  contradicted: boolean;
+};
+
 export type ConfidenceBreakdown = {
   agreement: number;
   edge: number;
@@ -75,6 +92,8 @@ export type ConfidenceBreakdown = {
   verified: boolean;
   /** Contribution of the confirmation layer (0 when none was supplied). */
   confirmation: number;
+  /** Contribution of the research library (0 when none was supplied). */
+  research: number;
 };
 
 export type ConfidenceInput = {
@@ -99,6 +118,12 @@ export type ConfidenceInput = {
    * score is identical to the original calibrated formula.
    */
   confirmation?: ConfirmationEvidence | null;
+  /**
+   * Evidence from the 300-engine research library. Only supplied when a real
+   * forecast audit ran for this contract/duration; callers that do not pass it
+   * keep a bit-identical score.
+   */
+  research?: ResearchEvidence | null;
 };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -156,6 +181,25 @@ export function summarizeBacktest(wins: number, sample: number, fair: number, ef
 }
 
 /**
+ * How much the research library's own validated forecast is worth to the
+ * evidence score. Skill sets the size, agreement sets the sign, sample weight
+ * stops a handful of rows from mattering, and an unvalidated ensemble is only
+ * ever allowed to take evidence away — the same rule the probability fusion
+ * uses, so the library can never manufacture confidence.
+ */
+export function researchTerm(evidence: ResearchEvidence): number {
+  const skill = Math.max(0, Math.min(1, Number.isFinite(evidence.skill) ? (evidence.skill as number) : 0));
+  const sample = Number.isFinite(evidence.sample) ? Math.max(0, evidence.sample) : 0;
+  const agreement = clamp(Number.isFinite(evidence.agreement) ? evidence.agreement : 0, 0, 1);
+  const direction = clamp((agreement - 0.5) / 0.5, -1, 1);
+  const magnitude = Math.tanh(12 * skill) * (sample / (sample + 60));
+  const signed = magnitude * direction;
+  if (!evidence.validated) return Math.min(0, signed);
+  if (evidence.contradicted) return Math.min(0, signed) - 0.05;
+  return signed;
+}
+
+/**
  * Evidence score from 1 to 99 plus its normalized components (-1 to 1).
  * Calibrated by simulation so that scanning 13 purely random markets almost
  * never produces STRONG, while genuinely structured streams score 85+.
@@ -189,13 +233,16 @@ export function confidenceScore(input: ConfidenceInput): { confidence: number; b
     ? clamp(input.confirmation.stateAgreement, -1, 1) * clamp(input.confirmation.statePredictability, 0, 1)
     : 0;
   const confirmation = 0.07 * calibrationTerm + 0.05 * stateTerm;
-  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation;
+  // The research library contributes at most a few points, and only through
+  // measured skill: callers without an audit keep the original score.
+  const research = input.research ? 0.06 * researchTerm(input.research) : 0;
+  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation + research;
   let confidence = 50 + 50 * raw * quality;
   // Passing every strict held-out research gate is rare and meaningful.
   if (input.verified) confidence += 8;
   return {
     confidence: Math.round(clamp(confidence, 1, 99)),
-    breakdown: { agreement, edge, backtest, validation, quality, verified: Boolean(input.verified), confirmation },
+    breakdown: { agreement, edge, backtest, validation, quality, verified: Boolean(input.verified), confirmation, research },
   };
 }
 

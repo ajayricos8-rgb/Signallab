@@ -22,10 +22,21 @@ export function scopeSettlements(positions: readonly DerivClosedPosition[], symb
   return [...unique.values()].sort((a, b) => a.epoch - b.epoch);
 }
 
-/** Missing/old reports fail closed for the bot, without hiding the ranked analysis candidate. */
-export function researchExecutionIssue(decision?: ResearchDecision | null): string | null {
-  if (!decision) return 'This signal has no research execution audit. Run Analysis again before automatic trading.';
-  if (!decision.eligible || decision.action !== 'candidate') return `Observation-only signal. ${decision.reasons.join(' ')}`;
+/**
+ * Plain-language advice, not a gate.
+ *
+ * The research gates used to block automatic execution ("observation only"),
+ * which left a finished analysis with a Load and Run button that could not be
+ * pressed. The ranked signal is what the user asked for and the bot now trades
+ * it, so this text only travels with the run as information the user can act
+ * on: it never disables a button and never blocks a purchase.
+ */
+export function researchAdvisory(decision?: ResearchDecision | null): string | null {
+  if (!decision) return 'No research audit is attached to this signal; the bot trades the analysis estimate as it stands.';
+  if (!decision.eligible || decision.action !== 'candidate') {
+    const reasons = decision.reasons.filter((reason) => !reason.startsWith('Evidence gates passed'));
+    return `Research library advice: ${reasons.join(' ') || 'the evidence gates did not pass for this contract.'}`;
+  }
   return null;
 }
 

@@ -8,6 +8,7 @@ import type { SignalBotController } from '@/hooks/use-signal-bot';
 import { describeStopReason } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotEntryWatch, SignalBotRun, SignalBotStatus } from '@/lib/signal-bot/types.ts';
 import { describeEntryEvidence, entryModeLabel } from '@/lib/signal-engine/entry.ts';
+import { researchAdvisory } from '@/lib/engine-lab/execution';
 import { formatAmount, formatSignedAmount } from '@/lib/deriv-trading';
 import type { TradeFamily } from '@/lib/trade-draft';
 import { TRADE_FAMILIES } from '@/lib/trade-draft';
@@ -229,6 +230,23 @@ export function SignalBotWindow({
                 From the engine analysis: {describeEntryEvidence(plan.entry)}
               </div>
             </div>
+            {plan.research && plan.research.total > 0 && (
+              <div className="rounded-lg border border-border bg-background/40 px-2.5 py-2 text-[10px] leading-relaxed text-muted-foreground" data-testid="bot-research">
+                <span className="font-bold text-foreground">Research library </span>
+                {plan.research.agreeing}/{plan.research.total} models favour this outcome ·{' '}
+                {plan.research.weight > 0
+                  ? `folded into the traded estimate at ${Math.round(plan.research.weight * 100)}% weight (${plan.research.contributionPts >= 0 ? '+' : ''}${plan.research.contributionPts.toFixed(2)} pts)`
+                  : 'checked, no change to the estimate'} ·{' '}
+                {plan.research.validated
+                  ? `validated on ${plan.research.sample} independent holdout rows`
+                  : 'not independently validated, so it could only lower the estimate'}
+              </div>
+            )}
+            {researchAdvisory(plan.researchDecision) && (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[10px] leading-relaxed text-amber-600 dark:text-amber-400" data-testid="bot-research-advisory">
+                {researchAdvisory(plan.researchDecision)} Trades still go ahead.
+              </div>
+            )}
             {entryWatch && <EntryWatchBand watch={entryWatch} />}
           </div>
         ) : (
