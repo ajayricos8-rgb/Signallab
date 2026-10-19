@@ -10,14 +10,16 @@
 // replayed on a later held-out slice (backtest) before the live vote.
 import { analyzeRiseFall, type MarketTick, type RiseFallAnalysis } from '../rise-fall-analysis.ts';
 import {
-  confidenceScore, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
+  confidenceScore, edgeShrinkage, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
 import { familyBalancedWeights } from './consensus.ts';
 import { analyzeQuoteEntry, type EntryPlan } from './entry.ts';
 import { analyzeQuoteState, type QuoteMarketState } from './market-state.ts';
 import { synthesizeRiseFallAi, type AiSynthesis } from './ai-synthesis.ts';
-import { pairedImprovementZ } from './stats.ts';
+import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
+import { forecastStandardError, probabilityInterval, reliabilityReport, type ProbabilityInterval, type ReliabilityReport } from './recalibration.ts';
+import { shrinkEdges, type Heterogeneity } from './precision.ts';
 import { confirmRiseFall, type ConfirmationReport, type QuoteConfirmationRow } from './confirmation.ts';
 
 import { createForecastFactory, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
@@ -92,6 +94,22 @@ export type RiseFallHorizonSignal = {
   /** What the research library's own forecast contributed to `winEstimate`. */
   research: ResearchFusion;
   historical: { sample: number; rise: number; fall: number; unchanged: number };
+  /**
+   * How precisely this win estimate is known, and how far the precision layer
+   * moved it. `interval` is a 95% band for the true win rate behind
+   * `winEstimate`, measured out of sample.
+   */
+  precision: {
+    standardError: number | null;
+    interval: ProbabilityInterval | null;
+    reliability: ReliabilityReport;
+    /** Fraction of the confirmed edge the precision layer kept (1 = untouched). */
+    shrinkFactor: number;
+    /** Probability points removed as the winner's curse of ranking the durations. */
+    selectionDebitPts: number;
+    /** z-score of the edge against its own standard error. */
+    edgeZ: number | null;
+  };
   /** When and at what price this signal should be traded. */
   entry: EntryPlan;
   /**
@@ -122,6 +140,8 @@ export type RiseFallMarketAnalysis = {
   state: QuoteMarketState;
   /** Layer 5: quant measurement engines synthesised into one AI verdict. */
   aiSynthesis: AiSynthesis;
+  /** Cross-duration precision fit for this scan (heterogeneity of the pool). */
+  precisionFit: { tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
   /** Number of analysis engines that ran (separate from the 14 prediction engines). */
   analysisEngineCount: number;
   engineLab: EngineLabReport;
@@ -451,7 +471,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const researchFactory = createForecastFactory(ticks, 'quote');
   const researchAudits = new Map<string, ResearchAudit>();
   // 2. Evaluate every duration.
-  const signals: RiseFallHorizonSignal[] = horizons.map((horizon, horizonIndex) => {
+  const drafts = horizons.map((horizon, horizonIndex) => {
     if (horizonIndex % 3 === 0) onProgress?.(0.4 + 0.55 * (horizonIndex / horizons.length), `Training the AI meta-model and backtesting ${formatRiseFallHorizon(horizon)}`);
     const exits = exitIndices(epochs, horizon);
     const outcome = (start: number) => exits[start] < 0 ? null : sign(prices[exits[start]] - prices[start]);
@@ -571,16 +591,16 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const consensusScore = liveConsensus.score;
     const consensusDirection = (consensusScore !== 0 ? sign(consensusScore) : sign(liveAnalysis.trendScore) || 1) as 1 | -1;
     const aiProbability = liveScores[AI_INDEX] === null ? null : 0.5 + (liveScores[AI_INDEX] as number) / 2;
-    // Trust the raw AI probability only as far as its meta-model validated on
-    // independent held-out outcomes. This is the same shrinkage the prediction
-    // layer has always applied; confirmation can then adjust the shrunk number,
-    // but it cannot reintroduce an unvalidated edge.
-    const validationReliability = validationZ === null
-      ? (validationSkill !== null && validationSkill > 0 ? 1 : 0)
-      : clamp((validationZ - 1) / 1.5, 0, 1);
-    const aiTrust = clamp(25 * Math.max(0, validationSkill ?? 0), 0, 1) * validationReliability;
-    const aiForConfirmation =
-      aiProbability === null ? null : 0.5 + aiTrust * (aiProbability - 0.5);
+    // The meta-model's probability goes to the confirmation layer at full size.
+    // It used to be pre-shrunk here by an ad-hoc trust factor, confirmation then
+    // shrank it again when it could not confirm it, and the precision layer
+    // shrinks a third time — three answers to the same question, multiplied
+    // together, which understated every real edge. Calibration now fixes the
+    // MAPPING, the precision layer decides how much of the edge survives its own
+    // measurement error and the selection, and the confidence score reports how
+    // much evidence stands behind it. The demonstrable-skill test survives as a
+    // wider error bar (see `standardError` below), not as a silent rescale.
+    const aiForConfirmation = aiProbability;
     const buildVotes = (directionForVotes: 1 | -1): EngineVote[] => RISE_FALL_ENGINES.map((engine, index) => {
       const score = liveScores[index];
       const vote = score === null ? 'abstain' : Math.abs(score) <= VOTE_THRESHOLD ? 'neutral' : sign(score) === directionForVotes ? 'agree' : 'against';
@@ -660,7 +680,64 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       confirmation.edgePts = 100 * (winEstimate - fair);
       confirmation.reasons.push(`Research library: ${research.note}`);
     }
-    const horizonQuality = quality * clamp(0.6 + 0.4 * reliability, 0.6, 1);
+    // Report the latest 500 completed outcomes (not 500 start ticks) so the
+    // historical panel uses comparable sample sizes across every duration.
+    const recent = { sample: 0, rise: 0, fall: 0, unchanged: 0 };
+    for (let start = n - 1; start >= 0 && recent.sample < DRIFT_WINDOW; start -= 1) {
+      const result = outcome(start);
+      if (result === null) continue;
+      recent.sample += 1;
+      if (result > 0) recent.rise += 1; else if (result < 0) recent.fall += 1; else recent.unchanged += 1;
+    }
+    const holdoutPoints: CalibrationPoint[] = calibrationRows.map((row) => ({ probability: row.ai, won: row.won }));
+    const measuredError = forecastStandardError(holdoutPoints);
+    // Two parts, as in the digit panel: the sampling variance of the estimate
+    // plus the model's measured miscalibration out of fold. The AI meta-model
+    // can be tightly clustered and still badly wrong, and pricing only the
+    // variance is what let an overconfident estimate publish a large edge.
+    // The miscalibration term is only charged to a model that has NOT proven
+    // itself out of sample. A model that beat the no-edge rate on held-out rows
+    // with a paired z above 2 has already demonstrated that its numbers track
+    // the frequencies, so charging it a miscalibration penalty measured on the
+    // same rows would double-count — and, with a thin holdout, penalise the
+    // honest model for the noise in its own reliability bins.
+    const skillProven = (validationZ ?? 0) >= 2 && (validationSkill ?? 0) > 0;
+    const miscalibration = skillProven ? null : confirmation.calibration.residualMiscalibration;
+    const standardError = measuredError === null && miscalibration === null
+      ? null
+      : Math.hypot(
+        (measuredError ?? 0) / clamp(edgeShrinkage(validationSkill, validationZ), 0.3, 1),
+        miscalibration ?? 0,
+      );
+    return {
+      horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, consensusDirection,
+      votes, tally, backtest, validationSkill, validationZ, flatRate, fair, research, researchDecision,
+      confirmation, entryInputs: { prices, epochs, rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })), exits, liveAverageMove: liveAnalysis.averageTickMove14 },
+      horizonQuality: quality * clamp(0.6 + 0.4 * reliability, 0.6, 1),
+      winEstimate, standardError, reliabilityReportValue: reliabilityReport(holdoutPoints), holdoutPoints,
+      recent, exits,
+    };
+  });
+
+  // ---------------------------------------------------------------------------
+  // PHASE 2 — precision: winner's-curse correction across every duration.
+  // ---------------------------------------------------------------------------
+  const estimates = drafts.map((draft) => ({ edge: draft.winEstimate - draft.fair, standardError: draft.standardError ?? 0.05 }));
+  const precisionFit = shrinkEdges(estimates);
+
+  const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): RiseFallHorizonSignal => {
+    const { horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, votes, tally, backtest,
+      validationSkill, validationZ, flatRate, fair, research, researchDecision, confirmation, entryInputs, horizonQuality,
+      standardError, holdoutPoints, recent } = draft;
+    let winEstimate = clamp(fair + shrinkFactor * (draft.winEstimate - fair) - selectionDebit, 0.001, 0.999);
+    if (Math.abs(winEstimate - draft.winEstimate) > 1e-9) {
+      confirmation.probability = winEstimate;
+      confirmation.winProbability = winEstimate;
+      const conditionalWin = winEstimate / Math.max(0.001, 1 - flatRate);
+      confirmation.probabilityRise = directionSign > 0 ? conditionalWin : 1 - conditionalWin;
+      confirmation.edgePts = 100 * (winEstimate - fair);
+    }
+    const interval = probabilityInterval(holdoutPoints, winEstimate);
     const { confidence: baseConfidence, breakdown } = confidenceScore({
       weightedAgreement: tally.weightedAgreement,
       edgeRatio: (winEstimate - fair) / 0.5,
@@ -676,33 +753,25 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
       research: researchEvidence(research),
+      precision: { edge: winEstimate - fair, standardError, intervalHalfWidth: interval ? (interval.upper - interval.lower) / 2 : null },
     });
     const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
-    const recent = { sample: 0, rise: 0, fall: 0, unchanged: 0 };
-    // Report the latest 500 completed outcomes (not 500 start ticks) so the
-    // historical panel uses comparable sample sizes across every duration.
-    for (let start = n - 1; start >= 0 && recent.sample < DRIFT_WINDOW; start -= 1) {
-      const result = outcome(start);
-      if (result === null) continue;
-      recent.sample += 1;
-      if (result > 0) recent.rise += 1; else if (result < 0) recent.fall += 1; else recent.unchanged += 1;
-    }
     // 7. Entry timing: replay the same fired signals for the price level and
     //    the wait a trade should use, instead of buying at the signal tick.
     //    The analysis's own numbers (engine agreement, the AI probability for
     //    this direction, the confirmed win estimate against the no-edge rate)
     //    travel with the entry as its evidence.
     const entry = analyzeQuoteEntry({
-      prices,
-      epochs,
-      rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })),
+      prices: entryInputs.prices,
+      epochs: entryInputs.epochs,
+      rows: entryInputs.rows,
       direction: directionSign > 0 ? 1 : -1,
-      averageMove: liveAnalysis.averageTickMove14,
+      averageMove: entryInputs.liveAverageMove,
       horizonTicks:
         horizon.unit === 'ticks'
           ? horizon.value
           : Math.round((horizon.value * 60_000) / tickSpacingMs),
-      exits,
+      exits: entryInputs.exits,
       fairRate: fair,
       signal: {
         source: 'rise-fall',
@@ -720,11 +789,41 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
       confidence, breakdown, strength, historical: recent, entry, researchDecision, research,
+      precision: {
+        standardError,
+        interval,
+        reliability: draft.reliabilityReportValue,
+        shrinkFactor,
+        selectionDebitPts: selectionDebit * 100,
+        edgeZ: standardError !== null && standardError > 1e-9 ? (winEstimate - fair) / standardError : null,
+      },
       deep: { confirmation },
     };
-  });
+  };
 
-  signals.sort((a, b) => b.confidence - a.confidence || b.tally.weightedAgreement - a.tally.weightedAgreement || (a.horizon.unit === b.horizon.unit ? a.horizon.value - b.horizon.value : a.horizon.unit === 'ticks' ? -1 : 1));
+  const rank = (list: RiseFallHorizonSignal[]) =>
+    [...list].sort((a, b) => b.confidence - a.confidence || b.tally.weightedAgreement - a.tally.weightedAgreement || (a.horizon.unit === b.horizon.unit ? a.horizon.value - b.horizon.value : a.horizon.unit === 'ticks' ? -1 : 1));
+  const provisional = rank(drafts.map((draft, index) => finalize(draft, precisionFit.factors[index], 0)));
+  const leader = provisional[0];
+  const leaderIndex = drafts.findIndex((draft) => draft.horizon === leader.horizon);
+  const leaderIsStandout = precisionFit.standouts.some((standout) => standout.index === leaderIndex);
+  const leaderStandardError = leaderIndex >= 0 ? drafts[leaderIndex].standardError : null;
+  // As in the digit panel: a winner that cleared the Šidák-corrected standout
+  // bar has already paid for being chosen from a pool, so the winner's-curse
+  // debit is only charged to a lead that is not individually significant.
+  const selectionDebit = !leaderIsStandout && leaderStandardError !== null
+    ? Math.max(0, Math.min(Math.abs(leader.winEstimate - leader.fairProbability) * 0.35, precisionFit.selectionBiasUnits * leaderStandardError))
+    : 0;
+  const signals = selectionDebit > 1e-9
+    ? rank([finalize(drafts[leaderIndex], precisionFit.factors[leaderIndex], selectionDebit), ...provisional.filter((signal) => signal.horizon !== leader.horizon)])
+    : provisional;
+  const precisionSummary = {
+    ...precisionFit.heterogeneity,
+    tau: precisionFit.tau,
+    standoutThreshold: precisionFit.standoutThreshold,
+    standouts: precisionFit.standouts.length,
+    heterogeneous: precisionFit.trimmedHeterogeneity.heterogeneous,
+  };
   const notes: string[] = [];
   if (!input.fresh) notes.push('Live tick freshness was not confirmed; confidence is reduced.');
   if (n < 1_500) notes.push(`Only ${n} ticks of history; longer minute durations have little validation data.`);
@@ -751,7 +850,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
     lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
     engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
-    state, aiSynthesis, analysisEngineCount: state.engines.length, engineLab, notes,
-    durationMs: Date.now() - started,
+    state, aiSynthesis, analysisEngineCount: state.engines.length, engineLab,
+    precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }

@@ -28,6 +28,9 @@ import { analyzeDigitState, type DigitMarketState } from './market-state.ts';
 import { synthesizeDigitAi, type AiSynthesis } from './ai-synthesis.ts';
 import { confirmDigitContract, type ConfirmationReport } from './confirmation.ts';
 import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
+import { forecastStandardError, probabilityInterval, reliabilityReport, type ProbabilityInterval, type ReliabilityReport } from './recalibration.ts';
+import { shrinkEdges, type Heterogeneity } from './precision.ts';
+import { blendWeight, fitStackWeights, mixWeights, type StackingRow } from './stacking.ts';
 
 import { buildForecastBank, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
 import { buildEngineLabReport } from '../engine-lab/report.ts';
@@ -78,6 +81,25 @@ export type DigitContractSignal = {
   research: ResearchFusion;
   /** Historical outcomes after the current digit (or parity) context. */
   history: { sample: number; hits: number; rate: number | null; context: string } | null;
+  /**
+   * How precisely this probability is known, and how far it was moved by the
+   * winner's-curse correction. `interval` is a 95% band for the true win rate
+   * behind `probability`, measured out of sample.
+   */
+  precision: {
+    standardError: number | null;
+    interval: ProbabilityInterval | null;
+    /** Reliability of the published probability on held-out rows. */
+    reliability: ReliabilityReport;
+    /** Fraction of the confirmed edge the precision layer kept (1 = untouched). */
+    shrinkFactor: number;
+    /** The confirmed probability before the precision layer moved it. */
+    beforePrecision: number;
+    /** Probability points removed as the winner's curse of ranking this pool. */
+    selectionDebitPts: number;
+    /** z-score of the edge against its own standard error. */
+    edgeZ: number | null;
+  };
   /** When to enter this contract: which tick context, and how long it may take. */
   entry: EntryPlan;
   /**
@@ -116,6 +138,8 @@ export type DigitMarketAnalysis = {
   analysisEngineCount: number;
   /** Full audit stored once for the winning contract, not duplicated across candidates. */
   engineLab: EngineLabReport;
+  /** Cross-candidate precision fit for this scan (heterogeneity of the pool). */
+  precisionFit: { tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
   notes: string[];
   durationMs: number;
 };
@@ -221,7 +245,14 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   onProgress?.(0.965, 'Replaying research engines with purged chronological validation');
   const researchBank = buildForecastBank(ticks, 'digit', { unit: 'ticks', value: input.horizon });
   const researchAudits = new Map<string, ResearchAudit>();
-  const signals = contracts.map((contract): DigitContractSignal => {
+  // ---------------------------------------------------------------------------
+  // PHASE 1 — measure every contract.
+  //
+  // Everything up to (and including) the confirmation layer is computed first,
+  // because the precision layer needs the whole pool: you cannot know whether
+  // one contract's edge is real without the spread of the others.
+  // ---------------------------------------------------------------------------
+  const drafts = contracts.map((contract) => {
     const fair = fairProbability(contract);
     const deviation = Math.sqrt(fair * (1 - fair));
     const margin = voteMargin(fair);
@@ -319,9 +350,22 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     const backtest = summarizeBacktest(wins, fired, fair);
     const strictScore = strictByKey.get(digitContractKey(contract));
     const verified = Boolean(strictScore?.eligible);
-    // Trust the raw consensus edge only as far as it validated out of sample.
-    const shrunk = fair + edgeShrinkage(validationSkill, validationZ) * (rawProbability - fair);
-    const beforeConfirmation = clamp(shrunk, 0.0005, 0.9995);
+    // The consensus goes to the confirmation layer at full size.
+    //
+    // It used to be pre-shrunk here by `edgeShrinkage`, confirmation then
+    // shrank it again when it could not confirm, and the precision layer shrinks
+    // it a third time. Each of those asks the same question ("how much of this
+    // edge is real?") and each multiplied its own answer in, so a genuine
+    // five-point edge reached the user as half a point. Now each layer asks a
+    // different question: calibration fixes the MAPPING, the precision layer
+    // decides how much of the edge survives its own measurement error and the
+    // selection, and the confidence score reports the evidence behind it.
+    //
+    // The demonstrable-skill test is not dropped, it is repriced: a model that
+    // has not beaten the no-edge rate out of sample has its standard error
+    // inflated below, which makes the precision layer stricter instead of
+    // silently rescaling the number.
+    const beforeConfirmation = clamp(rawProbability, 0.0005, 0.9995);
     // Layer 3: calibrate that estimate on held-out ticks, let a small logistic
     // stack try to beat it, and fold in the validated analysis prior. Nothing
     // can move the probability more than six points.
@@ -363,6 +407,85 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     const probability = clamp(confirmation.probability, 0.0005, 0.9995);
     const edge = probability - fair;
     const edgeRatio = edge / deviation;
+    // How precisely this probability is known. `forecastStandardError` measures
+    // the out-of-sample error of the published number itself, with a binomial
+    // floor so a near-constant forecast cannot report a tighter band than the
+    // outcome noise allows.
+    const measuredError = forecastStandardError(holdout);
+    // The error bar has two parts, because a forecast's error has two parts.
+    // `measuredError` is the sampling VARIANCE of the estimate; the second term
+    // is the model's measured MISCALIBRATION out of fold — how far its numbers
+    // have actually been from the frequencies they claimed, after any accepted
+    // calibration. A model can have tiny variance and still be badly wrong, and
+    // pricing only the variance is how an overconfident model earns an edge it
+    // has not measured.
+    //
+    // `edgeShrinkage` measures how much of this model's claimed edge historically
+    // survived out of sample; dividing by it inflates the variance term by up to
+    // 3.3x for a model with no track record at all, which keeps a real link to
+    // demonstrated skill — a model that has never beaten the no-edge rate does
+    // not get to publish a precise-looking number — without the old behaviour of
+    // three layers each rescaling the same number.
+    // The miscalibration term is only charged to a model that has NOT proven
+    // itself out of sample. A model that beat the no-edge rate on held-out rows
+    // with a paired z above 2 has already demonstrated that its numbers track
+    // the frequencies, so charging it a miscalibration penalty measured on the
+    // same rows would double-count — and, with a thin holdout, penalise the
+    // honest model for the noise in its own reliability bins.
+    const skillProven = (validationZ ?? 0) >= 2 && (validationSkill ?? 0) > 0;
+    const miscalibration = skillProven ? null : confirmation.calibration.residualMiscalibration;
+    const standardError = measuredError === null && miscalibration === null
+      ? null
+      : Math.hypot(
+        (measuredError ?? 0) / clamp(edgeShrinkage(validationSkill, validationZ), 0.3, 1),
+        miscalibration ?? 0,
+      );
+    const reliability = reliabilityReport(holdout);
+    return {
+      contract, fair, deviation, margin, bias, corrected, skills, weighted, live, liveValues,
+      rawProbability, votes, tally, backtest, validationSkill, validationZ, verified,
+      confirmation, research, researchDecision, probability, edge, edgeRatio, quality,
+      context, standardError, reliability, holdout,
+    };
+  });
+
+  // ---------------------------------------------------------------------------
+  // PHASE 2 — precision: winner's-curse correction across the whole pool.
+  //
+  // Ranking up to 16 contracts and reporting the winner is a selection, not a
+  // measurement. `shrinkEdges` estimates how much of the spread between the
+  // candidates is real (τ) and shrinks each edge by its own measurement error,
+  // so a noise pool collapses to "no edge" while a precisely-measured edge
+  // keeps its size.
+  // ---------------------------------------------------------------------------
+  const estimates = drafts.map((draft) => ({ edge: draft.edge, standardError: draft.standardError ?? 0.05 }));
+  const precisionFit = shrinkEdges(estimates);
+
+  /** Turn a measured draft into a publishable signal at a given (shrunken) probability. */
+  const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): DigitContractSignal => {
+    const { contract, fair, deviation, rawProbability, votes, tally, backtest, validationSkill, validationZ,
+      verified, confirmation, research, researchDecision, context, standardError, reliability, holdout } = draft;
+    const probability = clamp(fair + shrinkFactor * (draft.probability - fair) - selectionDebit, 0.0005, 0.9995);
+    const edge = probability - fair;
+    const edgeRatio = edge / deviation;
+    // Keep the confirmation report in step with what is actually published.
+    // Layer 3 decides the mapping; the precision layer then decides how much of
+    // the resulting edge survives. Both numbers must agree on the card, and a
+    // call whose edge the precision layer removed cannot stay "confirmed".
+    if (Math.abs(probability - confirmation.probability) > 1e-9) {
+      confirmation.probability = probability;
+      confirmation.edgePts = 100 * edge;
+      if (Math.abs(edge) < Math.max(0.005, 0.01 * fair)) {
+        confirmation.decisive = false;
+        if (confirmation.status === 'confirmed') confirmation.status = 'cautious';
+      }
+      if (Math.abs(edge - (draft.probability - fair)) >= 0.005) {
+        confirmation.reasons.push(
+          `Precision layer: the measured edge did not clear its own standard error, so it was shrunk from ${(100 * (draft.probability - fair)).toFixed(2)} to ${(100 * edge).toFixed(2)} points.`,
+        );
+      }
+    }
+    const interval = probabilityInterval(holdout, probability);
     const { confidence: baseConfidence, breakdown } = confidenceScore({
       weightedAgreement: tally.weightedAgreement, edgeRatio, backtest, validationSkill, dataQuality: quality, verified,
       selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
@@ -374,6 +497,9 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
       research: researchEvidence(research),
+      // A probability the market data cannot actually pin down is weaker
+      // evidence than the same number measured off 2,000 ticks.
+      precision: { edge, standardError, intervalHalfWidth: interval ? (interval.upper - interval.lower) / 2 : null },
     });
     const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
     const historical = context ? evaluateHistoricalContract(observations as unknown as DigitObservation[], contract, input.horizon, context) : null;
@@ -408,9 +534,52 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,
       } : null,
+      precision: {
+        standardError,
+        interval,
+        reliability,
+        beforePrecision: draft.probability,
+        shrinkFactor,
+        selectionDebitPts: selectionDebit * 100,
+        edgeZ: standardError !== null && standardError > 1e-9 ? edge / standardError : null,
+      },
       deep: { confirmation },
     };
-  }).sort((a, b) => b.confidence - a.confidence || b.edgeRatio - a.edgeRatio || contractOrder(a.contract) - contractOrder(b.contract));
+  };
+
+  // ---------------------------------------------------------------------------
+  // PHASE 3 — publish, then charge the winner its selection bias.
+  //
+  // Ranking first and debiting afterwards is deliberate: the winner's curse is
+  // a property of having been SELECTED, so only the contract that is actually
+  // published pays it. The debit is then re-ranked, so a candidate whose whole
+  // lead was selection luck loses the top slot to one with a measured edge.
+  // ---------------------------------------------------------------------------
+  const rank = (list: DigitContractSignal[]) =>
+    [...list].sort((a, b) => b.confidence - a.confidence || b.edgeRatio - a.edgeRatio || contractOrder(a.contract) - contractOrder(b.contract));
+  const provisional = rank(drafts.map((draft, index) => finalize(draft, precisionFit.factors[index], 0)));
+  const leader = provisional[0];
+  const leaderIndex = drafts.findIndex((draft) => draft.contract === leader.contract);
+  const leaderStandardError = leaderIndex >= 0 ? drafts[leaderIndex].standardError : null;
+  // The debit is charged to a winner whose lead is NOT individually
+  // significant. A winner that cleared the Šidák-corrected standout bar has
+  // already paid for the fact that it was chosen from a pool — subtracting the
+  // expected maximum of m draws a second time would double-count the same
+  // correction and systematically under-report every real edge.
+  const leaderIsStandout = precisionFit.standouts.some((standout) => standout.index === leaderIndex);
+  const selectionDebit = !leaderIsStandout && leaderStandardError !== null
+    ? Math.max(0, Math.min(Math.abs(leader.edge) * 0.35, precisionFit.selectionBiasUnits * leaderStandardError))
+    : 0;
+  const signals = selectionDebit > 1e-9
+    ? rank([finalize(drafts[leaderIndex], precisionFit.factors[leaderIndex], selectionDebit), ...provisional.filter((signal) => signal.contract !== leader.contract)])
+    : provisional;
+  const precisionSummary = {
+    ...precisionFit.heterogeneity,
+    tau: precisionFit.tau,
+    standoutThreshold: precisionFit.standoutThreshold,
+    standouts: precisionFit.standouts.length,
+    heterogeneous: precisionFit.trimmedHeterogeneity.heterogeneous,
+  };
 
   const notes: string[] = [];
   if (!input.fresh) notes.push('Live tick freshness was not confirmed; confidence is reduced.');
@@ -440,6 +609,6 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     sample: fit.sequence.digits.length, lastDigit, asOfEpoch: fit.sequence.epochs.at(-1)!, fresh: input.fresh,
     dataQuality: quality, structure: fit.structure.status, engineCount: fit.engines.length,
     best, contracts: signals, report, state, aiSynthesis, analysisEngineCount: state.engines.length, engineLab,
-    notes, durationMs: Date.now() - started,
+    precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }

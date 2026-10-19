@@ -11,7 +11,7 @@ import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
 import {
-  AiSynthesisCard, AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, SignalCard, StrengthBadge, formatPercent, shortMarketName,
+  AiSynthesisCard, AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, PrecisionPanel, SignalCard, StrengthBadge, formatPercent, shortMarketName,
 } from '@/components/signal/signal-ui';
 import { analyzeRiseFall, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
 import { analyzePriceContext } from '@/lib/price-context';
@@ -311,6 +311,11 @@ export function RiseFallTool() {
                 { label: 'Win chance', value: formatPercent(signal.winEstimate), hint: 'Confirmed probability for this direction after calibration, stacking and the analysis check' },
                 { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
                 { label: 'AI P(rise)', value: formatPercent(signal.aiProbability), hint: 'Raw logistic-regression meta-model output' },
+                ...(signal.precision.interval ? [{
+                  label: '95% range',
+                  value: `${formatPercent(signal.precision.interval.lower, 0)}–${formatPercent(signal.precision.interval.upper, 0)}`,
+                  hint: `Measured on ${signal.precision.reliability.sample} held-out ticks. If the bottom of this range still clears 50%, the edge is real enough to trade.`,
+                }] : []),
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: `Held-out ${signal.direction} calls at this duration: win rate and number of calls` },
                 { label: 'Consensus', value: formatSigned(signal.consensusScore), hint: 'Skill-weighted engine score from -1 (fall) to +1 (rise)' },
                 {
@@ -332,6 +337,7 @@ export function RiseFallTool() {
               onUse={() => { setDraftMarketCode(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
             />
             <ConfirmationPanel report={signal.deep.confirmation} />
+            {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={0.5} /> : null}
             {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
             <EntryPlanCard
               entry={signal.entry}

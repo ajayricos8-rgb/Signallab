@@ -46,6 +46,8 @@ export function dot(left: readonly number[], right: readonly number[]): number {
   return total;
 }
 
+import { recalibrate, type ReliabilityReport } from './recalibration.ts';
+
 // ---- distributions ---------------------------------------------------------
 
 /** Lanczos approximation (g = 7, n = 9); relative error ~1e-13. */
@@ -415,18 +417,29 @@ export function wilsonInterval(hits: number, sample: number, z = 1.96): { lower:
 // ---- calibration -----------------------------------------------------------
 
 export type CalibrationPoint = { probability: number; won: 0 | 1 };
+export type CalibrationMethod = 'isotonic' | 'platt' | 'isotonic+platt' | 'shrunk-isotonic' | 'ensemble' | 'none';
 export type CalibrationResult = {
-  method: 'isotonic' | 'platt' | 'ensemble' | 'none';
+  method: CalibrationMethod;
   sample: number;
   evaluationSample: number;
   brierBefore: number | null;
   brierAfter: number | null;
-  /** 1 - brierAfter / brierBefore on the untouched evaluation half. */
+  /** 1 - brierAfter / brierBefore, measured out of fold. */
   skill: number | null;
   improved: boolean;
   slope: number | null;
   intercept: number | null;
   predict: (probability: number) => number;
+  /** Purged walk-forward folds used to score the calibrator. */
+  folds?: number;
+  /** Paired z-score behind `improved`. */
+  pairedZ?: number;
+  /**
+   * Murphy reliability decomposition of the raw and calibrated probabilities,
+   * both measured on rows no calibrator saw. Present only when enough rows were
+   * available to measure them.
+   */
+  reliability?: { raw: ReliabilityReport; calibrated: ReliabilityReport };
 };
 
 const identity = (probability: number) => clamp(probability, 0.0005, 0.9995);
@@ -577,66 +590,59 @@ export function fitLogistic(
 }
 
 /**
- * Chronological out-of-sample calibration. Both candidates are fitted on the
- * older half and scored on the newer half, so a calibration is only accepted
- * when it improves predictions it has never seen.
+ * Chronological out-of-sample calibration.
+ *
+ * This is now a purged walk-forward CROSS-VALIDATION rather than a single 50/50
+ * split (see `recalibration.ts` for the full rationale). Every candidate
+ * — identity, Platt on the log-odds, isotonic, and two shrunk blends of the
+ * two — is fitted on all rows strictly before each fold and scored on that
+ * fold, so:
+ *
+ *   * the skill, reliability and slope are measured on nearly every row instead
+ *     of half of them, which is what makes the decision precise;
+ *   * the calibrator that is finally returned is refitted on ALL rows, which is
+ *     what makes the deployed mapping accurate;
+ *   * a calibrator is still only accepted when it beats the raw probability by
+ *     both a material margin and a paired z on rows it never saw, so this layer
+ *     can never manufacture an edge it cannot prove.
+ *
+ * The return shape is unchanged, so every existing caller keeps working.
  */
 export function calibrateOutOfSample(
   points: readonly CalibrationPoint[],
   options: { minimum?: number; minimumEvaluation?: number; minimumImprovement?: number } = {},
 ): CalibrationResult {
-  const minimum = options.minimum ?? 80;
-  const minimumEvaluation = options.minimumEvaluation ?? 25;
-  const minimumImprovement = options.minimumImprovement ?? 0.015;
-  if (points.length < minimum) {
-    return { method: 'none', sample: points.length, evaluationSample: 0, brierBefore: null, brierAfter: null, skill: null, improved: false, slope: null, intercept: null, predict: identity };
+  const usable = points.filter((point) => Number.isFinite(point.probability) && (point.won === 0 || point.won === 1));
+  const result = recalibrate(usable, {
+    minimum: options.minimum ?? 80,
+    minimumEvaluation: options.minimumEvaluation ?? 25,
+    minimumImprovement: options.minimumImprovement ?? 0.015,
+  });
+  if (!result.evaluationSample) {
+    // Too few rows to fit a calibrator, but never too few to MEASURE the model:
+    // the reliability report is what tells the precision layer how much this
+    // estimate can be trusted, and withholding it is how an overconfident model
+    // on a thin holdout slips through.
+    return {
+      method: 'none', sample: usable.length, evaluationSample: 0, brierBefore: null, brierAfter: null,
+      skill: null, improved: false, slope: null, intercept: null, predict: identity, folds: 0, pairedZ: 0,
+      reliability: { raw: result.raw, calibrated: result.calibrated },
+    };
   }
-  const split = Math.floor(points.length / 2);
-  const fitting = points.slice(0, split);
-  const evaluation = points.slice(split);
-  if (evaluation.length < minimumEvaluation) {
-    return { method: 'none', sample: points.length, evaluationSample: evaluation.length, brierBefore: null, brierAfter: null, skill: null, improved: false, slope: null, intercept: null, predict: identity };
-  }
-  const raw = brierScore(evaluation);
-  const rawErrors = evaluation.map((point) => (point.probability - point.won) ** 2);
-  const isotonic = fitIsotonic(fitting);
-  const isotonicScore = brierScore(evaluation, isotonic.predict);
-  const isotonicErrors = evaluation.map((point) => (clamp(isotonic.predict(point.probability), 0.0005, 0.9995) - point.won) ** 2);
-  const plattModel = fitLogistic(fitting.map((point) => [point.probability]), fitting.map((point) => point.won), { ridge: 1, minSample: 30 });
-  const platt: (probability: number) => number = plattModel ? (probability) => plattModel.predict([probability]) : identity;
-  const plattScore = brierScore(evaluation, platt);
-  const plattErrors = evaluation.map((point) => (clamp(platt(point.probability), 0.0005, 0.9995) - point.won) ** 2);
-  if (raw === null || raw < 1e-12) {
-    return { method: 'none', sample: points.length, evaluationSample: evaluation.length, brierBefore: raw, brierAfter: raw, skill: null, improved: false, slope: null, intercept: null, predict: identity };
-  }
-  const candidates: Array<{ method: CalibrationResult['method']; score: number; predict: (probability: number) => number; errors: number[] }> = [
-    { method: 'isotonic', score: isotonicScore ?? raw, predict: isotonic.predict, errors: isotonicErrors },
-    { method: 'platt', score: plattScore ?? raw, predict: platt, errors: plattErrors },
-  ];
-  candidates.sort((left, right) => left.score - right.score);
-  const best = candidates[0];
-  const improvement = (raw - best.score) / raw;
-  const pairedZ = pairedImprovementZ(rawErrors, best.errors);
-  if (improvement < minimumImprovement || pairedZ < 2.5) {
-    return { method: 'none', sample: points.length, evaluationSample: evaluation.length, brierBefore: raw, brierAfter: best.score, skill: improvement, improved: false, slope: null, intercept: null, predict: identity };
-  }
-  // Refit the winning method on every row for live use; its skill stays the
-  // out-of-sample number measured on the untouched evaluation half.
-  const finalIsotonic = fitIsotonic(points);
-  const finalPlatt = fitLogistic(points.map((point) => [point.probability]), points.map((point) => point.won), { ridge: 1, minSample: 30 });
-  const predict = best.method === 'isotonic' ? finalIsotonic.predict : finalPlatt ? (probability: number) => finalPlatt.predict([probability]) : identity;
-  const slope = finalPlatt ? finalPlatt.coefficients[1] ?? null : null;
   return {
-    method: best.method,
-    sample: points.length,
-    evaluationSample: evaluation.length,
-    brierBefore: raw,
-    brierAfter: best.score,
-    skill: improvement,
-    improved: true,
-    slope,
-    intercept: finalPlatt?.coefficients[0] ?? null,
-    predict,
+    method: result.method,
+    sample: result.sample,
+    evaluationSample: result.evaluationSample,
+    brierBefore: result.brierBefore,
+    brierAfter: result.brierAfter,
+    skill: result.skill,
+    improved: result.improved,
+    slope: result.slope,
+    intercept: result.intercept,
+    predict: result.predict,
+    folds: result.folds,
+    pairedZ: result.pairedZ,
+    reliability: { raw: result.raw, calibrated: result.calibrated },
   };
 }
 
