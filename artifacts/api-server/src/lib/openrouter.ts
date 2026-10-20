@@ -241,18 +241,19 @@ export class OpenRouterService {
     if (prob >= 0.58 && conf >= 55 && edgeZ > 0.5) stance = 'support';
     else if (prob <= 0.47 || conf < 30) stance = 'oppose';
     // Build engine-aware analysis text
-    const voteSummary = best.votes.slice(0, 3).map(v => `${v.label} (${v.probability != null ? (v.probability * 100).toFixed(1) + '%' : 'n/a'})`).join(', ') || 'no votes';
-    const backtestNote = best.backtest.sample ? ` Backtest ${best.backtest.sample} samples @ ${(best.backtest.rate ?? 0 * 100).toFixed(1)}% win.` : ' No backtest edge.';
-    const researchSnippet = best.research ? ` Research: ${best.research.slice(0, 180)}` : '';
+    const safeStr = (v: unknown, len = 180) => String(v ?? '').slice(0, len);
+    const voteSummary = Array.isArray(best.votes) ? best.votes.slice(0, 3).map(v => `${String((v as any).label ?? 'vote')} (${(v as any).probability != null ? (Number((v as any).probability) * 100).toFixed(1) + '%' : 'n/a'})`).join(', ') || 'no votes' : 'no votes';
+    const backtestNote = best.backtest?.sample ? ` Backtest ${best.backtest.sample} samples @ ${((best.backtest.rate ?? 0) * 100).toFixed(1)}% win.` : ' No backtest edge.';
+    const researchSnippet = best.research ? ` Research: ${safeStr(best.research, 180)}` : '';
     const modelName = modelHint ?? (this.models[0] ?? 'openrouter/free');
     const isLocal = modelName.includes('local') || modelName === 'openrouter/free';
     const analysisPrefix = isLocal ? '[Local engine synthesis — OpenRouter unreachable, using free-model fallback] ' : '';
     return {
       candidateId: best.id,
       stance,
-      analysis: `${analysisPrefix}Engines evaluated ${input.candidates.length} candidates across ${best.symbol} (${best.family}, ${best.label}, horizon ${best.horizon}). Top votes: ${voteSummary}. Engine probability ${(prob * 100).toFixed(1)}% vs fair ${(best.fairProbability * 100).toFixed(1)}% (confidence ${conf.toFixed(0)}%, edgeZ ${edgeZ.toFixed(2)}).${backtestNote}${researchSnippet} Confirmation: ${best.confirmation.slice(0, 200)} AnalysisState: ${best.analysisState.slice(0, 150)} Local synthesis: ${best.localSynthesis.slice(0, 200)}`,
-      prediction: `Next 10-15 ticks: ${best.label} on ${best.symbol} has measured probability ${(prob * 100).toFixed(1)}% (${stance}). Recent ticks (${best.recentTicks.length}) show ${best.fresh ? 'fresh' : 'stale'} context. Volatility and engine audit (12-model across 25 durations) support ${stance} stance. Validity ${best.entry.validForTicks ?? best.entry.windowTicks} ticks — re-run if window expires.`,
-      entry: `${best.entry.mode}: ${best.entry.instruction} (window ${best.entry.windowTicks} ticks, trigger ${best.entry.trigger}${best.entry.priceLevel != null ? ` @ ${best.entry.priceLevel} ${best.entry.priceCondition ?? ''}` : ''}). ${best.entry.validation.slice(0, 200)} Invalidation: if price moves beyond entry zone or freshness lost, re-run analysis. Confidence ${best.entry.confidence.toFixed(0)}%.`,
+      analysis: `${analysisPrefix}Engines evaluated ${input.candidates.length} candidates across ${best.symbol} (${best.family}, ${best.label}, horizon ${best.horizon}). Top votes: ${voteSummary}. Engine probability ${(prob * 100).toFixed(1)}% vs fair ${(best.fairProbability * 100).toFixed(1)}% (confidence ${conf.toFixed(0)}%, edgeZ ${edgeZ.toFixed(2)}).${backtestNote}${researchSnippet} Confirmation: ${safeStr(best.confirmation, 200)} AnalysisState: ${safeStr(best.analysisState, 150)} Local synthesis: ${safeStr(best.localSynthesis, 200)}`,
+      prediction: `Next 10-15 ticks: ${best.label} on ${best.symbol} has measured probability ${(prob * 100).toFixed(1)}% (${stance}). Recent ticks (${Array.isArray(best.recentTicks) ? best.recentTicks.length : 0}) show ${best.fresh ? 'fresh' : 'stale'} context. Volatility and engine audit (12-model across 25 durations) support ${stance} stance. Validity ${best.entry?.validForTicks ?? best.entry?.windowTicks ?? 5} ticks — re-run if window expires.`,
+      entry: `${String(best.entry?.mode ?? 'immediate')}: ${safeStr(best.entry?.instruction ?? '', 400)} (window ${best.entry?.windowTicks ?? 5} ticks, trigger ${safeStr(best.entry?.trigger ?? 'none', 100)}${best.entry?.priceLevel != null ? ` @ ${best.entry.priceLevel} ${best.entry.priceCondition ?? ''}` : ''}). ${safeStr(best.entry?.validation ?? '', 200)} Invalidation: if price moves beyond entry zone or freshness lost, re-run analysis. Confidence ${Number(best.entry?.confidence ?? 0).toFixed(0)}%.`,
       risks: [
         'Synthetic tick streams may have no edge — past performance not predictive.',
         `Engine confidence ${conf.toFixed(0)}% is not a guaranteed win rate; slippage and spread apply.`,
