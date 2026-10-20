@@ -21,10 +21,17 @@ The development script starts the workspace services and binds Vite to `0.0.0.0`
 
 Deriv REST calls are made from the browser first. If a browser blocks that cross-origin read, the same request is retried through this workspace's API service (`/api/deriv/*`), which relays only Deriv Options API paths and forwards the caller's `Authorization` and `Deriv-App-ID` headers without logging them.
 
+## External AI analysis (OpenRouter)
+
+Set `OPENROUTER_API_KEY` in the **API server** environment (or its ignored `artifacts/api-server/.env` file), restart `pnpm dev`, and test it in **Settings → OpenRouter**. Do not use a `VITE_*` variable for this secret. Every Tools-tab Run Analysis selects a random available zero-price `:free` model to review engine forecasts, calculations and entry evidence, then select an engine-generated candidate with a 10–15 tick outlook. The chosen model and its analysis are visible on the result. The key is never returned to the browser.
+
+AI outlook is not guaranteed validity: measured probabilities and entry-window limits remain unchanged, signal age includes AI latency, and failures are explicitly labelled engine-only. See [configuration, security, quotas and analysis details](docs/openrouter.md).
+
 ## Validate
 
 ```sh
 pnpm --filter @workspace/deriv-signal-lab typecheck
+pnpm --filter @workspace/api-server test:openrouter
 pnpm --filter @workspace/deriv-signal-lab test:digit-analysis
 PORT=18781 BASE_PATH=/ pnpm --filter @workspace/deriv-signal-lab build
 ```

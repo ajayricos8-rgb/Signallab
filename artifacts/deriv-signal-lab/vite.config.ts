@@ -59,7 +59,8 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8080',
-        changeOrigin: true,
+        // Preserve the browser host for the API's same-origin AI quota protection.
+        changeOrigin: false,
       },
     },
     fs: {

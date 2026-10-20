@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMarketFeed, type MarketFeedEntry } from '@/components/market-feed-provider';
 import type { AnalysisProgressView, MarketProgressState } from '@/components/signal/signal-ui';
 import type { ScanJobResult } from '@/lib/signal-engine/scan-protocol';
+import { reviewScan, type AiScanReview } from '@/lib/openrouter-analysis';
 import { rankScanResults } from '@/lib/signal-engine/scan-rank';
 import { runScan, type ScanFailure, type ScanMarketJob } from '@/lib/signal-engine/scan-runner';
 
@@ -17,6 +18,7 @@ export type ScanRun<R extends ScanJobResult, M> = {
   workers: number;
   marketsScanned: number;
   meta: M;
+  aiReview?: AiScanReview;
 };
 
 export type StartScanOptions<M> = {
@@ -29,7 +31,7 @@ export type StartScanOptions<M> = {
 };
 
 const DATA_PHASE = 6;
-const SCAN_PHASE = 92;
+const SCAN_PHASE = 78;
 const DATA_TIMEOUT_MS = 25_000;
 
 function isAbort(error: unknown) {
@@ -89,6 +91,7 @@ export function useSignalScan<R extends ScanJobResult, M>(memoryKey: string) {
       for (const failure of skipped) states.set(failure.symbol, { symbol: failure.symbol, name: failure.name, state: 'failed', percent: 0 });
       const snapshotStates = () => [...states.values()].map((state) => ({ ...state }));
       setProgress({ percent: DATA_PHASE, stage: `Analysing ${jobs.length} markets`, completed: 0, total: jobs.length, markets: snapshotStates() });
+      const snapshotAt = Date.now();
       const outcome = await runScan(jobs, {
         signal: controller.signal,
         onProgress: (update) => {
@@ -113,18 +116,22 @@ export function useSignalScan<R extends ScanJobResult, M>(memoryKey: string) {
           if (state) state.state = 'failed';
         },
       });
-      setProgress({ percent: 99, stage: 'Selecting the strongest signal', completed: jobs.length, total: jobs.length, markets: snapshotStates() });
-      const ranked = rankScanResults(outcome.results as R[]);
+      setProgress({ percent: 86, stage: 'Random free AI model reviewing engines, predictions and entry', completed: jobs.length, total: jobs.length, markets: snapshotStates() });
+      let ranked = rankScanResults(outcome.results as R[]);
       if (!ranked.length) throw new Error(outcome.failures[0]?.message ?? 'The engines could not analyse any market. Please try again.');
+      const reviewed = await reviewScan(ranked, jobs, snapshotAt, controller.signal);
+      if (controller.signal.aborted) throw new DOMException('The analysis was cancelled.', 'AbortError');
+      ranked = reviewed.results;
+      setProgress({ percent: 99, stage: 'Finalising AI + engine signal', completed: jobs.length, total: jobs.length, markets: snapshotStates() });
       const next: ScanRun<R, M> = {
-        id: Date.now(), ranAt: Date.now(), results: ranked, failures: [...skipped, ...outcome.failures],
-        durationMs: outcome.durationMs, workers: outcome.workers, marketsScanned: jobs.length, meta: options.meta,
+        id: Date.now(), ranAt: snapshotAt, results: ranked, failures: [...skipped, ...outcome.failures],
+        aiReview: reviewed.aiReview, durationMs: Date.now() - snapshotAt, workers: outcome.workers, marketsScanned: jobs.length, meta: options.meta,
       };
       feed.memory.set(memoryKey, next);
       setRun(next);
       return next;
     } catch (cause) {
-      if (!isAbort(cause)) setError(cause instanceof Error ? cause.message : 'The analysis could not finish. Please try again.');
+      if (abortRef.current === controller && !isAbort(cause)) setError(cause instanceof Error ? cause.message : 'The analysis could not finish. Please try again.');
       return null;
     } finally {
       if (abortRef.current === controller) {

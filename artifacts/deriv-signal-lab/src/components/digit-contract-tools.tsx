@@ -1,3 +1,4 @@
+import { OpenRouterReviewCard } from '@/components/signal/openrouter-review-card';
 import { useMemo, useState } from 'react';
 import { Activity, AlertTriangle, Play, Radio, ShieldAlert, Square, Wifi, WifiOff, Zap } from 'lucide-react';
 import { analyzeDigits, supportedTickDurations, type DigitAnalysis, type DigitContractCandidate } from '@/lib/digit-analysis';
@@ -384,6 +385,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
       {run && selectedResult && signal ? (
         <section className={`grid grid-cols-1 gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined}>
           <div className="space-y-4">
+            {run.aiReview && <OpenRouterReviewCard review={run.aiReview} now={feed.now} />}
             <SignalCard
               eyebrow={isBest ? `Best signal · ${run.marketsScanned} markets scanned` : `Signal · ${selectedResult.name}`}
               label={signal.label}
