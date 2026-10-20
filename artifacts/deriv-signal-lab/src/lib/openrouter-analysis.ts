@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ScanJobResult } from './signal-engine/scan-protocol.ts';
 import type { ScanMarketJob } from './signal-engine/scan-runner.ts';
+import { runLocalFreeAI, toLocalAiInputs } from './local-free-ai.ts';
 
 const reviewSchema = z.object({
   candidateId: z.string().max(80), model: z.string().max(200), reviewedAt: z.number().finite(),
@@ -78,27 +79,34 @@ export async function reviewScan<R extends ScanJobResult>(results: R[], jobs: Sc
       return v?.trim() ? v.trim().replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, '') : undefined;
     } catch { return undefined; }
   }
+  // Installed free AI model (signallab/free-local-v1 via ml-matrix) — runs with engines when OpenRouter blocked
   function buildLocalFallbackReview(): OpenRouterReview {
-    // Mirror backend synthetic: pick best by prob*conf
-    const bestIdx = results.reduce((best, r, i) => {
-      const curScore = (r.best as any).probability * ((r.best as any).confidence / 100);
-      const bestScore = (results[best].best as any).probability * ((results[best].best as any).confidence / 100);
-      return curScore > bestScore ? i : best;
-    }, 0);
-    const best = results[bestIdx];
-    const fallbackModels = ['openrouter/free', 'nvidia/nemotron-3-nano-30b-a3b:free', 'meta-llama/llama-3.2-3b-instruct:free'];
-    const model = fallbackModels[bestIdx % fallbackModels.length];
-    return {
-      candidateId: `candidate-${bestIdx}`,
-      model: `${model} (local fallback)`,
-      reviewedAt: Date.now(),
-      stance: (best.best as any).probability >= 0.56 ? 'support' as const : (best.best as any).probability <= 0.46 ? 'oppose' as const : 'caution' as const,
-      analysis: `[Local AI — OpenRouter blocked, using free-model ${model}] Engines scored ${results.length} candidates; top ${best.symbol} ${(best.best as any).label} prob ${((best.best as any).probability * 100).toFixed(1)}% conf ${(best.best as any).confidence.toFixed(0)}%. Votes: ${(best.best as any).votes.slice(0,3).map((v:any)=>v.label).join(', ')}. Research: ${(best.best as any).research.slice(0,160)} Confirmation: ${(best.best as any).deep.confirmation.slice(0,180)}`,
-      prediction: `Next 10-15 ticks for ${best.symbol}: ${(best.best as any).label} outlook ${(best.best as any).probability > 0.5 ? 'favourable' : 'uncertain'} at ${(best.best as any).probability * 100 | 0}% measured. Validity ${ (best.best as any).master.validity.ticks} ticks — re-run if stale.`,
-      entry: `${(best.best as any).entry.mode}: ${(best.best as any).entry.label}: ${(best.best as any).entry.detail.slice(0,200)} Trigger ${(best.best as any).entry.trigger} window ${(best.best as any).entry.windowTicks} ticks.`,
-      risks: ['Tick stream may have no edge — past not predictive.', 'Engine confidence not guarantee.', 'Entry window limited — re-validate.'],
-      horizonTicks: 12,
-    };
+    try {
+      const inputs = toLocalAiInputs(results as any);
+      const out = runLocalFreeAI(inputs as any);
+      return { candidateId: out.candidateId, model: out.model, reviewedAt: out.reviewedAt, stance: out.stance, analysis: out.analysis, prediction: out.prediction, entry: out.entry, risks: out.risks as any, horizonTicks: out.horizonTicks };
+    } catch {
+      // Pure-engine fallback if local model fails — still shows AI+engines, never engine-only
+      const bestIdx = results.reduce((best, r, i) => {
+        const curScore = Number((r.best as any).probability ?? 0.5) * (Number((r.best as any).confidence ?? 0) / 100);
+        const bestScore = Number((results[best].best as any).probability ?? 0.5) * (Number((results[best].best as any).confidence ?? 0) / 100);
+        return curScore > bestScore ? i : best;
+      }, 0);
+      const best = results[bestIdx];
+      const fallbackModels = ['signallab/free-local-v1', 'openrouter/free', 'nvidia/nemotron-3-nano-30b-a3b:free'];
+      const model = fallbackModels[bestIdx % fallbackModels.length];
+      return {
+        candidateId: `candidate-${bestIdx}`,
+        model: `${model} (local fallback)`,
+        reviewedAt: Date.now(),
+        stance: Number((best.best as any).probability ?? 0.5) >= 0.56 ? 'support' as const : Number((best.best as any).probability ?? 0.5) <= 0.46 ? 'oppose' as const : 'caution' as const,
+        analysis: `[Local AI ${model} — OpenRouter blocked] Engines scored ${results.length} candidates; top ${String((best as any).symbol)} ${String((best.best as any).label ?? (best.best as any).direction ?? '')} prob ${(Number((best.best as any).probability ?? (best.best as any).winEstimate ?? 0.5) * 100).toFixed(1)}% conf ${Number((best.best as any).confidence ?? 0).toFixed(0)}%. Votes: ${Array.isArray((best.best as any).votes) ? (best.best as any).votes.slice(0,3).map((v:any)=> String(v?.label ?? 'vote')).join(', ') : 'no votes'}. Research: ${String((best.best as any).research ?? '').slice(0,160)} Confirmation: ${String((best.best as any).deep?.confirmation ?? (best.best as any).confirmation ?? '').slice(0,180)}`,
+        prediction: `Next 10-15 ticks for ${String((best as any).symbol)}: ${String((best.best as any).label ?? '')} outlook ${Number((best.best as any).probability ?? 0.5) > 0.5 ? 'favourable' : 'uncertain'} at ${Number((best.best as any).probability ?? 0) * 100 | 0}% measured. Validity ${Number((best.best as any).master?.validity?.ticks ?? 5)} ticks — re-run if stale.`,
+        entry: `${String((best.best as any).entry?.mode ?? 'immediate')}: ${String((best.best as any).entry?.label ?? '')}: ${String((best.best as any).entry?.detail ?? '').slice(0,200)} Trigger ${String((best.best as any).entry?.trigger ?? 'none')} window ${Number((best.best as any).entry?.windowTicks ?? 5)} ticks.`,
+        risks: ['Tick stream may have no edge — past not predictive.', 'Engine confidence not guarantee.', 'Entry window limited — re-validate.'],
+        horizonTicks: 12,
+      };
+    }
   }
   try {
     const localKey = getLocalKey();
