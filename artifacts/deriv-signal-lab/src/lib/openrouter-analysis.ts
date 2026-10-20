@@ -11,6 +11,10 @@ const reviewSchema = z.object({
 export const connectionSchema = z.object({
   status: z.enum(['not_configured', 'connected', 'unavailable']), configured: z.boolean(),
   message: z.string(), freeModels: z.number(), checkedAt: z.number(),
+  keySource: z.enum(['env', 'stored', 'none']).optional(),
+  maskedKey: z.string().nullable().optional(),
+  canClearStored: z.boolean().optional(),
+  envConfigured: z.boolean().optional(),
 });
 export type OpenRouterConnection = z.infer<typeof connectionSchema>;
 export type OpenRouterReview = z.infer<typeof reviewSchema>;

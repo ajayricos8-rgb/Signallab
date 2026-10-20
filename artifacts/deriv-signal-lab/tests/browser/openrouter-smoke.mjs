@@ -89,10 +89,23 @@ try {
   const connection = page.getByTestId('openrouter-connection');
   const expectLive = process.env.BROWSER_EXPECT_LIVE_OPENROUTER === '1';
   await connection.getByText(expectLive ? 'Connected' : 'Unavailable', { exact: true }).waitFor({ timeout: 25_000 });
-  assert.equal(await connection.locator('input').count(), 0, 'API key must not be exposed in a settings input');
-  if (!expectLive) assert.match(await connection.innerText(), /could not be reached/);
+  // The Settings card now has an API-key input for saving the server key; it must never be pre-filled with a secret,
+  // and the stored key is shown only as a masked value.
+  const keyInput = connection.getByTestId('openrouter-key-input');
+  assert.ok((await keyInput.count()) <= 1, 'at most one API-key input should exist');
+  if (await keyInput.count() === 1) {
+    assert.equal(await keyInput.inputValue(), '', 'API-key input must not be pre-filled with a secret');
+    assert.match(await keyInput.getAttribute('placeholder') ?? '', /sk-or-v1/);
+  }
+  if (connection.locator('[data-testid=\"openrouter-clear-key\"]').count) {
+    // Ensure no raw secret leaks in the visible connection text
+    const text = await connection.innerText();
+    assert.equal(text.includes('sk-or-v1-'), false, 'Raw key must never appear in the UI');
+  }
+  if (!expectLive) assert.match(await connection.innerText(), /could not be reached|No OpenRouter key/);
   await page.route('**/api/openrouter/status*', (route) => route.fulfill({ json: {
     status: 'connected', configured: true, message: 'Server key verified.', freeModels: 3, checkedAt: Date.now(),
+    keySource: 'stored', maskedKey: 'sk-or-v1••••••••', canClearStored: true, envConfigured: false,
   } }));
   await page.getByTestId('openrouter-refresh').click();
   await connection.getByText('Connected', { exact: true }).waitFor();

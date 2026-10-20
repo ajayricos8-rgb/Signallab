@@ -2,14 +2,32 @@
 
 ## Configure securely
 
-1. Create or rotate an OpenRouter key. A key shared in chat must be considered exposed and should be rotated.
-2. Configure **`OPENROUTER_API_KEY` on the API server**, preferably in the deployment's secret manager. For local development, copy `artifacts/api-server/.env.example` to `artifacts/api-server/.env` and fill it there. This file is ignored by Git.
-3. Run `pnpm dev`. The development launcher loads that server-only file when starting the API; `pnpm --filter @workspace/api-server start` also loads it. When running the compiled JavaScript directly, inject the environment variable yourself or use Node's `--env-file` option. Restart the API after changing the secret.
-4. In **Settings → OpenRouter → Test connection**, verify the live connection.
+There are two supported ways to configure the server key — they both end up as a server-only secret:
 
-Never put the key in `VITE_*`, frontend environment files, source code, localStorage, browser request headers, URLs or commits. The Settings card intentionally has no key input, key preview, or key retrieval API. The server returns only a boolean configuration state, a connection status, safe messages, the free-model count and a timestamp. It never returns the key or the provider's key metadata. Provider errors are mapped to safe messages rather than echoed or logged.
+### Option A — Settings UI (recommended for local use)
 
-The API server must have outbound HTTPS access to `https://openrouter.ai/api/v1`. A configured key alone does **not** count as connected: Settings calls the authenticated `/key` endpoint and validates the available free-model catalogue. This verifies authentication/catalogue access, not guaranteed inference capacity. A failed or blocked connection is explicitly **Unavailable**. Status is cached for 60 seconds, with the manual test allowing refresh after five seconds.
+1. Create an OpenRouter account at **https://openrouter.ai** (no credit card needed for free models) and open **https://openrouter.ai/keys** → **Create Key**. Give it a name and optionally a credit limit. Keys created during onboarding have a $100 limit and expire after 180 days.
+2. Open **Settings → AI analysis provider → OpenRouter** in SignalLab and paste the key (it starts with `sk-or-v1-`) into the **OpenRouter API key** field, then click **Save key**.
+3. The key is sent to the API server over your app origin, validated against `https://openrouter.ai/api/v1/key`, persisted to a server-only file (`.openrouter-key.json`, git-ignored) and never stored in the browser's localStorage. The UI shows only a masked preview (`sk-or-v1••••••••`) and the key source (`stored via Settings` or `from server env`).
+4. Click **Test connection** to verify the live catalogue. A successful check shows **Connected** and the number of free models.
+
+You can replace the stored key at any time by pasting a new one and saving, or **Clear stored key** to remove it. If an environment key is set, the env key takes priority and must be cleared in your deployment secrets instead.
+
+> **Security:** Never put the key in `VITE_*`, frontend env files, source code, URLs or chat logs. A key shared in chat must be considered exposed and should be rotated immediately at https://openrouter.ai/keys. The server never returns the raw key — only a masked prefix, connection status, free-model count and timestamp. Provider errors are mapped to safe messages rather than echoed or logged.
+
+### Option B — Server environment (hosting / production)
+
+1. Configure **`OPENROUTER_API_KEY` on the API server**, preferably in the deployment's secret manager. For local development, copy `artifacts/api-server/.env.example` to `artifacts/api-server/.env` and fill it there. This file is ignored by Git.
+2. Run `pnpm dev`. The development launcher loads that server-only file when starting the API; `pnpm --filter @workspace/api-server start` also loads it. When running the compiled JavaScript directly, inject the environment variable yourself or use Node's `--env-file` option. Restart the API after changing the secret.
+3. In **Settings → OpenRouter → Test connection**, verify the live connection. When the env var is set, Settings shows `from server env` and disables Clear.
+
+Both options require the API server to have outbound HTTPS access to `https://openrouter.ai/api/v1`. A configured key alone does **not** count as connected: Settings calls the authenticated `/key` endpoint and validates the available free-model catalogue (filtering to `:free` variants **and** `openrouter/free` router entries with zero prompt/completion pricing and text output). This verifies authentication/catalogue access, not guaranteed inference capacity. A failed or blocked connection is explicitly **Unavailable**. Status is cached for 60 seconds, with the manual test allowing refresh after five seconds.
+
+### Finding free models
+
+- Free models are the `:free` variants in the catalogue *and* the `openrouter/free` auto-router. Browse https://openrouter.ai/models and look for **(free)** in the name, or call `GET https://openrouter.ai/api/v1/models` and filter for `id.endsWith(':free') || id === 'openrouter/free'` with `pricing.prompt === "0"` and `pricing.completion === "0"`.
+- Free models are capped at **20 requests/min** and **50 requests/day** (or **1,000/day** after you've purchased ≥ $10 lifetime credits). See https://openrouter.ai/docs/faq#how-are-rate-limits-calculated.
+- Using `openrouter/free` as a model is the simplest way to get free inference — it randomly selects an eligible free model matching your request's features (text, tools, image understanding, structured output).
 
 ## What Run Analysis does
 
@@ -17,8 +35,8 @@ The Rise/Fall, Over/Under, Even/Odd and Matches tools use the same pipeline:
 
 1. Snapshot the market histories and run the existing worker-based engines, research library, calibration, holdout validation, precision corrections and entry replay.
 2. Rank the engine results. Send a bounded evidence packet containing the top engine-generated candidate for each of up to 20 markets to the app's same-origin `POST /api/openrouter/analyze` endpoint. The packet includes public market data, recent ticks, per-engine estimates/weights, measured probabilities and fair rates, error bars, holdout outcomes, research fusion, local statistical synthesis and entry rules. It excludes Deriv PATs, accounts, balances, positions, settlements and trade history.
-3. On the server, retrieve the live model catalogue (five-minute cache), filter to text models with **`:free` IDs AND zero prompt/completion prices**, and randomly select one using Node's cryptographic random generator. Each run makes a fresh random selection; repeats are possible.
-4. Ask that actual external model to combine the evidence into an analysis, a **10–15 tick outlook**, an entry/invalidation explanation, risks, and selection of one supplied candidate. Provider routing also sets a zero-price ceiling and denies data-collection providers. No paid-model fallback is allowed.
+3. On the server, retrieve the live model catalogue (five-minute cache), filter to text models with **`:free` IDs or `openrouter/free` AND zero prompt/completion prices**, and randomly select one using Node's cryptographic random generator. Each run makes a fresh random selection; repeats are possible.
+4. Ask that actual external model to combine the evidence into an analysis, a **10–15 tick outlook**, an entry/invalidation explanation, risks, and selection of one supplied candidate. Provider routing also sets a zero-price ceiling (`max_price: {prompt:0, completion:0}`) and denies data-collection providers (`data_collection: "deny"`). No paid-model fallback is allowed.
 5. Validate the returned JSON, stance, candidate ID, text lengths and horizon. A busy, unavailable or malformed model is retried with a different free model, at most three attempts, within a 45-second overall deadline.
 6. Promote the AI-selected engine candidate to the top of the displayed scan results and show its model, analysis, outlook, entry advice, stance and risks. Calibrated probabilities, confidence scores, strength labels, verdicts and executable entry rules are **not** rewritten by the language model.
 
@@ -37,7 +55,7 @@ Free models have variable capacity, per-key quotas and quality. Some zero-price 
 - Browser calls are relative `/api/...` requests. Proxy `/api` to the backend and preserve the original Host header (the included Vite proxy does so).
 - Cross-origin browser analysis requests are rejected. The service also caps concurrent AI requests at two and total review requests at 12 per minute per server process. These safeguards protect a shared free quota but are **not authentication**.
 - This repository's workspace has no user-authentication system. Before exposing it as a public multi-user service, add application authentication, per-user quotas, a shared distributed rate limiter and deployment-level access controls. Do not rely on CORS or Origin checks to stop non-browser clients.
-- Use HTTPS for the public deployment. Keep the server environment file outside frontend/static hosting. Do not publish build artifacts containing environment secrets.
+- Use HTTPS for the public deployment. Keep the server environment file (and `.openrouter-key.json` if using Settings storage) outside frontend/static hosting. Do not publish build artifacts containing environment secrets.
 
 ## Validation
 
@@ -49,4 +67,12 @@ PORT=18781 BASE_PATH=/ pnpm run build
 BROWSER_EXECUTABLE_PATH=/path/to/chromium node artifacts/deriv-signal-lab/tests/browser/openrouter-smoke.mjs
 ```
 
-The browser smoke test uses mocked public Deriv data and mocked AI inference. It exercises all four Tools tabs, connection states and engine-only fallback without account tokens or orders. Its initial Settings check expects OpenRouter to be unreachable in a network-restricted sandbox; set `BROWSER_EXPECT_LIVE_OPENROUTER=1` when testing on a host with a verified live connection. Mock tests validate routing/schema/error behavior but do not certify that any real key or model is currently available.
+The browser smoke test uses mocked public Deriv data and mocked AI inference. It exercises all four Tools tabs, connection states (Settings now allows a masked stored key) and engine-only fallback without account tokens or orders. Its initial Settings check expects OpenRouter to be unreachable in a network-restricted sandbox; set `BROWSER_EXPECT_LIVE_OPENROUTER=1` when testing on a host with a verified live connection. Mock tests validate routing/schema/error behavior but do not certify that any real key or model is currently available.
+
+## API endpoints (server)
+
+- `GET /api/openrouter/status?refresh=1` → `{status, configured, message, freeModels, checkedAt, keySource, maskedKey, canClearStored, envConfigured}`
+- `GET /api/openrouter/key` → `{configured, source: 'env'|'stored'|'none', maskedKey, envConfigured, message}`
+- `POST /api/openrouter/key {key: string}` → saves, invalidates caches, returns fresh `status` (validates `sk-` prefix, length, whitespace)
+- `DELETE /api/openrouter/key` → clears stored file (blocked when env var is set), returns fresh `status`
+- `POST /api/openrouter/analyze` → engine evidence → AI review (zero-price provider filter, 3 retries across free models)
