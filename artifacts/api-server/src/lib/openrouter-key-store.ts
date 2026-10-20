@@ -28,9 +28,7 @@ function loadFileKey(): string | undefined {
         return v || undefined;
       }
     } catch {
-      // Not JSON — treat raw as key if it looks like a key
       if (raw.startsWith('sk-')) return raw;
-      // Fallback: if raw length plausible, return it
       if (raw.length >= 10 && raw.length <= 512) return raw;
     }
     return undefined;
@@ -83,14 +81,16 @@ export function setStoredKey(key: string): void {
   if (trimmed.length > 2048) throw new Error('Key too long');
   memoryKey = trimmed;
   memoryLoaded = true;
+  // Best-effort persistence: file may be read-only on serverless (Vercel, Netlify, Replit).
+  // Keep in-memory key even if write fails — it survives until process restarts,
+  // and env var can be used for permanent storage.
   try {
     const p = storePath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify({ key: trimmed, updatedAt: Date.now() }, null, 2), { mode: 0o600 });
   } catch (error) {
-    // Memory still holds; surface error for API layer to report
-    console.error('Failed to persist OpenRouter key:', error);
-    throw new Error('Server could not persist the API key. Check server file permissions.');
+    console.warn('OpenRouter key will be kept in memory only (file persistence failed):', error instanceof Error ? error.message : String(error));
+    // Do not throw — in-memory key is still usable for this process lifetime.
   }
 }
 
@@ -101,8 +101,7 @@ export function clearStoredKey(): void {
     const p = storePath();
     if (fs.existsSync(p)) fs.unlinkSync(p);
   } catch (error) {
-    console.error('Failed to clear OpenRouter key:', error);
-    throw new Error('Server could not clear the stored key.');
+    console.warn('Failed to clear persisted OpenRouter key file (in-memory cleared):', error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -114,6 +113,16 @@ export function maskKey(key: string | undefined): string | null {
   const visible = t.slice(0, 8);
   const maskedLen = Math.min(20, t.length - 8);
   return `${visible}${'•'.repeat(maskedLen)}`;
+}
+
+export function validateKeyFormat(key: string): { ok: boolean; error?: string } {
+  const trimmed = key.trim();
+  if (!trimmed) return { ok: false, error: 'Paste your OpenRouter API key. Find it at https://openrouter.ai/keys — it starts with sk-or-v1-.' };
+  if (trimmed.length < 10) return { ok: false, error: 'That key length looks invalid. Copy the full key from openrouter.ai/keys.' };
+  if (trimmed.length > 2048) return { ok: false, error: 'That key is too long. Copy only the key from openrouter.ai/keys.' };
+  if (!trimmed.startsWith('sk-')) return { ok: false, error: 'OpenRouter keys start with sk-or-v1-. Paste the full key from https://openrouter.ai/keys.' };
+  if (/\s/.test(trimmed)) return { ok: false, error: 'The key contains whitespace. Paste only the key characters.' };
+  return { ok: true };
 }
 
 export function resetForTests(): void {

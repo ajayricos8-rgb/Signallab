@@ -1,7 +1,6 @@
 import { randomInt } from 'node:crypto';
 import { z } from 'zod/v4';
 import {
-  clearStoredKey,
   getRawStoredKey,
   getStoredKey,
   getStoredKeySource,
@@ -9,7 +8,7 @@ import {
   maskKey,
 } from './openrouter-key-store.ts';
 
-const BASE_URL = 'https://openrouter.ai/api/v1';
+const BASE_URL = process.env.OPENROUTER_BASE_URL?.trim() || 'https://openrouter.ai/api/v1';
 const finite = z.number().finite();
 const text = z.string().max(1600);
 const candidateSchema = z.object({
@@ -83,45 +82,137 @@ export class OpenRouterService {
     const key = this.key()?.trim();
     if (!key) throw new OpenRouterError(503, 'OpenRouter is not configured. Add your API key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server.');
     let response: Response;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      // Per docs: HTTP-Referer and X-Title are optional but help with ranking / attribution.
+      // We send both canonical forms for compatibility.
+      'X-Title': 'SignalLab',
+      'X-OpenRouter-Title': 'SignalLab',
+    };
+    // Allow custom referer for self-hosted deployments; default to a safe placeholder.
+    const referer = process.env.OPENROUTER_HTTP_REFERER?.trim() || process.env.OPENROUTER_SITE_URL?.trim() || 'https://signallab.local';
+    if (referer) {
+      headers['HTTP-Referer'] = referer;
+      headers['X-OpenRouter-Referer'] = referer;
+    }
     try {
       response = await this.request(`${BASE_URL}${path}`, {
         method: body ? 'POST' : 'GET',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'X-Title': 'SignalLab' },
+        headers,
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.any([AbortSignal.timeout(body ? 20_000 : 8_000), ...(signal ? [signal] : [])]),
       });
-    } catch {
+    } catch (cause) {
       if (signal?.aborted) throw new OpenRouterError(503, 'AI review cancelled or timed out. Engine results are unchanged.');
-      throw new OpenRouterError(503, 'OpenRouter could not be reached. Check server network access and retry.');
+      // Network failure — could be sandbox allowlist, DNS, or firewall.
+      const msg = cause instanceof Error ? cause.message : String(cause);
+      // Never leak key material in error.
+      if (msg.includes(key)) throw new OpenRouterError(503, 'OpenRouter could not be reached. Check server network access and retry.');
+      throw new OpenRouterError(503, 'OpenRouter could not be reached. Check server network access (firewall/allowlist) and retry. In restricted sandboxes, outbound to openrouter.ai may be blocked.');
     }
-    // Never surface provider response bodies, headers or exception messages: these may contain secrets.
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
+      // Map HTTP codes per https://openrouter.ai/docs/api_reference/errors-and-debugging
+      if (response.status === 401) {
         this.cachedStatus = undefined;
-        throw new OpenRouterError(503, 'OpenRouter rejected authentication. Check or rotate the server API key.');
+        throw new OpenRouterError(503, 'OpenRouter rejected authentication (401). The API key is invalid or disabled — check it at openrouter.ai/keys and re-paste it in Settings.');
+      }
+      if (response.status === 402) {
+        throw new OpenRouterError(402, 'OpenRouter reports insufficient credits (402). Add credits at openrouter.ai/credits — even free :free / openrouter/free models need a non-negative balance.');
+      }
+      if (response.status === 403) {
+        this.cachedStatus = undefined;
+        // Could be guardrail, workspace budget, or key limit.
+        throw new OpenRouterError(503, 'OpenRouter blocked the request (403). Check key limits/budgets at openrouter.ai/keys and any guardrail/budget settings.');
+      }
+      if (response.status === 408) {
+        throw new OpenRouterError(503, 'OpenRouter request timed out (408). Try again.');
+      }
+      if (response.status === 429) {
+        throw new OpenRouterError(429, 'OpenRouter free-model rate limit reached (429: 20/min, 50/day or 1000/day with $10 credits). Wait a minute or add credits at openrouter.ai/credits.');
+      }
+      if (response.status === 502) {
+        throw new OpenRouterError(502, 'The selected free model is temporarily down (502). The app will retry a different free model automatically.');
       }
       throw new OpenRouterError(response.status === 429 ? 429 : 503,
-        response.status === 429 ? 'OpenRouter free-model rate limit reached. Try again later.' : 'OpenRouter provider is unavailable. Try again later.');
+        response.status === 503 ? 'OpenRouter has no available provider for this routing (503). Try again shortly.' : 'OpenRouter provider is unavailable. Try again later.');
     }
     try { return await response.json(); }
     catch { throw new OpenRouterError(502, 'OpenRouter returned an invalid response. Engine results are unchanged.'); }
   }
 
+  // Validates key by calling GET /key (preferred) with fallback to /auth/key for older docs.
+  private async verifyKey(signal?: AbortSignal): Promise<void> {
+    // Try canonical endpoint per https://openrouter.ai/docs/api_reference/limits
+    const tryEndpoints = ['/key', '/auth/key'];
+    let lastError: OpenRouterError | undefined;
+    for (const path of tryEndpoints) {
+      try {
+        const payload = await this.api(path, signal);
+        // Expected shape: { data: { label, limit, is_free_tier, free_model_daily_requests, ... } }
+        // Be lenient: just ensure data is an object.
+        if (z.object({ data: z.object({}) }).safeParse(payload).success) return;
+        throw new OpenRouterError(502, 'OpenRouter key verification returned an unexpected shape.');
+      } catch (error) {
+        if (error instanceof OpenRouterError) {
+          // Auth/credits errors should surface immediately, not try next endpoint.
+          if (error.code === 401 || error.code === 402 || error.code === 403) throw error;
+          // 404 means endpoint not found — try next.
+          if (error.code === 503 && error.message.includes('could not be reached')) throw error;
+          lastError = error;
+          // If 404, try next endpoint; otherwise rethrow.
+          if (error.message.includes('Invalid response') || error.message.includes('unexpected shape')) {
+            // Try next
+          } else {
+            // For other verification failures, stop.
+            // But if path was /key and we got 404, try /auth/key.
+            const is404 = error.message.includes('404') || error.code === 503;
+            if (!is404) throw error;
+          }
+        } else {
+          lastError = new OpenRouterError(503, 'OpenRouter verification failed.');
+        }
+      }
+    }
+    if (lastError) throw lastError;
+    throw new OpenRouterError(503, 'OpenRouter key verification failed.');
+  }
+
   private async freeModels(signal?: AbortSignal) {
     if (this.models.length && Date.now() - this.modelsAt < 300_000) return this.models;
-    const payload = await this.api('/models', signal);
+    // Fetch catalog per https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties
+    // Note: models endpoint requires Authorization.
+    let payload: unknown;
+    try {
+      payload = await this.api('/models', signal);
+    } catch (error) {
+      // If network blocked, provide a documented fallback list so review can still attempt openrouter/free.
+      if (error instanceof OpenRouterError && error.message.includes('could not be reached')) {
+        // Fallback to well-known free router + a few stable :free IDs verified in docs.
+        // These are documented in https://openrouter.ai/openrouter/free and free-models collection.
+        const fallback = ['openrouter/free', 'nvidia/nemotron-3-nano-30b-a3b:free', 'meta-llama/llama-3.2-3b-instruct:free', 'google/gemma-3n-e4b-it:free'];
+        this.models = fallback;
+        this.modelsAt = Date.now();
+        return this.models;
+      }
+      throw error;
+    }
     const catalog = z.object({ data: z.array(z.object({
       id: z.string(), pricing: z.object({ prompt: z.string(), completion: z.string() }),
       architecture: z.object({ output_modalities: z.array(z.string()).optional() }).optional(),
     })) }).safeParse(payload);
     if (!catalog.success) throw new OpenRouterError(502, 'OpenRouter model catalogue could not be validated.');
-    this.models = catalog.data.data.filter((model) => (model.id.endsWith(':free') || model.id === 'openrouter/free')
+    const filtered = catalog.data.data.filter((model) => (model.id.endsWith(':free') || model.id === 'openrouter/free')
       && model.pricing.prompt.trim() !== '' && model.pricing.completion.trim() !== ''
       && Number(model.pricing.prompt) === 0 && Number(model.pricing.completion) === 0
       && (!model.architecture?.output_modalities || model.architecture.output_modalities.includes('text')))
       .map((model) => model.id);
-    // Prefer explicit :free models, but keep openrouter/free as valid fallback
-    // If no :free models but openrouter/free exists, it will be included above.
+    // Always ensure openrouter/free is available if catalog actually lists it per https://openrouter.ai/docs/guides/routing/routers/free-router
+    if (!filtered.includes('openrouter/free')) {
+      const hasRouter = catalog.data.data.some((m) => m.id === 'openrouter/free');
+      if (hasRouter) filtered.push('openrouter/free');
+    }
+    this.models = filtered;
     this.modelsAt = Date.now();
     if (!this.models.length) throw new OpenRouterError(503, 'No free text models are currently available on OpenRouter.');
     return this.models;
@@ -140,7 +231,7 @@ export class OpenRouterService {
     const base = this.buildStatusBase();
     if (!base.key) return {
       status: 'not_configured', configured: false,
-      message: 'No OpenRouter key is configured. Paste your key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server.',
+      message: 'No OpenRouter key is configured. Paste your key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server. Create a free key at https://openrouter.ai/keys (no card needed).',
       freeModels: 0, checkedAt: Date.now(),
       keySource: base.source, maskedKey: base.masked, canClearStored: base.canClear, envConfigured: base.env,
     };
@@ -148,21 +239,25 @@ export class OpenRouterService {
     if (this.statusPending) return this.statusPending;
     this.statusPending = (async (): Promise<ConnectionStatus> => {
       try {
-        const auth = await this.api('/key');
-        if (!z.object({ data: z.object({}) }).safeParse(auth).success) throw new OpenRouterError(502, 'OpenRouter key verification returned an invalid response.');
+        await this.verifyKey();
         const models = await this.freeModels();
         return {
           status: 'connected', configured: true,
           message: base.source === 'env'
-            ? 'Server key verified (from environment). Free-model catalogue available; model capacity and free quotas are checked on each analysis.'
-            : 'Server key verified. Free-model catalogue available; model capacity and free quotas are checked on each analysis.',
+            ? `Server key verified (from environment). ${models.length} free models available via :free variants and openrouter/free router; capacity/quotas checked per analysis.`
+            : `Server key verified. ${models.length} free models available via :free variants and openrouter/free router; capacity/quotas checked per analysis.`,
           freeModels: models.length, checkedAt: Date.now(),
           keySource: base.source, maskedKey: base.masked, canClearStored: base.canClear, envConfigured: base.env,
         };
       } catch (error) {
+        // Provide actionable messages per error code
+        let msg = error instanceof OpenRouterError ? error.message : 'OpenRouter verification failed.';
+        if (error instanceof OpenRouterError && error.code === 503 && msg.includes('could not be reached')) {
+          msg = 'OpenRouter could not be reached (network/DNS/firewall or sandbox allowlist). Key is stored; verify that the API server has outbound HTTPS to https://openrouter.ai. In restricted sandboxes, set OPENROUTER_MOCK=1 for offline testing.';
+        }
         return {
           status: 'unavailable', configured: true,
-          message: error instanceof OpenRouterError ? error.message : 'OpenRouter verification failed.',
+          message: msg,
           freeModels: 0, checkedAt: Date.now(),
           keySource: base.source, maskedKey: base.masked, canClearStored: base.canClear, envConfigured: base.env,
         };
@@ -181,6 +276,8 @@ export class OpenRouterService {
     try {
       const deadline = AbortSignal.any([AbortSignal.timeout(45_000), ...(signal ? [signal] : [])]);
       const remaining = [...await this.freeModels(deadline)];
+      // If catalog was empty, ensure router is tried
+      if (!remaining.length) remaining.push('openrouter/free');
       let failure: OpenRouterError = new OpenRouterError(503, 'Free AI models are unavailable. Engine results are unchanged.');
       for (let attempt = 0; attempt < 3 && remaining.length && !deadline.aborted; attempt++) {
         const [model] = remaining.splice(this.pick(remaining.length), 1);
@@ -188,10 +285,17 @@ export class OpenRouterService {
           const payload = await this.api('/chat/completions', deadline, {
             model, messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify(input) }],
             temperature: 0.2, max_tokens: 1800, stream: false,
+            // Enforce JSON output per https://openrouter.ai/docs/api_reference/overview#structured-outputs
+            response_format: { type: 'json_object' },
             provider: { max_price: { prompt: 0, completion: 0 }, allow_fallbacks: true, data_collection: 'deny' },
           });
           const envelope = z.object({ error: z.unknown().optional(), choices: z.array(z.object({ message: z.object({ content: z.string().nullable().optional() }) })).optional() }).safeParse(payload);
-          if (!envelope.success || envelope.data.error) throw new OpenRouterError(503, 'The free model could not complete this review.');
+          if (!envelope.success || envelope.data.error) {
+            // OpenRouter can return 200 with error object for model downtime — treat as retryable
+            const errMsg = envelope.success && envelope.data.error ? JSON.stringify(envelope.data.error) : 'model error';
+            if (errMsg.toLowerCase().includes('rate limit') || errMsg.includes('429')) throw new OpenRouterError(429, 'OpenRouter free-model rate limit reached. Try again later.');
+            throw new OpenRouterError(503, 'The free model could not complete this review.');
+          }
           const content = envelope.data.choices?.[0]?.message?.content;
           if (typeof content !== 'string') throw new OpenRouterError(502, 'The free model returned no analysis text.');
           let raw: unknown;
@@ -204,7 +308,9 @@ export class OpenRouterService {
           return { ...result.data, model, reviewedAt: Date.now() };
         } catch (error) {
           failure = error instanceof OpenRouterError ? error : new OpenRouterError(502, 'AI review failed validation.');
-          if (failure.message.includes('authentication')) throw failure;
+          if (failure.message.includes('authentication') || failure.code === 401) throw failure;
+          if (failure.code === 402) throw failure; // credits error not retryable
+          // 429 is retryable with different model, so continue loop
         }
       }
       throw failure;
