@@ -120,6 +120,13 @@ export type EntryPlan = {
   contextLabel: string | null;
   /** The entry must happen inside this many ticks of the signal. */
   windowTicks: number;
+  /**
+   * Layer-6 cap on that window: how many ticks the measured edge actually
+   * survived after the signal. The entry may never wait longer than this, even
+   * when the timing replay offered a wider window. Absent on plans built
+   * outside a full analysis, in which case the measured window stands.
+   */
+  validForTicks?: number | null;
   /** Median ticks the entry took in the replay. */
   expectedWaitTicks: number;
   /** Median wall-clock wait measured on the replayed signals. */
@@ -498,7 +505,7 @@ function assessTrigger(
       origin: row.origin,
       trigger,
       wait: trigger >= 0 ? trigger - row.origin : -1,
-      waitedMs: trigger >= 0 ? epochs[trigger] - epochs[row.origin] : -1,
+      waitedMs: trigger >= 0 ? epochGapMs(epochs[row.origin], epochs[trigger]) : -1,
       overshoot:
         trigger >= 0
           ? Math.max(0, (side === 'adverse' ? -1 : 1) * (prices[trigger] - prices[row.origin]) - depth)
@@ -1120,16 +1127,46 @@ export function rebaseEntryPlan(plan: EntryPlan, quote: number | null): EntryPla
 }
 
 /** Wall-clock window the bot gives an entry, from the plan and the tick spacing. */
+export function effectiveWindowTicks(plan: EntryPlan): number {
+  const measured = Number.isFinite(plan.windowTicks) ? Math.max(1, Math.round(plan.windowTicks)) : 1;
+  const cap = Number.isFinite(plan.validForTicks)
+    ? Math.max(1, Math.round(plan.validForTicks as number))
+    : measured;
+  return Math.max(1, Math.min(measured, cap));
+}
+
+/**
+ * Wall-clock window the bot gives an entry, from the plan and the tick spacing.
+ *
+ * The Layer-6 validity cap is applied here, so a signal whose edge was measured
+ * to survive for 4 ticks can never keep the bot waiting 12 ticks for a trigger
+ * that the analysis no longer vouches for. With a one-tick window the deadline
+ * is exactly one tick: the minimum window floor is only applied when the
+ * validity allows it.
+ */
 export function entryWindowMs(plan: EntryPlan, tickSpacingMs: number): number {
   const spacing = Number.isFinite(tickSpacingMs) && tickSpacingMs > 0 ? tickSpacingMs : 1_000;
+  const ticks = effectiveWindowTicks(plan);
   const expected = plan.expectedWaitMs > 0 ? plan.expectedWaitMs : plan.expectedWaitTicks * spacing;
-  const scaled = expected * (plan.windowTicks / Math.max(1, plan.expectedWaitTicks || 1));
-  return Math.round(clamp(Math.max(scaled, plan.windowTicks * spacing * 0.5), ENTRY_MIN_WINDOW_MS, ENTRY_MAX_WINDOW_MS));
+  const scaled = expected * (ticks / Math.max(1, plan.expectedWaitTicks || 1));
+  const capMs = ticks * spacing;
+  // The floor is allowed to exceed the tick cap in wall-clock terms: the bot's
+  // expiry check is the earlier of "ticks elapsed" and "deadline passed", so a
+  // one-tick validity still expires after one tick even though no sensible UI
+  // wants to show a sub-second window. Above the floor the window is capped by
+  // the validity itself.
+  const upperMs = Math.max(capMs, ENTRY_MIN_WINDOW_MS);
+  return Math.round(clamp(
+    Math.min(Math.max(scaled, capMs * 0.5), upperMs),
+    ENTRY_MIN_WINDOW_MS,
+    ENTRY_MAX_WINDOW_MS,
+  ));
 }
 
 /** The bot's live check of one entry plan against the newest tick. */
 export function evaluateEntry(plan: EntryPlan, observation: EntryObservation, state: EntryState): EntryEvaluation {
-  const remainingTicks = plan.windowTicks - state.elapsedTicks;
+  const windowTicks = effectiveWindowTicks(plan);
+  const remainingTicks = windowTicks - state.elapsedTicks;
   const remainingMs = state.deadline - state.now;
   const base = {
     elapsedTicks: state.elapsedTicks,
@@ -1141,7 +1178,7 @@ export function evaluateEntry(plan: EntryPlan, observation: EntryObservation, st
   if (plan.trigger === 'immediate')
     return { ...base, status: 'ready', distance: null, reason: 'Entering at the signal price.' };
   if (remainingTicks <= 0 || remainingMs <= 0)
-    return { ...base, status: 'expired', distance: null, reason: `The entry window closed after ${plan.windowTicks} ticks.` };
+    return { ...base, status: 'expired', distance: null, reason: `The entry window closed after ${windowTicks} ticks.` };
 
   if (plan.trigger === 'digit') {
     const digits = plan.contextDigits ?? [];
@@ -1205,13 +1242,29 @@ export function ticksSince(ticks: readonly { epoch: number }[], epoch: number | 
   return count;
 }
 
+/**
+ * Convert an epoch gap to milliseconds.
+ *
+ * Deriv publishes tick epochs as Unix SECONDS (~1.7e9), while unit tests and
+ * some adapters use milliseconds (~1.7e12). Treating a one-second gap as 1 ms
+ * silently collapsed every wall-clock entry window and validity countdown by a
+ * factor of 1000. The magnitude of the absolute epoch makes the unit
+ * unambiguous: no plausible millisecond epoch is below 1e11.
+ */
+export function epochGapMs(from: number, to: number): number {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
+  const scale = Math.abs(to) < 1e11 ? 1_000 : 1;
+  return (to - from) * scale;
+}
+
 /** Median milliseconds between the feed's recent ticks for one market. */
 export function medianTickSpacingMs(ticks: readonly { epoch: number }[], fallbackMs = 1_000): number {
   if (ticks.length < 3) return fallbackMs;
   const gaps: number[] = [];
+  const scale = Math.abs(ticks[ticks.length - 1].epoch) < 1e11 ? 1_000 : 1;
   const from = Math.max(1, ticks.length - 60);
   for (let index = from; index < ticks.length; index += 1) {
-    const gap = ticks[index].epoch - ticks[index - 1].epoch;
+    const gap = (ticks[index].epoch - ticks[index - 1].epoch) * scale;
     if (Number.isFinite(gap) && gap > 0) gaps.push(gap);
   }
   if (!gaps.length) return fallbackMs;
@@ -1223,7 +1276,7 @@ export function medianTickSpacingMs(ticks: readonly { epoch: number }[], fallbac
 export function entryModeLabel(plan: EntryPlan): string {
   if (plan.mode === 'immediate') return 'Entry next tick';
   if (plan.mode === 'context') return `Context entry · ${plan.contextLabel ?? 'digit context'}`;
-  return `${plan.label} · within ${plan.windowTicks} ticks`;
+  return `${plan.label} · within ${effectiveWindowTicks(plan)} tick${effectiveWindowTicks(plan) === 1 ? '' : 's'}`;
 }
 
 /**
@@ -1290,6 +1343,8 @@ export function isEntryPlan(value: unknown): value is EntryPlan {
     typeof plan.detail === 'string' &&
     typeof plan.windowTicks === 'number' &&
     Number.isFinite(plan.windowTicks) &&
+    (plan.validForTicks === undefined || plan.validForTicks === null ||
+      (typeof plan.validForTicks === 'number' && Number.isFinite(plan.validForTicks) && plan.validForTicks >= 1)) &&
     typeof plan.confidence === 'number' &&
     Number.isFinite(plan.confidence) &&
     typeof plan.measured === 'boolean' &&

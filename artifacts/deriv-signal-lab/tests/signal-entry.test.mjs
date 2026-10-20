@@ -10,6 +10,7 @@ import {
   entryModeLabel,
   entryTier,
   entryWindowMs,
+  epochGapMs,
   evaluateEntry,
   immediateEntryPlan,
   isEntryPlan,
@@ -405,6 +406,12 @@ test('feed helpers count ticks after the arming tick and read the spacing', () =
   assert.equal(ticksSince(ticks, ticks.at(-1).epoch), 0);
   assert.equal(medianTickSpacingMs(ticks), 1_000);
   assert.equal(medianTickSpacingMs([], 700), 700);
+  // Deriv publishes epochs in SECONDS. Reading a one-second gap as 1 ms
+  // collapsed every wall-clock window and validity countdown by 1000x.
+  assert.equal(epochGapMs(1_700_000_000, 1_700_000_003), 3_000);
+  assert.equal(epochGapMs(1_700_000_000_000, 1_700_000_003_000), 3_000);
+  const secondTicks = Array.from({ length: 10 }, (_, index) => ({ epoch: 1_700_000_000 + index }));
+  assert.equal(medianTickSpacingMs(secondTicks), 1_000);
 });
 
 // ---- evidence bookkeeping --------------------------------------------------

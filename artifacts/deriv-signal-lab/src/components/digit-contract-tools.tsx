@@ -9,7 +9,7 @@ import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner
 import type { OverUnderReport } from '@/lib/over-under/ensemble';
 import type { TradeRecommendation } from '@/lib/trade-draft';
 import { explainSignal } from '@/lib/signal-engine/confidence';
-import { entryModeLabel } from '@/lib/signal-engine/entry.ts';
+import { effectiveWindowTicks, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { useMarketFeed, type MarketFeedEntry, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
 import { TradeDock } from '@/components/trade-dock';
@@ -17,6 +17,7 @@ import { EngineLabPanel } from '@/components/signal/engine-lab-panel';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { scopeSettlements } from '@/lib/engine-lab/execution';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
+import { MasterDecisionCard } from '@/components/signal/master-decision-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import {
@@ -289,6 +290,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
+        master: signal.master,
         researchDecision: signal.researchDecision,
         research: signal.research,
         confirmation: {
@@ -398,6 +400,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
               now={feed.now}
               notes={selectedResult.notes}
               metrics={[
+                { label: 'Master call', value: `${signal.master.verdict.replaceAll('_', ' ')} · ${signal.master.validity.ticks}t`, hint: signal.master.headline },
                 { label: 'Win chance', value: formatPercent(signal.probability), hint: 'Confirmed probability after out-of-sample calibration, stacking and the analysis check' },
                 { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
                 { label: 'Fair odds', value: formatPercent(signal.fairProbability, 0), hint: 'Win probability with uniformly random digits' },
@@ -421,10 +424,17 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                 {
                   label: 'Entry time',
                   value: signal.entry.mode === 'immediate' ? 'Signal tick' : signal.entry.expectedWaitTicks <= 1 ? 'Next matches' : `~${signal.entry.expectedWaitTicks} ticks`,
-                  hint: `The entry stays valid for ${signal.entry.windowTicks} ticks; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed ticks matched`}.`,
+                  hint: `The entry stays valid for ${effectiveWindowTicks(signal.entry)} ticks — the shorter of the plan's window and the measured edge validity; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed ticks matched`}.`,
                 },
               ]}
               onUse={() => { setTradeMarket(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+            />
+            <MasterDecisionCard
+              master={signal.master}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={durationLabel(selectedResult.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
             />
             <ConfirmationPanel report={signal.deep.confirmation} />
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={signal.fairProbability} /> : null}

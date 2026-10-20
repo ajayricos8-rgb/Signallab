@@ -57,7 +57,15 @@ export type ConfirmationReport = {
     calibratedProbability: number | null;
     /** Probability produced by the logistic stack (null when it did not improve). */
     stackedProbability: number | null;
+    /** Brier skill of the stack over the calibrated chain on the evaluation slice. */
     stackSkill: number | null;
+    /**
+     * The same skill measured against the no-edge rate instead of the chain.
+     * Master pooling weights sources by their skill against FAIR, so a stack
+     * that improves 5% on a chain already 20% better than fair must not look
+     * five times weaker than an engine with 5% skill against fair.
+     */
+    stackSkillVsFair: number | null;
     stackSample: number;
     /** 1 when the AI model and the engine consensus point the same way. */
     agreement: number;
@@ -130,6 +138,16 @@ export type DigitConfirmationInput = {
   statePriorProbability: number | null;
   /** Candidates competing in the scan (contracts × markets), for the best-of-pool bar. */
   selectionPool?: number;
+  /**
+   * Extra features for the AI meta-model, aligned with `holdout`: how widely
+   * the engines disagree, how much of their weight backs the signalled side,
+   * and what the rolling-frequency baseline says. These are the things a
+   * linear blend cannot see. Without them the stack would only see monotone
+   * transforms of the same probability and could never add information.
+   */
+  engineFeatures?: readonly (readonly number[])[];
+  /** The same extra features for the live row this signal is published from. */
+  liveFeatures?: readonly number[];
 };
 
 /**
@@ -155,21 +173,50 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
     reasons.push('Too few independent held-out ticks to recalibrate this contract; the raw ensemble estimate is kept.');
   }
 
-  // A nonlinear logistic stack on the same chronological holdout. Feature 0 is
-  // the ensemble probability, so it can only earn its place by beating that
-  // base on rows the fit never saw.
+  // A logistic AI stack on the same chronological holdout. Feature 0 is the
+  // ensemble probability, so it can only earn its place by beating that base
+  // on rows the fit never saw. The remaining features are the ones a weighted
+  // average cannot express: engine disagreement, the weight that actually
+  // backs the signalled side, and the rolling-frequency baseline's own view.
+  //
+  // The old stack was fitted on [p, logit(p)] — two monotone transforms of the
+  // same number. It could rescale the probability but never add information,
+  // so on a genuinely well-calibrated ensemble it lost to the base by
+  // construction and the "AI" source carried zero weight. These features make
+  // the meta-model a real second opinion.
   let stack: StackResult | null = null;
   let stackedProbability: number | null = null;
-  if (input.holdout.length >= 90) {
-    const features = input.holdout.map((point) => {
+  const extraFeatures = input.engineFeatures;
+  const extraCount = extraFeatures?.[0]?.length ?? 0;
+  const liveExtra = input.liveFeatures;
+  if (
+    input.holdout.length >= 120 &&
+    extraFeatures &&
+    extraCount > 0 &&
+    extraFeatures.length === input.holdout.length &&
+    extraFeatures.every((row) => row.length === extraCount && row.every((value) => Number.isFinite(value))) &&
+    liveExtra &&
+    liveExtra.length === extraCount &&
+    liveExtra.every((value) => Number.isFinite(value))
+  ) {
+    const features = input.holdout.map((point, index) => {
       const p = clamp(point.probability, 0.001, 0.999);
-      return [p, Math.log(p / (1 - p))];
+      return [p, Math.log(p / (1 - p)), ...extraFeatures[index]];
     });
-    stack = fitOutOfSampleStack(features, input.holdout.map((point) => point.won), { minimum: 90, minimumEvaluation: 30 });
+    stack = fitOutOfSampleStack(features, input.holdout.map((point) => point.won), {
+      minimum: 120,
+      minimumEvaluation: 40,
+      ridge: 3,
+      // Every digit analysis scores up to 16 contracts; accepting the AI on a
+      // 2.5-sigma paired test would make the best of 16 noise stacks look
+      // significant. Three sigma is the honest per-contract bar in a pool.
+      minimumZ: 3,
+    });
     if (stack.improved && stack.model) {
-      stackedProbability = clamp(stack.model.predict([base, Math.log(base / (1 - base))]), 0.001, 0.999);
+      const liveRow = [base, Math.log(base / (1 - base)), ...liveExtra];
+      stackedProbability = clamp(stack.model.predict(liveRow), 0.001, 0.999);
       reasons.push(
-        `A logistic AI stack added information the raw probability missed (out-of-sample Brier skill ${signed((stack.skill ?? 0) * 100, 1)}% on ${stack.evaluationSample} ticks).`,
+        `The AI meta-model (engine disagreement, weighted support and rolling frequency) beat the raw probability out of sample (Brier skill ${signed((stack.skill ?? 0) * 100, 1)}% on ${stack.evaluationSample} ticks).`,
       );
     }
   }
@@ -267,6 +314,18 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
     input.backtest.sample >= 10 &&
     confirmedEvidence;
 
+  // Express the stack's skill on the same scale as every other source (Brier
+  // skill against the no-edge rate). The evaluation slice is the same newer
+  // half `fitOutOfSampleStack` scored, so this is still out of sample.
+  let stackSkillVsFair: number | null = null;
+  if (stack?.improved && stack.stackBrier !== null) {
+    const evaluation = input.holdout.slice(Math.floor(input.holdout.length / 2));
+    if (evaluation.length >= 20) {
+      const fairBrier = evaluation.reduce((total, point) => total + (fair - point.won) ** 2, 0) / evaluation.length;
+      if (fairBrier > 1e-9) stackSkillVsFair = 1 - stack.stackBrier / fairBrier;
+    }
+  }
+
   return {
     status,
     probabilityBefore: base,
@@ -279,6 +338,7 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
       calibratedProbability,
       stackedProbability,
       stackSkill: stack?.skill ?? null,
+      stackSkillVsFair,
       stackSample: stack?.sample ?? 0,
       agreement: stateAgreement !== 0 ? stateAgreement : edge > 0.005 ? 1 : edge < -0.005 ? -1 : 0,
     },
@@ -480,6 +540,14 @@ export function confirmRiseFall(input: QuoteConfirmationInput): QuoteConfirmatio
     input.backtest.sample >= 10 &&
     confirmedEvidence;
 
+  // The stack and the calibration both work on the non-flat conditional, whose
+  // no-edge rate is exactly 0.5 (Brier 0.25). Expressing the stack's skill on
+  // that scale keeps it comparable with the engine vote, which is also scored
+  // against the fair rate.
+  const stackSkillVsFair = stack?.improved && stack.stackBrier !== null
+    ? 1 - stack.stackBrier / 0.25
+    : null;
+
   return {
     status,
     probabilityBefore,
@@ -492,6 +560,7 @@ export function confirmRiseFall(input: QuoteConfirmationInput): QuoteConfirmatio
       calibratedProbability: calibratedProbability === null ? null : clamp((direction === 1 ? calibratedProbability : 1 - calibratedProbability) * (1 - flatRate), 0.001, 0.999),
       stackedProbability: stackedConditional === null ? null : clamp((direction === 1 ? stackedConditional : 1 - stackedConditional) * (1 - flatRate), 0.001, 0.999),
       stackSkill: stack?.skill ?? null,
+      stackSkillVsFair,
       stackSample: stack?.sample ?? 0,
       agreement: stateAgreement !== 0 ? stateAgreement : edge > 0.005 ? 1 : edge < -0.005 ? -1 : 0,
     },

@@ -31,6 +31,7 @@ import {
 import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
 import { researchAdvisory } from '@/lib/engine-lab/execution';
 import type { ResearchFusion } from '@/lib/engine-lab/fusion';
+import type { MasterDecision } from '@/lib/signal-engine/master-decision.ts';
 import type { ResearchDecision } from '@/lib/engine-lab/types';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
 import { describeEntryEvidence, entryModeLabel, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
@@ -57,6 +58,8 @@ export type SignalAnalysisBrief = {
   researchDecision?: ResearchDecision | null;
   /** What the 300-engine library contributed to this signal's probability. */
   research?: ResearchFusion | null;
+  /** Layer 6 decision that travels with the signal (validity + verdict). */
+  master?: MasterDecision | null;
   /** Layer-3 verdict the bot page shows next to the loaded signal. */
   confirmation?: {
     status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
@@ -299,6 +302,7 @@ export function TradeDock({
       research: analysis?.research ?? null,
       ranAt: analysis?.ranAt ?? 0,
       confirmation: analysis?.confirmation ?? null,
+      master: analysis?.master ?? null,
     };
   }, [analysis, analysisEntryReady, expiryOptions, family, loadedEntry, marketName, recommendation]);
 
@@ -722,6 +726,15 @@ export function TradeDock({
                         ? 'The loaded signal has no entry from the engine analysis. Run Analysis again to plan it.'
                         : 'Run Analysis to load a signal into the bot.'}
                   </span>
+                  {botPlan?.master ? (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.06em] ${botPlan.master.verdict === 'NO_EDGE' ? 'border-slate-500/40 bg-slate-500/10 text-slate-300' : botPlan.master.verdict === 'SPECULATIVE' ? 'border-amber-400/40 bg-amber-400/10 text-amber-200' : 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200'}`}
+                      title={botPlan.master.headline}
+                      data-testid="dock-master-verdict"
+                    >
+                      Master {botPlan.master.verdict.replaceAll('_', ' ')} · valid ~{botPlan.master.validity.ticks} tick{botPlan.master.validity.ticks === 1 ? '' : 's'} · conviction {botPlan.master.conviction}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
                   <BotNumberField

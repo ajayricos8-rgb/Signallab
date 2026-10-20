@@ -666,7 +666,7 @@ export type StackResult = {
 export function fitOutOfSampleStack(
   rows: readonly (readonly number[])[],
   labels: readonly number[],
-  options: { minimum?: number; minimumEvaluation?: number; ridge?: number } = {},
+  options: { minimum?: number; minimumEvaluation?: number; ridge?: number; minimumZ?: number } = {},
 ): StackResult {
   const minimum = options.minimum ?? 120;
   const minimumEvaluation = options.minimumEvaluation ?? 40;
@@ -687,7 +687,10 @@ export function fitOutOfSampleStack(
   const stackBrier = mean(stackErrors);
   const skill = baseBrier > 1e-12 ? 1 - stackBrier / baseBrier : null;
   const pairedZ = pairedImprovementZ(baseErrors, stackErrors);
-  const improved = skill !== null && skill > 0.02 && pairedZ >= 2.5;
+  // `minimumZ` lets a pool of many contracts raise the bar for accepting a
+  // stack. A single contract at 2.5 is a 5σ-looking result across a 16-contract
+  // scan only when it is the winner; three sigma is the honest default there.
+  const improved = skill !== null && skill > 0.02 && pairedZ >= (options.minimumZ ?? 2.5);
   if (!improved) {
     return { model: null, featureCount: rows[0].length, sample: rows.length, evaluationSample, baseBrier, stackBrier, skill, improved: false, weights: [] };
   }
