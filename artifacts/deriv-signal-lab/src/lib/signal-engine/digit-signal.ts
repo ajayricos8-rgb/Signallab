@@ -19,7 +19,8 @@ import {
 } from '../over-under/ensemble.ts';
 import type { Forecast } from '../over-under/features.ts';
 import { familyBalancedWeights } from './consensus.ts';
-import { analyzeDigitEntry, type EntryPlan } from './entry.ts';
+import { analyzeDigitEntry, medianTickSpacingMs, type EntryPlan } from './entry.ts';
+import { buildMasterDecision, type MasterDecision, type MasterSourceInput } from './master-decision.ts';
 import {
   confidenceScore, edgeShrinkage, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
@@ -103,6 +104,12 @@ export type DigitContractSignal = {
   /** When to enter this contract: which tick context, and how long it may take. */
   entry: EntryPlan;
   /**
+   * Layer 6: the engines, AI, calculations and entry fused into one decision
+   * with one measured validity window. This is what the UI leads with and what
+   * the bot's entry window is capped by.
+   */
+  master: MasterDecision;
+  /**
    * The two layers behind the probability: the analysis engines that measured
    * the market and the out-of-sample confirmation that adjusted it. Exposed so
    * the tools can show every engine by its own work instead of one opaque score.
@@ -139,7 +146,7 @@ export type DigitMarketAnalysis = {
   /** Full audit stored once for the winning contract, not duplicated across candidates. */
   engineLab: EngineLabReport;
   /** Cross-candidate precision fit for this scan (heterogeneity of the pool). */
-  precisionFit: { tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
+  precisionFit: { candidates: number; tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
   notes: string[];
   durationMs: number;
 };
@@ -216,6 +223,47 @@ function historyContext(family: DigitSignalFamily, lastDigit: number | null): { 
   return family === 'even-odd' ? { parity: (lastDigit % 2) as 0 | 1 } : { digit: lastDigit };
 }
 
+/**
+ * The three things a weighted average cannot say, for the AI meta-model:
+ *
+ *  - dispersion: how far the engines are from their own consensus. A tight
+ *    committee is usually more reliable than a split one even at the same
+ *    probability.
+ *  - support: the weight that actually backs the signalled side, signed so a
+ *    committee leaning the other way is negative, not merely small.
+ *  - baselineEdge: what the rolling-frequency model says about this contract
+ *    relative to fair. It is the only feature that does not come from the
+ *    engine pool, so it can break a tie the engines agree on for structural
+ *    reasons.
+ */
+function metaFeatures(
+  values: readonly (number | null)[],
+  weights: readonly number[],
+  estimate: number,
+  baselineProbability: number,
+  fair: number,
+): number[] {
+  const direction = estimate >= fair ? 1 : -1;
+  let totalWeight = 0;
+  let squared = 0;
+  let support = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    const weight = weights[index] ?? 0;
+    if (value === null || weight <= 0) continue;
+    totalWeight += weight;
+    squared += weight * (value - estimate) ** 2;
+    const side = Math.sign(value - fair);
+    if (side !== 0) support += side === direction ? weight : -weight;
+  }
+  const dispersion = totalWeight > 1e-9 ? Math.sqrt(squared / totalWeight) : 0;
+  return [
+    dispersion,
+    totalWeight > 1e-9 ? support / totalWeight : 0,
+    baselineProbability - fair,
+  ];
+}
+
 /** Full single-market digit analysis. Throws only for unusable input. */
 export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: EnsembleProgress): DigitMarketAnalysis {
   const started = Date.now();
@@ -242,6 +290,9 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   const lastDigit = fit.sequence.digits.at(-1) ?? null;
   const quality = dataQuality(fit.sequence.digits.length, input.fresh, fit.structure.status);
   const context = historyContext(input.family, lastDigit);
+  // Layer 6 needs the market's own tick cadence to turn a measured tick window
+  // into wall-clock seconds for the bot and the UI.
+  const tickSpacingMs = medianTickSpacingMs(fit.sequence.epochs.map((epoch) => ({ epoch })));
   onProgress?.(0.965, 'Replaying research engines with purged chronological validation');
   const researchBank = buildForecastBank(ticks, 'digit', { unit: 'ticks', value: input.horizon });
   const researchAudits = new Map<string, ResearchAudit>();
@@ -332,15 +383,25 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     const modelErrors: number[] = [];
     const fairErrors: number[] = [];
     const holdout: CalibrationPoint[] = [];
+    // Extra AI features aligned one-for-one with `holdout`. They are computed
+    // from the same replay rows, so the meta-model is fitted and scored under
+    // exactly the chronology the rest of the layer uses.
+    const metaHoldout: number[][] = [];
+    // Every historical occasion the same consensus rule favoured this contract,
+    // with the tick its contract expired on. Layer 6 reuses exactly these rows
+    // to measure how the edge decays when an entry is delayed.
+    const firedRows: { origin: number; exit: number }[] = [];
     for (const row of fit.checked) {
-      const estimate = weighted(row.forecasts).estimate;
+      const replay = weighted(row.forecasts);
+      const estimate = replay.estimate;
       const won = contractWins(contract, row.target) ? 1 : 0;
       holdout.push({ probability: estimate, won: won as 0 | 1 });
+      metaHoldout.push(metaFeatures(replay.values, replay.weights, estimate, digitContractProbability(row.baseline, contract), fair));
       modelLoss += (estimate - won) ** 2;
       fairLoss += (fair - won) ** 2;
       modelErrors.push((estimate - won) ** 2);
       fairErrors.push((fair - won) ** 2);
-      if (estimate - fair > margin) { fired += 1; wins += won; }
+      if (estimate - fair > margin) { fired += 1; wins += won; firedRows.push({ origin: row.origin, exit: row.targetIndex }); }
     }
     const validationSkill = fit.checked.length >= 30 && fairLoss > 1e-9 ? 1 - modelLoss / fairLoss : null;
     // A positive Brier skill on overlapping or thin rows can be luck. The
@@ -381,6 +442,14 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       validationSkill,
       statePriorProbability,
       selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
+      engineFeatures: metaHoldout,
+      liveFeatures: metaFeatures(
+        live.values,
+        live.weights,
+        live.estimate,
+        digitContractProbability(fit.baseline, contract),
+        fair,
+      ),
     });
     const audit = auditForecastBank(researchBank, contract, fair, contracts.length * Math.max(1, input.marketsInScan ?? 1));
     researchAudits.set(digitContractKey(contract), audit);
@@ -441,11 +510,60 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         miscalibration ?? 0,
       );
     const reliability = reliabilityReport(holdout);
+    // The evidence sources Layer 6 pools. Each one carries its own measured
+    // out-of-sample skill and the independent sample behind it, so a source
+    // that has never beaten the no-edge rate is reported but carries no weight.
+    const sources: MasterSourceInput[] = [
+      {
+        id: 'engines',
+        label: `${fit.engines.length}-engine ensemble`,
+        probability: rawProbability,
+        skill: validationSkill,
+        sample: fit.checked.length,
+        detail: `Bias-corrected consensus over ${fit.engines.length} predictors, validated on ${fit.checked.length} held-out ticks.`,
+      },
+      {
+        id: 'ai',
+        label: 'AI meta-model',
+        // Only the stack is AI. Calibration is the calculation layer and is
+        // already represented by the published probability; re-reporting it
+        // here would let the same adjustment vote twice.
+        probability: confirmation.ai.stackedProbability,
+        // Weighted against FAIR, the same reference every other source uses.
+        skill: confirmation.ai.stackSkillVsFair,
+        sample: confirmation.ai.stackSample,
+        familyCredit: 0.6,
+        detail: confirmation.ai.stackedProbability !== null
+          ? `Logistic meta-model on engine disagreement, weighted support and rolling frequency (${confirmation.ai.stackSample} rows), accepted out of sample.`
+          : confirmation.calibration.improved
+            ? 'The AI meta-model did not beat the calibrated chain out of sample, so it carries no vote.'
+            : 'The AI meta-model did not beat the raw chain out of sample, so it carries no vote.',
+      },
+      {
+        id: 'analysis',
+        label: 'Analysis engines',
+        probability: statePriorProbability,
+        skill: state.priorBacktest.skill,
+        sample: state.priorBacktest.sample,
+        detail: state.prior
+          ? `Validated analysis prior (${state.regime}, predictability ${(100 * state.predictability).toFixed(0)}%).`
+          : 'The analysis prior did not survive its own backtest, so it has no vote.',
+      },
+      {
+        id: 'research',
+        label: 'Research library',
+        probability: research.probability,
+        skill: research.skill,
+        sample: research.sample,
+        familyCredit: 0.8,
+        detail: research.note,
+      },
+    ];
     return {
       contract, fair, deviation, margin, bias, corrected, skills, weighted, live, liveValues,
       rawProbability, votes, tally, backtest, validationSkill, validationZ, verified,
       confirmation, research, researchDecision, probability, edge, edgeRatio, quality,
-      context, standardError, reliability, holdout,
+      context, standardError, reliability, holdout, firedRows, sources,
     };
   });
 
@@ -464,7 +582,8 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   /** Turn a measured draft into a publishable signal at a given (shrunken) probability. */
   const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): DigitContractSignal => {
     const { contract, fair, deviation, rawProbability, votes, tally, backtest, validationSkill, validationZ,
-      verified, confirmation, research, researchDecision, context, standardError, reliability, holdout } = draft;
+      verified, confirmation, research, researchDecision, context, standardError, reliability, holdout,
+      firedRows, sources } = draft;
     const probability = clamp(fair + shrinkFactor * (draft.probability - fair) - selectionDebit, 0.0005, 0.9995);
     const edge = probability - fair;
     const edgeRatio = edge / deviation;
@@ -526,10 +645,51 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     // much confidence the evidence score accumulated.
     const labelled = strengthWithConfirmation(strengthOf(confidence, tally, backtest), confirmation);
     const strength = edge < Math.max(0.005, 0.01 * fair) ? 'WEAK' : labelled;
+    // -----------------------------------------------------------------------
+    // Layer 6 — the single decision.
+    //
+    // Everything above has now been measured: the sources' out-of-sample
+    // skills, the calibrated chain probability, its error bar, the quality of
+    // the sample and the entry the replay planned. Layer 6 pools the sources,
+    // reconciles them with the chain, decides whether the edge is real and how
+    // long it survives, and caps the entry window at that measured validity.
+    // -----------------------------------------------------------------------
+    const master = buildMasterDecision({
+      family: 'digit',
+      label: candidateLabel(contract),
+      fair,
+      publishedProbability: probability,
+      publishedStandardError: standardError,
+      publishedConfidence: confidence,
+      strength,
+      sources,
+      validity: {
+        rows: firedRows,
+        // Hold the prediction fixed and settle it later: what a user who waits
+        // `lag` ticks before entering actually gets.
+        outcome: (row, lag) => {
+          const digit = fit.sequence.digits[row.exit + lag];
+          return digit === undefined ? null : contractWins(contract, digit) ? 1 : 0;
+        },
+        fair,
+        maxLag: clamp(input.horizon + 4, 4, 12),
+      },
+      tickSpacingMs,
+      entry,
+      dataQuality: quality,
+      marketMeasured: fit.structure.status !== 'insufficient',
+      marketRandom: state.regime === 'random',
+      structureStable: fit.structure.status === 'stable',
+      confirmed: confirmation.decisive,
+      contradicted: confirmation.status === 'contradicted',
+    });
+    // The bot may not wait for a trigger longer than the edge was measured to
+    // last. This is the only place the validity cap is applied to the plan.
+    const tradeableEntry: EntryPlan = { ...entry, validForTicks: master.validity.ticks };
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,
       votes, tally, backtest, validationSkill, validationZ, verified, confidence, breakdown,
-      strength, entry, researchDecision, research,
+      strength, entry: tradeableEntry, master, researchDecision, research,
       history: historical ? {
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,
@@ -555,8 +715,16 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // published pays it. The debit is then re-ranked, so a candidate whose whole
   // lead was selection luck loses the top slot to one with a measured edge.
   // ---------------------------------------------------------------------------
+  // Layer 6 ranks first: a decisive, currently-tradeable edge outranks a
+  // higher confidence score whose edge the master could not certify, and a
+  // signal that survives longer breaks ties before the old evidence score.
   const rank = (list: DigitContractSignal[]) =>
-    [...list].sort((a, b) => b.confidence - a.confidence || b.edgeRatio - a.edgeRatio || contractOrder(a.contract) - contractOrder(b.contract));
+    [...list].sort((a, b) =>
+      b.master.priority - a.master.priority
+      || b.confidence - a.confidence
+      || b.master.validity.ticks - a.master.validity.ticks
+      || b.edgeRatio - a.edgeRatio
+      || contractOrder(a.contract) - contractOrder(b.contract));
   const provisional = rank(drafts.map((draft, index) => finalize(draft, precisionFit.factors[index], 0)));
   const leader = provisional[0];
   const leaderIndex = drafts.findIndex((draft) => draft.contract === leader.contract);
@@ -575,6 +743,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     : provisional;
   const precisionSummary = {
     ...precisionFit.heterogeneity,
+    candidates: contracts.length,
     tau: precisionFit.tau,
     standoutThreshold: precisionFit.standoutThreshold,
     standouts: precisionFit.standouts.length,
@@ -602,6 +771,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     settlements: input.settlements, settlementCurrency: input.settlementCurrency,
   });
   if (best.research.weight > 0) notes.push(`Research library: ${best.research.note}`);
+  notes.push(`Master decision: ${best.master.headline}. ${best.master.entry.instruction}`);
   if (!best.researchDecision.eligible) notes.push(`Research advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
   onProgress?.(1, 'Signal and 300-engine audit ready');
   return {

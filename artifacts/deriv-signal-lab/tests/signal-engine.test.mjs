@@ -154,8 +154,16 @@ test('every digit family always returns a signal with 12 engine votes on random 
     assert.equal(signal.fairProbability, fairProbability(signal.contract));
     // Pure noise across a 13-market scan must not be labelled STRONG.
     assert.notEqual(signal.strength, 'STRONG', `${family} ${signal.label} ${signal.confidence}`);
-    // Contracts are sorted by confidence.
-    for (let index = 1; index < result.contracts.length; index += 1) assert.ok(result.contracts[index - 1].confidence >= result.contracts[index].confidence);
+    // Contracts are ranked by the master decision (verdict evidence, then
+    // conviction), so a decisive edge outranks a higher confidence whose edge
+    // the master could not certify. Equal priorities must stay confidence
+    // ordered, which is the tie-break.
+    for (let index = 1; index < result.contracts.length; index += 1) {
+      const previous = result.contracts[index - 1];
+      const current = result.contracts[index];
+      assert.ok(previous.master.priority >= current.master.priority, `${family} priority order`);
+      if (previous.master.priority === current.master.priority) assert.ok(previous.confidence >= current.confidence);
+    }
   }
 });
 

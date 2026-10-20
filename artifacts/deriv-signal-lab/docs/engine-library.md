@@ -125,6 +125,82 @@ is pure, worker-safe and deterministic:
 On the ten seeded null streams used by the regression suite, no candidate is ever boosted: noise does
 not validate, so the fusion can only leave the estimate alone or lower it.
 
+## The AI meta-model reads what the blend cannot
+
+The digit confirmation stack used to be fitted on `[p, logit(p)]` — two monotone
+transforms of the same number. That model could only rescale a probability, never
+add information, so on a well-calibrated ensemble it lost to the base by
+construction and the "AI" source carried no weight. `confirmation.ts` now fits a
+regularised logistic meta-model on `[p, logit(p), dispersion, signed support,
+baseline edge]`:
+
+- **dispersion** — the weight-weighted spread of the engine probabilities around
+  their own consensus. Two committees that publish the same probability are not
+  equally trustworthy when one is split.
+- **signed support** — the share of engine weight backing the signalled side,
+  negative when the committee leans the other way.
+- **baseline edge** — rolling-frequency probability minus fair. It is the only
+  feature that does not come from the engine pool.
+
+Acceptance is out of sample and strict: the stack must beat the base Brier score
+by more than 2% and clear a paired z of 3 (2.5 per contract would make the best
+of a 16-contract scan look significant) on the newer chronological half, after
+which it is refitted on all rows for the live prediction. The stack's skill is
+reported twice — against the calibrated chain (`stackSkill`) and against the
+no-edge rate (`stackSkillVsFair`) — because Layer 6 pools every source by its
+skill against **fair**. A stack that improves 5% on a chain already 20% better
+than fair is not five times weaker than an engine with 5% edge.
+
+If the features are absent, misaligned or non-finite, the stack is not fitted at
+all. The AI source is then reported with no view, not given a vote it did not
+earn.
+
+## Layer 6: one master decision and one measured validity window
+
+`src/lib/signal-engine/master-decision.ts` is the pass that joins the layers into
+a single call. It is pure, deterministic, structured-clone friendly (it runs in
+the scan workers) and does not mutate its inputs.
+
+1. **Pool.** Every source with demonstrated out-of-sample skill is weighted by
+   `tanh(30 × skill) × n/(n+50) × familyCredit` and pooled in log-odds space.
+   Unmeasured sources are still reported but carry zero weight. The AI stack and
+   the research library carry partial family credit because they read the same
+   tick stream.
+2. **Reconcile.** The calibrated chain owns the probability. The pool may pull
+   it by at most a quarter of the disagreement and at most 0.15 log-odds, so a
+   committee of correlated measurements can never overrule the audited chain.
+3. **Decide.** A decisive call requires a material edge, `z ≥ 1.645`, a stable
+   decay curve (2 of 3 chronological thirds agreeing), either confirmation or
+   at least two weighted sources, and no validated contradiction. Anything with
+   a positive but smaller edge is `SPECULATIVE`; the rest is `NO_EDGE`. The best
+   candidate is still returned in every case — the master reports the absence of
+   an edge, it does not block the analysis.
+4. **Measure the window.** For every replayed signal the prediction is held
+   fixed and the entry is delayed by 0…maxLag ticks. The hit rate at each delay
+   is measured against fair with an overlap-corrected effective sample:
+   `observed / (span/stride + lag/span)`, where `span` is the median contract
+   span and `stride` the median gap between replay origins. The window is the
+   last lag whose edge is at least half the initial edge, positive, and whose
+   one-sided 90% Wilson lower bound still clears fair. `NO_EDGE` collapses the
+   window to one tick; nothing is allowed to wait on noise.
+5. **Cap the entry.** The plan is returned as `{ ...entry, validForTicks }`.
+   `effectiveWindowTicks` and `entryWindowMs` honour the stricter of the plan
+   window and the measured validity, so the bot can never wait for a trigger the
+   analysis no longer vouches for. A one-tick validity expires after one tick
+   even though the UI's wall-clock floor keeps the countdown readable.
+6. **Report.** Conviction is capped by the verdict: at most 45 on `NO_EDGE` and
+   70 on `SPECULATIVE`, so a high evidence score cannot dress up a call the edge
+   did not earn. The decision carries the per-source pool, the decay curve, the
+   entry instruction and the invalidation conditions used by the master card.
+
+On the biased 2,000-tick fixture (digit 7 at 28%) the master returns
+`TRADE_NOW`, conviction 99, edge +25.2 points, z 5.00, five-tick validity. On an
+unbiased stream it returns `NO_EDGE`, conviction 45, edge +0.3 points, and a
+one-tick window. The Rise/Fall path applies the same layer to its 14 engines and
+25 durations, measuring delayed-entry outcomes from the delayed entry price
+rather than the original origin, so a trend cannot masquerade as an edge that
+survives every delay.
+
 ## Candles, units and unavailable states
 
 - Candles are timestamp-aligned **60-second observed OHLC**, not fabricated “tick candles.” The open last bucket and an initial partial bucket are excluded. Missing buckets are not forward-filled. Intra-bucket missing ticks remain a data limitation.

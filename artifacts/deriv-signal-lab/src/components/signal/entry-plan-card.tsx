@@ -7,7 +7,7 @@
 // engines / AI / replay numbers (`describeEntryEvidence`) that prove the entry
 // came out of the analysis rather than out of nothing.
 import { ArrowDown, ArrowUp, BrainCircuit, Clock3, Crosshair, Layers, Route, Timer } from 'lucide-react';
-import { describeEntryEvidence, entryTier, type EntryPlan } from '@/lib/signal-engine/entry.ts';
+import { describeEntryEvidence, effectiveWindowTicks, entryTier, type EntryPlan } from '@/lib/signal-engine/entry.ts';
 import { StrengthBadge } from '@/components/signal/signal-ui';
 
 function formatPrice(value: number | null): string {
@@ -111,8 +111,12 @@ export function EntryPlanCard({
         />
         <StatTile
           label="Valid for"
-          value={`${entry.windowTicks} tick${entry.windowTicks === 1 ? '' : 's'}`}
-          hint="How long the signal stays worth entering: past the window the bot uses its Entry setting (market or skip)."
+          value={`${effectiveWindowTicks(entry)} tick${effectiveWindowTicks(entry) === 1 ? '' : 's'}`}
+          hint={
+            entry.validForTicks !== undefined && entry.validForTicks !== null && entry.validForTicks < entry.windowTicks
+              ? `The Layer-6 master decision measured the edge for ${entry.validForTicks} tick${entry.validForTicks === 1 ? '' : 's'}, so the ${entry.windowTicks}-tick timing window was capped. Past the cap the bot uses its Entry setting (market or skip).`
+              : 'How long the signal stays worth entering: past the window the bot uses its Entry setting (market or skip).'
+          }
         />
         <StatTile
           label="Entry reached"

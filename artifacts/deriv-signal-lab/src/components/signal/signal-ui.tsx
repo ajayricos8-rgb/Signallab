@@ -409,8 +409,11 @@ export type PrecisionView = {
 
 export function PrecisionPanel({ block, candidates, fair }: { block: PrecisionView; candidates?: number; fair?: number }) {
   const se = block.standardError;
-  const low = block.interval ? block.interval.lower : se === null ? null : (block.interval?.probability ?? 0) - 2 * se;
-  const high = block.interval ? block.interval.upper : se === null ? null : (block.interval?.probability ?? 0) + 2 * se;
+  // The interval is the only measured range. Without it there is no centre to
+  // put a ±2 s.e. band around, so the panel reports the estimate as unmeasured
+  // instead of inventing a probability of zero.
+  const low = block.interval ? block.interval.lower : null;
+  const high = block.interval ? block.interval.upper : null;
   const suppressed = block.shrinkFactor < 0.35;
   const clears = fair !== undefined && low !== null && low > fair;
   return (

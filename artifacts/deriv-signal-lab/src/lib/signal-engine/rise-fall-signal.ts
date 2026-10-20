@@ -14,7 +14,8 @@ import {
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
 import { familyBalancedWeights } from './consensus.ts';
-import { analyzeQuoteEntry, type EntryPlan } from './entry.ts';
+import { analyzeQuoteEntry, epochGapMs, type EntryPlan } from './entry.ts';
+import { buildMasterDecision, type MasterDecision, type MasterSourceInput } from './master-decision.ts';
 import { analyzeQuoteState, type QuoteMarketState } from './market-state.ts';
 import { synthesizeRiseFallAi, type AiSynthesis } from './ai-synthesis.ts';
 import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
@@ -113,6 +114,12 @@ export type RiseFallHorizonSignal = {
   /** When and at what price this signal should be traded. */
   entry: EntryPlan;
   /**
+   * Layer 6: the engines, AI, calculations and entry fused into one decision
+   * with one measured validity window. This is what the UI leads with and what
+   * the bot's entry window is capped by.
+   */
+  master: MasterDecision;
+  /**
    * Layer 1 (analysis engines) and layer 3 (out-of-sample confirmation) behind
    * this duration. Exposed so the tools can show every engine by its own work.
    */
@@ -141,7 +148,7 @@ export type RiseFallMarketAnalysis = {
   /** Layer 5: quant measurement engines synthesised into one AI verdict. */
   aiSynthesis: AiSynthesis;
   /** Cross-duration precision fit for this scan (heterogeneity of the pool). */
-  precisionFit: { tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
+  precisionFit: { candidates: number; tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
   /** Number of analysis engines that ran (separate from the 14 prediction engines). */
   analysisEngineCount: number;
   engineLab: EngineLabReport;
@@ -244,7 +251,7 @@ function averageTickSpacingMs(epochs: readonly number[]): number {
   const gaps: number[] = [];
   const from = Math.max(1, epochs.length - 501);
   for (let index = from; index < epochs.length; index += 1) {
-    const gap = epochs[index] - epochs[index - 1];
+    const gap = epochGapMs(epochs[index - 1], epochs[index]);
     if (Number.isFinite(gap) && gap > 0) gaps.push(gap);
   }
   if (!gaps.length) return 1_000;
@@ -549,6 +556,12 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     let aiLoss = 0;
     let fairLoss = 0;
     let aiRows = 0;
+    // Brier skill of the 14-engine consensus on its own, measured on the same
+    // independent holdout rows as the AI meta-model. Layer 6 needs this to
+    // price the engine vote separately from the meta-model that reweights it.
+    let engineLoss = 0;
+    let engineFairLoss = 0;
+    let engineRows = 0;
     const aiErrors: number[] = [];
     const fairErrors: number[] = [];
     for (const row of setC) {
@@ -567,6 +580,13 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         fairErrors.push(0.25);
         aiRows += 1;
         calibrationRows.push({ ai: p, score, won: (row.label === 1 ? 1 : 0) as 0 | 1 });
+        // Engine-only consensus (the AI member is excluded from this score, so
+        // the two sources are not literally the same number).
+        const engineScore = consensus(row.scores).score;
+        const engineRise = clamp(0.5 + engineScore / 2, 0.01, 0.99);
+        engineLoss += (engineRise - y) ** 2;
+        engineFairLoss += (0.5 - y) ** 2;
+        engineRows += 1;
       }
     }
     const flatRate = setC.length ? flats / setC.length : 0;
@@ -582,6 +602,10 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // Brier loss actually lower than the coin-flip baseline? Without this a
     // thin positive skill on a random walk would be trusted at face value.
     const validationZ = aiErrors.length >= 30 ? pairedImprovementZ(fairErrors, aiErrors) : null;
+    // The engine consensus gets its own out-of-sample skill, measured on the
+    // same independent rows as the AI meta-model so Layer 6 can price the two
+    // sources on the same scale without counting the same fit twice.
+    const engineSkill = engineRows >= 30 && engineFairLoss > 0 ? 1 - engineLoss / engineFairLoss : null;
 
     // 6. Live vote, then layer 3 confirmation. Family budgets prevent
     //    correlated indicators from outvoting independent evidence just
@@ -709,10 +733,52 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         (measuredError ?? 0) / clamp(edgeShrinkage(validationSkill, validationZ), 0.3, 1),
         miscalibration ?? 0,
       );
+    // Evidence sources for Layer 6, each expressed as P(this direction) with
+    // its own measured out-of-sample skill and independent sample.
+    const engineRiseLive = clamp(0.5 + consensusScore / 2, 0.01, 0.99);
+    const sources: MasterSourceInput[] = [
+      {
+        id: 'engines',
+        label: `${RISE_FALL_ENGINES.length}-engine consensus`,
+        probability: directionSign > 0 ? engineRiseLive : 1 - engineRiseLive,
+        skill: engineSkill,
+        sample: engineRows,
+        detail: `Skill-weighted vote of ${RISE_FALL_ENGINES.length} state, drift and meta engines, scored on ${engineRows} independent holdout outcomes.`,
+      },
+      {
+        id: 'ai',
+        label: 'AI meta-model',
+        probability: aiForDirection,
+        skill: validationSkill,
+        sample: aiRows,
+        familyCredit: 0.6,
+        detail: `Logistic meta-model fitted on the other engines' replayed scores (${aiRows} held-out outcomes).`,
+      },
+      {
+        id: 'analysis',
+        label: 'Analysis engines',
+        probability: state.prior === null ? null : directionSign > 0 ? state.prior : 1 - state.prior,
+        skill: state.priorBacktest.skill,
+        sample: state.priorBacktest.sample,
+        detail: state.prior === null
+          ? 'The analysis prior did not survive its own backtest, so it has no vote.'
+          : `${state.regime} conditions, predictability ${(100 * state.predictability).toFixed(0)}%.`,
+      },
+      {
+        id: 'research',
+        label: 'Research library',
+        probability: research.probability,
+        skill: research.skill,
+        sample: research.sample,
+        familyCredit: 0.8,
+        detail: research.note,
+      },
+    ];
     return {
       horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, consensusDirection,
       votes, tally, backtest, validationSkill, validationZ, flatRate, fair, research, researchDecision,
-      confirmation, entryInputs: { prices, epochs, rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })), exits, liveAverageMove: liveAnalysis.averageTickMove14 },
+      confirmation, sources,
+      entryInputs: { prices, epochs, rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })), exits, liveAverageMove: liveAnalysis.averageTickMove14 },
       horizonQuality: quality * clamp(0.6 + 0.4 * reliability, 0.6, 1),
       winEstimate, standardError, reliabilityReportValue: reliabilityReport(holdoutPoints), holdoutPoints,
       recent, exits,
@@ -728,7 +794,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): RiseFallHorizonSignal => {
     const { horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, votes, tally, backtest,
       validationSkill, validationZ, flatRate, fair, research, researchDecision, confirmation, entryInputs, horizonQuality,
-      standardError, holdoutPoints, recent } = draft;
+      standardError, holdoutPoints, recent, sources } = draft;
     let winEstimate = clamp(fair + shrinkFactor * (draft.winEstimate - fair) - selectionDebit, 0.001, 0.999);
     if (Math.abs(winEstimate - draft.winEstimate) > 1e-9) {
       confirmation.probability = winEstimate;
@@ -786,9 +852,53 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // much confidence the evidence score accumulated.
     const labelled = strengthWithConfirmation(strengthOf(confidence, tally, backtest), confirmation);
     const strength = winEstimate - fair < Math.max(0.005, 0.01 * fair) ? 'WEAK' : labelled;
+    // -----------------------------------------------------------------------
+    // Layer 6 — one decision out of engines + AI + calculations + entry.
+    // The validity curve holds the direction fixed and measures what a delayed
+    // entry would have settled as: the same contract, expiring later.
+    // -----------------------------------------------------------------------
+    const master = buildMasterDecision({
+      family: 'rise-fall',
+      label: direction,
+      fair,
+      publishedProbability: winEstimate,
+      publishedStandardError: standardError,
+      publishedConfidence: confidence,
+      strength,
+      sources,
+      validity: {
+        rows: entryInputs.rows,
+        // Delay the ENTRY by `lag` ticks and keep the holding period fixed. The
+        // old version compared the delayed exit against the original origin,
+        // which in a trending market measures the drift accumulated before the
+        // entry rather than the edge a late entrant actually gets. That made a
+        // trend look valid for every delay. Entering at origin+lag and exiting
+        // at exit+lag is the contract a delayed entry really buys.
+        outcome: (row, lag) => {
+          const entryIndex = row.origin + lag;
+          const exitIndex = row.exit + lag;
+          if (exitIndex >= entryInputs.prices.length || entryIndex >= entryInputs.prices.length) return null;
+          const move = entryInputs.prices[exitIndex] - entryInputs.prices[entryIndex];
+          if (move === 0) return 0;
+          return sign(move) === directionSign ? 1 : 0;
+        },
+        fair,
+        maxLag: horizon.unit === 'ticks' ? clamp(horizon.value + 4, 4, 12) : 8,
+      },
+      tickSpacingMs: state.tickSpacingMs,
+      entry,
+      dataQuality: horizonQuality,
+      marketMeasured: state.regime !== 'insufficient',
+      marketRandom: state.regime === 'random',
+      structureStable: state.regime !== 'insufficient',
+      confirmed: confirmation.decisive,
+      contradicted: confirmation.status === 'contradicted',
+    });
+    // The bot may not wait longer than the edge was measured to last.
+    const tradeableEntry: EntryPlan = { ...entry, validForTicks: master.validity.ticks };
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
-      confidence, breakdown, strength, historical: recent, entry, researchDecision, research,
+      confidence, breakdown, strength, historical: recent, entry: tradeableEntry, master, researchDecision, research,
       precision: {
         standardError,
         interval,
@@ -801,8 +911,15 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     };
   };
 
+  // Layer 6 ranks first, exactly as in the digit panel: a decisive, currently
+  // tradeable edge outranks a higher evidence score the master cannot certify.
   const rank = (list: RiseFallHorizonSignal[]) =>
-    [...list].sort((a, b) => b.confidence - a.confidence || b.tally.weightedAgreement - a.tally.weightedAgreement || (a.horizon.unit === b.horizon.unit ? a.horizon.value - b.horizon.value : a.horizon.unit === 'ticks' ? -1 : 1));
+    [...list].sort((a, b) =>
+      b.master.priority - a.master.priority
+      || b.confidence - a.confidence
+      || b.master.validity.ticks - a.master.validity.ticks
+      || b.tally.weightedAgreement - a.tally.weightedAgreement
+      || (a.horizon.unit === b.horizon.unit ? a.horizon.value - b.horizon.value : a.horizon.unit === 'ticks' ? -1 : 1));
   const provisional = rank(drafts.map((draft, index) => finalize(draft, precisionFit.factors[index], 0)));
   const leader = provisional[0];
   const leaderIndex = drafts.findIndex((draft) => draft.horizon === leader.horizon);
@@ -819,6 +936,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     : provisional;
   const precisionSummary = {
     ...precisionFit.heterogeneity,
+    candidates: horizons.length,
     tau: precisionFit.tau,
     standoutThreshold: precisionFit.standoutThreshold,
     standouts: precisionFit.standouts.length,
@@ -844,6 +962,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     settlements: input.settlements, settlementCurrency: input.settlementCurrency,
   });
   if (best.research.weight > 0) notes.push(`Research library: ${best.research.note}`);
+  notes.push(`Master decision: ${best.master.headline}. ${best.master.entry.instruction}`);
   if (!best.researchDecision.eligible) notes.push(`Research advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
   onProgress?.(1, 'Signal and 300-engine audit ready');
   return {

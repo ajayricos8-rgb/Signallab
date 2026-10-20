@@ -29,7 +29,9 @@ import { barrierFor, type DerivTradeRequest } from '@/lib/deriv-trading';
 import type { TradeContractType, TradeFamily } from '@/lib/trade-draft';
 import type { TradeDurationUnit } from '@/lib/trade-duration';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
+import type { MasterDecision } from '@/lib/signal-engine/master-decision.ts';
 import {
+  effectiveWindowTicks,
   evaluateEntry,
   isEntryPlan,
   medianTickSpacingMs,
@@ -79,6 +81,8 @@ export type SignalBotPlan = {
   recommendedRuns: number;
   /** When and at what price the analysis says this signal should be traded. */
   entry: EntryPlan;
+  /** Layer-6 decision: the validity window, verdict and evidence behind it. */
+  master?: MasterDecision | null;
   ranAt: number;
   researchDecision?: ResearchDecision | null;
   /** What the 300-engine library contributed to the traded probability. */
@@ -287,7 +291,7 @@ export function useSignalBot(): SignalBotController {
           elapsedTicks: evaluation.elapsedTicks,
           remainingTicks: evaluation.remainingTicks,
           remainingMs: evaluation.remainingMs,
-          windowTicks: decision.entry.windowTicks,
+          windowTicks: effectiveWindowTicks(decision.entry),
         });
       };
 
@@ -308,7 +312,7 @@ export function useSignalBot(): SignalBotController {
               reason: `Waiting for a fresh tick — the last quote is ${(Math.abs(entry.receiveAgeMs) / 1_000).toFixed(1)}s old.`,
               distance: null,
               elapsedTicks,
-              remainingTicks: Math.max(0, decision.entry.windowTicks - elapsedTicks),
+              remainingTicks: Math.max(0, effectiveWindowTicks(decision.entry) - elapsedTicks),
               remainingMs: Math.max(0, decision.deadline - Date.now()),
             },
             latest?.quote ?? null,
@@ -380,6 +384,20 @@ export function useSignalBot(): SignalBotController {
         setStatus('error');
         setStopReason('error');
         setError(`This analysis is ${Math.round((Date.now() - nextPlan.ranAt) / 60_000)} minutes old. Run Analysis again so the bot trades a current entry.`);
+        return;
+      }
+      // Layer 6 measured how long this edge survives. A signal the analysis
+      // says is valid for a handful of ticks must not be armed minutes later,
+      // so the bot refuses an old snapshot well before the 15-minute ceiling.
+      // The floor keeps ordinary "analyse, then configure the dock" use intact.
+      const validityMs = nextPlan.master?.validity.ms ?? 0;
+      const staleAfterMs = Math.max(120_000, validityMs * 3);
+      if (validityMs > 0 && Number.isFinite(nextPlan.ranAt) && nextPlan.ranAt > 0 && Date.now() - nextPlan.ranAt > staleAfterMs) {
+        setStatus('error');
+        setStopReason('error');
+        setError(
+          `This signal was measured valid for ~${Math.max(1, Math.round(validityMs / 1_000))}s and the analysis is ${Math.round((Date.now() - nextPlan.ranAt) / 1_000)}s old. Run Analysis again so the bot arms a current edge.`,
+        );
         return;
       }
       const config = sanitizeSignalBotConfig(rawConfig);

@@ -6,6 +6,7 @@ import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { scopeSettlements } from '@/lib/engine-lab/execution';
 import { digitTicksOf } from '@/lib/market-feed';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
+import { MasterDecisionCard } from '@/components/signal/master-decision-card';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
@@ -22,7 +23,7 @@ import {
 import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner';
 import type { TradeRecommendation } from '@/lib/trade-draft';
 import { explainSignal } from '@/lib/signal-engine/confidence';
-import { entryModeLabel } from '@/lib/signal-engine/entry.ts';
+import { effectiveWindowTicks, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 
 const ALL_MARKETS = 'all';
 const ENGINE_COUNT = RISE_FALL_ENGINES.length;
@@ -205,6 +206,7 @@ export function RiseFallTool() {
         marketName: selectedResult.name,
         ranAt: run?.ranAt ?? 0,
         entry: signal.entry,
+        master: signal.master,
         researchDecision: signal.researchDecision,
         research: signal.research,
         confirmation: {
@@ -308,6 +310,7 @@ export function RiseFallTool() {
               now={feed.now}
               notes={selectedResult.notes}
               metrics={[
+                { label: 'Master call', value: `${signal.master.verdict.replaceAll('_', ' ')} · ${signal.master.validity.ticks}t`, hint: signal.master.headline },
                 { label: 'Win chance', value: formatPercent(signal.winEstimate), hint: 'Confirmed probability for this direction after calibration, stacking and the analysis check' },
                 { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
                 { label: 'AI P(rise)', value: formatPercent(signal.aiProbability), hint: 'Raw logistic-regression meta-model output' },
@@ -331,10 +334,17 @@ export function RiseFallTool() {
                 {
                   label: 'Entry time',
                   value: signal.entry.mode === 'immediate' ? 'Signal tick' : `~${signal.entry.expectedWaitTicks} tick${signal.entry.expectedWaitTicks === 1 ? '' : 's'}${signal.entry.expectedWaitMs > 0 ? ` · ~${(signal.entry.expectedWaitMs / 1_000).toFixed(1)}s` : ''}`,
-                  hint: `The entry stays valid for ${signal.entry.windowTicks} ticks; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed signals got there`}.`,
+                  hint: `The entry stays valid for ${effectiveWindowTicks(signal.entry)} ticks — the shorter of the plan's window and the measured edge validity; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed signals got there`}.`,
                 },
               ]}
               onUse={() => { setDraftMarketCode(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+            />
+            <MasterDecisionCard
+              master={signal.master}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={formatRiseFallHorizon(signal.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
             />
             <ConfirmationPanel report={signal.deep.confirmation} />
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={0.5} /> : null}
