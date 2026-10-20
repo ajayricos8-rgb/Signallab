@@ -110,11 +110,14 @@ router.post('/openrouter/analyze', async (req, res) => {
     res.status(400).json({ error: 'Invalid engine evidence for AI review.' });
     return;
   }
+  // Accept client-provided OpenRouter key as fallback when server has none (e.g., localStorage fallback after 404)
+  const clientKeyHeader = req.get('x-openrouter-key') || req.get('x-openrouter-api-key') || (req.body as any)?._clientKey || (req.body as any)?.clientKey;
+  const overrideKey = typeof clientKeyHeader === 'string' && clientKeyHeader.startsWith('sk-') ? clientKeyHeader.trim() : undefined;
   const controller = new AbortController();
   const cancel = () => { if (!res.writableEnded) controller.abort(); };
   res.on('close', cancel);
   try {
-    res.json(await openRouter.review(parsed.data, controller.signal));
+    res.json(await openRouter.review(parsed.data, controller.signal, overrideKey));
   } catch (error) {
     if (!res.destroyed) res.status(error instanceof OpenRouterError ? error.code : 503).json({
       error: error instanceof OpenRouterError ? error.message : 'OpenRouter analysis is unavailable. Engine results are unchanged.',

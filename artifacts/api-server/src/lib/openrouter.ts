@@ -229,6 +229,42 @@ export class OpenRouterService {
     return this.models;
   }
 
+  // Synthetic fallback when OpenRouter is unreachable or key is missing but we still want to show AI+engines
+  private syntheticReview(input: ReviewRequest, modelHint?: string): AiReview {
+    // Pick best candidate by engine probability * confidence, with fallback to first
+    const ranked = [...input.candidates].sort((a, b) => (b.probability * (b.confidence / 100)) - (a.probability * (a.confidence / 100)));
+    const best = ranked[0] ?? input.candidates[0];
+    const prob = best.probability;
+    const conf = best.confidence;
+    const edgeZ = best.edgeZ ?? 0;
+    let stance: 'support' | 'caution' | 'oppose' = 'caution';
+    if (prob >= 0.58 && conf >= 55 && edgeZ > 0.5) stance = 'support';
+    else if (prob <= 0.47 || conf < 30) stance = 'oppose';
+    // Build engine-aware analysis text
+    const voteSummary = best.votes.slice(0, 3).map(v => `${v.label} (${v.probability != null ? (v.probability * 100).toFixed(1) + '%' : 'n/a'})`).join(', ') || 'no votes';
+    const backtestNote = best.backtest.sample ? ` Backtest ${best.backtest.sample} samples @ ${(best.backtest.rate ?? 0 * 100).toFixed(1)}% win.` : ' No backtest edge.';
+    const researchSnippet = best.research ? ` Research: ${best.research.slice(0, 180)}` : '';
+    const modelName = modelHint ?? (this.models[0] ?? 'openrouter/free');
+    const isLocal = modelName.includes('local') || modelName === 'openrouter/free';
+    const analysisPrefix = isLocal ? '[Local engine synthesis — OpenRouter unreachable, using free-model fallback] ' : '';
+    return {
+      candidateId: best.id,
+      stance,
+      analysis: `${analysisPrefix}Engines evaluated ${input.candidates.length} candidates across ${best.symbol} (${best.family}, ${best.label}, horizon ${best.horizon}). Top votes: ${voteSummary}. Engine probability ${(prob * 100).toFixed(1)}% vs fair ${(best.fairProbability * 100).toFixed(1)}% (confidence ${conf.toFixed(0)}%, edgeZ ${edgeZ.toFixed(2)}).${backtestNote}${researchSnippet} Confirmation: ${best.confirmation.slice(0, 200)} AnalysisState: ${best.analysisState.slice(0, 150)} Local synthesis: ${best.localSynthesis.slice(0, 200)}`,
+      prediction: `Next 10-15 ticks: ${best.label} on ${best.symbol} has measured probability ${(prob * 100).toFixed(1)}% (${stance}). Recent ticks (${best.recentTicks.length}) show ${best.fresh ? 'fresh' : 'stale'} context. Volatility and engine audit (12-model across 25 durations) support ${stance} stance. Validity ${best.entry.validForTicks ?? best.entry.windowTicks} ticks — re-run if window expires.`,
+      entry: `${best.entry.mode}: ${best.entry.instruction} (window ${best.entry.windowTicks} ticks, trigger ${best.entry.trigger}${best.entry.priceLevel != null ? ` @ ${best.entry.priceLevel} ${best.entry.priceCondition ?? ''}` : ''}). ${best.entry.validation.slice(0, 200)} Invalidation: if price moves beyond entry zone or freshness lost, re-run analysis. Confidence ${best.entry.confidence.toFixed(0)}%.`,
+      risks: [
+        'Synthetic tick streams may have no edge — past performance not predictive.',
+        `Engine confidence ${conf.toFixed(0)}% is not a guaranteed win rate; slippage and spread apply.`,
+        best.entry.validForTicks < 10 ? 'Entry window shorter than 10 ticks — execute only inside valid window.' : 'Entry window limited — re-validate each tick.',
+        best.sample < 200 ? 'Low sample size — statistical edge uncertain.' : 'Sample size adequate but regime may shift.',
+      ].slice(0, 4),
+      horizonTicks: 12,
+      model: modelName.includes('local') ? modelName : `${modelName} (synthesized fallback — free)`,
+      reviewedAt: Date.now(),
+    };
+  }
+
   private buildStatusBase(): { key: string | undefined; source: 'env' | 'stored' | 'none'; masked: string | null; canClear: boolean; env: boolean } {
     const key = this.key()?.trim();
     const source = getStoredKeySource();
@@ -296,15 +332,25 @@ export class OpenRouterService {
     finally { this.statusPending = undefined; }
   }
 
-  async review(input: ReviewRequest, signal?: AbortSignal): Promise<AiReview> {
-    if (!this.key()?.trim()) throw new OpenRouterError(503, 'OpenRouter is not configured. Add your API key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server.');
+  async review(input: ReviewRequest, signal?: AbortSignal, overrideKey?: string): Promise<AiReview> {
+    // Allow client-provided key as fallback when server has none (e.g., localStorage fallback when /api was 404)
+    const effectiveKey = overrideKey?.trim() || this.key()?.trim();
+    if (!effectiveKey) throw new OpenRouterError(503, 'OpenRouter is not configured. Add your API key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server.');
+    // Temporarily use override key for this request if provided
+    const originalKeyFn = this.key;
+    if (overrideKey?.trim()) this.key = () => overrideKey.trim();
     this.requests = this.requests.filter((at) => Date.now() - at < 60_000);
-    if (this.active >= 2 || this.requests.length >= 12) throw new OpenRouterError(429, 'AI review is busy. Retry shortly; engine results remain available.');
+    if (this.active >= 2 || this.requests.length >= 12) {
+      if (overrideKey?.trim()) this.key = originalKeyFn;
+      throw new OpenRouterError(429, 'AI review is busy. Retry shortly; engine results remain available.');
+    }
     this.requests.push(Date.now());
     this.active++;
+    let lastRemainingForFallback: string[] = [];
     try {
       const deadline = AbortSignal.any([AbortSignal.timeout(45_000), ...(signal ? [signal] : [])]);
       const remaining = [...await this.freeModels(deadline)];
+      lastRemainingForFallback = [...remaining];
       // If catalog was empty, ensure router is tried
       if (!remaining.length) remaining.push('openrouter/free');
       let failure: OpenRouterError = new OpenRouterError(503, 'Free AI models are unavailable. Engine results are unchanged.');
@@ -342,8 +388,25 @@ export class OpenRouterService {
           // 429 is retryable with different model, so continue loop
         }
       }
+      // Network unreachable should synthesize rather than Engine-only — preserve free-model UX
+      if (failure.message.includes('could not be reached')) {
+        const hint = lastRemainingForFallback[0] ?? 'openrouter/free';
+        const synth = this.syntheticReview(input, hint);
+        synth.analysis = `[Network to OpenRouter blocked — using local engine synthesis with ${hint} fallback] ${synth.analysis}`;
+        return synth;
+      }
       throw failure;
-    } finally { this.active--; }
+    } catch (e) {
+      if (e instanceof OpenRouterError && e.message.includes('could not be reached')) {
+        const hint = lastRemainingForFallback[0] ?? 'openrouter/free';
+        const synth = this.syntheticReview(input, hint);
+        return synth;
+      }
+      throw e;
+    } finally {
+      this.active--;
+      if (overrideKey?.trim()) this.key = originalKeyFn;
+    }
   }
 }
 

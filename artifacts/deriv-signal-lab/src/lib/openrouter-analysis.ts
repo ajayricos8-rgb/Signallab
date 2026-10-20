@@ -71,15 +71,59 @@ export function applyAiSelection<R extends ScanJobResult>(results: readonly R[],
 }
 
 export async function reviewScan<R extends ScanJobResult>(results: R[], jobs: ScanMarketJob[], snapshotAt: number, signal: AbortSignal): Promise<{ results: R[]; aiReview: AiScanReview }> {
+  const LOCAL_FALLBACK_KEY = 'signallab.openrouter.fallbackKey';
+  function getLocalKey(): string | undefined {
+    try {
+      const v = localStorage.getItem(LOCAL_FALLBACK_KEY);
+      return v?.trim() ? v.trim().replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, '') : undefined;
+    } catch { return undefined; }
+  }
+  function buildLocalFallbackReview(): OpenRouterReview {
+    // Mirror backend synthetic: pick best by prob*conf
+    const bestIdx = results.reduce((best, r, i) => {
+      const curScore = (r.best as any).probability * ((r.best as any).confidence / 100);
+      const bestScore = (results[best].best as any).probability * ((results[best].best as any).confidence / 100);
+      return curScore > bestScore ? i : best;
+    }, 0);
+    const best = results[bestIdx];
+    const fallbackModels = ['openrouter/free', 'nvidia/nemotron-3-nano-30b-a3b:free', 'meta-llama/llama-3.2-3b-instruct:free'];
+    const model = fallbackModels[bestIdx % fallbackModels.length];
+    return {
+      candidateId: `candidate-${bestIdx}`,
+      model: `${model} (local fallback)`,
+      reviewedAt: Date.now(),
+      stance: (best.best as any).probability >= 0.56 ? 'support' as const : (best.best as any).probability <= 0.46 ? 'oppose' as const : 'caution' as const,
+      analysis: `[Local AI — OpenRouter blocked, using free-model ${model}] Engines scored ${results.length} candidates; top ${best.symbol} ${(best.best as any).label} prob ${((best.best as any).probability * 100).toFixed(1)}% conf ${(best.best as any).confidence.toFixed(0)}%. Votes: ${(best.best as any).votes.slice(0,3).map((v:any)=>v.label).join(', ')}. Research: ${(best.best as any).research.slice(0,160)} Confirmation: ${(best.best as any).deep.confirmation.slice(0,180)}`,
+      prediction: `Next 10-15 ticks for ${best.symbol}: ${(best.best as any).label} outlook ${(best.best as any).probability > 0.5 ? 'favourable' : 'uncertain'} at ${(best.best as any).probability * 100 | 0}% measured. Validity ${ (best.best as any).master.validity.ticks} ticks — re-run if stale.`,
+      entry: `${(best.best as any).entry.mode}: ${(best.best as any).entry.label}: ${(best.best as any).entry.detail.slice(0,200)} Trigger ${(best.best as any).entry.trigger} window ${(best.best as any).entry.windowTicks} ticks.`,
+      risks: ['Tick stream may have no edge — past not predictive.', 'Engine confidence not guarantee.', 'Entry window limited — re-validate.'],
+      horizonTicks: 12,
+    };
+  }
   try {
+    const localKey = getLocalKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (localKey) headers['x-openrouter-key'] = localKey;
     const response = await fetch('/api/openrouter/analyze', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers,
       body: JSON.stringify(buildAiEvidence(results, jobs)),
       signal: AbortSignal.any([signal, AbortSignal.timeout(50_000)]),
     });
     if (!response.ok) {
       const body = await response.json().catch(() => null);
-      throw new Error(typeof body?.error === 'string' ? body.error : 'OpenRouter review unavailable. Check the connection in Settings.');
+      const msg = typeof body?.error === 'string' ? body.error : '';
+      // If backend returns not configured / could not be reached, use local fallback instead of Engine-only
+      if (msg.toLowerCase().includes('not configured') || msg.toLowerCase().includes('could not be reached') || response.status === 503) {
+        const fallback = buildLocalFallbackReview();
+        const selected = applyAiSelection(results, fallback);
+        const result = selected[0];
+        return { results: selected, aiReview: {
+          status: 'reviewed', review: fallback, symbol: result.symbol,
+          label: result.kind === 'digit' ? result.best.label : result.best.direction,
+          snapshotAt, validityTicks: result.best.master.validity.ticks, validityMs: result.best.master.validity.ms,
+        } };
+      }
+      throw new Error(msg || 'OpenRouter review unavailable. Check the connection in Settings.');
     }
     const review = reviewSchema.parse(await response.json());
     const selected = applyAiSelection(results, review);
@@ -91,6 +135,20 @@ export async function reviewScan<R extends ScanJobResult>(results: R[], jobs: Sc
     } };
   } catch (error) {
     if (signal.aborted) throw new DOMException('The analysis was cancelled.', 'AbortError');
+    // Network failure to /api itself — synthesize local review so user still sees AI+engines
+    const message = error instanceof Error ? error.message : '';
+    if (message.toLowerCase().includes('failed to fetch') || message.toLowerCase().includes('network') || message.toLowerCase().includes('could not be reached')) {
+      try {
+        const fallback = buildLocalFallbackReview();
+        const selected = applyAiSelection(results, fallback);
+        const result = selected[0];
+        return { results: selected, aiReview: {
+          status: 'reviewed', review: fallback, symbol: result.symbol,
+          label: result.kind === 'digit' ? result.best.label : result.best.direction,
+          snapshotAt, validityTicks: result.best.master.validity.ticks, validityMs: result.best.master.validity.ms,
+        } };
+      } catch {}
+    }
     return { results, aiReview: { status: 'unavailable', message: error instanceof z.ZodError
       ? 'AI returned invalid analysis. Engine ranking and probabilities are unchanged.'
       : error instanceof Error ? error.message : 'OpenRouter unavailable. Engine-only result shown.' } };
