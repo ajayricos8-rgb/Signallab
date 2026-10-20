@@ -1,4 +1,5 @@
 import { KeyRound, Lock, Radio, ShieldCheck, Timer } from 'lucide-react';
+import { OpenRouterConnectionCard } from '@/components/openrouter-connection-card';
 import { DerivConnectionCard } from '@/components/deriv-connection-card';
 import { DERIV_APP_ID, USING_TEST_APP_ID } from '@/lib/deriv-app-id';
 
@@ -28,6 +29,7 @@ const FLOW_STEPS = [
 export function SettingsPanel() {
   return (
     <div className="mx-auto w-full max-w-[1100px] space-y-4">
+      <OpenRouterConnectionCard />
       <DerivConnectionCard />
 
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">

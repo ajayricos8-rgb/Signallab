@@ -1,3 +1,4 @@
+import { OpenRouterReviewCard } from '@/components/signal/openrouter-review-card';
 import { useMemo, useState } from 'react';
 import { AlertTriangle, BarChart3, Clock3, Play, Radio, ShieldAlert, Square, TrendingDown, Wifi, WifiOff, Zap } from 'lucide-react';
 import { TradeDock } from '@/components/trade-dock';
@@ -295,6 +296,7 @@ export function RiseFallTool() {
       {run && selectedResult && signal ? (
         <section className={`grid grid-cols-1 gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined} data-testid="analysis-summary">
           <div className="space-y-4">
+            {run.aiReview && <OpenRouterReviewCard review={run.aiReview} now={feed.now} />}
             <SignalCard
               eyebrow={isBest ? `Best signal · ${run.marketsScanned} markets × 25 durations` : `Signal · ${selectedResult.name}`}
               label={signal.direction}
