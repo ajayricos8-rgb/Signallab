@@ -1,6 +1,6 @@
 import { Router, type IRouter } from 'express';
 import { OpenRouterError, openRouter, reviewRequestSchema } from '../lib/openrouter';
-import { clearStoredKey, getStoredKey, getStoredKeySource, isEnvConfigured, maskKey, setStoredKey } from '../lib/openrouter-key-store.ts';
+import { clearStoredKey, getStoredKey, getStoredKeySource, isEnvConfigured, maskKey, setStoredKey, validateKeyFormat } from '../lib/openrouter-key-store.ts';
 
 const router: IRouter = Router();
 
@@ -26,27 +26,38 @@ router.get('/openrouter/key', async (_req, res) => {
   });
 });
 
+// Simple health for debugging connectivity without exposing key
+router.get('/openrouter/health', async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const key = getStoredKey();
+  res.json({
+    configured: !!key,
+    source: getStoredKeySource(),
+    maskedKey: maskKey(key),
+    baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    note: 'Use GET /api/openrouter/status?refresh=1 to verify key via GET /key and fetch /models. Outbound to openrouter.ai must be allowed.',
+  });
+});
+
+router.get('/openrouter/models', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const status = await openRouter.status(req.query.refresh === '1');
+    res.json({ freeModels: status.freeModels, message: status.message, status: status.status, checkedAt: status.checkedAt });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Could not fetch models.' });
+  }
+});
+
 router.post('/openrouter/key', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const raw = (req.body as any)?.key;
-  if (typeof raw !== 'string' || !raw.trim()) {
-    res.status(400).json({ error: 'Paste your OpenRouter API key. Find it at https://openrouter.ai/keys — it starts with sk-or-v1-.' });
+  const validation = validateKeyFormat(typeof raw === 'string' ? raw : '');
+  if (!validation.ok) {
+    res.status(400).json({ error: validation.error });
     return;
   }
-  const trimmed = raw.trim();
-  if (trimmed.length < 10 || trimmed.length > 2048) {
-    res.status(400).json({ error: 'That key length looks invalid. Copy the full key from openrouter.ai/keys.' });
-    return;
-  }
-  if (!trimmed.startsWith('sk-')) {
-    res.status(400).json({ error: 'OpenRouter keys start with sk-or-v1-. Paste the full key from https://openrouter.ai/keys.' });
-    return;
-  }
-  // Extra guard: keys should be sk-or-v1-... but allow sk- prefix for future variant
-  if (trimmed.includes(' ') || trimmed.includes('\n')) {
-    res.status(400).json({ error: 'The key contains whitespace. Paste only the key characters.' });
-    return;
-  }
+  const trimmed = (raw as string).trim();
   try {
     setStoredKey(trimmed);
   } catch (error) {
@@ -54,9 +65,13 @@ router.post('/openrouter/key', async (req, res) => {
     return;
   }
   openRouter.invalidateCache();
-  // Verify immediately so UI gets connected/unavailable feedback
-  const status = await openRouter.status(true);
-  res.json(status);
+  try {
+    const status = await openRouter.status(true);
+    res.json(status);
+  } catch {
+    // Fallback: key is saved locally even if verification throws synchronously
+    res.json(await openRouter.status(true));
+  }
 });
 
 router.delete('/openrouter/key', async (_req, res) => {
@@ -78,7 +93,6 @@ router.delete('/openrouter/key', async (_req, res) => {
 
 router.post('/openrouter/analyze', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  // A public browser may not spend this server's quota cross-origin.
   const origin = req.get('origin');
   if (origin) {
     try {

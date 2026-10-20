@@ -116,6 +116,19 @@ export function OpenRouterConnectionCard() {
 
       <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{error || connection?.message || 'Checking the server-side API key and available free models…'}</p>
 
+      {connection?.status === 'unavailable' && connection.configured && (
+        <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300" role="status" data-testid="openrouter-troubleshoot">
+          <div className="font-bold">Troubleshooting</div>
+          <ul className="mt-1.5 list-disc space-y-1 pl-4">
+            <li><strong>401 invalid key:</strong> Re-copy the full key from <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="underline">openrouter.ai/keys</a> — it must start with <span className="mono">sk-or-v1-</span>. Rotate if it was shared in chat.</li>
+            <li><strong>402 no credits:</strong> Add credits at <a href="https://openrouter.ai/credits" target="_blank" rel="noreferrer" className="underline">openrouter.ai/credits</a>. Even free models need a non-negative balance.</li>
+            <li><strong>429 rate limited:</strong> Free tier is 20/min, 50/day (1,000/day after $10). Wait a minute or add fallback models.</li>
+            <li><strong>Network / sandbox:</strong> The API server needs outbound HTTPS to <span className="mono">https://openrouter.ai/api/v1</span>. Restricted sandboxes (allowlist: github/npm/pypi only) block this — the key is still saved and will verify when network is available. Check server logs and firewall/allowlist.</li>
+          </ul>
+          <div className="mt-2 text-[10px] text-muted-foreground">Docs: <a href="https://openrouter.ai/docs/api_reference/overview" target="_blank" rel="noreferrer" className="underline">API overview</a> · <a href="https://openrouter.ai/docs/api_reference/limits" target="_blank" rel="noreferrer" className="underline">Limits</a> · <a href="https://openrouter.ai/docs/api_reference/errors-and-debugging" target="_blank" rel="noreferrer" className="underline">Errors</a></div>
+        </div>
+      )}
+
       {connection?.maskedKey && connection.configured && (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-background/40 px-3 py-2 text-[11px]">
           <KeyRound size={12} className="text-primary" />
