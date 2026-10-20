@@ -1,5 +1,13 @@
 import { randomInt } from 'node:crypto';
 import { z } from 'zod/v4';
+import {
+  clearStoredKey,
+  getRawStoredKey,
+  getStoredKey,
+  getStoredKeySource,
+  isEnvConfigured,
+  maskKey,
+} from './openrouter-key-store.ts';
 
 const BASE_URL = 'https://openrouter.ai/api/v1';
 const finite = z.number().finite();
@@ -33,6 +41,10 @@ export type AiReview = z.infer<typeof decisionSchema> & { model: string; reviewe
 export type ConnectionStatus = {
   status: 'not_configured' | 'connected' | 'unavailable';
   configured: boolean; message: string; freeModels: number; checkedAt: number;
+  keySource?: 'env' | 'stored' | 'none';
+  maskedKey?: string | null;
+  canClearStored?: boolean;
+  envConfigured?: boolean;
 };
 
 export class OpenRouterError extends Error {
@@ -55,14 +67,21 @@ export class OpenRouterService {
   private pick: (max: number) => number;
 
   constructor(
-    key: () => string | undefined = () => process.env.OPENROUTER_API_KEY,
+    key: () => string | undefined = () => getStoredKey(),
     request: typeof fetch = fetch,
     pick: (max: number) => number = randomInt,
   ) { this.key = key; this.request = request; this.pick = pick; }
 
+  invalidateCache(): void {
+    this.models = [];
+    this.modelsAt = 0;
+    this.cachedStatus = undefined;
+    this.statusPending = undefined;
+  }
+
   private async api(path: string, signal?: AbortSignal, body?: unknown) {
     const key = this.key()?.trim();
-    if (!key) throw new OpenRouterError(503, 'OpenRouter is not configured. Set OPENROUTER_API_KEY on the API server.');
+    if (!key) throw new OpenRouterError(503, 'OpenRouter is not configured. Add your API key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server.');
     let response: Response;
     try {
       response = await this.request(`${BASE_URL}${path}`, {
@@ -96,18 +115,35 @@ export class OpenRouterService {
       architecture: z.object({ output_modalities: z.array(z.string()).optional() }).optional(),
     })) }).safeParse(payload);
     if (!catalog.success) throw new OpenRouterError(502, 'OpenRouter model catalogue could not be validated.');
-    this.models = catalog.data.data.filter((model) => model.id.endsWith(':free')
+    this.models = catalog.data.data.filter((model) => (model.id.endsWith(':free') || model.id === 'openrouter/free')
       && model.pricing.prompt.trim() !== '' && model.pricing.completion.trim() !== ''
       && Number(model.pricing.prompt) === 0 && Number(model.pricing.completion) === 0
       && (!model.architecture?.output_modalities || model.architecture.output_modalities.includes('text')))
       .map((model) => model.id);
+    // Prefer explicit :free models, but keep openrouter/free as valid fallback
+    // If no :free models but openrouter/free exists, it will be included above.
     this.modelsAt = Date.now();
     if (!this.models.length) throw new OpenRouterError(503, 'No free text models are currently available on OpenRouter.');
     return this.models;
   }
 
+  private buildStatusBase(): { key: string | undefined; source: 'env' | 'stored' | 'none'; masked: string | null; canClear: boolean; env: boolean } {
+    const key = this.key()?.trim();
+    const source = getStoredKeySource();
+    const masked = maskKey(key);
+    const canClear = !!getRawStoredKey() && !isEnvConfigured();
+    const env = isEnvConfigured();
+    return { key, source, masked, canClear, env };
+  }
+
   async status(refresh = false): Promise<ConnectionStatus> {
-    if (!this.key()?.trim()) return { status: 'not_configured', configured: false, message: 'Set OPENROUTER_API_KEY in the API server environment.', freeModels: 0, checkedAt: Date.now() };
+    const base = this.buildStatusBase();
+    if (!base.key) return {
+      status: 'not_configured', configured: false,
+      message: 'No OpenRouter key is configured. Paste your key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server.',
+      freeModels: 0, checkedAt: Date.now(),
+      keySource: base.source, maskedKey: base.masked, canClearStored: base.canClear, envConfigured: base.env,
+    };
     if (this.cachedStatus && Date.now() - this.cachedStatus.checkedAt < (refresh ? 5_000 : 60_000)) return this.cachedStatus;
     if (this.statusPending) return this.statusPending;
     this.statusPending = (async (): Promise<ConnectionStatus> => {
@@ -115,9 +151,21 @@ export class OpenRouterService {
         const auth = await this.api('/key');
         if (!z.object({ data: z.object({}) }).safeParse(auth).success) throw new OpenRouterError(502, 'OpenRouter key verification returned an invalid response.');
         const models = await this.freeModels();
-        return { status: 'connected', configured: true, message: 'Server key verified. Free-model catalogue available; model capacity and free quotas are checked on each analysis.', freeModels: models.length, checkedAt: Date.now() };
+        return {
+          status: 'connected', configured: true,
+          message: base.source === 'env'
+            ? 'Server key verified (from environment). Free-model catalogue available; model capacity and free quotas are checked on each analysis.'
+            : 'Server key verified. Free-model catalogue available; model capacity and free quotas are checked on each analysis.',
+          freeModels: models.length, checkedAt: Date.now(),
+          keySource: base.source, maskedKey: base.masked, canClearStored: base.canClear, envConfigured: base.env,
+        };
       } catch (error) {
-        return { status: 'unavailable', configured: true, message: error instanceof OpenRouterError ? error.message : 'OpenRouter verification failed.', freeModels: 0, checkedAt: Date.now() };
+        return {
+          status: 'unavailable', configured: true,
+          message: error instanceof OpenRouterError ? error.message : 'OpenRouter verification failed.',
+          freeModels: 0, checkedAt: Date.now(),
+          keySource: base.source, maskedKey: base.masked, canClearStored: base.canClear, envConfigured: base.env,
+        };
       }
     })();
     try { this.cachedStatus = await this.statusPending; return this.cachedStatus; }
@@ -125,7 +173,7 @@ export class OpenRouterService {
   }
 
   async review(input: ReviewRequest, signal?: AbortSignal): Promise<AiReview> {
-    if (!this.key()?.trim()) throw new OpenRouterError(503, 'OpenRouter is not configured. Set OPENROUTER_API_KEY on the API server.');
+    if (!this.key()?.trim()) throw new OpenRouterError(503, 'OpenRouter is not configured. Add your API key in Settings → AI analysis provider, or set OPENROUTER_API_KEY on the API server.');
     this.requests = this.requests.filter((at) => Date.now() - at < 60_000);
     if (this.active >= 2 || this.requests.length >= 12) throw new OpenRouterError(429, 'AI review is busy. Retry shortly; engine results remain available.');
     this.requests.push(Date.now());
