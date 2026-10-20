@@ -142,15 +142,23 @@ export class OpenRouterService {
   }
 
   // Validates key by calling GET /key (preferred) with fallback to /auth/key for older docs.
+  // Per https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key and /limits:
+  // GET https://openrouter.ai/api/v1/key with Authorization: Bearer <key> returns 200 + {data:{label, limit, limit_remaining, is_free_tier, ...}}
+  // 401 = invalid/disabled, 402 insufficient, 403 guardrail, 429 rate limited.
   private async verifyKey(signal?: AbortSignal): Promise<void> {
-    // Try canonical endpoint per https://openrouter.ai/docs/api_reference/limits
     const tryEndpoints = ['/key', '/auth/key'];
     let lastError: OpenRouterError | undefined;
     for (const path of tryEndpoints) {
       try {
         const payload = await this.api(path, signal);
-        // Expected shape: { data: { label, limit, is_free_tier, free_model_daily_requests, ... } }
-        // Be lenient: just ensure data is an object.
+        const parsed = z.object({ data: z.object({ label: z.string().optional(), is_provisioning_key: z.boolean().optional(), is_management_key: z.boolean().optional() }).passthrough() }).safeParse(payload);
+        if (parsed.success) {
+          // Provisioning / management keys cannot be used for inference — must be a normal user key
+          if (parsed.data.data.is_provisioning_key || parsed.data.data.is_management_key) {
+            throw new OpenRouterError(401, 'That key is a provisioning/management key and cannot be used for inference. Create a normal API key at https://openrouter.ai/keys.');
+          }
+          return;
+        }
         if (z.object({ data: z.object({}) }).safeParse(payload).success) return;
         throw new OpenRouterError(502, 'OpenRouter key verification returned an unexpected shape.');
       } catch (error) {
@@ -198,13 +206,16 @@ export class OpenRouterService {
       throw error;
     }
     const catalog = z.object({ data: z.array(z.object({
-      id: z.string(), pricing: z.object({ prompt: z.string(), completion: z.string() }),
+      id: z.string(), pricing: z.object({ prompt: z.union([z.string(), z.number()]), completion: z.union([z.string(), z.number()]) }),
       architecture: z.object({ output_modalities: z.array(z.string()).optional() }).optional(),
     })) }).safeParse(payload);
     if (!catalog.success) throw new OpenRouterError(502, 'OpenRouter model catalogue could not be validated.');
+    const isZero = (v: string | number) => {
+      if (typeof v === 'number') return v === 0;
+      const t = v.trim(); return t !== '' && Number(t) === 0;
+    };
     const filtered = catalog.data.data.filter((model) => (model.id.endsWith(':free') || model.id === 'openrouter/free')
-      && model.pricing.prompt.trim() !== '' && model.pricing.completion.trim() !== ''
-      && Number(model.pricing.prompt) === 0 && Number(model.pricing.completion) === 0
+      && isZero(model.pricing.prompt) && isZero(model.pricing.completion)
       && (!model.architecture?.output_modalities || model.architecture.output_modalities.includes('text')))
       .map((model) => model.id);
     // Always ensure openrouter/free is available if catalog actually lists it per https://openrouter.ai/docs/guides/routing/routers/free-router
