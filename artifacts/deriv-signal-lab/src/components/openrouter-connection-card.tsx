@@ -20,11 +20,29 @@ export function OpenRouterConnectionCard() {
       const response = await fetch(`/api/openrouter/status${refresh ? '?refresh=1' : ''}`, {
         cache: 'no-store', signal: AbortSignal.any([AbortSignal.timeout(20_000), ...(signal ? [signal] : [])]),
       });
-      if (!response.ok) throw new Error('API server could not verify the OpenRouter connection.');
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        const detail = typeof body?.error === 'string' ? ` — ${body.error}` : '';
+        throw new Error(`API server could not verify the OpenRouter connection (HTTP ${response.status})${detail}.`);
+      }
       const result = connectionSchema.parse(await response.json());
       if (!signal?.aborted) setConnection(result);
-    } catch {
-      if (!signal?.aborted) { setConnection(null); setError('Connection could not be verified. Check that the API server is running and can reach OpenRouter.'); }
+    } catch (cause) {
+      if (!signal?.aborted) {
+        // Keep last connection but surface a clear error so badge shows Unavailable, not Checking…
+        const isTimeout = cause instanceof Error && (cause.name === 'TimeoutError' || cause.message.includes('The operation was aborted'));
+        const isNetwork = cause instanceof TypeError && cause.message.toLowerCase().includes('fetch');
+        const msg = cause instanceof Error ? cause.message : '';
+        if (isNetwork || msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('networkerror')) {
+          setError('API server not reachable — is it running? Start it with `pnpm dev` (runs Vite + api-server via scripts/dev-with-api.mjs on http://127.0.0.1:8080) or set OPENROUTER_API_KEY env. Vite proxies /api → API_PROXY_TARGET.');
+        } else if (isTimeout) {
+          setError('OpenRouter verification timed out. Check that the API server can reach https://openrouter.ai/api/v1 (firewall/allowlist) and try Test connection again.');
+        } else if (msg) {
+          setError(msg);
+        } else {
+          setError('Connection could not be verified. Check that the API server is running and can reach OpenRouter.');
+        }
+      }
     } finally { if (!signal?.aborted) setBusy(false); }
   }, []);
 
@@ -37,8 +55,9 @@ export function OpenRouterConnectionCard() {
 
   const connected = !error && connection?.status === 'connected';
   const notConfigured = connection?.status === 'not_configured';
-  const unavailable = connection?.status === 'unavailable';
-  const label = busy ? 'Verifying…' : connected ? 'Connected' : notConfigured ? 'Not configured' : unavailable ? 'Unavailable' : 'Checking…';
+  const unavailable = !error && connection?.status === 'unavailable';
+  // When API server is down, connection is null and error is set — show Unavailable, not Checking…
+  const label = busy ? 'Verifying…' : connected ? 'Connected' : notConfigured ? 'Not configured' : unavailable || error ? 'Unavailable' : 'Checking…';
 
   const handleSave = async () => {
     const trimmed = apiKey.trim();
@@ -64,13 +83,32 @@ export function OpenRouterConnectionCard() {
       if (!response.ok) throw new Error(typeof body?.error === 'string' ? body.error : 'Could not save the key.');
       const result = connectionSchema.parse(body);
       setConnection(result);
+      setError('');
+      // Keep masked key visible but clear the input for security
       setApiKey('');
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 4000);
+      if (result.status === 'connected') {
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 4000);
+      } else if (result.status === 'unavailable') {
+        // Key saved but OpenRouter could not be reached / key invalid — show the backend message as error
+        setSaveError(result.message);
+      } else {
+        setSaveSuccess(false);
+      }
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : 'Could not save the API key.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Dedicated Connect button requested by user — performs the same as Save but is the primary CTA
+  const handleConnect = async () => {
+    // If input has a key, save it; otherwise just test the already-stored key
+    if (apiKey.trim()) {
+      await handleSave();
+    } else {
+      await check(undefined, true);
     }
   };
 
@@ -116,16 +154,17 @@ export function OpenRouterConnectionCard() {
 
       <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{error || connection?.message || 'Checking the server-side API key and available free models…'}</p>
 
-      {connection?.status === 'unavailable' && connection.configured && (
+      {(error || (connection?.status === 'unavailable' && connection.configured)) && (
         <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300" role="status" data-testid="openrouter-troubleshoot">
           <div className="font-bold">Troubleshooting</div>
           <ul className="mt-1.5 list-disc space-y-1 pl-4">
-            <li><strong>401 invalid key:</strong> Re-copy the full key from <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="underline">openrouter.ai/keys</a> — it must start with <span className="mono">sk-or-v1-</span>. Rotate if it was shared in chat.</li>
+            <li><strong>API server not reachable:</strong> Run <span className="mono">pnpm dev</span> (or <span className="mono">npm run dev</span>) — it builds <span className="mono">artifacts/api-server/dist/index.mjs</span> via <span className="mono">build.mjs</span> and proxies <span className="mono">/api → http://127.0.0.1:8080</span> (see <span className="mono">vite.config.ts API_PROXY_TARGET</span>). Check <span className="mono">/api/healthz</span> and <span className="mono">/api/openrouter/health</span> in your browser.</li>
+            <li><strong>401 invalid key:</strong> Re-copy the full key from <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="underline">openrouter.ai/keys</a> — it must start with <span className="mono">sk-or-v1-</span>. Rotate if it was shared in chat or screenshot.</li>
             <li><strong>402 no credits:</strong> Add credits at <a href="https://openrouter.ai/credits" target="_blank" rel="noreferrer" className="underline">openrouter.ai/credits</a>. Even free models need a non-negative balance.</li>
             <li><strong>429 rate limited:</strong> Free tier is 20/min, 50/day (1,000/day after $10). Wait a minute or add fallback models.</li>
-            <li><strong>Network / sandbox:</strong> The API server needs outbound HTTPS to <span className="mono">https://openrouter.ai/api/v1</span>. Restricted sandboxes (allowlist: github/npm/pypi only) block this — the key is still saved and will verify when network is available. Check server logs and firewall/allowlist.</li>
+            <li><strong>Network / sandbox:</strong> The API server needs outbound HTTPS to <span className="mono">https://openrouter.ai/api/v1</span>. Restricted sandboxes (allowlist: github/npm/pypi only) block this — the key is still saved; the Connect flow now locally verifies format and will live-verify on the next Run Analysis when network is available.</li>
           </ul>
-          <div className="mt-2 text-[10px] text-muted-foreground">Docs: <a href="https://openrouter.ai/docs/api_reference/overview" target="_blank" rel="noreferrer" className="underline">API overview</a> · <a href="https://openrouter.ai/docs/api_reference/limits" target="_blank" rel="noreferrer" className="underline">Limits</a> · <a href="https://openrouter.ai/docs/api_reference/errors-and-debugging" target="_blank" rel="noreferrer" className="underline">Errors</a></div>
+          <div className="mt-2 text-[10px] text-muted-foreground">Docs: <a href="https://openrouter.ai/docs/api_reference/overview" target="_blank" rel="noreferrer" className="underline">API overview</a> · <a href="https://openrouter.ai/docs/api_reference/limits" target="_blank" rel="noreferrer" className="underline">Limits</a> · <a href="https://openrouter.ai/docs/api_reference/errors-and-debugging" target="_blank" rel="noreferrer" className="underline">Errors</a> · <a href="https://openrouter.ai/docs/quickstart" target="_blank" rel="noreferrer" className="underline">Quickstart</a></div>
         </div>
       )}
 
@@ -178,12 +217,23 @@ export function OpenRouterConnectionCard() {
           </div>
           <button
             type="button"
+            onClick={() => void handleConnect()}
+            disabled={saving || busy || (!apiKey.trim() && !connection?.configured)}
+            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            data-testid="openrouter-connect"
+            title={apiKey.trim() ? 'Save key and verify connection to OpenRouter' : 'Verify stored key connection to OpenRouter'}
+          >
+            {saving || busy ? <><RefreshCw size={14} className="mr-1 animate-spin" /> {saving ? 'Connecting…' : 'Verifying…'}</> : 'Connect'}
+          </button>
+          <button
+            type="button"
             onClick={() => void handleSave()}
             disabled={saving || !apiKey.trim()}
-            className="inline-flex h-10 items-center justify-center rounded-lg bg-primary px-5 text-sm font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center rounded-lg border border-input bg-background px-4 text-sm font-bold hover:bg-secondary disabled:opacity-50"
             data-testid="openrouter-save-key"
+            title="Save key without immediate re-check"
           >
-            {saving ? <><RefreshCw size={14} className="mr-2 animate-spin" /> Saving…</> : 'Save key'}
+            {saving ? <RefreshCw size={14} className="animate-spin" /> : 'Save key'}
           </button>
         </div>
 
