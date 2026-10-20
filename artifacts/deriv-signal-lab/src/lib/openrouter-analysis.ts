@@ -112,8 +112,12 @@ export async function reviewScan<R extends ScanJobResult>(results: R[], jobs: Sc
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       const msg = typeof body?.error === 'string' ? body.error : '';
-      // If backend returns not configured / could not be reached, use local fallback instead of Engine-only
-      if (msg.toLowerCase().includes('not configured') || msg.toLowerCase().includes('could not be reached') || response.status === 503) {
+      const lower = msg.toLowerCase();
+      // Always fallback to engine-aware local AI when API is 404/5xx or not configured — this is the free-model path
+      // Keep 401/402 as hard errors (invalid key / no credits) so user sees actionable message
+      const isAuthError = response.status === 401 || response.status === 402 || lower.includes('invalid') && lower.includes('api key') || lower.includes('insufficient credits');
+      if (!isAuthError) {
+        // Covers 404 route not found, 500 build missing, 503 could not be reached / not configured, network sandbox
         const fallback = buildLocalFallbackReview();
         const selected = applyAiSelection(results, fallback);
         const result = selected[0];
