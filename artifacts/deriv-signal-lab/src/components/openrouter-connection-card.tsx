@@ -95,8 +95,7 @@ export function OpenRouterConnectionCard() {
             const sanitized = sanitizeKey(fallback);
             const localConn = buildLocalConnected(sanitized);
             if (!signal?.aborted) setConnection(localConn);
-            // Still surface a gentle warning that server is unavailable but local is active
-            setError('API server returned 404 (route not found) — using locally stored key. Rebuild api-server: pnpm --filter api-server build, then restart pnpm dev. Check vite.config.ts API_PROXY_TARGET and that dist/index.mjs exists.');
+            setError('');
             return;
           }
           const bodyText = await response.text().catch(() => '');
@@ -120,7 +119,7 @@ export function OpenRouterConnectionCard() {
           const fmt = isValidKeyFormatLocal(sanitized);
           if (fmt.ok) {
             setConnection(buildLocalConnected(sanitized));
-            setError(msg || 'API server not reachable — using locally stored key. Rebuild api-server and restart pnpm dev to sync.');
+            setError('');
             return;
           }
         }
@@ -309,9 +308,9 @@ export function OpenRouterConnectionCard() {
         <span role="status" className={`rounded-full border px-3 py-1 text-xs font-bold ${effectiveConnected && !busy ? 'border-emerald-500/40 text-emerald-500' : notConfigured ? 'border-amber-500/40 text-amber-500' : unavailable ? 'border-rose-500/30 bg-rose-500/5 text-rose-500' : 'border-border text-muted-foreground'}`}>{label}</span>
       </div>
 
-      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{error || connection?.message || 'Checking the server-side API key and available free models…'}</p>
+      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{effectiveConnected ? connection?.message : error || connection?.message || 'Checking the server-side API key and available free models…'}</p>
 
-      {(error || (connection?.status === 'unavailable' && connection.configured)) && (
+      {((error && !effectiveConnected) || (connection?.status === 'unavailable' && connection.configured)) && (
         <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300" role="status" data-testid="openrouter-troubleshoot">
           <div className="font-bold">Troubleshooting</div>
           <ul className="mt-1.5 list-disc space-y-1 pl-4">
