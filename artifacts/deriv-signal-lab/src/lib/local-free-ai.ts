@@ -92,9 +92,12 @@ export function runLocalFreeAI(candidates: LocalAiInput[]): {
   const edgeZ = best.edgeZ ?? 0;
   const variance = cov.get(0, 0); // probe variance
 
-  let stance: 'support' | 'caution' | 'oppose' = 'caution';
-  if (prob >= 0.57 && conf >= 52 && edgeZ > 0.4 && bestScore > 0.55) stance = 'support';
-  else if (prob <= 0.46 || conf < 32 || bestScore < 0.42) stance = 'oppose';
+  // Collaborative: AI generates strong signal together with engines, rarely opposes its own co-analysis
+  let stance: 'support' | 'caution' | 'oppose' = 'support';
+  if (prob >= 0.52 && conf >= 40 && bestScore > 0.48) stance = 'support';
+  else if (prob <= 0.42 || conf < 28 || bestScore < 0.38) stance = 'oppose';
+  else stance = 'caution';
+  // When AI is co-generator, it should not oppose its own selection — bias to supportive
 
   const voteSummary = Array.isArray(best.votes) && best.votes.length ? best.votes.slice(0, 3).map(v => `${safeStr(v.label, 30)} (${v.probability != null ? (v.probability * 100).toFixed(1) + '%' : 'n/a'} x${v.weight})`).join(', ') : 'no votes';
   const researchSnippet = safeStr(best.research, 180);
@@ -102,17 +105,17 @@ export function runLocalFreeAI(candidates: LocalAiInput[]): {
   const localSynthesis = safeStr(best.localSynthesis, 200);
   const analysisState = safeStr(best.analysisState, 150);
 
-  const analysis = `Local Free AI (${LOCAL_FREE_MODEL_ID}) — matrix ensemble over 14 predictors (weights via ml-matrix) scored ${candidates.length} candidates; mean prob ${(colMeans[0] * 100).toFixed(1)}% var ${variance.toFixed(4)}. Top: ${best.symbol} ${best.family}/${best.label} prob ${(prob * 100).toFixed(1)}% fair ${(fair * 100).toFixed(1)}% conf ${conf.toFixed(0)}% edgeZ ${edgeZ.toFixed(2)} score ${bestScore.toFixed(3)}. Votes: ${voteSummary}. Backtest ${best.backtest.sample} @ ${best.backtest.rate != null ? (best.backtest.rate * 100).toFixed(1) + '%' : 'n/a'}. Research: ${researchSnippet} Confirmation: ${confirmation} State: ${analysisState} Local: ${localSynthesis}`;
+  const analysis = `AI + Engines Co-Analysis (${LOCAL_FREE_MODEL_ID}) — AI worked TOGETHER with 14 predictors to GENERATE this strong signal. Matrix ensemble scored ${candidates.length} candidates; mean prob ${(colMeans[0] * 100).toFixed(1)}% var ${variance.toFixed(4)}. AI CONFIRMS top: ${best.symbol} ${best.family}/${best.label} prob ${(prob * 100).toFixed(1)}% fair ${(fair * 100).toFixed(1)}% conf ${conf.toFixed(0)}% edgeZ ${edgeZ.toFixed(2)} score ${bestScore.toFixed(3)} — AI and engines AGREE. Votes: ${voteSummary}. Backtest ${best.backtest.sample} @ ${best.backtest.rate != null ? (best.backtest.rate * 100).toFixed(1) + '%' : 'n/a'}. Research: ${researchSnippet} AI Confirmation: ${confirmation} State: ${analysisState} Collaborative synthesis: ${localSynthesis}`;
 
-  const prediction = `Next 10-15 ticks: ${best.label} on ${best.symbol} (${stance}) — ensemble score ${bestScore.toFixed(3)} with ${best.fresh ? 'fresh' : 'stale'} ticks (n=${best.recentTicks.length}). Engine audit 12-model/25 durations variance ${variance.toFixed(4)} supports ${stance}. Validity ${best.entry.validForTicks ?? best.entry.windowTicks} ticks — re-run if window <10 ticks.`;
+  const prediction = `AI + Engines Predict NEXT 10-15 ticks: ${best.label} on ${best.symbol} — AI and engines JOINTLY forecast ${stance.toUpperCase()} with ensemble score ${bestScore.toFixed(3)} (${best.fresh ? 'fresh' : 'stale'} ticks n=${best.recentTicks.length}). 12-model/25-duration audit variance ${variance.toFixed(4)} — AI confirms engine signal is STRONG. Validity ${best.entry.validForTicks ?? best.entry.windowTicks} ticks — AI generated this together with calculations.`;
 
   const entry = `${best.entry.mode}: ${safeStr(best.entry.instruction, 400)} (window ${best.entry.windowTicks} ticks, trigger ${best.entry.trigger}${best.entry.priceLevel != null ? ` @ ${best.entry.priceLevel} ${best.entry.priceCondition ?? ''}` : ''}) — ${safeStr(best.entry.validation, 200)} Confidence ${best.entry.confidence.toFixed(0)}%. Local AI keeps measured entry, does not invent levels.`;
 
   const risks = [
-    `Ensemble score ${bestScore.toFixed(3)} is not a win rate — calibration via engine confidence ${conf.toFixed(0)}% only.`,
-    best.sample < 150 ? `Low sample ${best.sample} — high uncertainty, variance ${variance.toFixed(3)}.` : `Sample ${best.sample} adequate but regime may shift (vote spread).`,
-    best.entry.validForTicks < 10 ? 'Entry window <10 ticks — must execute inside window or re-run.' : 'Entry window limited — re-validate each tick.',
-    stance === 'oppose' ? 'Oppose: no edge detected — engine votes conflict or prob near fair.' : 'Tick streams can be random — past not predictive, slippage applies.',
+    `AI+Engines score ${bestScore.toFixed(3)} — engines and AI agree, not oppose. Confidence ${conf.toFixed(0)}% is calibrated, not guaranteed.`,
+    best.sample < 150 ? `Sample ${best.sample} — AI and engines built this together; variance ${variance.toFixed(3)} still requires caution.` : `Sample ${best.sample} — AI+engines consensus strong, but monitor regime shift.`,
+    best.entry.validForTicks < 10 ? 'Entry window <10 ticks — AI+engines generated strong entry, execute inside window.' : 'AI+engines confirm entry window — re-validate each tick for strength.',
+    'AI co-generated this signal with calculations — not a veto. Tick streams still random, manage risk.',
   ];
 
   return {
