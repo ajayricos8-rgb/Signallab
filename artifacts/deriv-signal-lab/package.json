@@ -79,8 +79,5 @@
     "vite": "catalog:",
     "wouter": "^3.3.5",
     "zod": "catalog:"
-  },
-  "dependencies": {
-    "ml-matrix": "^6.15.0"
   }
 }

@@ -5,7 +5,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMarketFeed, type MarketFeedEntry } from '@/components/market-feed-provider';
 import type { AnalysisProgressView, MarketProgressState } from '@/components/signal/signal-ui';
 import type { ScanJobResult } from '@/lib/signal-engine/scan-protocol';
-import { reviewScan, type AiScanReview } from '@/lib/openrouter-analysis';
 import { rankScanResults } from '@/lib/signal-engine/scan-rank';
 import { runScan, type ScanFailure, type ScanMarketJob } from '@/lib/signal-engine/scan-runner';
 
@@ -18,7 +17,6 @@ export type ScanRun<R extends ScanJobResult, M> = {
   workers: number;
   marketsScanned: number;
   meta: M;
-  aiReview?: AiScanReview;
 };
 
 export type StartScanOptions<M> = {
@@ -116,16 +114,13 @@ export function useSignalScan<R extends ScanJobResult, M>(memoryKey: string) {
           if (state) state.state = 'failed';
         },
       });
-      setProgress({ percent: 86, stage: 'Random free AI model reviewing engines, predictions and entry', completed: jobs.length, total: jobs.length, markets: snapshotStates() });
-      let ranked = rankScanResults(outcome.results as R[]);
+      setProgress({ percent: 90, stage: 'Ranking engine signals', completed: jobs.length, total: jobs.length, markets: snapshotStates() });
+      const ranked = rankScanResults(outcome.results as R[]);
       if (!ranked.length) throw new Error(outcome.failures[0]?.message ?? 'The engines could not analyse any market. Please try again.');
-      const reviewed = await reviewScan(ranked, jobs, snapshotAt, controller.signal);
       if (controller.signal.aborted) throw new DOMException('The analysis was cancelled.', 'AbortError');
-      ranked = reviewed.results;
-      setProgress({ percent: 99, stage: 'Finalising AI + engine signal', completed: jobs.length, total: jobs.length, markets: snapshotStates() });
       const next: ScanRun<R, M> = {
         id: Date.now(), ranAt: snapshotAt, results: ranked, failures: [...skipped, ...outcome.failures],
-        aiReview: reviewed.aiReview, durationMs: Date.now() - snapshotAt, workers: outcome.workers, marketsScanned: jobs.length, meta: options.meta,
+        durationMs: Date.now() - snapshotAt, workers: outcome.workers, marketsScanned: jobs.length, meta: options.meta,
       };
       feed.memory.set(memoryKey, next);
       setRun(next);
