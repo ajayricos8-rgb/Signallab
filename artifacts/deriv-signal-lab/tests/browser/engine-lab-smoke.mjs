@@ -120,6 +120,16 @@ try {
     // Load and Run is a real button: the research gates are advice, never a veto.
     assert.equal(await page.getByTestId(`button-load-and-run-${family}`).isEnabled(), true, `${family} Load and Run must be usable after an analysis`);
     assert.equal(await page.getByTestId(`button-load-and-run-${family}`).innerText(), 'Load and Run');
+    // Auto is a switch above the button and starts OFF, so nothing trades by
+    // itself until the user asks for it. Clicking it twice only toggles the
+    // switch: the already-handled signal is never traded by arming Auto.
+    const autoButton = page.getByTestId(`button-bot-auto-${family}`);
+    assert.equal(await autoButton.getAttribute('aria-pressed'), 'false', `${family} Auto must default to off`);
+    await autoButton.click();
+    assert.equal(await autoButton.getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByTestId(`button-load-and-run-${family}`).innerText(), 'Load and Run', 'arming Auto must not start a run on the signal already on screen');
+    await autoButton.click();
+    assert.equal(await autoButton.getAttribute('aria-pressed'), 'false', `${family} Auto must switch back off`);
     if (await page.getByTestId('trade-dock-body').isVisible()) await page.getByTestId('trade-dock-toggle').click();
     await page.getByText('Model weights, contribution and held-out performance', { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
