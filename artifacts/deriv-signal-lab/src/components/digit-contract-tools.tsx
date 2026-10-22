@@ -18,6 +18,7 @@ import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { scopeSettlements } from '@/lib/engine-lab/execution';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { MasterDecisionCard } from '@/components/signal/master-decision-card';
+import { NeuralModelCard } from '@/components/signal/neural-model-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import {
@@ -422,6 +423,13 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                   hint: signal.research.note,
                 },
                 {
+                  label: 'Neural model',
+                  value: selectedResult.neural
+                    ? `${formatPercent(signal.neural.probability)}${signal.neural.weight > 0 ? ` · ${signal.neural.contributionPts >= 0 ? '+' : ''}${signal.neural.contributionPts.toFixed(1)} pts` : ' · no vote'}`
+                    : '—',
+                  hint: signal.neural.note,
+                },
+                {
                   label: 'Entry time',
                   value: signal.entry.mode === 'immediate' ? 'Signal tick' : signal.entry.expectedWaitTicks <= 1 ? 'Next matches' : `~${signal.entry.expectedWaitTicks} ticks`,
                   hint: `The entry stays valid for ${effectiveWindowTicks(signal.entry)} ticks — the shorter of the plan's window and the measured edge validity; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed ticks matched`}.`,
@@ -439,6 +447,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
             <ConfirmationPanel report={signal.deep.confirmation} />
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={signal.fairProbability} /> : null}
             {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
+            {selectedResult.neural ? <NeuralModelCard forecast={selectedResult.neural} fusion={signal.neural} /> : null}
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}

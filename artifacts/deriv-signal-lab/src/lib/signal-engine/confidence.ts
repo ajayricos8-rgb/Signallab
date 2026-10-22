@@ -84,6 +84,26 @@ export type ResearchEvidence = {
 };
 
 /**
+ * What the embedded neural model's forecast contributed to a signal.
+ * Handed to the score by the analyzers; an unvalidated model has no vote, so
+ * it can neither add nor remove confidence.
+ */
+export type NeuralEvidence = {
+  /** The model's probability for the traded outcome. */
+  probability: number;
+  /** No-edge probability of that outcome. */
+  fair: number;
+  /** Out-of-sample Brier skill of the model; null when unmeasured. */
+  skill: number | null;
+  /** Independent holdout rows behind that skill. */
+  sample: number;
+  /** True only when the model beat chance out of sample and carries weight. */
+  validated: boolean;
+  /** True when a validated model contradicts the traded outcome. */
+  contradicted: boolean;
+};
+
+/**
  * How well the published probability is pinned down. An edge smaller than its
  * own measurement error is not evidence of anything, however many engines
  * agreed on it, so this term is negative until the edge clears one standard
@@ -111,6 +131,8 @@ export type ConfidenceBreakdown = {
   confirmation: number;
   /** Contribution of the research library (0 when none was supplied). */
   research: number;
+  /** Contribution of the embedded neural model (0 when none was supplied). */
+  neural: number;
 };
 
 export type ConfidenceInput = {
@@ -141,6 +163,11 @@ export type ConfidenceInput = {
    * keep a bit-identical score.
    */
   research?: ResearchEvidence | null;
+  /**
+   * Evidence from the embedded neural model. Optional: absent for callers that
+   * do not run it, which keeps their score bit-identical.
+   */
+  neural?: NeuralEvidence | null;
   /**
    * How precisely the probability is known. Optional: callers that do not
    * measure a standard error keep the original score to the last bit.
@@ -228,6 +255,25 @@ export function researchTerm(evidence: ResearchEvidence): number {
 }
 
 /**
+ * How much the embedded neural model's forecast is worth to the evidence
+ * score. Same shape as the research term: skill sets the size, the model's
+ * own edge sets the sign, the sample stops a thin holdout from mattering, and
+ * only a model that validated out of sample can contribute at all.
+ */
+export function neuralTerm(evidence: NeuralEvidence): number {
+  if (!evidence.validated) return 0;
+  const skill = Math.max(0, Math.min(1, Number.isFinite(evidence.skill) ? (evidence.skill as number) : 0));
+  const sample = Number.isFinite(evidence.sample) ? Math.max(0, evidence.sample) : 0;
+  const edge = Number.isFinite(evidence.probability) && Number.isFinite(evidence.fair)
+    ? (evidence.probability - evidence.fair) / 0.05
+    : 0;
+  const magnitude = Math.tanh(12 * skill) * (sample / (sample + 120));
+  const signed = magnitude * clamp(edge, -1, 1);
+  if (evidence.contradicted) return -Math.abs(signed);
+  return signed;
+}
+
+/**
  * −1 when the edge is buried in its own measurement error, +1 when it stands
  * several standard errors clear of it. Zero is "one standard error", which is
  * exactly the point at which an edge stops being indistinguishable from noise.
@@ -277,11 +323,15 @@ export function confidenceScore(input: ConfidenceInput): { confidence: number; b
   // The research library contributes at most a few points, and only through
   // measured skill: callers without an audit keep the original score.
   const research = input.research ? 0.06 * researchTerm(input.research) : 0;
+  // The embedded neural model is the newest voice and the most heavily
+  // gated: it only reaches this term after beating chance out of sample, and
+  // even then it can move the score by at most a few points.
+  const neural = input.neural ? 0.05 * neuralTerm(input.neural) : 0;
   // Precision is the newest layer and deliberately the smallest: it decides
   // between two otherwise identical signals by how well their edge was
   // measured, it does not redefine what the evidence is worth.
   const precision = input.precision ? 0.08 * precisionTerm(input.precision) : 0;
-  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation + research + precision;
+  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation + research + neural + precision;
   let confidence = 50 + 50 * raw * quality;
   // Passing every strict held-out research gate is rare and meaningful.
   if (input.verified) confidence += 8;
@@ -289,7 +339,7 @@ export function confidenceScore(input: ConfidenceInput): { confidence: number; b
     confidence: Math.round(clamp(confidence, 1, 99)),
     breakdown: {
       agreement, edge, backtest, validation, quality, precision,
-      verified: Boolean(input.verified), confirmation, research,
+      verified: Boolean(input.verified), confirmation, research, neural,
     },
   };
 }

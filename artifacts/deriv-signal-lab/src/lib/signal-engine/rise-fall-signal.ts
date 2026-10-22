@@ -26,6 +26,10 @@ import { confirmRiseFall, type ConfirmationReport, type QuoteConfirmationRow } f
 import { createForecastFactory, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
 import { buildEngineLabReport } from '../engine-lab/report.ts';
 import { fuseResearch, researchEvidence, type ResearchFusion } from '../engine-lab/fusion.ts';
+import {
+  fuseNeural, neuralEvidence, trainQuoteNeuralModel,
+  type NeuralFusion, type NeuralQuoteForecast,
+} from '../neural/models.ts';
 import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
 
 export type RiseFallDirection = 'RISE' | 'FALL';
@@ -94,6 +98,8 @@ export type RiseFallHorizonSignal = {
   researchDecision: ResearchDecision;
   /** What the research library's own forecast contributed to `winEstimate`. */
   research: ResearchFusion;
+  /** Layer 7: the embedded neural model's view of this duration and what it did. */
+  neural: NeuralFusion;
   historical: { sample: number; rise: number; fall: number; unchanged: number };
   /**
    * How precisely this win estimate is known, and how far the precision layer
@@ -147,6 +153,11 @@ export type RiseFallMarketAnalysis = {
   state: QuoteMarketState;
   /** Layer 5: quant measurement engines synthesised into one AI verdict. */
   aiSynthesis: AiSynthesis;
+  /**
+   * Layer 7: the embedded, free neural model for the best duration's horizon,
+   * trained on this market's own prices. Null when the history is too short.
+   */
+  neural: NeuralQuoteForecast | null;
   /** Cross-duration precision fit for this scan (heterogeneity of the pool). */
   precisionFit: { candidates: number; tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
   /** Number of analysis engines that ran (separate from the 14 prediction engines). */
@@ -733,6 +744,17 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         (measuredError ?? 0) / clamp(edgeShrinkage(validationSkill, validationZ), 0.3, 1),
         miscalibration ?? 0,
       );
+    // Layer 7: the embedded neural direction model for THIS horizon. It sees
+    // the same prices and settles on the same exit tick as the indicator
+    // engines, so its forecast is directly comparable to the win estimate.
+    const neuralModel = trainQuoteNeuralModel(prices, exits, {
+      horizonTicks: horizon.unit === 'ticks'
+        ? horizon.value
+        : Math.max(1, Math.round((horizon.value * 60_000) / Math.max(1, tickSpacingMs))),
+    });
+    const neuralProbability = neuralModel
+      ? directionSign > 0 ? neuralModel.probabilityUp : 1 - neuralModel.probabilityUp
+      : null;
     // Evidence sources for Layer 6, each expressed as P(this direction) with
     // its own measured out-of-sample skill and independent sample.
     const engineRiseLive = clamp(0.5 + consensusScore / 2, 0.01, 0.99);
@@ -773,12 +795,25 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         familyCredit: 0.8,
         detail: research.note,
       },
+      {
+        id: 'neural',
+        label: neuralModel ? `Neural model · ${neuralModel.model.parameters} params` : 'Neural model',
+        probability: neuralProbability,
+        // Zero weight unless the network beat the coin flip out of sample.
+        skill: neuralModel?.metrics.validated ? neuralModel.metrics.brierSkill : null,
+        sample: neuralModel?.metrics.holdoutRows ?? 0,
+        familyCredit: 0.6,
+        detail: neuralModel
+          ? `${neuralModel.model.id} ${neuralModel.model.version}, trained locally for this horizon: ${neuralModel.note}`
+          : 'The embedded neural model could not be fitted for this horizon.',
+      },
     ];
     return {
       horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, consensusDirection,
       votes, tally, backtest, validationSkill, validationZ, flatRate, fair, research, researchDecision,
       confirmation, sources,
       entryInputs: { prices, epochs, rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })), exits, liveAverageMove: liveAnalysis.averageTickMove14 },
+      neuralModel, neuralProbability, neuralWeight: neuralModel?.weight ?? 0, neuralMetrics: neuralModel?.metrics ?? null,
       horizonQuality: quality * clamp(0.6 + 0.4 * reliability, 0.6, 1),
       winEstimate, standardError, reliabilityReportValue: reliabilityReport(holdoutPoints), holdoutPoints,
       recent, exits,
@@ -796,6 +831,18 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       validationSkill, validationZ, flatRate, fair, research, researchDecision, confirmation, entryInputs, horizonQuality,
       standardError, holdoutPoints, recent, sources } = draft;
     let winEstimate = clamp(fair + shrinkFactor * (draft.winEstimate - fair) - selectionDebit, 0.001, 0.999);
+    // Layer 7: the embedded neural model's forecast is folded into the
+    // published win estimate under the same rule as the research library — a
+    // weighted second opinion, with zero weight until it validates.
+    const neuralFused = fuseNeural({
+      probability: winEstimate,
+      fair,
+      neuralProbability: draft.neuralProbability,
+      weight: draft.neuralWeight,
+      metrics: draft.neuralMetrics,
+    });
+    const neuralFusion = neuralFused.fusion;
+    if (neuralFusion.weight > 0) winEstimate = clamp(neuralFused.probability, 0.001, 0.999);
     if (Math.abs(winEstimate - draft.winEstimate) > 1e-9) {
       confirmation.probability = winEstimate;
       confirmation.winProbability = winEstimate;
@@ -819,6 +866,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
       research: researchEvidence(research),
+      neural: neuralEvidence(neuralFusion),
       precision: { edge: winEstimate - fair, standardError, intervalHalfWidth: interval ? (interval.upper - interval.lower) / 2 : null },
     });
     const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
@@ -898,7 +946,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const tradeableEntry: EntryPlan = { ...entry, validForTicks: master.validity.ticks };
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
-      confidence, breakdown, strength, historical: recent, entry: tradeableEntry, master, researchDecision, research,
+      confidence, breakdown, strength, historical: recent, entry: tradeableEntry, master, researchDecision, research, neural: neuralFusion,
       precision: {
         standardError,
         interval,
@@ -947,6 +995,11 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   if (n < 1_500) notes.push(`Only ${n} ticks of history; longer minute durations have little validation data.`);
   notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
   notes.push(`AI synthesis: ${aiSynthesis.verdict}. ${aiSynthesis.consensus.detail}`);
+  const neuralForBest = drafts.find((draft) => draft.horizon.unit === signals[0]?.horizon.unit && draft.horizon.value === signals[0]?.horizon.value)?.neuralModel ?? null;
+  notes.push(neuralForBest
+    ? `Neural model: ${neuralForBest.note}`
+    : 'Neural model: the price history is too short to fit the embedded network; every other layer ran unchanged.');
+  if ((signals[0]?.neural.weight ?? 0) > 0) notes.push(`Neural fusion: ${signals[0].neural.note}`);
   const best = signals[0];
   if (best?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best duration; treat it as a contradicted call, not a verified edge.');
   else if (best?.deep.confirmation.status === 'confirmed') notes.push(`Confirmation layer: ${best.deep.confirmation.reasons.at(-1)}`);
@@ -969,7 +1022,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
     lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
     engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
-    state, aiSynthesis, analysisEngineCount: state.engines.length, engineLab,
+    state, aiSynthesis, neural: neuralForBest, analysisEngineCount: state.engines.length, engineLab,
     precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }

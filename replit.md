@@ -28,20 +28,33 @@ _Replace the heading above with the project's name, and this line with one sente
 - `artifacts/deriv-signal-lab/src/hooks/use-signal-bot.ts` + `src/lib/signal-bot/` — the run loop and its pure rules (runs per signal, martingale ladder, stop decisions).
 - `artifacts/deriv-signal-lab/src/lib/engine-lab/fusion.ts` — layer 4: how the 300-engine research ensemble is folded into the traded probability and evidence score.
 - `artifacts/deriv-signal-lab/src/components/signal-bot-provider.tsx` — shared bot state, mounted above the workspace tabs so a run survives tab switches.
+- `artifacts/deriv-signal-lab/src/lib/neural/` — layer 7: the embedded, free neural model (network, causal features, chronological training + validation, fusion).
+- `artifacts/deriv-signal-lab/src/components/signal/neural-model-card.tsx` — the model card, live forecast and measured skill shown on every tool.
 
 ## Architecture decisions
 
 - The four Tools tabs share one public Deriv market-data socket (`artifacts/deriv-signal-lab/src/components/market-feed-provider.tsx`) mounted above the tabs, so history survives tab switches and Run Analysis can scan every volatility index at once.
 - Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`). Every analysis is layered: **analysis engines** (`market-state.ts`) measure structure/regime, **prediction engines** (the 12-engine digit ensemble / 14-engine Rise/Fall panel) produce probabilities, a **confirmation layer** (`confirmation.ts`) calibrates them out of sample and checks the analysis prior, a **precision layer** (`precision.ts`) shrinks every published edge by how much of it survived out of sample and charges the winner's curse of having been ranked, the **entry layer** (`entry.ts`) measures the entry level/window on an older slice and validates it on a newer one, and a **quant + AI synthesis layer** (`ai-synthesis.ts`) folds the independent quant measurement suite (distribution, parity runs, recurrence/FFT, Hurst/RSI/MACD regime) into one verdict with a cross-window stability check. Results are ranked by a calibrated confidence score (`confidence.ts`).
+- Layer 7 is a network trained in the app on the market's own feed, not a hosted or pretrained model: a digit net (`signal-net-digit-v1`, 113→24→12→10) for Over/Under, Even/Odd and Matches and a quote net (`signal-net-quote-v1`, 20→24→12→2) for Rise/Fall. Rows are causal and chronological, split 60/20/20 with a purge gap, and the holdout is scored once against the same fair odds the contract pays on. Its forecast is blended into the published probability (≤25% of the edge) only after a positive Brier skill with a paired z ≥ 2 on ≥60 unseen rows; otherwise the weight is exactly 0 and the number is bit-identical. It is also its own row in the master decision's source pool and a small (<5%) term in the confidence score when validated.
 - Workers are an optimisation, never a dependency: each worker answers a handshake after its script loads, jobs whose worker dies (script 404, wrong MIME, CSP/proxy blocks, thread crash, silence) are retried once in a replacement worker and then analysed inline on the main thread, so Run Analysis ends in ranked signals on every hosting environment instead of a crash banner.
 - The strict research gates in `src/lib/over-under/ensemble.ts` are kept and surface as a "Verified edge" flag instead of blocking signals.
 - Each tool shows the analysis-engine panel (`AnalysisEnginePanel`), the confirmation report (`ConfirmationPanel`) and the measured error bar (`PrecisionPanel`) next to the signal card, so every probability can be traced to the engines, the calibration, the replay and the research fusion that produced it.
 - The precision layer is what keeps the published number honest. On a fair stream it collapses a 16-contract scan to exactly 0.0 points of edge (it used to report ~0.1); on a real edge it keeps 92% of the true magnitude rather than 77%, and it halves the error on the hard case of a small edge hidden in noise.
 
+## Embedded neural model (2026-10-22)
+
+- `src/lib/neural/network.ts` is a self-contained MLP (ReLU + softmax, Adam, L2, early stopping) with a seeded PRNG — deterministic, dependency-free and worker-safe. `train.ts` owns the chronological 60/20/20 split with purging, the scaler fitted on train only, validation temperature scaling and the one-shot holdout score.
+- `src/lib/neural/features.ts` builds causal vectors: 113 digit features (recent digits, gaps, hot/cold z-scores over 100/300, parity share, streaks, entropy) and 20 quote features (returns, momentum, volatility ratio, moving-average position, RSI, streaks, Bollinger position).
+- `models.ts` exports `trainDigitNeuralModel`, `trainQuoteNeuralModel`, `fuseNeural` and `neuralEvidence`. Fusion is a convex combination of edges over the same `fair` baseline, capped at `NEURAL_MAX_WEIGHT = 0.25`; with weight 0 the estimate is unchanged, which is how the layer stays inert on a fair market.
+- Both analyzers now expose `neural` at market level and `neural` (a `NeuralFusion`) per contract/duration, add a `neural` master source, pass `neuralEvidence` to `confidenceScore`, and note the fit (or the refusal) in `notes`.
+- UI: `components/signal/neural-model-card.tsx` on every tool (live distribution, holdout accuracy vs chance, Brier skill, paired z, rows, temperature, fusion contribution, model card) and a Settings section describing the installed models, cost, licence and gating.
+- Docs and tests: `docs/neural-model.md`, `tests/neural-model.test.mjs` (`pnpm --filter @workspace/deriv-signal-lab test:neural`). The model is additive: if it cannot be fitted, every existing layer runs unchanged.
+
 ## Product
 
 - Run Analysis on any tool ends in a signal; the mini bottom trade menu can trade it by hand (Trade) or automatically (Load and Run), using the stake and martingale configured on that menu.
 - Load and Run is a real button, not a status label: it is enabled whenever a finished analysis produced an entry plan, a valid stake is typed and no run is in progress. The research library's evidence gates and the quoted payout only ever add advisory text to the run.
+- The embedded neural model is installed, free and always trained locally; the tool page says plainly whether it validated on this market and how many probability points it moved. A fair market correctly leaves it at zero weight.
 - The 300-engine research library is part of the overall analysis, not a separate report. Its validated forecast is folded into every candidate's probability, the evidence score and the entry evidence (`src/lib/engine-lab/fusion.ts`); the inspector shows the weight and the probability points it contributed.
 
 ## User preferences

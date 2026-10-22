@@ -47,12 +47,13 @@ const VERDICT: Record<MasterDecision['verdict'], {
   },
 };
 
-const SOURCE_ORDER: MasterSourceId[] = ['engines', 'ai', 'analysis', 'research'];
+const SOURCE_ORDER: MasterSourceId[] = ['engines', 'ai', 'analysis', 'research', 'neural'];
 const SOURCE_SHORT: Record<MasterSourceId, string> = {
   engines: 'Engines',
   ai: 'AI',
   analysis: 'Analysis',
   research: 'Research',
+  neural: 'Neural',
 };
 
 function formatPts(value: number, digits = 1): string {

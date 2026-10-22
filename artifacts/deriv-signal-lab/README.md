@@ -26,6 +26,7 @@ Deriv REST calls are made from the browser first. If a browser blocks that cross
 ```sh
 pnpm --filter @workspace/deriv-signal-lab typecheck
 pnpm --filter @workspace/deriv-signal-lab test:digit-analysis
+pnpm --filter @workspace/deriv-signal-lab test:neural
 PORT=18781 BASE_PATH=/ pnpm --filter @workspace/deriv-signal-lab build
 ```
 
@@ -42,6 +43,17 @@ The build config requires both `PORT` and `BASE_PATH`, including for production 
 - Displayed hit frequencies describe in-sample historical outcomes. The nominal Wilson interval is not a calibrated forecast interval; overlapping tick horizons do not satisfy its simple independent-outcome assumption.
 - The separate price-context panel reports tick-indexed EMA(9/21/50), RSI(14), MACD(12/26/9), ROC(14), 50-tick log-return volatility and a confirmed 3-tick swing summary. It is not used to rank digit outcomes. Formal multi-horizon Dow analysis, candle-based ATR/ADX and OHLC studies are not implemented.
 - Every panel remains `WAIT` until its own data gates pass. Live proposal quotes and order placement exist only in the trade dock, and only for a connected account; payout/EV gating, probability calibration, persistent signals, external/pretrained ML services (the LSTM and boosting models are small local implementations, not XGBoost/LightGBM downloads) and automatic execution are not implemented. Engine probabilities are research estimates, not calibrated win probabilities or a promise of profit.
+
+## Embedded neural model (free, local, no API key)
+
+Every analysis now trains a small neural network inside the app, on the market's own feed, and shows it on the tool page as **Layer 7 · free embedded neural model**:
+
+- `signal-net-digit-v1` (113 → 24 → 12 → 10, ≈3.2k parameters) predicts the next digit and feeds Over/Under, Even/Odd and Matches; every contract reuses the same distribution by summing the classes it wins on.
+- `signal-net-quote-v1` (20 → 24 → 12 → 2, ≈0.8k parameters) predicts the direction of the move a Rise/Fall horizon settles on.
+- Training is deterministic (seeded PRNG, no `Math.random`, no download) and runs in the existing analysis Web Workers. Rows are causal, split 60/20/20 chronologically with a purge gap; the scaler, weights and softmax temperature never see the holdout slice.
+- The forecast is folded into the published probability as a weighted second opinion over the same fair odds the contract pays (≤25% of the edge) **only** when it beat chance out of sample: positive Brier skill, positive log-loss skill and a paired z ≥ 2 on ≥60 unseen rows. With zero weight the published number is bit-identical, so a fair market leaves the model silent — which is the honest and usual outcome on synthetic indices.
+- The model is also a row in the master decision's source table and, when validated, a small (<5%) term in the confidence score. Its card reports architecture, parameter count, seed, epochs, temperature, row counts, hit rate vs chance and the probability points it moved.
+- Free means: no API key, no account, no per-call cost, no tick leaving the device. See `docs/neural-model.md`.
 
 ## Premium bots
 
