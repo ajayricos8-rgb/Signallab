@@ -36,6 +36,10 @@ import { blendWeight, fitStackWeights, mixWeights, type StackingRow } from './st
 import { buildForecastBank, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
 import { buildEngineLabReport } from '../engine-lab/report.ts';
 import { fuseResearch, researchEvidence, type ResearchFusion } from '../engine-lab/fusion.ts';
+import {
+  fuseNeural, neuralEvidence, trainDigitNeuralModel,
+  type NeuralDigitForecast, type NeuralFusion,
+} from '../neural/models.ts';
 import { normalizeTicks } from '../engine-lab/math.ts';
 import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
 
@@ -80,6 +84,8 @@ export type DigitContractSignal = {
   researchDecision: ResearchDecision;
   /** What the research library's own forecast contributed to the probability above. */
   research: ResearchFusion;
+  /** Layer 7: the embedded neural model's view of this contract and what it did. */
+  neural: NeuralFusion;
   /** Historical outcomes after the current digit (or parity) context. */
   history: { sample: number; hits: number; rate: number | null; context: string } | null;
   /**
@@ -141,6 +147,12 @@ export type DigitMarketAnalysis = {
   state: DigitMarketState;
   /** Layer 5: quant measurement engines synthesised into one AI verdict. */
   aiSynthesis: AiSynthesis;
+  /**
+   * Layer 7: the embedded, free neural model trained on this market's own tick
+   * stream. Null when the stream is too short to fit it. Its forecast is folded
+   * into every contract's probability only when it beat chance out of sample.
+   */
+  neural: NeuralDigitForecast | null;
   /** Number of analysis engines that ran (separate from the 12 prediction engines). */
   analysisEngineCount: number;
   /** Full audit stored once for the winning contract, not duplicated across candidates. */
@@ -278,6 +290,11 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   const state = analyzeDigitState(fit.sequence.digits);
   onProgress?.(0.945, 'Ensembling quant measurement engines with AI synthesis');
   const aiSynthesis = synthesizeDigitAi(input.family, fit.sequence.digits);
+  onProgress?.(0.947, 'Training the embedded neural model on this tick stream');
+  // Layer 7: a real network fitted inside the app on this market's own digits.
+  // It is additive — if it cannot be fitted, every layer below behaves exactly
+  // as before.
+  const neural = trainDigitNeuralModel(fit.sequence.digits);
   onProgress?.(0.96, 'Confirming every contract out of sample');
 
   const requested = input.contracts?.length ? input.contracts : DIGIT_SIGNAL_CONTRACTS[input.family];
@@ -510,6 +527,9 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         miscalibration ?? 0,
       );
     const reliability = reliabilityReport(holdout);
+    // The neural model's own probability for THIS contract: the share of its
+    // next-digit distribution that the contract wins on.
+    const neuralProbability = neural ? digitContractProbability(neural.distribution, contract) : null;
     // The evidence sources Layer 6 pools. Each one carries its own measured
     // out-of-sample skill and the independent sample behind it, so a source
     // that has never beaten the no-edge rate is reported but carries no weight.
@@ -558,12 +578,25 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         familyCredit: 0.8,
         detail: research.note,
       },
+      {
+        id: 'neural',
+        label: neural ? `Neural model · ${neural.model.parameters} params` : 'Neural model',
+        probability: neuralProbability,
+        // An unvalidated model is reported but carries no weight: the pool only
+        // counts a source whose skill cleared its own out-of-sample bar.
+        skill: neural?.metrics.validated ? neural.metrics.brierSkill : null,
+        sample: neural?.metrics.holdoutRows ?? 0,
+        familyCredit: 0.6,
+        detail: neural
+          ? `${neural.model.id} ${neural.model.version}, trained locally on this market: ${neural.note}`
+          : 'The embedded neural model could not be fitted on this market.',
+      },
     ];
     return {
       contract, fair, deviation, margin, bias, corrected, skills, weighted, live, liveValues,
       rawProbability, votes, tally, backtest, validationSkill, validationZ, verified,
       confirmation, research, researchDecision, probability, edge, edgeRatio, quality,
-      context, standardError, reliability, holdout, firedRows, sources,
+      context, standardError, reliability, holdout, firedRows, sources, neuralProbability,
     };
   });
 
@@ -584,7 +617,22 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     const { contract, fair, deviation, rawProbability, votes, tally, backtest, validationSkill, validationZ,
       verified, confirmation, research, researchDecision, context, standardError, reliability, holdout,
       firedRows, sources } = draft;
-    const probability = clamp(fair + shrinkFactor * (draft.probability - fair) - selectionDebit, 0.0005, 0.9995);
+    const shrunk = clamp(fair + shrinkFactor * (draft.probability - fair) - selectionDebit, 0.0005, 0.9995);
+    // Layer 7: fold the neural forecast into the number that gets published.
+    // Identical rule to the research fusion — a weighted second opinion over
+    // the same fair baseline, and zero weight unless it validated.
+    const neuralFused = fuseNeural({
+      probability: shrunk,
+      fair,
+      neuralProbability: draft.neuralProbability,
+      weight: neural?.weight ?? 0,
+      metrics: neural?.metrics ?? null,
+    });
+    const neuralFusion = neuralFused.fusion;
+    const probability = clamp(neuralFused.probability, 0.0005, 0.9995);
+    if (neuralFusion.weight > 0 && !confirmation.reasons.some((reason) => reason.startsWith('Neural model:'))) {
+      confirmation.reasons.push(`Neural model: ${neuralFusion.note}`);
+    }
     const edge = probability - fair;
     const edgeRatio = edge / deviation;
     // Keep the confirmation report in step with what is actually published.
@@ -598,9 +646,12 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         confirmation.decisive = false;
         if (confirmation.status === 'confirmed') confirmation.status = 'cautious';
       }
-      if (Math.abs(edge - (draft.probability - fair)) >= 0.005) {
+      // Report the precision layer's own movement separately from the neural
+      // layer's, so neither is blamed for the other's adjustment.
+      const precisionEdge = shrunk - fair;
+      if (Math.abs(precisionEdge - (draft.probability - fair)) >= 0.005) {
         confirmation.reasons.push(
-          `Precision layer: the measured edge did not clear its own standard error, so it was shrunk from ${(100 * (draft.probability - fair)).toFixed(2)} to ${(100 * edge).toFixed(2)} points.`,
+          `Precision layer: the measured edge did not clear its own standard error, so it was shrunk from ${(100 * (draft.probability - fair)).toFixed(2)} to ${(100 * precisionEdge).toFixed(2)} points.`,
         );
       }
     }
@@ -616,6 +667,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
       },
       research: researchEvidence(research),
+      neural: neuralEvidence(neuralFusion),
       // A probability the market data cannot actually pin down is weaker
       // evidence than the same number measured off 2,000 ticks.
       precision: { edge, standardError, intervalHalfWidth: interval ? (interval.upper - interval.lower) / 2 : null },
@@ -689,7 +741,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,
       votes, tally, backtest, validationSkill, validationZ, verified, confidence, breakdown,
-      strength, entry: tradeableEntry, master, researchDecision, research,
+      strength, entry: tradeableEntry, master, researchDecision, research, neural: neuralFusion,
       history: historical ? {
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,
@@ -757,6 +809,10 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   if (state.regime === 'random') notes.push('Analysis engines: the digit stream is statistically indistinguishable from random; confirmed edges are kept small and the entry is usually immediate.');
   else notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
   notes.push(`AI synthesis: ${aiSynthesis.verdict}. ${aiSynthesis.consensus.detail}`);
+  notes.push(neural
+    ? `Neural model: ${neural.note}`
+    : 'Neural model: the tick stream is too short to fit the embedded network; every other layer ran unchanged.');
+  if (signals[0]?.neural.weight > 0) notes.push(`Neural fusion: ${signals[0].neural.note}`);
   if (signals[0]?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best contract; treat it as a contradicted call, not a verified edge.');
   onProgress?.(0.99, 'Explaining all 300 registered engines for the selected contract');
   const best = signals[0];
@@ -778,7 +834,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,
     sample: fit.sequence.digits.length, lastDigit, asOfEpoch: fit.sequence.epochs.at(-1)!, fresh: input.fresh,
     dataQuality: quality, structure: fit.structure.status, engineCount: fit.engines.length,
-    best, contracts: signals, report, state, aiSynthesis, analysisEngineCount: state.engines.length, engineLab,
+    best, contracts: signals, report, state, aiSynthesis, neural, analysisEngineCount: state.engines.length, engineLab,
     precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }

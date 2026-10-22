@@ -7,6 +7,7 @@ import { scopeSettlements } from '@/lib/engine-lab/execution';
 import { digitTicksOf } from '@/lib/market-feed';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { MasterDecisionCard } from '@/components/signal/master-decision-card';
+import { NeuralModelCard } from '@/components/signal/neural-model-card';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
@@ -327,6 +328,13 @@ export function RiseFallTool() {
                   hint: signal.research.note,
                 },
                 {
+                  label: 'Neural model',
+                  value: selectedResult.neural
+                    ? `${formatPercent(signal.neural.probability)}${signal.neural.weight > 0 ? ` · ${signal.neural.contributionPts >= 0 ? '+' : ''}${signal.neural.contributionPts.toFixed(1)} pts` : ' · no vote'}`
+                    : '—',
+                  hint: signal.neural.note,
+                },
+                {
                   label: 'Entry point',
                   value: signal.entry.mode === 'immediate' ? 'Next tick' : signal.entry.mode === 'pullback' ? `Pullback ${signal.entry.priceCondition === 'below' ? '↓' : '↑'}` : `Breakout ${signal.entry.priceCondition === 'above' ? '↑' : '↓'}`,
                   hint: `Where the bot waits to open the trade: ${signal.entry.detail}`,
@@ -349,6 +357,7 @@ export function RiseFallTool() {
             <ConfirmationPanel report={signal.deep.confirmation} />
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={0.5} /> : null}
             {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
+            {selectedResult.neural ? <NeuralModelCard forecast={selectedResult.neural} fusion={signal.neural} /> : null}
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}
