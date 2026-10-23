@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, Bot, ChevronDown, ChevronUp, Loader2, Settings2, ShieldCheck, WifiOff } from 'lucide-react';
+import { ArrowRight, Bot, ChevronDown, ChevronUp, Loader2, Settings2, ShieldCheck, WifiOff, Zap } from 'lucide-react';
 import { DerivConnectionStatusBadge } from '@/components/deriv-connection-card';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { SignalBotWindow } from '@/components/signal-bot-window';
@@ -29,6 +29,7 @@ import {
   sanitizeSignalBotConfig,
 } from '@/lib/signal-bot/plan.ts';
 import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
+import { decideAutoRun, type AutoRunState } from '@/lib/signal-bot/auto.ts';
 import { researchAdvisory } from '@/lib/engine-lab/execution';
 import type { ResearchFusion } from '@/lib/engine-lab/fusion';
 import type { MasterDecision } from '@/lib/signal-engine/master-decision.ts';
@@ -97,10 +98,21 @@ const controlClass =
 
 const COLLAPSED_KEY = 'signal-lab-trade-dock-collapsed';
 const BOT_CONFIG_KEY = 'signal-lab-signal-bot-config';
+/** Auto is a switch, not a stake setting, so it is stored on its own. */
+const AUTO_KEY = 'signal-lab-signal-bot-auto';
 
 function readCollapsed(): boolean {
   try {
     return window.localStorage.getItem(COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Auto starts off: a fresh browser never trades without a deliberate click. */
+function readAuto(): boolean {
+  try {
+    return window.localStorage.getItem(AUTO_KEY) === '1';
   } catch {
     return false;
   }
@@ -189,6 +201,9 @@ export function TradeDock({
   const [timeDurationText, setTimeDurationText] = useState('');
   const [botConfig, setBotConfig] = useState<SignalBotConfig>(readBotConfig);
   const [botSpeed, setBotSpeed] = useState<'fast' | 'normal'>('normal');
+  // Auto: start Load and Run by itself as soon as a signal is generated.
+  const [autoRun, setAutoRun] = useState<boolean>(readAuto);
+  const [autoNotice, setAutoNotice] = useState<{ state: AutoRunState; note: string } | null>(null);
   const titleId = useId();
   const noteId = useId();
   const bodyId = useId();
@@ -219,6 +234,14 @@ export function TradeDock({
       // Storage is optional; the configuration is still held in memory.
     }
   }, [botConfig]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(AUTO_KEY, autoRun ? '1' : '0');
+    } catch {
+      // Storage is optional; the switch is still held in memory.
+    }
+  }, [autoRun]);
 
   const timeDuration = /^\d+$/.test(timeDurationText.trim())
     ? Number(timeDurationText.trim())
@@ -325,6 +348,18 @@ export function TradeDock({
       ? `${formatAmount(botConfig.takeProfitAmount, currency)} realised profit`
       : '',
   ].filter(Boolean);
+  // What Auto is doing right now, shown under the bot settings. With the switch
+  // off the line disappears and Load and Run is a manual button again.
+  const autoNoticeText = autoRun
+    ? autoNotice?.note ?? 'Auto is on — Run Analysis starts the bot the moment a signal is generated.'
+    : '';
+  const autoNoticeTone = autoNotice?.state === 'started'
+    ? 'text-emerald-200'
+    : autoNotice?.state === 'idle'
+      ? 'text-slate-300'
+      : autoNotice && autoNotice.state !== 'armed'
+        ? 'text-amber-200'
+        : 'text-sky-200';
 
   // A finished analysis pops the dock open so Load and Run is reachable.
   const lastAnalysisRunId = useRef(analysis?.runId ?? 0);
@@ -334,6 +369,74 @@ export function TradeDock({
     lastAnalysisRunId.current = runId;
     if (botPlan) setCollapsed(false);
   }, [analysis, botPlan]);
+
+  // The signal Auto has already acted on. Seeded with whatever signal was on
+  // screen when the dock mounted, so a run restored from the feed's memory is
+  // never re-traded: Auto only fires on a signal generated after it was armed.
+  const autoHandoffRunId = useRef<number>(analysis?.runId ?? 0);
+
+  // Auto hands a freshly generated signal straight to Load and Run. The rule
+  // itself is pure (`decideAutoRun`); this effect only supplies the facts and
+  // performs the handoff once per signal id, so a re-render, a settings change
+  // or a tab switch can never start a second run on the same signal.
+  useEffect(() => {
+    if (!autoRun) {
+      setAutoNotice(null);
+      return;
+    }
+    const runId = analysis?.runId ?? 0;
+    // The user pressed Load and Run on this very signal while Auto is on: the
+    // bot is already trading it, so there is nothing to hand over and nothing
+    // to warn about.
+    const alreadyTradingThisSignal = bot.running
+      && Boolean(bot.plan && analysis?.ranAt && bot.plan.ranAt === analysis.ranAt);
+    if (alreadyTradingThisSignal) {
+      if (runId > 0) autoHandoffRunId.current = runId;
+      return;
+    }
+    const decision = decideAutoRun({
+      enabled: autoRun,
+      runId,
+      handoffRunId: autoHandoffRunId.current,
+      planReady: Boolean(botPlan),
+      entryReady: analysisEntryReady,
+      botRunning: bot.running,
+      connected,
+      stakeValid,
+      analysisAgeMs: analysis?.ranAt ? Date.now() - analysis.ranAt : null,
+      validityMs: botPlan?.master?.validity.ms ?? null,
+    });
+    if (decision.handoff) autoHandoffRunId.current = runId;
+    // Keep the last meaningful message: once a signal is handled the rule
+    // reports 'idle', which must not overwrite "Auto started the bot…".
+    // The updater is idempotent so a feed tick cannot churn the render.
+    if (decision.state !== 'idle') {
+      setAutoNotice((current) =>
+        current && current.state === decision.state && current.note === decision.note
+          ? current
+          : { state: decision.state, note: decision.note },
+      );
+    }
+    if (!decision.start || !botPlan || stakeValue === null) return;
+    setTicketIssue('');
+    setCollapsed(false);
+    signalBot.loadAndRun(botPlan, { ...botConfig, baseStake: stakeValue }, botSpeed);
+    // Keyed on the facts the rule reads. `botPlan` is rebuilt on every render,
+    // but the runId handoff above makes the start idempotent.
+  }, [analysis, analysisEntryReady, autoRun, bot.plan, bot.running, botSpeed, botConfig, botPlan, connected, signalBot, stakeValid, stakeValue]);
+
+  /**
+   * Auto is armed for the NEXT signal. Switching it on records the signal
+   * already on screen as handled, so flipping the switch never trades the
+   * analysis the user is looking at — only a new one generated afterwards.
+   */
+  function handleAutoToggle() {
+    const next = !autoRun;
+    if (next) autoHandoffRunId.current = analysis?.runId ?? 0;
+    setAutoRun(next);
+    setAutoNotice(null);
+    setTicketIssue('');
+  }
 
   function handleLoadAndRun() {
     if (!botPlan) {
@@ -489,6 +592,30 @@ export function TradeDock({
                 title={recommendationTitle}
                 className="focus-ring rounded-lg border border-sky-300/50 bg-sky-300/10 px-2.5 py-2 text-[11px] font-bold text-sky-200"
               >Use signal{recommendation.label ? ` · ${recommendation.label}` : ''}</button>}
+              <button
+                type="button"
+                onClick={handleAutoToggle}
+                aria-pressed={autoRun}
+                title={
+                  autoRun
+                    ? 'Auto is on: the bot starts by itself the moment Run Analysis produces a signal. Turn it off to start Load and Run manually.'
+                    : 'Auto is off: you start Load and Run yourself. Turn it on and the next analysis starts the bot automatically.'
+                }
+                className={`focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-bold transition-colors ${
+                  autoRun
+                    ? 'border-emerald-300/60 bg-emerald-400/15 text-emerald-200 hover:bg-emerald-400/25'
+                    : 'border-[#385677] bg-[#162f50] text-slate-300 hover:border-sky-300/60 hover:text-white'
+                }`}
+                data-testid={`button-bot-auto-${family}`}
+              >
+                <Zap size={12} />
+                <span className="hidden sm:inline">Auto {autoRun ? 'on' : 'off'}</span>
+                <span className="sm:hidden">Auto</span>
+                <span
+                  aria-hidden="true"
+                  className={`h-1.5 w-1.5 rounded-full ${autoRun ? 'bg-emerald-300' : 'bg-slate-500'}`}
+                />
+              </button>
               {botPlan && (
                 <>
                 <div className="inline-flex h-8 items-center rounded-lg border border-[#385677] bg-[#162f50] p-0.5" role="group" aria-label="Bot execution speed">
@@ -834,6 +961,16 @@ export function TradeDock({
                   <p className="mt-1.5 text-[10px] leading-snug text-emerald-200" data-testid="bot-take-profit-warning">
                     Take profit targets: {takeProfitTargets.join(' or ')}. No new contract is bought once a target is
                     reached; the contract already open is left to settle.
+                  </p>
+                )}
+                {autoNoticeText && (
+                  <p
+                    className={`mt-1.5 text-[10px] leading-snug ${autoNoticeTone}`}
+                    role="status"
+                    data-testid="bot-auto-note"
+                  >
+                    <Zap size={10} className="mr-1 inline" />
+                    {autoNoticeText}
                   </p>
                 )}
               </div>

@@ -26,6 +26,7 @@ _Replace the heading above with the project's name, and this line with one sente
 - `artifacts/deriv-signal-lab/src/components/trade-dock.tsx` — the mini bottom trade menu on every Tools tab: manual ticket, bot configuration (martingale, stop loss, take profit by winning runs or realised profit, runs) and the **Load and Run** button.
 - `artifacts/deriv-signal-lab/src/components/signal-bot-window.tsx` — the mini/expandable bot page that shows each taken trade, Stop and Reset.
 - `artifacts/deriv-signal-lab/src/hooks/use-signal-bot.ts` + `src/lib/signal-bot/` — the run loop and its pure rules (runs per signal, martingale ladder, stop decisions).
+- `artifacts/deriv-signal-lab/src/lib/signal-bot/auto.ts` — the Auto rule that decides whether a freshly generated signal should start Load and Run by itself.
 - `artifacts/deriv-signal-lab/src/lib/engine-lab/fusion.ts` — layer 4: how the 300-engine research ensemble is folded into the traded probability and evidence score.
 - `artifacts/deriv-signal-lab/src/components/signal-bot-provider.tsx` — shared bot state, mounted above the workspace tabs so a run survives tab switches.
 - `artifacts/deriv-signal-lab/src/lib/neural/` — layer 7: the embedded, free neural model (network, causal features, chronological training + validation, fusion).
@@ -50,6 +51,16 @@ _Replace the heading above with the project's name, and this line with one sente
 - UI: `components/signal/neural-model-card.tsx` on every tool (live distribution, holdout accuracy vs chance, Brier skill, paired z, rows, temperature, fusion contribution, model card) and a Settings section describing the installed models, cost, licence and gating.
 - Docs and tests: `docs/neural-model.md`, `tests/neural-model.test.mjs` (`pnpm --filter @workspace/deriv-signal-lab test:neural`). The model is additive: if it cannot be fitted, every existing layer runs unchanged.
 
+## Auto for Load and Run (2026-10-22)
+
+- The trade dock header carries an **Auto on/off** switch (`data-testid="button-bot-auto-<family>"`, persisted in `localStorage` under `signal-lab-signal-bot-auto`, default off). With Auto on, Run Analysis publishing a signal starts the bot immediately; with Auto off, Load and Run is manual again.
+- The decision itself is pure and unit-tested (`src/lib/signal-bot/auto.ts → decideAutoRun`). Auto is a one-signal handoff, not a loop:
+  - turning Auto on records the signal already on screen as handled, so flipping the switch never trades the analysis the user is looking at — only the next one;
+  - each signal id starts the bot at most once (`handoffRunId` ref), so re-renders, dock re-mounts on tab switches and settings changes cannot open a second run;
+  - a running bot is never replaced — a signal that arrives mid-run is skipped once with a reason instead of stacking a second run;
+  - the same preconditions the button enforces (engine entry present, tradeable plan, connected account, valid stake) apply, and an analysis older than the bot's own staleness rule (15 min, or 3× the measured validity with a 2-minute floor) is skipped rather than handed over to be refused.
+- The dock shows one line under the bot settings (`data-testid="bot-auto-note"`) explaining what Auto is doing: armed, started this signal, skipped it and why.
+
 ## Product
 
 - Run Analysis on any tool ends in a signal; the mini bottom trade menu can trade it by hand (Trade) or automatically (Load and Run), using the stake and martingale configured on that menu.
@@ -61,6 +72,7 @@ _Replace the heading above with the project's name, and this line with one sente
 
 - Every Run Analysis, on every tool, must start immediately across markets, show progress as a percentage and end with a signal, its confidence score and how many engines agreed — never an "Analysis blocked" / WAIT-only result.
 - The signal bot reads stake, martingale and the exit limits from the mini bottom trade menu (stop loss, take profit by winning runs, take profit by realised profit) and the tick duration plus run count from the analysis; both take profit targets are optional (0 = off), either one ends the run as **Completed**, it trades one contract at a time, stops immediately on request and only offers Reset once it is idle.
+- Auto is a convenience, never a default: it starts off, persists per browser, arms for the NEXT signal, never re-trades one it already handled, and never replaces a bot that is still running.
 - The bot trades every signal it is loaded with. No research gate, evidence status or quoted payout may turn Load and Run into an observation-only state: they are shown as advice on the run (and in the bot page) instead.
 
 ## Gotchas
