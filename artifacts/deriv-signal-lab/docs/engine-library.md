@@ -67,6 +67,50 @@ The same normalized digit forecasts are projected into even/odd outcomes, preser
 
 Forecasts are projected into the actual strict side of the actual candidate barrier. The display retains **over, under and equal** mass. Dynamic barrier diagnostics compare normalized edge against each barrier's own reference probability; the production ranking retains calibrated evidence, not highest raw win rate. Digit-label distance/pressure is not presented as price support/resistance.
 
+### The digit prior (Over/Under, Even/Odd, Matches)
+
+Behind every digit contract sits `digitPriorComponents()` / `buildDigitPrior()` in
+`src/lib/signal-engine/market-state.ts`. It is not one frequency table: it is ten
+separate forecast angles, each scored on its own out-of-sample Brier loss against
+uniform, each rebuilt at past origins with only the history available then, and
+each scored against **the digit the contract settles on** (`origin + horizon`),
+not the next tick.
+
+| Angle | Question it answers |
+| --- | --- |
+| `frequency` | long-run appearance of each digit |
+| `recent` | recency-weighted appearance over the last few hundred ticks |
+| `transition` | the measured first-order transition row for the current digit, at the contract's horizon |
+| `pattern` | higher-order (2–3 tick) context matching the recent suffix |
+| `momentum` | the fitted slope of the digit level over the last 60 ticks (conditional on a significant t) |
+| `drift` | frequency drift: which digits moved between the last 150 and the previous 900 ticks |
+| `reversal` | signed AR(1) mean reversion of the digit level |
+| `repeat` | exact repetition of the last digit (one-tick contracts only) |
+| `spike` | burst/cluster state after extreme digits |
+| `gap` | overdue/gap hazard for each digit |
+
+The pool is linear with a uniform floor of 40% (`PRIOR_UNIFORM_FLOOR`), a per-digit
+clip of ±0.12 (`PRIOR_DIGIT_CLIP`), and weights equal to each angle's measured
+skill scaled by its support. An angle that cannot beat uniform gets **weight 0**
+and cannot influence the published number; on a structureless stream every angle
+gets zero and the prior is exactly uniform, so the published probability is
+exactly fair. `digitPriorWithWeights()` is the single shipped recipe — the live
+prior and the validated backtest both call it, so the reported skill always
+describes the number on screen.
+
+Downstream, `confirmation.ts` pools that prior with the calibrated ensemble by
+measured skill (`state.weight`, reported in the panel), never by a fixed nudge,
+and `precision.ts` prices the mixture with a standard error that includes the
+prior's own sampling error. The AI meta-model receives `priorEdge` — the prior's
+per-contract view over the rolling-frequency baseline rebuilt at that row's own
+origin — as an extra feature, gated at three sigma out of sample.
+
+`scripts/digit-accuracy-benchmark.mjs` audits the whole chain on markets whose
+structure is known: per-angle skill tables, the shipped recipe replayed at every
+out-of-sample origin (published vs realised vs fair), and a fair-stream
+neutrality check. Run `node --experimental-strip-types ./scripts/digit-accuracy-benchmark.mjs`
+(`H=1` for one-tick contracts, `SEEDS=6` for tighter error bars).
+
 ### Rise/Fall
 
 Direct horizon outcomes use `quote[exit] − quote[origin]`, with a separate flat category. For minute horizons the exit is the first observed tick reaching the actual timestamp, not a conversion using average cadence. The audit adds trend, RSI and completed-candle context models alongside frequency, transition, sequence, run and regime models. Verified digits, when provided, are contextual rather than causal quote-direction predictors.
