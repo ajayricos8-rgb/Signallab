@@ -77,6 +77,13 @@ export type DigitMarketState = {
    * weight 0 and are kept only for the panel.
    */
   priorComponents: DigitPriorComponent[];
+  /**
+   * How far the shipped prior is allowed to commit, earned by its own replay.
+   * Exposed so any historical replay of the prior uses the same band.
+   */
+  priorLimits: DigitPriorLimits;
+  /** The pool's own out-of-sample skill, measured before the validation tail. */
+  priorReplay: { skill: number | null; sample: number };
   priorBacktest: PriorBacktest;
   engines: AnalysisEngine[];
   metrics: {
@@ -651,10 +658,40 @@ export function digitPriorComponents(digits: readonly number[], horizon = 1): Di
  * what the prediction layer uses to score the analysis prior per contract on
  * its own held-out rows.
  */
+/**
+ * How far the pool is allowed to commit: the share of uniform mass it always
+ * keeps, and the most any single digit may be moved from 10%.
+ *
+ * Both are earned rather than fixed. A stream whose own replay shows no skill
+ * keeps the conservative defaults (40% uniform, ±12 points), so it is
+ * bit-identical to the old recipe. A stream whose replay shows real skill is
+ * allowed to commit further, because a prior that is systematically 14 points
+ * shy of what actually happens is not safe, it is miscalibrated in the other
+ * direction — and under-confidence costs the same trades as over-confidence.
+ */
+export type DigitPriorLimits = { floor: number; clip: number };
+
+export const CONSERVATIVE_DIGIT_PRIOR_LIMITS: DigitPriorLimits = { floor: PRIOR_UNIFORM_FLOOR, clip: PRIOR_DIGIT_CLIP };
+
+/**
+ * Translate the pool's own measured out-of-sample skill into how far it may
+ * commit. The mapping is deliberately gentle and bounded: it can widen the band
+ * to ±30 points and cut the uniform floor to 8%, never further, and it never
+ * touches a pool that measured no skill at all.
+ */
+export function digitPriorLimitsFor(replaySkill: number | null): DigitPriorLimits {
+  const skill = replaySkill !== null && Number.isFinite(replaySkill) ? Math.max(0, replaySkill) : 0;
+  return {
+    floor: clamp(PRIOR_UNIFORM_FLOOR - 8 * skill, 0.08, PRIOR_UNIFORM_FLOOR),
+    clip: clamp(PRIOR_DIGIT_CLIP + 2 * skill, PRIOR_DIGIT_CLIP, 0.3),
+  };
+}
+
 export function digitPriorWithWeights(
   digits: readonly number[],
   horizon: number,
   weights: ReadonlyMap<DigitPriorComponentId, number>,
+  limits: DigitPriorLimits = CONSERVATIVE_DIGIT_PRIOR_LIMITS,
 ): { prior: number[]; fired: DigitPriorComponentId[] } {
   const steps = Math.max(1, Math.min(10, Math.round(horizon)));
   const components = digitPriorComponents(digits, steps);
@@ -666,17 +703,19 @@ export function digitPriorWithWeights(
     total += weight;
     fired.push(component.id);
   }
-  let prior = UNIFORM.map((value) => value * PRIOR_UNIFORM_FLOOR);
+  const floor = clamp(limits.floor, 0.02, PRIOR_UNIFORM_FLOOR);
+  const clip = clamp(limits.clip, PRIOR_DIGIT_CLIP, 0.45);
+  let prior = UNIFORM.map((value) => value * floor);
   if (total > 1e-9) {
     for (const component of components) {
       const weight = weights.get(component.id) ?? 0;
       if (!component.probabilities || weight <= 0) continue;
-      const scale = (weight / total) * (1 - PRIOR_UNIFORM_FLOOR);
+      const scale = (weight / total) * (1 - floor);
       prior = prior.map((value, digit) => value + component.probabilities![digit] * scale);
     }
   }
   prior = normalize(prior.map((value) => D(value)));
-  prior = normalize(prior.map((value) => clamp(value, 0.1 - PRIOR_DIGIT_CLIP, 0.1 + PRIOR_DIGIT_CLIP)));
+  prior = normalize(prior.map((value) => clamp(value, 0.1 - clip, 0.1 + clip)));
   return { prior, fired };
 }
 
@@ -735,6 +774,8 @@ export function buildDigitPrior(digits: readonly number[], horizon = 1): {
   strength: number;
   components: DigitPriorComponent[];
   weights: Map<DigitPriorComponentId, number>;
+  limits: DigitPriorLimits;
+  replay: { skill: number | null; sample: number };
 } {
   const steps = Math.max(1, Math.min(10, Math.round(horizon)));
   const components = digitPriorComponents(digits, steps);
@@ -768,9 +809,29 @@ export function buildDigitPrior(digits: readonly number[], horizon = 1): {
     rawTotal += skill;
   }
   void rawTotal;
-  const { prior } = digitPriorWithWeights(digits, steps, weights);
+  // How far may the pool commit? Its OWN replay on the training origins says
+  // so: the same weights, the same recipe, scored on rows that were never used
+  // to choose them.
+  let replayLoss = 0;
+  let replayBase = 0;
+  let replayRows = 0;
+  for (const origin of trainingOrigins) {
+    const target = digits[origin + steps];
+    if (!Number.isInteger(target)) continue;
+    const history = digits.slice(0, origin + 1);
+    if (history.length < 200) continue;
+    const { prior: replayPrior } = digitPriorWithWeights(history, steps, weights);
+    replayLoss += digitBrier(replayPrior, target);
+    let uniformLoss = 0;
+    for (let digit = 0; digit < 10; digit += 1) uniformLoss += (0.1 - (digit === target ? 1 : 0)) ** 2;
+    replayBase += uniformLoss;
+    replayRows += 1;
+  }
+  const replaySkill = replayRows >= 12 && replayBase > 1e-12 ? 1 - replayLoss / replayBase : null;
+  const limits = digitPriorLimitsFor(replaySkill);
+  const { prior } = digitPriorWithWeights(digits, steps, weights, limits);
   const strength = totalVariation(prior, UNIFORM);
-  return { prior, strength, components, weights };
+  return { prior, strength, components, weights, limits, replay: { skill: replaySkill, sample: replayRows } };
 }
 
 /**
@@ -798,7 +859,8 @@ function backtestDigitPrior(digits: readonly number[], horizon = 1): PriorBackte
   const improvements: number[] = [];
   for (let origin = validationStart; origin < sample - 1 - steps; origin += stride) {
     const history = digits.slice(0, origin + 1);
-    const { prior } = digitPriorWithWeights(history, steps, built.weights);
+    // The audit replays the SHIPPED recipe, commit band included.
+    const { prior } = digitPriorWithWeights(history, steps, built.weights, built.limits);
     const target = digits[origin + steps];
     const priorLoss = digitBrier(prior, target);
     let uniformLoss = 0;
@@ -848,6 +910,7 @@ export function analyzeDigitState(
     return {
       kind: 'digit', regime: 'insufficient', predictability: 0, confidence: 0, sample,
       prior: null, priorStrength: 0, priorComponents: [],
+      priorLimits: CONSERVATIVE_DIGIT_PRIOR_LIMITS, priorReplay: { skill: null, sample: 0 },
       priorBacktest: { sample: 0, brier: null, baseline: null, skill: null, accuracy: null, improved: false },
       engines: [],
       metrics: {
@@ -1074,6 +1137,8 @@ export function analyzeDigitState(
     prior: built ? built.prior : null,
     priorStrength: built ? built.strength : 0,
     priorComponents: built ? built.components : components,
+    priorLimits: built ? built.limits : CONSERVATIVE_DIGIT_PRIOR_LIMITS,
+    priorReplay: built ? built.replay : { skill: null, sample: 0 },
     priorBacktest,
     engines,
     metrics: {

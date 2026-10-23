@@ -29,6 +29,11 @@ export type SignalBotStopReason =
   | 'stop-loss'
   /** A configured take profit target was reached. */
   | 'take-profit'
+  /**
+   * The bot's own settled results stopped matching the published probability:
+   * the run is halted before the edge is proven absent by a long losing streak.
+   */
+  | 'calibration'
   | 'error'
   | null;
 
@@ -68,7 +73,18 @@ export type SignalBotConfig = {
   maxRuns: number;
   /** How the entry the analysis planned is used. */
   entryMode: SignalBotEntryMode;
+  /**
+   * What the bot optimises inside the analysis it was given.
+   *
+   * - `edge`     trade the signal the analysis publishes (highest certified edge).
+   * - `hit-rate` trade the highest-probability contract whose published
+   *              probability is not below its fair rate, so the run wins more
+   *              often while still never taking a negative-expectation bet.
+   */
+  objective: SignalBotObjective;
 };
+
+export type SignalBotObjective = 'edge' | 'hit-rate';
 
 export type SignalBotRun = {
   /** 1-based run number shown to the user. */

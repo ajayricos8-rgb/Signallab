@@ -10,6 +10,7 @@ import { entryWindowMs, rebaseEntryPlan, type EntryPlan } from '../signal-engine
 import type {
   SignalBotConfig,
   SignalBotEntryMode,
+  SignalBotObjective,
   SignalBotRun,
   SignalBotStopReason,
   SignalBotSummary,
@@ -28,6 +29,12 @@ export const SIGNAL_BOT_LIMITS = {
 } as const;
 
 export const SIGNAL_BOT_ENTRY_MODES: SignalBotEntryMode[] = ['analysis', 'skip'];
+export const SIGNAL_BOT_OBJECTIVES: SignalBotObjective[] = ['edge', 'hit-rate'];
+
+export const SIGNAL_BOT_OBJECTIVE_LABELS: Record<SignalBotObjective, string> = {
+  edge: 'Highest certified edge',
+  'hit-rate': 'Highest win rate (no negative edge)',
+};
 
 export const SIGNAL_BOT_ENTRY_MODE_LABELS: Record<SignalBotEntryMode, string> = {
   analysis: 'Enter at the signal price',
@@ -55,7 +62,16 @@ export function defaultSignalBotConfig(): SignalBotConfig {
     takeProfitAmount: 0,
     maxRuns: 0,
     entryMode: 'analysis',
+    // The edge objective is the shipped default: it trades the signal the
+    // analysis publishes. Hit-rate mode is an explicit choice.
+    objective: 'edge',
   };
+}
+
+function sanitizeObjective(value: unknown): SignalBotObjective {
+  return typeof value === 'string' && (SIGNAL_BOT_OBJECTIVES as string[]).includes(value)
+    ? (value as SignalBotObjective)
+    : 'edge';
 }
 
 function sanitizeEntryMode(value: unknown): SignalBotEntryMode {
@@ -98,6 +114,7 @@ export function sanitizeSignalBotConfig(input: Partial<SignalBotConfig> | null |
     ),
     maxRuns: Math.round(clampNumber(input.maxRuns, SIGNAL_BOT_LIMITS.maxRuns, base.maxRuns)),
     entryMode: sanitizeEntryMode(input.entryMode),
+    objective: sanitizeObjective(input.objective),
   };
 }
 
@@ -231,10 +248,21 @@ export function nextRunDecision(input: {
   profit?: number;
   /** Winning runs settled so far; defaults to 0 (runs target unfed). */
   wins?: number;
+  /**
+   * The probability the loaded signal was published at, plus the run's own
+   * settled record. When supplied, a record that no longer matches the
+   * measurement stops the bot before the stop loss would.
+   */
+  calibration?: { published: number; settled: number } | null;
 }): { buy: boolean; reason: SignalBotStopReason } {
   if (input.status !== 'running') return { buy: false, reason: input.status === 'idle' ? null : (input.status as SignalBotStopReason) };
   if (input.config.stopLossStreak > 0 && input.lossStreak >= input.config.stopLossStreak)
     return { buy: false, reason: 'stop-loss' };
+  if (input.calibration && calibrationGuard({
+    published: input.calibration.published,
+    settled: input.calibration.settled,
+    wins: input.wins ?? 0,
+  }).stop) return { buy: false, reason: 'calibration' };
   const takeProfit = takeProfitState(input.config, {
     profit: input.profit ?? 0,
     wins: input.wins ?? 0,
@@ -242,6 +270,66 @@ export function nextRunDecision(input: {
   if (takeProfit.reached) return { buy: false, reason: 'take-profit' };
   if (input.runsStarted >= input.targetRuns) return { buy: false, reason: 'runs' };
   return { buy: true, reason: null };
+}
+
+/**
+ * Has the run's own record stopped matching the probability it was sold on?
+ *
+ * Every run is a bet on a published probability p. After n settled runs the
+ * wins are Binomial(n, p); if the observed count falls far enough below n·p the
+ * simplest explanation is that the edge is not there, and continuing only
+ * spends more stake to prove it. The test is one-sided (losses matter, wins do
+ * not), needs at least eight settled runs, and demands three standard errors —
+ * a guard against a bad streak being called a broken model.
+ */
+export function calibrationGuard(input: {
+  published: number;
+  settled: number;
+  wins: number;
+  minimumRuns?: number;
+  zBar?: number;
+}): { stop: boolean; z: number | null; expectedWins: number; detail: string } {
+  const probability = Number.isFinite(input.published) ? Math.min(0.999, Math.max(0.001, input.published)) : 0.5;
+  const settled = Math.max(0, Math.round(input.settled));
+  const wins = Math.max(0, Math.min(settled, Math.round(input.wins)));
+  const minimumRuns = Math.max(4, Math.round(input.minimumRuns ?? 8));
+  const zBar = Number.isFinite(input.zBar) ? (input.zBar as number) : 3;
+  const expectedWins = settled * probability;
+  const standardError = Math.sqrt(settled * probability * (1 - probability));
+  const z = settled > 0 && standardError > 1e-9 ? (wins - expectedWins) / standardError : null;
+  const stop = settled >= minimumRuns && z !== null && z <= -zBar;
+  return {
+    stop,
+    z,
+    expectedWins,
+    detail: stop
+      ? `The bot won ${wins} of ${settled} settled runs against ${(100 * probability).toFixed(1)}% published (${expectedWins.toFixed(1)} expected, z ${z!.toFixed(1)}). The results no longer match the measurement, so the run stops instead of spending more stake on it.`
+      : `Results track the measurement: ${wins}/${settled} settled wins against ${(100 * probability).toFixed(1)}% published${z === null ? '' : ` (z ${z.toFixed(1)})`}.`,
+  };
+}
+
+/**
+ * Which candidate inside a finished analysis the bot should trade.
+ *
+ * `edge` keeps the published signal. `hit-rate` looks for the contract with the
+ * highest probability that is still priced at or above its own fair rate: it
+ * wins more often without taking a negative-expectation bet, which is the only
+ * honest way to raise the hit rate. When no candidate qualifies the published
+ * signal is used, so the bot always has something to trade.
+ */
+export function chooseRunCandidate<T extends { probability: number; fairProbability: number }>(
+  candidates: readonly T[],
+  objective: SignalBotObjective,
+): T | null {
+  if (!candidates.length) return null;
+  if (objective !== 'hit-rate') return candidates[0];
+  const priced = candidates.filter((candidate) =>
+    Number.isFinite(candidate.probability) && Number.isFinite(candidate.fairProbability)
+    && candidate.probability >= candidate.fairProbability);
+  if (!priced.length) return candidates[0];
+  return [...priced].sort((left, right) =>
+    right.probability - left.probability
+    || (right.probability - right.fairProbability) - (left.probability - left.fairProbability))[0];
 }
 
 export type RunEntryDecision = {
@@ -370,6 +458,7 @@ export function describeStopReason(reason: SignalBotStopReason): string {
   if (reason === 'runs') return 'Finished every run from the analysis.';
   if (reason === 'stop-loss') return 'Stopped by the stop loss: too many losses in a row.';
   if (reason === 'take-profit') return 'Stopped by take profit: the run reached the target you set.';
+  if (reason === 'calibration') return 'Stopped by the calibration guard: the settled results stopped matching the published probability.';
   if (reason === 'manual') return 'Stopped by you. Contracts already bought keep running to expiry.';
   if (reason === 'error') return 'Stopped because Deriv refused an order.';
   return '';

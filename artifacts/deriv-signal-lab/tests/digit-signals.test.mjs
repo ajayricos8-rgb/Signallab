@@ -87,7 +87,7 @@ test('Over/Under ensemble restricts research barriers to 1–8 and explains inel
   assert.ok(result.candidates.every((candidate) => candidate.contract.barrier >= 1 && candidate.contract.barrier <= 8));
   assert.ok(result.candidates.every((candidate) => candidate.ensemble));
   assert.ok(result.overUnder);
-  assert.equal(result.overUnder.engines.length, 12);
+  assert.equal(result.overUnder.engines.length, 17);
   // A constant stream is already predicted by the frequency baseline, so no
   // candidate can show lift over it; the ensemble must say why it waits.
   assert.notEqual(result.reason, '');

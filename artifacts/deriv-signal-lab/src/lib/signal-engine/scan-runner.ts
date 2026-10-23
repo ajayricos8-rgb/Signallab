@@ -36,9 +36,20 @@ export type ScanOptions = {
   handshakeTimeoutMs?: number;
 };
 
+/**
+ * How many markets are analysed at once.
+ *
+ * Every market is an independent, CPU-bound fit (17 engines, layer 1, the
+ * neural model, the research bank), so the pool is bounded by real cores and by
+ * the number of markets: leaving one core for the UI keeps progress smooth, and
+ * eight is the ceiling past which extra workers only add memory and contention.
+ * A single-core device still gets one worker; the pool never falls back to
+ * zero, and every job that cannot run in a worker runs inline instead.
+ */
 export function defaultWorkerCount(): number {
   const cores = typeof navigator !== 'undefined' && Number.isFinite(navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 2;
-  return Math.max(1, Math.min(4, cores - 1));
+  if (!Number.isFinite(cores) || cores <= 1) return 1;
+  return Math.max(2, Math.min(8, Math.floor(cores) - 1));
 }
 
 function abortError() {

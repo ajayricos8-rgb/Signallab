@@ -89,6 +89,12 @@ export type SignalBotPlan = {
   research?: ResearchFusion | null;
   /** Confirmation-layer verdict for this signal, for the bot page. */
   confirmation?: { status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted'; edgePts: number; decisive: boolean } | null;
+  /**
+   * Probability the contract was published at. The calibration guard compares
+   * the run's settled record against it, so a run that stops matching the
+   * measurement ends before it spends a stake proving it.
+   */
+  probability?: number | null;
 };
 
 export type SignalBotController = {
@@ -438,7 +444,11 @@ export function useSignalBot(): SignalBotController {
         // Take profit progress is tracked on the loop's own settlement results
         // (not React state) so the decision before the next purchase is exact.
         let wins = 0;
+        let settled = 0;
         let realisedProfit = 0;
+        // The probability the bot was handed. Every settled run is a Bernoulli
+        // draw from it, which is what the calibration guard tests.
+        const published = Number.isFinite(nextPlan.probability ?? NaN) ? (nextPlan.probability as number) : null;
         while (true) {
           const decision = nextRunDecision({
             status: 'running',
@@ -448,6 +458,7 @@ export function useSignalBot(): SignalBotController {
             profit: realisedProfit,
             wins,
             config,
+            calibration: published !== null ? { published, settled } : null,
           });
           if (!decision.buy) {
             finish(generation, decision.reason ?? 'runs');
@@ -622,10 +633,11 @@ export function useSignalBot(): SignalBotController {
           const result = await waitForSettlement(contractId, settlementTimeoutMs(nextPlan.duration, nextPlan.durationUnit));
           setActiveContractId(null);
           if (generation !== generationRef.current) return;
-          if (result.status === 'lost') streak += 1;
+          if (result.status === 'lost') { streak += 1; settled += 1; }
           else if (result.status === 'won') {
             streak = 0;
             wins += 1;
+            settled += 1;
           }
           // An unknown result has no profit to bank; only what Deriv reported
           // moves the take profit total.

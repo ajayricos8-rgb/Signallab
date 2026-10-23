@@ -37,7 +37,7 @@ _Replace the heading above with the project's name, and this line with one sente
 ## Architecture decisions
 
 - The four Tools tabs share one public Deriv market-data socket (`artifacts/deriv-signal-lab/src/components/market-feed-provider.tsx`) mounted above the tabs, so history survives tab switches and Run Analysis can scan every volatility index at once.
-- Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`). Every analysis is layered: **analysis engines** (`market-state.ts`) measure structure/regime, **prediction engines** (the 12-engine digit ensemble / 15-engine Rise/Fall panel) produce probabilities, a **confirmation layer** (`confirmation.ts`) calibrates them out of sample and checks the analysis prior, a **precision layer** (`precision.ts`) shrinks every published edge by how much of it survived out of sample and charges the winner's curse of having been ranked, the **entry layer** (`entry.ts`) measures the entry level/window on an older slice and validates it on a newer one, and a **quant + AI synthesis layer** (`ai-synthesis.ts`) folds the independent quant measurement suite (distribution, parity runs, recurrence/FFT, Hurst/RSI/MACD regime) into one verdict with a cross-window stability check. Results are ranked by a calibrated confidence score (`confidence.ts`).
+- Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`). Every analysis is layered: **analysis engines** (`market-state.ts`) measure structure/regime, **prediction engines** (the 17-engine digit ensemble / 15-engine Rise/Fall panel) produce probabilities, a **confirmation layer** (`confirmation.ts`) calibrates them out of sample and checks the analysis prior, a **precision layer** (`precision.ts`) shrinks every published edge by how much of it survived out of sample and charges the winner's curse of having been ranked, the **entry layer** (`entry.ts`) measures the entry level/window on an older slice and validates it on a newer one, and a **quant + AI synthesis layer** (`ai-synthesis.ts`) folds the independent quant measurement suite (distribution, parity runs, recurrence/FFT, Hurst/RSI/MACD regime) into one verdict with a cross-window stability check. Results are ranked by the master verdict, then a calibrated confidence score (`confidence.ts`), under a pool of up to eight workers.
 - Layer 7 is a network trained in the app on the market's own feed, not a hosted or pretrained model: a digit net (`signal-net-digit-v1`, 113→24→12→10) for Over/Under, Even/Odd and Matches and a quote net (`signal-net-quote-v1`, 20→24→12→2) for Rise/Fall. Rows are causal and chronological, split 60/20/20 with a purge gap, and the holdout is scored once against the same fair odds the contract pays on. Its forecast is blended into the published probability (≤25% of the edge) only after a positive Brier skill with a paired z ≥ 2 on ≥60 unseen rows; otherwise the weight is exactly 0 and the number is bit-identical. It is also its own row in the master decision's source pool and a small (<5%) term in the confidence score when validated.
 - Workers are an optimisation, never a dependency: each worker answers a handshake after its script loads, jobs whose worker dies (script 404, wrong MIME, CSP/proxy blocks, thread crash, silence) are retried once in a replacement worker and then analysed inline on the main thread, so Run Analysis ends in ranked signals on every hosting environment instead of a crash banner.
 - The strict research gates in `src/lib/over-under/ensemble.ts` are kept and surface as a "Verified edge" flag instead of blocking signals.
@@ -86,6 +86,65 @@ _Replace the heading above with the project's name, and this line with one sente
   0.305. `tests/accuracy-level-reversion.test.mjs` holds the line: the fit must
   find the planted pull, match the realised frequency, and never clear its bar
   on a random walk.
+
+## Accuracy pass — 17 engines, more workers, and a bot that aims (2026-10-23)
+
+- **Five more digit engines** (`src/lib/over-under/extra-models.ts`), each fitted
+  on the training partition only and each gated by its own tuning skill exactly
+  like the original twelve: `ppm` (variable-order Markov with PPM escape and a
+  Dirichlet-shrunk backoff), `dirichlet` (Dirichlet–multinomial posterior mean
+  with an exponential half-life learned on training data), `hazard` (a measured
+  per-digit gap hazard — how often a digit actually prints at the exit tick given
+  its current age, instead of assuming an overdue digit must arrive), `spectral`
+  (per-digit autocorrelation at the contract's own horizon, tested against 1/√n)
+  and `kalman` (a local-level state-space filter per digit with a fitted gain,
+  damped forward to the horizon). Total: **17 engines**, 8 families.
+- **Family weight is now its best member, not its average.** Adding a weak engine
+  to a measured family must not dilute the family's evidence; the within-family
+  split still gives the weak member ~zero weight.
+- **The pool itself is chosen out of sample.** Two pools are fitted with the same
+  weights — linear (Σ wᵢpᵢ) and geometric (∝ Π pᵢ^wᵢ) — and the one with the
+  lower tuning Brier ships, by a 0.75% margin. The choice never sees a holdout
+  row, the losers are reported, and the linear pool stays the default.
+- **More workers.** `defaultWorkerCount()` now uses every core but one, up to
+  eight (it was capped at four), with a floor of two on any multi-core device. A
+  single-core device still gets one worker; workers remain an optimisation and
+  every job still falls back inline.
+- **The bot has an aim** (`SignalBotConfig.objective`). `edge` (default) trades
+  the published signal. `hit-rate` trades the most likely contract inside the
+  same analysis whose published probability is still at or above its own fair
+  rate, so it wins more often without taking a negative-expectation bet. The dock
+  shows which contract it picked and why.
+- **The prior's commit band is earned too.** `digitPriorLimitsFor()` turns the
+  pool's own replay skill into how far it may commit: the uniform floor falls
+  from 40% toward 8% and the per-digit band widens from ±12 to at most ±30
+  points as measured skill rises. A stream with no measured replay skill keeps
+  the exact conservative recipe (bit-identical), which is what keeps a fair
+  stream at fair. Measured effect on the shipped recipe: a five-tick bias moves
+  from 0.226 published / 0.263 realised (+0.037 over-confident) to 0.242 / 0.263
+  (−0.022), and the reversal stream from 0.850 / 0.990 (−0.140) to 0.854 / 0.910
+  (−0.056), with the fair stream unchanged at 0.300 / 0.250.
+- **Ranking: a certified edge first, then the better evidence.** Among
+  candidates the master refused to certify, priority differences are a fraction
+  of an edge z; ordering those by the evidence score picks the digit the model
+  actually favours instead of the lowest index. Measured on the 32-seed
+  selection audit: 8.75 → 9.06 of the available true edge captured (the certified
+  structured streams stay at 1.00).
+- **Calibration guard** (`calibrationGuard`, wired into `nextRunDecision`). Every
+  settled run is a Bernoulli draw from the published probability. After eight
+  settled runs, three standard errors below the expected win count stops the run
+  with reason `calibration` before the stake is spent proving the edge absent. It
+  cannot fire before eight runs, never fires on a winning record, and is inert
+  for a restored plan with no published probability.
+- **Measured** (`BOT=1 node --experimental-strip-types ./scripts/digit-accuracy-benchmark.mjs`,
+  settled on the real exit tick at fair odds, 5 markets × 2 seeds × 5 origins):
+  aim `edge` wins 23/50 (46.0% against 46.4% fair); aim `hit-rate` wins 36/50
+  (**72.0%** against 79.4% fair). More wins, not more profit: a 90% contract pays
+  1.11× and one loss erases nine wins, which is why the aim is a choice and the
+  rule refuses any contract priced below fair. Fifty runs is a demonstration,
+  not a profitability proof.
+- All 17 engines cost ~1.6 s per market on a 2,000-tick window (unchanged), and
+  the scan now runs up to eight of those in parallel.
 
 ## Accuracy pass — digit options, every angle measured (2026-10-23)
 

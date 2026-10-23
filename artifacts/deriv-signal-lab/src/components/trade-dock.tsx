@@ -21,6 +21,9 @@ import { barrierFor, formatAmount, type DerivTradeRequest } from '@/lib/deriv-tr
 import {
   SIGNAL_BOT_ENTRY_MODES,
   SIGNAL_BOT_ENTRY_MODE_LABELS,
+  SIGNAL_BOT_OBJECTIVES,
+  SIGNAL_BOT_OBJECTIVE_LABELS,
+  chooseRunCandidate,
   SIGNAL_BOT_LIMITS,
   defaultSignalBotConfig,
   maxLadderStake,
@@ -67,6 +70,31 @@ export type SignalAnalysisBrief = {
     edgePts: number;
     decisive: boolean;
   } | null;
+  /** Probability the published signal was priced at, for the calibration guard. */
+  probability?: number | null;
+  /** Every contract the analysis measured, so the bot can aim at hit rate. */
+  candidates?: readonly RunCandidateBrief[];
+};
+
+/**
+ * One candidate inside the finished analysis, as the dock needs it to choose a
+ * contract: the published probability, the fair rate it is measured against,
+ * the entry the engine planned for it and the evidence behind it.
+ */
+export type RunCandidateBrief = {
+  label: string;
+  contractType: TradeContractType;
+  barrier: number | null;
+  probability: number;
+  fairProbability: number;
+  entry: EntryPlan;
+  confidence: number;
+  strength: SignalStrength;
+  recommendedRuns: number;
+  master?: MasterDecision | null;
+  researchDecision?: ResearchDecision | null;
+  research?: ResearchFusion | null;
+  confirmation?: SignalAnalysisBrief['confirmation'];
 };
 
 type TradeDockProps = {
@@ -305,29 +333,43 @@ export function TradeDock({
   const botPlan = useMemo<SignalBotPlan | null>(() => {
     if (!recommendation || !canApplySignal(recommendation, family, expiryOptions)) return null;
     if (!analysisEntryReady) return null;
-    const confidence = analysis?.confidence ?? 0;
-    const strength = analysis?.strength ?? 'WEAK';
+    // The objective only chooses WHICH contract inside the analysis the bot
+    // trades; the market, the tick duration and the entry always come from the
+    // engine run. `hit-rate` takes the most likely contract that is still
+    // priced at or above its own fair rate, so the run wins more often without
+    // ever taking a negative-expectation bet.
+    const alternative = botConfig.objective === 'hit-rate' && analysis?.candidates?.length
+      ? chooseRunCandidate(analysis.candidates, 'hit-rate')
+      : null;
+    const differs = Boolean(alternative)
+      && (alternative!.contractType !== recommendation.contractType
+        || alternative!.barrier !== (recommendation.barrier ?? null));
+    const chosen = alternative && differs && isEntryPlan(alternative.entry) ? alternative : null;
+    const confidence = chosen?.confidence ?? analysis?.confidence ?? 0;
+    const strength = chosen?.strength ?? analysis?.strength ?? 'WEAK';
+    const label = chosen?.label ?? recommendation.label ?? recommendation.contractType;
     return {
       family,
       symbol: recommendation.symbol,
       marketName: analysis?.marketName ?? marketName ?? recommendation.symbol,
-      contractType: recommendation.contractType,
-      barrierDigit: recommendation.barrier ?? null,
+      contractType: chosen?.contractType ?? recommendation.contractType,
+      barrierDigit: chosen ? chosen.barrier : recommendation.barrier ?? null,
       duration: recommendation.duration,
       durationUnit: recommendation.durationUnit,
-      label: recommendation.label ?? recommendation.contractType,
-      contractLabel: `${recommendation.label ?? recommendation.contractType} · ${formatTradeDuration(recommendation.duration, recommendation.durationUnit)}`,
+      label,
+      contractLabel: `${label} · ${formatTradeDuration(recommendation.duration, recommendation.durationUnit)}`,
       confidence,
       strength,
-      recommendedRuns: recommendedRuns({ confidence, strength }),
-      entry: loadedEntry,
-      researchDecision: analysis?.researchDecision ?? null,
-      research: analysis?.research ?? null,
+      recommendedRuns: chosen?.recommendedRuns ?? recommendedRuns({ confidence, strength }),
+      entry: chosen?.entry ?? loadedEntry,
+      researchDecision: chosen?.researchDecision ?? analysis?.researchDecision ?? null,
+      research: chosen?.research ?? analysis?.research ?? null,
       ranAt: analysis?.ranAt ?? 0,
-      confirmation: analysis?.confirmation ?? null,
-      master: analysis?.master ?? null,
+      confirmation: chosen?.confirmation ?? analysis?.confirmation ?? null,
+      master: chosen?.master ?? analysis?.master ?? null,
+      probability: chosen?.probability ?? analysis?.probability ?? null,
     };
-  }, [analysis, analysisEntryReady, expiryOptions, family, loadedEntry, marketName, recommendation]);
+  }, [analysis, analysisEntryReady, botConfig.objective, expiryOptions, family, loadedEntry, marketName, recommendation]);
 
   // Advice only: the research library never blocks Load and Run any more. The
   // bot trades the signal the analysis produced; warnings travel with the run.
@@ -632,7 +674,7 @@ export function TradeDock({
                   title={
                     bot.running
                       ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
-                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.`
+                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.${botConfig.objective === 'hit-rate' && recommendation && botPlan.contractType !== recommendation.contractType ? ` Aim: highest win rate — the analysis published ${recommendation.label ?? recommendation.contractType}, and this contract carries the better hit rate at a non-negative measured edge.` : ''}`
                   }
                   className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 text-[11px] font-extrabold text-[#052e1e] transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-55"
                   data-testid={`button-load-and-run-${family}`}
@@ -928,6 +970,27 @@ export function TradeDock({
                     testId="bot-max-runs"
                     onChange={(value) => setBotConfig((current) => ({ ...current, maxRuns: value }))}
                   />
+                  <label className={fieldClass}>
+                    Aim
+                    <select
+                      value={botConfig.objective}
+                      onChange={(event) =>
+                        setBotConfig((current) => ({
+                          ...current,
+                          objective: event.target.value as SignalBotConfig['objective'],
+                        }))
+                      }
+                      className={controlClass}
+                      title="Highest certified edge trades the signal the analysis publishes. Highest win rate trades the most likely contract inside the same analysis that is still priced at or above its own fair rate, so it wins more often without ever taking a negative-expectation bet."
+                      data-testid="bot-objective"
+                    >
+                      {SIGNAL_BOT_OBJECTIVES.map((objective) => (
+                        <option key={objective} value={objective}>
+                          {SIGNAL_BOT_OBJECTIVE_LABELS[objective]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label className={fieldClass}>
                     Entry misses · if it never comes
                     <select

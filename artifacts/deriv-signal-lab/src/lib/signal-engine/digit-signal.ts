@@ -1,8 +1,9 @@
 // Always-on digit signal layer for Over/Under, Even/Odd and Matches.
 //
-// Every analysis fits the full 12-engine digit ensemble (Markov, n-gram, HMM,
-// frequency, entropy, streaks, trend, patterns, ARIMA, GARCH, LSTM and
-// gradient boosting) on the market's own ticks, then:
+// Every analysis fits the full 17-engine digit ensemble (Markov, n-gram, HMM,
+// frequency, entropy, streaks, trend, patterns, ARIMA, GARCH, LSTM, gradient
+// boosting, PPM, Dirichlet predictive, gap hazard, horizon autocorrelation and
+// a local-level filter) on the market's own ticks, then:
 //   1. removes each engine's structural shape bias (measured on the tuning
 //      window against the rolling-frequency baseline),
 //   2. lets every engine vote for or against each contract versus its fair
@@ -156,7 +157,7 @@ export type DigitMarketAnalysis = {
    * into every contract's probability only when it beat chance out of sample.
    */
   neural: NeuralDigitForecast | null;
-  /** Number of analysis engines that ran (separate from the 12 prediction engines). */
+  /** Number of analysis engines that ran (separate from the 17 prediction engines). */
   analysisEngineCount: number;
   /** Full audit stored once for the winning contract, not duplicated across candidates. */
   engineLab: EngineLabReport;
@@ -306,7 +307,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   const observations = ticks.map((tick) => ({ symbol: input.symbol, epoch: tick.epoch, digit: tick.digit }));
   const fit = fitDigitEnsemble(observations, input.horizon, (fraction, stage) => onProgress?.(fraction * 0.93, stage));
   onProgress?.(0.94, 'Measuring the market with the analysis engines');
-  // Layer 1 runs on the same validated tick stream the 12 prediction engines
+  // Layer 1 runs on the same validated tick stream the 17 prediction engines
   // saw. It measures structure; it never votes on a contract by itself.
   // The analysis is told the contract length: every conditioned angle it
   // measures (transitions, patterns, repeats) is a question about the digit at
@@ -329,7 +330,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     const cached = priorHistory.get(origin);
     if (cached !== undefined) return cached;
     const built = origin >= 300 && origin < fit.sequence.digits.length
-      ? digitPriorWithWeights(fit.sequence.digits.slice(0, origin + 1), input.horizon, priorWeights).prior
+      ? digitPriorWithWeights(fit.sequence.digits.slice(0, origin + 1), input.horizon, priorWeights, state.priorLimits).prior
       : null;
     priorHistory.set(origin, built);
     return built;
@@ -834,12 +835,28 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // Layer 6 ranks first: a decisive, currently-tradeable edge outranks a
   // higher confidence score whose edge the master could not certify, and a
   // signal that survives longer breaks ties before the old evidence score.
+  // A certified edge always outranks an uncertified one. Among candidates the
+  // master refused to certify, the verdict itself is the same for all of them,
+  // so their priority difference is a fraction of an edge z and the honest
+  // tie-break is the evidence score: the candidate with the better measured
+  // evidence is the one worth showing (and, for the bot, trading) rather than
+  // whichever happened to sort first by digit.
+  const stageRank = (signal: DigitContractSignal) =>
+    signal.master.verdict === 'TRADE_NOW' || signal.master.verdict === 'TRADE_ON_ENTRY' ? 2
+      : signal.master.verdict === 'SPECULATIVE' ? 1 : 0;
   const rank = (list: DigitContractSignal[]) =>
     [...list].sort((a, b) =>
-      b.master.priority - a.master.priority
+      stageRank(b) - stageRank(a)
+      || (stageRank(a) === 0 ? b.confidence - a.confidence : b.master.priority - a.master.priority)
       || b.confidence - a.confidence
       || b.master.validity.ticks - a.master.validity.ticks
       || b.edgeRatio - a.edgeRatio
+      // Nothing measurable separates these two: publish the contract the model
+      // thinks is MORE likely rather than whichever happens to sort first by
+      // digit. On a pool that shrank to exactly fair this is the only real
+      // information left, and it is the difference between picking the hot
+      // digit and picking an arbitrary one.
+      || b.probability - a.probability
       || contractOrder(a.contract) - contractOrder(b.contract));
   const provisional = rank(drafts.map((draft, index) => finalize(draft, precisionFit.factors[index], 0)));
   const leader = provisional[0];

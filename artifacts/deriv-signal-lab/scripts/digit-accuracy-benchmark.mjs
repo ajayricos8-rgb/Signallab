@@ -27,7 +27,8 @@ import {
   buildDigitPrior, digitPriorComponents, digitPriorWithWeights,
 } from '../src/lib/signal-engine/market-state.ts';
 import { contractWins } from '../src/lib/over-under/ensemble.ts';
-import { DIGIT_SIGNAL_CONTRACTS, fairProbability } from '../src/lib/signal-engine/digit-signal.ts';
+import { analyzeDigitMarket, DIGIT_SIGNAL_CONTRACTS, fairProbability } from '../src/lib/signal-engine/digit-signal.ts';
+import { chooseRunCandidate } from '../src/lib/signal-bot/plan.ts';
 
 const HORIZON = Math.max(1, Math.min(10, Number(process.env.H ?? 5)));
 const SEEDS = Math.max(1, Math.min(6, Number(process.env.SEEDS ?? 2)));
@@ -193,9 +194,11 @@ const rows = [];
 for (const [name, generate] of Object.entries(MARKETS)) {
   for (let seed = 1; seed <= SEEDS; seed += 1) {
     const digits = generate(seed, LENGTH);
-    const { weights } = buildDigitPrior(digits.slice(0, TRAIN_END), HORIZON);
+    // Exactly what the app ships: weights and the commit band are both decided
+    // on data before TRAIN_END, then replayed unchanged at every later origin.
+    const { weights, limits } = buildDigitPrior(digits.slice(0, TRAIN_END), HORIZON);
     for (let origin = TRAIN_END; origin + HORIZON < LENGTH; origin += STRIDE) {
-      const { prior } = digitPriorWithWeights(digits.slice(0, origin + 1), HORIZON, weights);
+      const { prior } = digitPriorWithWeights(digits.slice(0, origin + 1), HORIZON, weights, limits);
       const target = digits[origin + HORIZON];
       let best = null;
       for (const entry of CONTRACTS) {
@@ -252,3 +255,66 @@ console.log(`fair stream, contracts published       ${fairUsable.length}/${fairR
 console.log(`fair stream, published minus fair      ${fairPublished >= 0 ? '+' : ''}${fairPublished.toFixed(4)}  ${Math.abs(fairPublished) <= 0.02 ? 'PASS' : 'FAIL'}`);
 console.log(`fair stream, realised minus fair       ${fairBias === null ? 'no contract priced above fair' : `${fairBias >= 0 ? '+' : ''}${fairBias.toFixed(4)}`} (z ${fairZ === null ? 'n/a' : fairZ.toFixed(1)})  ${fairZ === null || Math.abs(fairZ) <= 3 ? 'PASS' : 'FAIL'}`);
 console.log('A fair stream must publish fair odds and realise them; planted structure must publish the edge it has, and no more.');
+
+// ---- 4. what the Load and Run bot would actually trade ----------------------
+//
+// The bot has two aims. `edge` trades the signal the analysis publishes;
+// `hit-rate` trades the most likely contract in the same analysis that is still
+// priced at or above its own fair rate. Both are settled on the real exit tick
+// of the real stream, and both are paid at fair odds, so the comparison is
+// wins first and stake-adjusted return second.
+if (process.env.BOT) {
+  const origins = [3_600, 3_900, 4_200, 4_500, 4_800];
+  const markets = { fair, bias, momentum, lowBias, parity };
+  const rows = [];
+  for (const [name, generate] of Object.entries(markets)) {
+    for (let seed = 1; seed <= (process.env.BOT_SEEDS ? Number(process.env.BOT_SEEDS) : 2); seed += 1) {
+      const digits = generate(seed, 6_000);
+      for (const origin of origins) {
+        if (origin + HORIZON >= digits.length) continue;
+        const ticks = digits.slice(0, origin).map((digit, index) => ({ epoch: 1_700_000_000 + index, digit }));
+        let analysis;
+        try {
+          analysis = analyzeDigitMarket({ family: 'over-under', symbol: 'R_100', name, horizon: HORIZON, ticks, fresh: true });
+        } catch { continue; }
+        const settle = digits[origin - 1 + HORIZON];
+        const edgePick = analysis.best;
+        const hitPick = chooseRunCandidate(analysis.contracts, 'hit-rate') ?? edgePick;
+        for (const [objective, pick] of [['edge', edgePick], ['hit-rate', hitPick]]) {
+          const fairRate = pick.fairProbability;
+          const won = contractWins(pick.contract, settle) ? 1 : 0;
+          rows.push({ name, objective, won, fairRate, payout: 1 / fairRate, probability: pick.probability });
+        }
+      }
+    }
+  }
+  console.log('\n4. Load and Run bot, settled on the real exit tick and paid at fair odds');
+  console.log('market       aim        n    wins   winRate   fair   published   netROI');
+  for (const name of Object.keys(markets)) {
+    for (const objective of ['edge', 'hit-rate']) {
+      const list = rows.filter((row) => row.name === name && row.objective === objective);
+      if (!list.length) continue;
+      const n = list.length;
+      const wins = list.reduce((total, row) => total + row.won, 0);
+      const fairRate = list.reduce((total, row) => total + row.fairRate, 0) / n;
+      const published = list.reduce((total, row) => total + row.probability, 0) / n;
+      // One unit staked per run, paid at the fair odds of the contract taken.
+      const net = list.reduce((total, row) => total + (row.won ? row.payout - 1 : -1), 0) / n;
+      console.log(
+        `${name.padEnd(11)} ${objective.padEnd(9)} ${String(n).padStart(3)}  ${String(wins).padStart(5)}   ${(wins / n).toFixed(3).padStart(6)}  `
+        + `${fairRate.toFixed(3)}   ${published.toFixed(3).padStart(8)}   ${`${net >= 0 ? '+' : ''}${net.toFixed(3)}`.padStart(6)}`,
+      );
+    }
+  }
+  const all = (objective) => rows.filter((row) => row.objective === objective);
+  const summary = (objective) => {
+    const list = all(objective);
+    const wins = list.reduce((total, row) => total + row.won, 0);
+    const fairRate = list.reduce((total, row) => total + row.fairRate, 0) / list.length;
+    const net = list.reduce((total, row) => total + (row.won ? row.payout - 1 : -1), 0) / list.length;
+    return `${objective}: ${wins}/${list.length} wins (${(100 * wins / list.length).toFixed(1)}% against ${(100 * fairRate).toFixed(1)}% fair), net ${(100 * net).toFixed(2)}% of stake per run`;
+  };
+  console.log(`overall      ${summary('edge')}`);
+  console.log(`overall      ${summary('hit-rate')}`);
+  console.log('Win rate and stake-adjusted edge are different objectives: raising the hit rate raises the number of winning runs, it does not promise a bigger profit.');
+}

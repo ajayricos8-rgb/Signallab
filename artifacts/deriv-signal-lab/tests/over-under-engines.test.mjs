@@ -23,7 +23,16 @@ test('a deterministic cycle is learnable and can qualify a barrier inside 1–8'
   assert.ok(report.selected.contract.barrier >= 1 && report.selected.contract.barrier <= 8);
   assert.equal(report.selected.eligible, true);
   assert.ok(report.validation.passed);
-  assert.equal(report.engines.length, 12);
+  // 12 original engines plus the five added in the accuracy pass (PPM,
+  // Dirichlet predictive, gap hazard, horizon autocorrelation, local-level
+  // filter). Every one of them is fitted on training data only and gated by
+  // its own tuning skill.
+  assert.equal(report.engines.length, 17);
+  for (const id of ['ppm', 'dirichlet', 'hazard', 'spectral', 'kalman']) {
+    assert.ok(report.engines.some((engine) => engine.id === id), `missing engine ${id}`);
+  }
+  assert.ok(report.diagnostics.blend, 'the shipped pool is reported');
+  assert.ok(['linear', 'logarithmic'].includes(report.diagnostics.blend.mode));
   assert.deepEqual(new Set(report.engines.map((engine) => engine.family)), new Set(['markov', 'frequency', 'information', 'streaks', 'trend', 'patterns', 'time-series', 'ml']));
   for (const engine of report.engines) {
     if (engine.probabilities) {

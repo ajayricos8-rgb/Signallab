@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   SIGNAL_BOT_ENTRY_MODES,
   SIGNAL_BOT_LIMITS,
+  SIGNAL_BOT_OBJECTIVES,
+  calibrationGuard,
+  chooseRunCandidate,
   SIGNAL_BOT_RUNS_BY_STRENGTH,
   defaultSignalBotConfig,
   describeEntryOutcome,
@@ -20,6 +23,68 @@ import {
   takeProfitState,
 } from '../src/lib/signal-bot/plan.ts';
 import { immediateEntryPlan, isEntryPlan } from '../src/lib/signal-engine/entry.ts';
+
+// ---- aiming at hit rate, and stopping when the record breaks --------------
+
+test('hit rate mode trades the most likely contract that is still not negative', () => {
+  const candidates = [
+    { id: 'over-3', probability: 0.62, fairProbability: 0.6 },
+    { id: 'under-1', probability: 0.905, fairProbability: 0.9 },
+    { id: 'over-8', probability: 0.11, fairProbability: 0.1 },
+    // Below fair: it wins 70% of the time but the payout does not cover it.
+    { id: 'under-3', probability: 0.7, fairProbability: 0.72 },
+  ];
+  assert.equal(chooseRunCandidate(candidates, 'edge')?.id, 'over-3');
+  const hitRate = chooseRunCandidate(candidates, 'hit-rate');
+  assert.equal(hitRate?.id, 'under-1', 'the highest probability at a non-negative edge wins');
+  assert.ok(hitRate.probability >= hitRate.fairProbability);
+  // A pool where every contract is priced below fair still returns the
+  // published signal rather than nothing, so the bot always has a plan.
+  const negative = candidates.filter((candidate) => candidate.probability < candidate.fairProbability);
+  assert.equal(chooseRunCandidate(negative, 'hit-rate')?.id, 'under-3');
+  assert.equal(chooseRunCandidate([], 'hit-rate'), null);
+});
+
+test('the objective setting defaults to edge and only accepts the two aims', () => {
+  assert.equal(defaultSignalBotConfig().objective, 'edge');
+  assert.deepEqual(SIGNAL_BOT_OBJECTIVES, ['edge', 'hit-rate']);
+  assert.equal(sanitizeSignalBotConfig({ objective: 'hit-rate' }).objective, 'hit-rate');
+  for (const retired of ['max-profit', 7, null]) {
+    assert.equal(sanitizeSignalBotConfig({ objective: retired }).objective, 'edge');
+  }
+});
+
+test('the calibration guard stops a run whose results stopped matching the measurement', () => {
+  // 8 settled runs at 90% published: 3 wins is far below 7.2 expected.
+  const bad = calibrationGuard({ published: 0.9, settled: 8, wins: 3 });
+  assert.equal(bad.stop, true);
+  assert.ok((bad.z ?? 0) <= -3);
+  // The same record at 30% published is normal, not a broken model.
+  assert.equal(calibrationGuard({ published: 0.3, settled: 8, wins: 3 }).stop, false);
+  // Fewer than eight settled runs never stops the bot: a guard that fires on
+  // the first bad streak would end every honest run.
+  assert.equal(calibrationGuard({ published: 0.9, settled: 4, wins: 0 }).stop, false);
+  // A bot that is winning is never stopped by this guard.
+  assert.equal(calibrationGuard({ published: 0.5, settled: 20, wins: 18 }).stop, false);
+  // A published probability of 1 or 0 cannot produce a division by zero.
+  assert.equal(calibrationGuard({ published: 1, settled: 3, wins: 3 }).stop, false);
+});
+
+test('the bot stops on the guard before it spends another stake', () => {
+  const config = { ...defaultSignalBotConfig(), stopLossStreak: 0 };
+  const calm = nextRunDecision({
+    status: 'running', runsStarted: 9, targetRuns: 40, lossStreak: 0,
+    config, wins: 1, calibration: { published: 0.9, settled: 9 },
+  });
+  assert.deepEqual(calm, { buy: false, reason: 'calibration' });
+  assert.match(describeStopReason('calibration'), /calibration guard/i);
+  // Without a published probability (a restored plan) the guard stays inert.
+  const noProbability = nextRunDecision({
+    status: 'running', runsStarted: 9, targetRuns: 40, lossStreak: 0,
+    config, wins: 1, calibration: null,
+  });
+  assert.deepEqual(noProbability, { buy: true, reason: null });
+});
 
 // ---- runs the analysis is worth -------------------------------------------
 

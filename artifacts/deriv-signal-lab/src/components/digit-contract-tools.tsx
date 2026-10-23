@@ -9,6 +9,7 @@ import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner
 import type { OverUnderReport } from '@/lib/over-under/ensemble';
 import type { TradeRecommendation } from '@/lib/trade-draft';
 import { explainSignal } from '@/lib/signal-engine/confidence';
+import { recommendedRuns } from '@/lib/signal-bot/plan.ts';
 import { effectiveWindowTicks, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { useMarketFeed, type MarketFeedEntry, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
@@ -28,7 +29,7 @@ import {
 const ALL_MARKETS = 'all';
 const DIGITS = Array.from({ length: 10 }, (_, digit) => digit);
 const DEFAULT_DURATIONS = Array.from({ length: 10 }, (_, index) => index + 1);
-const ENGINE_COUNT = 12;
+const ENGINE_COUNT = 17;
 
 type DigitRunMeta = { family: DigitFamily; duration: number; scope: string };
 
@@ -294,6 +295,29 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
         master: signal.master,
         researchDecision: signal.researchDecision,
         research: signal.research,
+        probability: signal.probability,
+        // Every contract the analysis measured, for the bot's hit-rate aim.
+        candidates: selectedResult.contracts.map((candidate) => ({
+          label: candidate.label,
+          contractType: candidate.contract.contractType,
+          barrier: (candidate.contract as { barrier?: number; targetDigit?: number }).barrier
+            ?? (candidate.contract as { targetDigit?: number }).targetDigit
+            ?? null,
+          probability: candidate.probability,
+          fairProbability: candidate.fairProbability,
+          entry: candidate.entry,
+          confidence: candidate.confidence,
+          strength: candidate.strength,
+          recommendedRuns: recommendedRuns({ confidence: candidate.confidence, strength: candidate.strength }),
+          master: candidate.master,
+          researchDecision: candidate.researchDecision,
+          research: candidate.research,
+          confirmation: {
+            status: candidate.deep.confirmation.status,
+            edgePts: candidate.deep.confirmation.edgePts,
+            decisive: candidate.deep.confirmation.decisive,
+          },
+        })),
         confirmation: {
           status: signal.deep.confirmation.status,
           edgePts: signal.deep.confirmation.edgePts,

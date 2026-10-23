@@ -134,18 +134,18 @@ test('effective replay sample counts only non-overlapping outcome intervals', ()
   assert.deepEqual(selectNonOverlappingOutcomes(rows).map(({ origin }) => origin), [1, 4, 8]);
 });
 
-test('every digit family always returns a signal with 12 engine votes on random digits', () => {
+test('every digit family always returns a signal with 17 engine votes on random digits', () => {
   for (const family of ['over-under', 'even-odd', 'matches']) {
     const result = analyzeDigitMarket({ family, symbol: 'R_100', name: 'Volatility 100 Index', horizon: 1, ticks: digitTicks(randomDigits(family.length)), fresh: true, marketsInScan: 13 });
     assert.equal(result.kind, 'digit');
-    assert.equal(result.engineCount, 12);
+    assert.equal(result.engineCount, 17);
     assert.equal(result.contracts.length, DIGIT_SIGNAL_CONTRACTS[family].length);
     const signal = result.best;
     assert.equal(signal.contract.family, family);
     assert.ok(signal.label.length > 0);
     assert.ok(Number.isInteger(signal.confidence) && signal.confidence >= 1 && signal.confidence <= 99);
-    assert.equal(signal.votes.length, 12);
-    assert.equal(signal.tally.agreeing + signal.tally.against + signal.tally.neutral + signal.tally.abstained, 12);
+    assert.equal(signal.votes.length, 17);
+    assert.equal(signal.tally.agreeing + signal.tally.against + signal.tally.neutral + signal.tally.abstained, 17);
     const familyWeights = new Map();
     for (const engine of signal.votes) familyWeights.set(engine.family, (familyWeights.get(engine.family) ?? 0) + engine.weight);
     for (const [engineFamily, weight] of familyWeights) assert.ok(weight <= 0.400000001, `${engineFamily} family received ${weight}`);
@@ -154,13 +154,23 @@ test('every digit family always returns a signal with 12 engine votes on random 
     assert.equal(signal.fairProbability, fairProbability(signal.contract));
     // Pure noise across a 13-market scan must not be labelled STRONG.
     assert.notEqual(signal.strength, 'STRONG', `${family} ${signal.label} ${signal.confidence}`);
-    // Contracts are ranked by the master decision (verdict evidence, then
-    // conviction), so a decisive edge outranks a higher confidence whose edge
-    // the master could not certify. Equal priorities must stay confidence
-    // ordered, which is the tie-break.
+    // Contracts are ranked by the master's verdict first: a certified edge
+    // outranks a speculative one, which outranks an uncertified one. Inside the
+    // certified stages the priority decides; among uncertified candidates the
+    // priority difference is a fraction of an edge z, so the evidence score
+    // decides instead of the digit index.
+    const stageRank = (value) =>
+      value.master.verdict === 'TRADE_NOW' || value.master.verdict === 'TRADE_ON_ENTRY' ? 2
+        : value.master.verdict === 'SPECULATIVE' ? 1 : 0;
     for (let index = 1; index < result.contracts.length; index += 1) {
       const previous = result.contracts[index - 1];
       const current = result.contracts[index];
+      assert.ok(stageRank(previous) >= stageRank(current), `${family} verdict order`);
+      if (stageRank(previous) !== stageRank(current)) continue;
+      if (stageRank(previous) === 0) {
+        assert.ok(previous.confidence >= current.confidence, `${family} no-edge evidence order`);
+        continue;
+      }
       assert.ok(previous.master.priority >= current.master.priority, `${family} priority order`);
       if (previous.master.priority === current.master.priority) assert.ok(previous.confidence >= current.confidence);
     }
@@ -188,7 +198,7 @@ test('a deterministic digit cycle passes the strict gates and is flagged as a ve
   assert.ok(result.best.verified);
   assert.ok(result.best.confidence >= 95);
   assert.ok(result.report.selected);
-  assert.equal(result.report.engines.length, 12);
+  assert.equal(result.report.engines.length, 17);
 });
 
 test('digit analysis honours the reported contract subset and validates its inputs', () => {
@@ -359,6 +369,26 @@ test('every digit angle is measured, and only the ones that beat uniform carry w
   const repeatAngle = state.priorComponents.find((component) => component.id === 'repeat');
   assert.equal(repeatAngle.probabilities, null);
   assert.equal(repeatAngle.weight, 0);
+});
+
+test('the commit band is earned: a fair stream keeps the conservative one', () => {
+  const noise = analyzeDigitState(randomDigits(44, 2_600), { horizon: 5 });
+  // No measured replay skill means the old, conservative recipe, exactly.
+  assert.equal(noise.priorReplay.skill, null);
+  assert.equal(noise.priorLimits.floor, 0.4);
+  assert.equal(noise.priorLimits.clip, 0.12);
+
+  const random = sfc32(45);
+  const biased = Array.from({ length: 3_000 }, () => (random() < 0.22 ? 8 : Math.floor(random() * 10)));
+  const state = analyzeDigitState(biased, { horizon: 5 });
+  assert.ok((state.priorReplay.skill ?? 0) > 0, 'the pool measures its own replay skill');
+  assert.ok(state.priorLimits.floor < 0.4, 'measured skill earns a lower uniform floor');
+  assert.ok(state.priorLimits.clip > 0.12, 'measured skill earns a wider per-digit band');
+  // The band is bounded: no prior may ever move a digit more than 30 points or
+  // drop the uniform floor below 8%.
+  assert.ok(state.priorLimits.floor >= 0.08);
+  assert.ok(state.priorLimits.clip <= 0.3);
+  assert.ok(state.prior, 'the prior is still built and audited with that band');
 });
 
 test('the validated prior survives its own out-of-sample replay on a planted bias', () => {

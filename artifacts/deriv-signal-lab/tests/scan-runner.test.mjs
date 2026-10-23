@@ -94,7 +94,7 @@ test('worker pool analyses every market, reports monotonic progress and isolates
   for (let index = 1; index < progress.length; index += 1) assert.ok(progress[index] >= progress[index - 1] - 1e-9, 'progress never moves backwards');
   for (const result of outcome.results) {
     assert.ok(['EVEN', 'ODD'].includes(result.best.label));
-    assert.equal(result.best.votes.length, 12);
+    assert.equal(result.best.votes.length, 17);
   }
 });
 

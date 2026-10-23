@@ -3,11 +3,12 @@ import { brier, clamp, countsOf, distributionStats, improvementSummary, mean, mi
 import { ENGINE_FAMILIES, prefix, streakDiagnostics, trendMetrics, type EngineFamily, type FittedEngine, type Forecast, type Sequence } from './features.ts';
 import { fitStatisticalEngines } from './statistical-models.ts';
 import { fitBoosting, fitLstm } from './ml-models.ts';
+import { fitExtraEngines } from './extra-models.ts';
 import { marketStructure } from './structure.ts';
 
 export const RESEARCH_BARRIERS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export type OverUnderContract = { family: 'over-under'; contractType: 'DIGITOVER' | 'DIGITUNDER'; barrier: number };
-/** Any digit contract the shared 12-engine ensemble can score. */
+/** Any digit contract the shared 17-engine ensemble can score. */
 export type DigitEnsembleContract = OverUnderContract | DigitContractCandidate;
 export type EngineEvidence = {
   id: string; family: EngineFamily; label: string;
@@ -84,17 +85,67 @@ function cappedFamilyWeights(scores: { id: EngineFamily; score: number }[]): Map
   return weights;
 }
 
-function combine(forecasts: Forecast[], weights: number[], baseline: number[], recentDigits: readonly number[]) {
+/**
+ * Two ways to pool the same engines, both weighted the same way:
+ *
+ *   linear       p = Σ wᵢ pᵢ            — an average of opinions.
+ *   logarithmic  p ∝ Π pᵢ^wᵢ            — a geometric pool, which sharpens when
+ *               independent engines agree and refuses to let one confident
+ *               engine alone set the number.
+ *
+ * Which one ships is decided on the tuning partition, per market, and only when
+ * the winner is better by a margin that is not rounding. A fair stream usually
+ * keeps the linear pool because neither can beat the other there.
+ */
+export type BlendMode = 'linear' | 'logarithmic';
+
+function pooledModel(forecasts: Forecast[], effectiveWeights: readonly number[], mode: BlendMode): number[] {
+  if (mode === 'logarithmic') {
+    // Floor the logs so a single zero-probability engine cannot annihilate the
+    // pool; the floor is far below any probability worth publishing.
+    const logs = UNIFORM.map((_, digit) => sum(forecasts.map((forecast, index) => {
+      const probability = forecast.probabilities?.[digit];
+      return probability === undefined ? 0 : effectiveWeights[index] * Math.log(Math.max(1e-4, probability));
+    })));
+    const maximum = Math.max(...logs);
+    return normalize(logs.map((value) => Math.exp(value - maximum)));
+  }
+  return normalize(UNIFORM.map((_, digit) => sum(forecasts.map((forecast, index) => (forecast.probabilities?.[digit] ?? 0) * effectiveWeights[index]))));
+}
+
+function combine(
+  forecasts: Forecast[], weights: number[], baseline: number[], recentDigits: readonly number[],
+  mode: BlendMode = 'linear',
+) {
   const usable = weights.map((weight, index) => forecasts[index].probabilities ? weight : 0);
   const total = sum(usable);
   if (total <= 0) return { probabilities: baseline, effectiveWeights: usable, baselineWeight: 1 };
   const effectiveWeights = usable.map((weight) => weight / total);
-  const model = normalize(UNIFORM.map((_, digit) => sum(forecasts.map((forecast, index) => (forecast.probabilities?.[digit] ?? 0) * effectiveWeights[index]))));
+  const model = pooledModel(forecasts, effectiveWeights, mode);
   const information = distributionStats(recentDigits);
   // High entropy with little compressible structure increases shrinkage, not a
   // directional vote. A uniform histogram can still have a repeating sequence.
   const baselineWeight = 0.12 + 0.18 * (information.normalizedEntropy ?? 1) * clamp(information.compression.ratio, 0, 1);
   return { probabilities: mix(model, baseline, 1 - baselineWeight), effectiveWeights, baselineWeight };
+}
+
+/** Mean Brier loss of each pool on the tuning rows, and the winner. */
+function chooseBlend(tuning: readonly EnsembleEvaluation[], weights: readonly number[], recent: (end: number) => number[]) {
+  const lossOf = (mode: BlendMode) => {
+    const rows = tuning.filter((row) => row.target !== undefined);
+    if (!rows.length) return null;
+    return mean(rows.map((row) => brier(combine(row.forecasts, weights as number[], row.baseline, recent(row.contextEnd), mode).probabilities, row.target)));
+  };
+  const linear = lossOf('linear');
+  const logarithmic = lossOf('logarithmic');
+  // A margin of 0.75% of the linear loss keeps a coin-flip difference out of
+  // the shipped recipe; the geometric pool must actually pay for itself.
+  const switchOver = linear !== null && logarithmic !== null && logarithmic < linear * 0.9925;
+  return {
+    mode: (switchOver ? 'logarithmic' : 'linear') as BlendMode,
+    linearBrier: linear,
+    logarithmicBrier: logarithmic,
+  };
 }
 
 function validateStream(observations: readonly StreamObservation[], horizon: number) {
@@ -127,8 +178,10 @@ export function fitDigitEnsemble(observations: readonly StreamObservation[], hor
   const lstm = fitLstm(train, horizon);
   report(0.5, 'Training gradient-boosted trees');
   const boosting = fitBoosting(train, horizon);
+  report(0.66, 'Fitting PPM, Dirichlet, hazard, spectral and state-space engines');
+  const extra = fitExtraEngines(train, horizon);
   report(0.78, 'Walk-forward tuning of engine weights');
-  const engines: FittedEngine[] = [...statistical.engines, lstm.engine, boosting.engine];
+  const engines: FittedEngine[] = [...statistical.engines, lstm.engine, boosting.engine, ...extra.engines];
   const evaluate = (start: number, end: number): EnsembleEvaluation[] => {
     const rows: EnsembleEvaluation[] = [];
     for (let origin = start; origin + horizon < end; origin += horizon) {
@@ -149,14 +202,23 @@ export function fitDigitEnsemble(observations: readonly StreamObservation[], hor
     const strength = available.length >= 30 && skill !== null ? Math.max(0, skill) * available.length / Math.max(1, tuning.length) : 0;
     return { sample: available.length, loss, skill, strength };
   });
-  const families = ENGINE_FAMILIES.map((family) => ({ id: family.id, score: mean(engines.map((engine, index) => engine.family === family.id ? tuningScores[index].strength : -1).filter((value) => value >= 0)) }));
+  // A family is worth its BEST member, not its average one: adding a weak
+  // engine to a family must not dilute the evidence the strong member measured.
+  // The within-family split below still gives the weak member ~no weight.
+  const families = ENGINE_FAMILIES.map((family) => ({
+    id: family.id,
+    score: Math.max(0, ...engines.map((engine, index) => engine.family === family.id ? tuningScores[index].strength : -1).filter((value) => value >= 0)),
+  }));
   const familyWeights = cappedFamilyWeights(families);
   const weights = engines.map((engine, index) => {
     const total = sum(engines.map((member, memberIndex) => member.family === engine.family ? tuningScores[memberIndex].strength : 0));
     return total ? (familyWeights.get(engine.family) ?? 0) * tuningScores[index].strength / total : 0;
   });
   const recent = (end: number) => sequence.digits.slice(Math.max(0, end - 1_000), end);
-  const checked = holdout.map((row) => ({ ...row, ensemble: combine(row.forecasts, weights, row.baseline, recent(row.contextEnd)).probabilities }));
+  // Which pool ships is measured on the tuning rows, before any holdout row is
+  // touched, so the choice cannot be fitted to the validation tail.
+  const blend = chooseBlend(tuning, weights, recent);
+  const checked = holdout.map((row) => ({ ...row, ensemble: combine(row.forecasts, weights, row.baseline, recent(row.contextEnd), blend.mode).probabilities }));
   const improvements = checked.map((row) => brier(row.baseline, row.target) - brier(row.ensemble, row.target));
   const improvement = improvementSummary(improvements);
   const baselineBrier = checked.length ? mean(checked.map((row) => brier(row.baseline, row.target))) : null;
@@ -165,7 +227,7 @@ export function fitDigitEnsemble(observations: readonly StreamObservation[], hor
   report(0.97, 'Live forecasts from every engine');
   const liveForecasts = engines.map((engine) => engine.predict(sequence, horizon));
   const baseline = baselineForecast(sequence);
-  const current = combine(liveForecasts, weights, baseline, recent(sequence.digits.length));
+  const current = combine(liveForecasts, weights, baseline, recent(sequence.digits.length), blend.mode);
   const engineEvidence: EngineEvidence[] = engines.map((engine, index) => ({
     id: engine.id, family: engine.family, label: engine.label,
     probabilities: liveForecasts[index].probabilities, support: liveForecasts[index].support,
@@ -176,8 +238,8 @@ export function fitDigitEnsemble(observations: readonly StreamObservation[], hor
   }));
   report(1, 'Engines fitted');
   return {
-    symbol, sequence, horizon, trainEnd, tuningEnd, structure, statistical, lstm, boosting, engines,
-    tuning, tuningScores, weights, checked, improvements, improvement, baselineBrier, ensembleBrier, validationPassed,
+    symbol, sequence, horizon, trainEnd, tuningEnd, structure, statistical, lstm, boosting, extra, engines,
+    tuning, tuningScores, weights, blend, checked, improvements, improvement, baselineBrier, ensembleBrier, validationPassed,
     liveForecasts, baseline, current, engineEvidence,
   };
 }
@@ -257,6 +319,10 @@ export function buildEnsembleReport<C extends DigitEnsembleContract>(fit: DigitE
     },
     diagnostics: {
       structure: fit.structure,
+      // Which pool shipped and what it measured on the tuning rows, plus the
+      // fitted hyper-parameters of the five extra engines.
+      blend: fit.blend,
+      extra: fit.extra.diagnostics,
       windows: [{ window: 100, ...stats100 }, { window: 1_000, ...stats1000 }],
       transitionCounts: statistical.markov.counts, transitionMatrix: statistical.markov.matrix,
       ngrams: statistical.ngram.contexts(sequence.digits).map(({ order, context, support }) => ({ order, context, support })),
