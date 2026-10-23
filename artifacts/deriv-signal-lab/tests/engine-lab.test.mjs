@@ -393,7 +393,7 @@ for (const family of ['matches', 'even-odd', 'over-under']) test(`${family} prod
   const result = analyzeDigitMarket({ family, symbol: 'R_100', name: 'Volatility 100', horizon: 2,
     ticks: data.map(({ epoch, digit }) => ({ epoch, digit })), quoteTicks: data.map(({ epoch, quote }) => ({ epoch, quote })), fresh: true, marketsInScan: 13 });
   assert.equal(result.engineLab.registered, 300);
-  assert.equal(result.engineCount, 12, 'catalog entries are not dishonest extra predictor votes');
+  assert.equal(result.engineCount, 17, 'catalog entries are not dishonest extra predictor votes');
   assert.deepEqual(result.engineLab.contract, result.best.contract);
   assert.deepEqual(result.best.researchDecision, result.engineLab.decision);
   close(result.best.entry.evidence.signalProbability, result.best.probability);

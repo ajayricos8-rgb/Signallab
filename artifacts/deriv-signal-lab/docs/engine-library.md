@@ -98,6 +98,13 @@ exactly fair. `digitPriorWithWeights()` is the single shipped recipe — the liv
 prior and the validated backtest both call it, so the reported skill always
 describes the number on screen.
 
+How far the pool may commit is earned by that same replay:
+`digitPriorLimitsFor(replaySkill)` lowers the uniform floor from 40% toward 8%
+and widens the per-digit band from ±12 to at most ±30 points as measured skill
+rises (`priorLimits` on the state, so every historical replay uses the same
+band). With no measured skill the recipe is the conservative one, bit for bit —
+which is why a fair stream still publishes exactly fair.
+
 Downstream, `confirmation.ts` pools that prior with the calibrated ensemble by
 measured skill (`state.weight`, reported in the panel), never by a fixed nudge,
 and `precision.ts` prices the mixture with a standard error that includes the
@@ -130,6 +137,11 @@ Direct horizon outcomes use `quote[exit] − quote[origin]`, with a separate fla
 | MA/trend context (quotes only) | Trend | Sign of trailing 20- versus 60-quote means |
 | RSI context (quotes only) | Momentum | Causal Wilder RSI <30 / 30–70 / >70 |
 | Closed candle context (quotes only) | Candle | Direction of the most recently completed 60-second candle |
+| PPM variable-order Markov (digits) | Markov | Orders 1–5 with PPM-C escape; each context row is shrunk by 24 pseudo-counts toward the shorter context before its escape share |
+| Dirichlet predictive (digits) | Frequency | Posterior mean `(decayed count + α·prior)/(decayed total + α)`; half-life ∈ {60,150,400,1000} and α ∈ {1,4,12} chosen on the training tail |
+| Gap hazard (digits) | Recurrence | Measured printing rate at the exit tick, bucketed by how long each digit has been absent, Laplace-smoothed toward 10% |
+| Horizon autocorrelation (digits) | Information | Per-digit indicator correlation at exactly the contract's horizon, tested at 2.5/√n before it tilts anything |
+| Local-level filter (digits) | Time series | Per-digit exponential state-space filter with a gain fitted on training data, damped toward the marginal over the horizon |
 
 These are transparent empirical research models, **not claims of new LSTMs, boosted trees or 300 neural networks**. They supplement, not rename, the existing application's separate model ensemble.
 
@@ -143,6 +155,12 @@ These are transparent empirical research models, **not claims of new LSTMs, boos
 - With ≥40 calibration rows and at least five positive and five negative outcomes, isotonic calibration is fitted on the calibration phase. Output is a fixed 50/50 raw/isotonic blend. Otherwise calibration is identity. The final test does not choose the calibrator.
 - Self-validation requires **≥30 tuning rows, ≥40 non-overlapping test rows, Brier skill >0.005, and corrected one-sided paired-loss p <0.05**. Correction multiplies by scanned candidate pool × research-model count. This is a conservative asymptotic check, not proof of independence or a universal false-positive guarantee.
 - Bayesian likelihood weighting, regime-specific model selection and ablation are **reported diagnostic alternatives**. They do not get stacked as extra correlated votes.
+- Two pools are fitted with the same weights — linear (Σ wᵢpᵢ) and geometric
+  (∝ Π pᵢ^wᵢ) — and the one with the lower **tuning** Brier ships, by a 0.75%
+  margin. The choice is made before any holdout row is read; the loser is still
+  reported in `diagnostics.blend`.
+- A family's weight is its best member's measured strength, not the average of
+  its members, so adding a weak engine cannot dilute a measured family.
 - A validated contrary research estimate reduces the base edge by **75%**, marks confirmation contradicted, and reduces confidence. Entry evidence is generated from that adjusted probability. Supportive/unvalidated research never increases the base estimate.
 
 ## Layer 4: the research library folded into the signal
