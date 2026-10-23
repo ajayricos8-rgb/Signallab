@@ -8,7 +8,7 @@ import { atr, closedCandles, correlation, distribution, ema, eventWins, horizonE
 import { quoteEconomics, researchAdvisory, scopeSettlements } from '../src/lib/engine-lab/execution.ts';
 import { fuseResearch, researchEvidence } from '../src/lib/engine-lab/fusion.ts';
 import { analyzeDigitMarket } from '../src/lib/signal-engine/digit-signal.ts';
-import { analyzeRiseFallMarket } from '../src/lib/signal-engine/rise-fall-signal.ts';
+import { analyzeRiseFallMarket, RISE_FALL_ENGINES } from '../src/lib/signal-engine/rise-fall-signal.ts';
 import { analyzeDigitEntry } from '../src/lib/signal-engine/entry.ts';
 import { confidenceScore } from '../src/lib/signal-engine/confidence.ts';
 
@@ -412,7 +412,9 @@ test('Rise/Fall production scan runs all 300 entries on the selected exact durat
   const result = analyzeRiseFallMarket({ symbol: 'R_100', name: 'Volatility 100', ticks: data, digitTicks: data, fresh: true, marketsInScan: 13,
     horizons: [{ unit: 'ticks', value: 1 }, { unit: 'ticks', value: 10 }, { unit: 'minutes', value: 3 }] });
   assert.equal(result.engineLab.registered, 300);
-  assert.equal(result.engineCount, 14);
+  // 13 state engines (level-reversion included) + drift + the AI meta-model.
+  assert.equal(result.engineCount, RISE_FALL_ENGINES.length);
+  assert.equal(result.engineCount, 15);
   assert.deepEqual(result.engineLab.horizon, result.best.horizon);
   assert.equal(result.engineLab.contract.direction, result.best.direction);
   close(result.best.entry.evidence.signalProbability, result.best.winEstimate);

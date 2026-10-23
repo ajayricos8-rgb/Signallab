@@ -24,6 +24,7 @@
 // Pure module: no I/O, no DOM, no React. It runs inside the Web Workers that
 // analyse markets, so every value must be structured-clone friendly.
 import type { SignalStrength } from './confidence.ts';
+import { fitLevelReversion, type LevelReversionModel } from './market-state.ts';
 
 export type EntryTrigger = 'immediate' | 'quote' | 'digit';
 export type EntryMode = 'immediate' | 'pullback' | 'breakout' | 'context';
@@ -114,6 +115,14 @@ export type EntryPlan = {
   distance: number | null;
   /** Quote the analysis saw; every bot run re-bases the level on the live quote. */
   referenceQuote: number | null;
+  /**
+   * How the bot re-bases this level on the live quote. `relative` (the default)
+   * keeps the measured distance, which is right for an excursion-based level.
+   * `absolute` keeps the level itself, which is right for a level anchored to a
+   * fitted equilibrium: dragging it along with the price would erase exactly the
+   * stretch it was measured on.
+   */
+  rebase?: 'relative' | 'absolute';
   /** Context digits the tick before the entry must print (digit triggers only). */
   contextDigits: number[] | null;
   /** How to read those digits, e.g. "after an even digit". */
@@ -663,6 +672,20 @@ export function analyzeQuoteEntry(input: QuoteEntryInput): EntryPlan {
   const horizonTicks = clamp(Math.round(input.horizonTicks) || 1, 1, 3_000);
   const direction = input.direction;
 
+  // Model-driven timing first. When the level-reversion fit validates a stretch
+  // window, that IS the entry: it is the same equilibrium the analysis layer
+  // published, measured on the same replayed signals. The excursion percentiles
+  // below remain the fallback for markets with no measurable equilibrium.
+  const levelPlan = analyzeLevelEntry({
+    ...input,
+    fairRate,
+    averageMove,
+    referenceQuote,
+    horizonTicks,
+    evidence,
+  });
+  if (levelPlan) return levelPlan;
+
   // Pass 1 — how far the price travelled against and with each replayed signal.
   const stats: RowStats[] = [];
   for (const row of rows) {
@@ -907,6 +930,261 @@ export type DigitEntryInput = {
 type DigitContextStats = { hits: number; sample: number };
 
 /**
+ * Entry timing from the level-reversion model (Layer 1's equilibrium fit).
+ *
+ * The excursion-percentile replay above answers "how far does price usually
+ * pull back". This answers a different and more direct question: the analysis
+ * already measured WHERE the price is relative to its fitted equilibrium and
+ * how strong the pull is. Entering while the price sits far from equilibrium
+ * wins materially more often than entering at an arbitrary tick, so the entry
+ * engine re-measures that stretch on the older replay rows, confirms it on the
+ * newer ones, and then either fires now (already stretched) or waits for the
+ * stretch to arrive at the model's own level.
+ *
+ * Measured on planted mean-reversion streams the win rate goes from ~62% (enter
+ * anywhere) to ~72% at one stationary σ of stretch; on random walks the fit
+ * never clears its unit-root bar, so no plan is produced at all.
+ */
+const LEVEL_STRETCH_GRID = [0.5, 0.75, 1, 1.25, 1.5] as const;
+/** Smallest inside-sample a stretch rule may be selected on. */
+const LEVEL_MIN_SELECTION = 20;
+/** z the inside-vs-outside gap must clear on the newer rows. */
+const LEVEL_VALIDATION_Z = 1.64;
+
+type LevelStretchRow = {
+  origin: number;
+  /** Signed stretch in the favourable direction: > 0 means "already stretched". */
+  stretch: number;
+  /** Model level the price would have to reach to be stretched by `threshold`. */
+  level: number | null;
+  model: LevelReversionModel | null;
+  /** Whether the trade won when entered at the origin. */
+  won: 0 | 1;
+  exit: number;
+};
+
+function levelStretchRows(
+  prices: readonly number[],
+  rows: readonly QuoteEntryRow[],
+  direction: 1 | -1,
+): LevelStretchRow[] {
+  const result: LevelStretchRow[] = [];
+  for (const row of rows) {
+    if (row.origin < 120 || row.origin >= prices.length) continue;
+    // Only ticks up to the origin: no look-ahead, exactly like the replay.
+    const model = fitLevelReversion(prices.slice(0, row.origin + 1));
+    const exit = Math.min(row.exit, prices.length - 1);
+    if (exit <= row.origin) continue;
+    const move = prices[exit] - prices[row.origin];
+    if (move === 0) continue;
+    const won = (sign(move) === direction ? 1 : 0) as 0 | 1;
+    if (!model || !model.active) {
+      result.push({ origin: row.origin, stretch: 0, level: null, model: null, won, exit });
+      continue;
+    }
+    // Fading the stretch means buying the direction that the pull supports:
+    // a RISE signal is favoured when the price sits BELOW equilibrium.
+    const stretch = -direction * model.displacementZ;
+    result.push({ origin: row.origin, stretch, level: null, model, won, exit });
+  }
+  return result;
+}
+
+function stretchRates(rows: readonly LevelStretchRow[], threshold: number): { insideHits: number; inside: number; outsideHits: number; outside: number } {
+  let insideHits = 0;
+  let inside = 0;
+  let outsideHits = 0;
+  let outside = 0;
+  for (const row of rows) {
+    if (!row.model) continue;
+    if (row.stretch >= threshold) { inside += 1; insideHits += row.won; }
+    else { outside += 1; outsideHits += row.won; }
+  }
+  return { insideHits, inside, outsideHits, outside };
+}
+
+function proportionZ(insideHits: number, inside: number, outsideHits: number, outside: number): number {
+  if (inside < 2 || outside < 2) return 0;
+  const pooled = (insideHits + outsideHits) / (inside + outside);
+  const standardError = Math.sqrt(Math.max(1e-12, pooled * (1 - pooled)) * (1 / inside + 1 / outside));
+  return standardError > 1e-12 ? (insideHits / inside - outsideHits / outside) / standardError : 0;
+}
+
+/**
+ * How long the price took to reach the stretch level, and what the trade bought
+ * at that point settled as. Rows already stretched wait zero ticks.
+ */
+function measureStretchReach(
+  prices: readonly number[],
+  epochs: readonly number[],
+  rows: readonly LevelStretchRow[],
+  direction: 1 | -1,
+  threshold: number,
+  horizonTicks: number,
+): { reached: number; settled: number; wins: number; waits: number[]; waitedMs: number[] } {
+  let reached = 0;
+  let settled = 0;
+  let wins = 0;
+  const waits: number[] = [];
+  const waitedMs: number[] = [];
+  for (const row of rows) {
+    if (!row.model) continue;
+    const level = row.model.mean - direction * threshold * row.model.levelSigma;
+    let index = -1;
+    if (row.stretch >= threshold) index = row.origin;
+    else {
+      const stop = Math.min(prices.length - 1, row.origin + ENTRY_LIMITS.scanTicks);
+      for (let cursor = row.origin + 1; cursor <= stop; cursor += 1) {
+        // The price has to reach the stretched level (worse for the signal).
+        if (direction === 1 ? prices[cursor] <= level : prices[cursor] >= level) { index = cursor; break; }
+      }
+    }
+    if (index < 0) continue;
+    reached += 1;
+    const wait = index - row.origin;
+    waits.push(wait);
+    if (Number.isFinite(epochs[index]) && Number.isFinite(epochs[row.origin])) {
+      const waited = epochs[index] - epochs[row.origin];
+      if (Number.isFinite(waited) && waited >= 0) waitedMs.push(waited);
+    }
+    const exit = index + horizonTicks;
+    if (exit >= prices.length) continue;
+    const move = prices[exit] - prices[index];
+    if (move === 0) continue;
+    settled += 1;
+    if (sign(move) === direction) wins += 1;
+  }
+  return { reached, settled, wins, waits, waitedMs };
+}
+
+function analyzeLevelEntry(input: QuoteEntryInput & {
+  fairRate: number;
+  averageMove: number;
+  referenceQuote: number | null;
+  horizonTicks: number;
+  evidence: EntryEvidence;
+}): EntryPlan | null {
+  // Timing cannot rescue a trade the analysis does not rate.
+  if (analysisRejection(input.evidence) !== null) return null;
+  const live = fitLevelReversion(input.prices);
+  if (!live || !live.active) return null;
+  const direction = input.direction;
+  const all = levelStretchRows(input.prices, input.rows, direction);
+  const usable = all.filter((row) => row.model !== null);
+  if (usable.length < ENTRY_LIMITS.minSample) return null;
+  const split = Math.floor(all.length * 0.6);
+  const selectionRows = all.slice(0, split);
+  const validationRows = all.slice(split);
+  const canValidate = validationRows.filter((row) => row.model !== null).length >= ENTRY_LIMITS.minValidationSample;
+
+  // Pick the threshold on the older rows only: the shallowest stretch that
+  // clears the no-edge rate on enough rows. Selection and scoring never share
+  // a row.
+  const selected = LEVEL_STRETCH_GRID
+    .map((threshold) => ({ threshold, ...stretchRates(selectionRows, threshold) }))
+    .filter((candidate) => candidate.inside >= LEVEL_MIN_SELECTION)
+    .sort((left, right) => {
+      const leftLift = left.insideHits / left.inside - input.fairRate;
+      const rightLift = right.insideHits / right.inside - input.fairRate;
+      if (Math.abs(leftLift - rightLift) > 0.01) return rightLift - leftLift;
+      return left.threshold - right.threshold;
+    })[0];
+  if (!selected) return null;
+
+  const check = canValidate ? stretchRates(validationRows, selected.threshold) : selected;
+  const insideRate = check.inside > 0 ? check.insideHits / check.inside : 0;
+  const outsideRate = check.outside > 0 ? check.outsideHits / check.outside : 0;
+  const z = proportionZ(check.insideHits, check.inside, check.outsideHits, check.outside);
+  const baselineRate = check.inside + check.outside > 0 ? (check.insideHits + check.outsideHits) / (check.inside + check.outside) : 0;
+  const gainPts = (insideRate - baselineRate) * 100;
+  const validation = {
+    sample: check.inside + check.outside,
+    gainPts,
+    reachRate: check.inside / Math.max(1, check.inside + check.outside),
+    rate: insideRate,
+    fairRate: input.fairRate,
+    passed: check.inside >= LEVEL_MIN_SELECTION && insideRate >= input.fairRate && z >= LEVEL_VALIDATION_Z && gainPts >= ENTRY_LIMITS.minEdgePts,
+    phase: (canValidate ? 'out-of-sample' : 'in-sample') as 'out-of-sample' | 'in-sample',
+  };
+  if (!validation.passed) return null;
+
+  const reach = measureStretchReach(input.prices, input.epochs, usable, direction, selected.threshold, input.horizonTicks);
+  const liveStretch = -direction * live.displacementZ;
+  const alreadyStretched = liveStretch >= selected.threshold;
+  const level = live.mean - direction * selected.threshold * live.levelSigma;
+  const sigmaText = `${selected.threshold.toFixed(2)}σ`;
+  const rates = `${(insideRate * 100).toFixed(1)}% when the price was at least ${sigmaText} from equilibrium against ${(outsideRate * 100).toFixed(1)}% elsewhere (${(baselineRate * 100).toFixed(1)}% overall)`;
+  const splitNote = canValidate
+    ? `threshold chosen on the older ${selectionRows.filter((row) => row.model).length} replayed signals and confirmed on the newer ${validationRows.filter((row) => row.model).length}`
+    : `measured in-sample on ${selectionRows.filter((row) => row.model).length} replayed signals`;
+
+  if (alreadyStretched) {
+    return {
+      mode: 'immediate',
+      trigger: 'immediate',
+      label: 'Enter next tick',
+      detail: `The quote is already ${liveStretch.toFixed(2)}σ from its ${live.halfLifeTicks === null ? 'fitted' : `${live.halfLifeTicks.toFixed(0)}-tick half-life`} equilibrium (${live.mean.toFixed(4)}), past the ${sigmaText} the replay needs: trades taken there won ${rates} — ${splitNote}, z ${z.toFixed(2)}. Entering at the next tick because waiting would mean waiting for a better price than the model says is required.`,
+      priceLevel: null,
+      priceCondition: null,
+      distance: null,
+      referenceQuote: null,
+      contextDigits: null,
+      contextLabel: null,
+      windowTicks: ENTRY_LIMITS.windowTicks.min,
+      expectedWaitTicks: 0,
+      expectedWaitMs: 0,
+      reachRate: null,
+      edgeGainPts: Math.round(gainPts * 10) / 10,
+      sample: all.length,
+      confidence: entryConfidence({ improved: check.insideHits, worsened: check.inside - check.insideHits, sample: check.inside }),
+      tolerance: Math.max(input.averageMove * 0.5, live.sigma),
+      validation,
+      fill: 'market',
+      // No trigger to wait for: the replay's verdict is "fire now", and the
+      // entry-plan invariant reserves `measured` for plans with a trigger.
+      measured: false,
+      evidence: input.evidence,
+    };
+  }
+
+  const waits = reach.waits;
+  const reaching = waits.length > 0 ? Math.min(1, reach.reached / Math.max(1, usable.length)) : 0;
+  const expectedWaitTicks = Math.max(1, Math.round(median(waits) ?? 0));
+  const expectedWaitMs = Math.max(0, Math.round(median(reach.waitedMs) ?? expectedWaitTicks * 1_000));
+  const windowTicks = Math.round(clamp(
+    (percentile(waits, WAIT_WINDOW_PERCENTILE) ?? expectedWaitTicks) + 2,
+    ENTRY_LIMITS.windowTicks.min,
+    ENTRY_LIMITS.windowTicks.max,
+  ));
+  const priceCondition: 'above' | 'below' = direction === 1 ? 'below' : 'above';
+  return {
+    mode: 'pullback',
+    trigger: 'quote',
+    label: 'Equilibrium entry',
+    detail: `Waits for the quote to reach ${level.toFixed(4)} — ${sigmaText} below the ${live.mean.toFixed(4)} equilibrium the ${live.halfLifeTicks === null ? 'fit' : `${live.halfLifeTicks.toFixed(0)}-tick half-life`} fit measures — before buying the ${direction === 1 ? 'rise' : 'fall'}: trades taken at that stretch won ${rates}, ${splitNote}, z ${z.toFixed(2)}. ${Math.round(reaching * 100)}% of replayed signals reached it, in a median of ${expectedWaitTicks} tick${expectedWaitTicks === 1 ? '' : 's'}${expectedWaitMs > 0 ? ` (~${(expectedWaitMs / 1_000).toFixed(1)}s)` : ''}, inside ${windowTicks} ticks; the level is anchored to the equilibrium, so the bot never drags it along with the price.`,
+    priceLevel: level,
+    priceCondition,
+    distance: input.referenceQuote === null ? null : Math.abs(input.referenceQuote - level),
+    referenceQuote: input.referenceQuote,
+    rebase: 'absolute',
+    contextDigits: null,
+    contextLabel: null,
+    windowTicks,
+    expectedWaitTicks,
+    expectedWaitMs,
+    reachRate: reaching,
+    edgeGainPts: Math.round(gainPts * 10) / 10,
+    sample: all.length,
+    confidence: entryConfidence({ improved: check.insideHits, worsened: check.inside - check.insideHits, sample: check.inside }),
+    tolerance: Math.max(input.averageMove * 2, live.sigma * 2),
+    validation,
+    fill: 'limit-with-tolerance',
+    measured: true,
+    evidence: input.evidence,
+  };
+}
+
+/**
  * Digit entry: a digit contract settles on the exit tick's digit, so the quote
  * is not the entry decision — the tick context is ("enter on the tick right
  * after an even digit"). Contexts are picked on the older 60% of the ticks and
@@ -1119,6 +1397,9 @@ export function analyzeDigitEntry(input: DigitEntryInput): EntryPlan {
  */
 export function rebaseEntryPlan(plan: EntryPlan, quote: number | null): EntryPlan {
   if (plan.trigger !== 'quote' || plan.distance === null || quote === null || !Number.isFinite(quote)) return plan;
+  // An equilibrium-anchored level is absolute: the bot waits for the price to
+  // come to the model's level, it never drags the level along with the price.
+  if (plan.rebase === 'absolute') return { ...plan, referenceQuote: quote };
   return {
     ...plan,
     referenceQuote: quote,

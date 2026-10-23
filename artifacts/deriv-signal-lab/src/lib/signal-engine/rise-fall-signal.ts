@@ -16,7 +16,7 @@ import {
 import { familyBalancedWeights } from './consensus.ts';
 import { analyzeQuoteEntry, epochGapMs, type EntryPlan } from './entry.ts';
 import { buildMasterDecision, type MasterDecision, type MasterSourceInput } from './master-decision.ts';
-import { analyzeQuoteState, type QuoteMarketState } from './market-state.ts';
+import { analyzeQuoteState, fitLevelReversion, levelReversionProbabilityUp, type QuoteMarketState } from './market-state.ts';
 import { synthesizeRiseFallAi, type AiSynthesis } from './ai-synthesis.ts';
 import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
 import { forecastStandardError, probabilityInterval, reliabilityReport, type ProbabilityInterval, type ReliabilityReport } from './recalibration.ts';
@@ -47,6 +47,11 @@ const REPLAY_STRIDE = 2;
 const VOTE_THRESHOLD = 0.05;
 const MARKOV_WINDOW = 1_000;
 const DRIFT_WINDOW = 500;
+/**
+ * Pseudo-rows an engine's measured accuracy is shrunk toward 50 % by. Thirty
+ * validation outcomes at 64 % is 55 % of the way to a real edge, not all of it.
+ */
+const ENGINE_ACCURACY_PRIOR_ROWS = 40;
 
 /**
  * Keep the feed's newest quote for each epoch, then restore chronological
@@ -242,12 +247,13 @@ export const RISE_FALL_ENGINES: EngineDef[] = [
   { id: 'regression', label: 'Linear-regression slope · 60 ticks', family: 'statistical' },
   { id: 'markov', label: 'Tick-direction Markov chain · orders 1–3', family: 'statistical' },
   { id: 'variance-ratio', label: 'Variance-ratio regime · Lo–MacKinlay', family: 'statistical' },
+  { id: 'level-reversion', label: 'AR(1) level pull · OU equilibrium', family: 'statistical' },
   { id: 'drift', label: 'Historical drift at this duration', family: 'statistical' },
   { id: 'ai', label: 'AI meta-model · logistic regression on all engines', family: 'ml' },
 ];
-const STATE_ENGINE_COUNT = 12;
-const DRIFT_INDEX = 12;
-const AI_INDEX = 13;
+const STATE_ENGINE_COUNT = 13;
+const DRIFT_INDEX = 13;
+const AI_INDEX = 14;
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 const sign = (value: number) => (value > 0 ? 1 : value < 0 ? -1 : 0);
@@ -355,6 +361,20 @@ class DirectionMarkov {
   }
 }
 
+/**
+ * Directional score from the level-reversion fit: fade a price that sits far
+ * from its fitted equilibrium, follow it when the fit says the level is a unit
+ * root (no score at all). The magnitude saturates by 2σ and is scaled by how
+ * conclusively the unit-root test was rejected, so a thin fit cannot shout.
+ */
+function levelReversionScore(prices: readonly number[]): number | null {
+  const model = fitLevelReversion(prices);
+  if (!model || !model.significant) return null;
+  if (Math.abs(model.displacementZ) < 0.15) return null;
+  const certainty = clamp((Math.abs(model.tStatistic) - 3.5) / 2.5, 0.15, 1);
+  return clamp(-Math.tanh(model.displacementZ / 1.5) * certainty, -1, 1);
+}
+
 function stateScores(analysis: RiseFallAnalysis, prices: readonly number[], markov: number | null): Array<number | null> {
   const average = analysis.averageTickMove14;
   const hasMove = average !== null && average > 0;
@@ -371,6 +391,7 @@ function stateScores(analysis: RiseFallAnalysis, prices: readonly number[], mark
     regressionScore(prices),
     markov,
     varianceRatioScore(prices),
+    levelReversionScore(prices),
   ];
 }
 
@@ -544,8 +565,23 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       }
       return { hits, total, rate: total >= 20 ? hits / total : null };
     });
-    // Log-odds style weighting: coin-flip engines fade, consistently right ones lead.
-    const factors = accuracy.map((item) => (item.rate === null ? 1 : clamp(Math.exp(8 * (item.rate - 0.5)), 0.3, 3)));
+    // Log-odds style weighting: coin-flip engines fade, consistently right ones
+    // lead. The measured rate is first shrunk toward 50% by its own sample size
+    // (James–Stein on a binomial proportion): a 64% hit rate on 30 outcomes is
+    // evidence, not proof, and treating it as proof is how a lucky engine takes
+    // over the vote. The level-reversion engine is the one exception, and not by
+    // fiat: when its unit-root test has fired it has already cleared a t-bar of
+    // 3.5 on 500+ ticks, so its reliability floor is set by that test rather
+    // than by thirty noisy replay rows.
+    const levelIndex = RISE_FALL_ENGINES.findIndex((engine) => engine.id === 'level-reversion');
+    const levelValidated = levelIndex >= 0 && state.levelReversion !== null && state.levelReversion.significant;
+    const factors = accuracy.map((item, index) => {
+      if (item.rate === null) return levelValidated && index === levelIndex ? 2.5 : 1;
+      const shrink = item.total / (item.total + ENGINE_ACCURACY_PRIOR_ROWS);
+      const shrunk = 0.5 + (item.rate - 0.5) * shrink;
+      const factor = clamp(Math.exp(8 * (shrunk - 0.5)), 0.3, 3);
+      return levelValidated && index === levelIndex ? Math.max(factor, 2.5) : factor;
+    });
     const consensus = (scores: Array<number | null>) => {
       const weights = familyBalancedWeights(RISE_FALL_ENGINES.map((engine, index) => ({
         family: engine.family,
@@ -567,7 +603,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     let aiLoss = 0;
     let fairLoss = 0;
     let aiRows = 0;
-    // Brier skill of the 14-engine consensus on its own, measured on the same
+    // Brier skill of the 15-engine consensus on its own, measured on the same
     // independent holdout rows as the AI meta-model. Layer 6 needs this to
     // price the engine vote separately from the meta-model that reweights it.
     let engineLoss = 0;
@@ -658,8 +694,22 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // outcomes, try a logistic stack, and let the validated analysis prior move
     // the result by at most two points. Direction is only overridden by a
     // validated model that disagrees materially.
+    // The analysis prior is measured at a reference five-tick horizon; re-price
+    // it analytically at THIS duration's exit so a 1-minute contract is not
+    // told the odds of a 5-tick move. The reversion fit supplies the exact
+    // horizon term (it decays geometrically), the drift term is unchanged.
+    const horizonTicks = horizon.unit === 'ticks'
+      ? Math.max(1, Math.round(horizon.value))
+      : Math.max(1, Math.round((horizon.value * 60_000) / Math.max(1, tickSpacingMs)));
+    const reversionUp = levelReversionProbabilityUp(state.levelReversion, horizonTicks);
+    const horizonPriorRise = state.prior === null
+      ? null
+      : reversionUp === null
+        ? state.prior
+        : clamp((state.prior + reversionUp) / 2, 0.3, 0.7);
     const confirmation = confirmRiseFall({
       aiProbability: aiForConfirmation,
+      statePriorProbability: horizonPriorRise,
       holdout: calibrationRows,
       consensusDirection,
       consensusScore,
@@ -747,11 +797,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // Layer 7: the embedded neural direction model for THIS horizon. It sees
     // the same prices and settles on the same exit tick as the indicator
     // engines, so its forecast is directly comparable to the win estimate.
-    const neuralModel = trainQuoteNeuralModel(prices, exits, {
-      horizonTicks: horizon.unit === 'ticks'
-        ? horizon.value
-        : Math.max(1, Math.round((horizon.value * 60_000) / Math.max(1, tickSpacingMs))),
-    });
+    const neuralModel = trainQuoteNeuralModel(prices, exits, { horizonTicks });
     const neuralProbability = neuralModel
       ? directionSign > 0 ? neuralModel.probabilityUp : 1 - neuralModel.probabilityUp
       : null;
@@ -779,7 +825,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       {
         id: 'analysis',
         label: 'Analysis engines',
-        probability: state.prior === null ? null : directionSign > 0 ? state.prior : 1 - state.prior,
+        probability: horizonPriorRise === null ? null : directionSign > 0 ? horizonPriorRise : 1 - horizonPriorRise,
         skill: state.priorBacktest.skill,
         sample: state.priorBacktest.sample,
         detail: state.prior === null
@@ -824,7 +870,10 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   // PHASE 2 — precision: winner's-curse correction across every duration.
   // ---------------------------------------------------------------------------
   const estimates = drafts.map((draft) => ({ edge: draft.winEstimate - draft.fair, standardError: draft.standardError ?? 0.05 }));
-  const precisionFit = shrinkEdges(estimates);
+  // With fewer than three durations τ² is unidentifiable; the specified prior is
+  // only used when the analysis layer independently validated an edge on this
+  // market, so a thin scan of a structureless market still collapses to fair.
+  const precisionFit = shrinkEdges(estimates, { independentEdge: state.prior !== null });
 
   const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): RiseFallHorizonSignal => {
     const { horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, votes, tally, backtest,

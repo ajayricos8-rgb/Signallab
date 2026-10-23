@@ -35,12 +35,55 @@ _Replace the heading above with the project's name, and this line with one sente
 ## Architecture decisions
 
 - The four Tools tabs share one public Deriv market-data socket (`artifacts/deriv-signal-lab/src/components/market-feed-provider.tsx`) mounted above the tabs, so history survives tab switches and Run Analysis can scan every volatility index at once.
-- Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`). Every analysis is layered: **analysis engines** (`market-state.ts`) measure structure/regime, **prediction engines** (the 12-engine digit ensemble / 14-engine Rise/Fall panel) produce probabilities, a **confirmation layer** (`confirmation.ts`) calibrates them out of sample and checks the analysis prior, a **precision layer** (`precision.ts`) shrinks every published edge by how much of it survived out of sample and charges the winner's curse of having been ranked, the **entry layer** (`entry.ts`) measures the entry level/window on an older slice and validates it on a newer one, and a **quant + AI synthesis layer** (`ai-synthesis.ts`) folds the independent quant measurement suite (distribution, parity runs, recurrence/FFT, Hurst/RSI/MACD regime) into one verdict with a cross-window stability check. Results are ranked by a calibrated confidence score (`confidence.ts`).
+- Run Analysis fans markets out to a Web Worker pool (`src/lib/signal-engine/scan-runner.ts`). Every analysis is layered: **analysis engines** (`market-state.ts`) measure structure/regime, **prediction engines** (the 12-engine digit ensemble / 15-engine Rise/Fall panel) produce probabilities, a **confirmation layer** (`confirmation.ts`) calibrates them out of sample and checks the analysis prior, a **precision layer** (`precision.ts`) shrinks every published edge by how much of it survived out of sample and charges the winner's curse of having been ranked, the **entry layer** (`entry.ts`) measures the entry level/window on an older slice and validates it on a newer one, and a **quant + AI synthesis layer** (`ai-synthesis.ts`) folds the independent quant measurement suite (distribution, parity runs, recurrence/FFT, Hurst/RSI/MACD regime) into one verdict with a cross-window stability check. Results are ranked by a calibrated confidence score (`confidence.ts`).
 - Layer 7 is a network trained in the app on the market's own feed, not a hosted or pretrained model: a digit net (`signal-net-digit-v1`, 113→24→12→10) for Over/Under, Even/Odd and Matches and a quote net (`signal-net-quote-v1`, 20→24→12→2) for Rise/Fall. Rows are causal and chronological, split 60/20/20 with a purge gap, and the holdout is scored once against the same fair odds the contract pays on. Its forecast is blended into the published probability (≤25% of the edge) only after a positive Brier skill with a paired z ≥ 2 on ≥60 unseen rows; otherwise the weight is exactly 0 and the number is bit-identical. It is also its own row in the master decision's source pool and a small (<5%) term in the confidence score when validated.
 - Workers are an optimisation, never a dependency: each worker answers a handshake after its script loads, jobs whose worker dies (script 404, wrong MIME, CSP/proxy blocks, thread crash, silence) are retried once in a replacement worker and then analysed inline on the main thread, so Run Analysis ends in ranked signals on every hosting environment instead of a crash banner.
 - The strict research gates in `src/lib/over-under/ensemble.ts` are kept and surface as a "Verified edge" flag instead of blocking signals.
 - Each tool shows the analysis-engine panel (`AnalysisEnginePanel`), the confirmation report (`ConfirmationPanel`) and the measured error bar (`PrecisionPanel`) next to the signal card, so every probability can be traced to the engines, the calibration, the replay and the research fusion that produced it.
 - The precision layer is what keeps the published number honest. On a fair stream it collapses a 16-contract scan to exactly 0.0 points of edge (it used to report ~0.1); on a real edge it keeps 92% of the true magnitude rather than 77%, and it halves the error on the hard case of a small edge hidden in noise.
+
+## Accuracy pass — level reversion, honest calibration, equilibrium entry (2026-10-23)
+
+- **New analysis engine `level-reversion`** (`market-state.ts`): an AR(1) /
+  Ornstein–Uhlenbeck fit on the quote levels themselves (`quote[t] = a + phi·quote[t−1]`),
+  with a real unit-root t-test (bar −3.5, beyond Dickey–Fuller 1%), an implied
+  half-life, the equilibrium, and the current displacement in stationary σ. The
+  rest of the stack reads *returns*, which cannot see a market that is pulled
+  back to a level while its returns look uncorrelated; this engine can.
+  `levelReversionProbabilityUp(model, h)` converts the fit into a directional
+  probability at any exit horizon, and a random walk (phi ≈ 1) publishes nothing.
+- **The prior is graded by the recipe that ships.** `quotePriorProbability()` is
+  now the single prior recipe: engine direction blend plus the level pull at the
+  contract's horizon. `backtestQuotePrior()` replays that exact function, so the
+  Brier skill shown in the UI describes the number on screen. Rise/Fall re-prices
+  the prior at each duration's own horizon and passes it to confirmation
+  (`statePriorProbability`), instead of reusing a five-tick reference number.
+- **15-engine prediction panel.** `level-reversion` is a member of
+  `RISE_FALL_ENGINES`, so it feeds the weighted vote, the AI meta-model's feature
+  vector and the per-engine validation accuracy. Its reliability floor is set by
+  its own unit-root test rather than by thirty noisy replay rows, and every
+  engine's measured accuracy is now shrunk toward 50% by its sample size before
+  it is turned into a weight.
+- **Precision layer fix.** With fewer than three candidates τ² is unidentifiable,
+  and the layer used to collapse every edge to zero — a real edge measured on a
+  single duration was published as a coin flip. A small pool now falls back to a
+  specified prior (sd 5 pts) **only when the analysis layer independently
+  validated an edge on that market**, so flat streams still publish exactly fair
+  while a genuinely measured edge survives, shrunk by its own standard error.
+- **Entry: equilibrium timing.** `entry.ts` gains `analyzeLevelEntry`, which
+  re-measures the model's stretch on the older 60% of replayed signals, confirms
+  it on the newer 40%, and then either fires at the next tick (already stretched)
+  or waits for the equilibrium level with `rebase: 'absolute'` so the level is
+  never dragged along with the live quote. On planted mean-reversion streams the
+  replayed win rate rises from ~62% (enter anywhere) to ~72% at one stationary σ,
+  and the plan reports ~82% against ~40% out of sample.
+- **Measured** (rolling walk-forward, 5-tick contracts, 5 synthetic markets × 4
+  seeds × 7 points, published vs realised): mean-reverting θ=0.15 Brier skill
+  0.089 → 0.135, direction hit 0.64 → 0.68; random walk and volatility-cluster
+  streams stay at skill 0.000 and publish 0.500; trending streams unchanged at
+  0.305. `tests/accuracy-level-reversion.test.mjs` holds the line: the fit must
+  find the planted pull, match the realised frequency, and never clear its bar
+  on a random walk.
 
 ## Embedded neural model (2026-10-22)
 

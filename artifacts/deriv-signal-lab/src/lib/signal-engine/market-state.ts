@@ -23,7 +23,7 @@
 import { marketStructure } from '../over-under/structure.ts';
 import {
   autocorrelation, chiSquareGoodnessOfFit, chiSquareIndependence, clamp, cusumChange,
-  hurstExponent, ljungBox, mean, normalPValue, percentile, runsTest, standardDeviation,
+  hurstExponent, ljungBox, mean, normalCdf, normalPValue, percentile, runsTest, standardDeviation,
   varianceRatioTest, wilsonInterval,
 } from './stats.ts';
 
@@ -106,6 +106,48 @@ export type VolatilityState = {
   regime: 'volatile' | 'quiet' | 'normal';
 };
 
+/**
+ * Level-reversion (Ornstein–Uhlenbeck / AR(1) on the quote itself) model.
+ *
+ * The return-only engines are blind to this: a genuinely mean-reverting market
+ * can have almost no return autocorrelation while its *level* is strongly
+ * pulled back toward equilibrium, because the reversion is proportional to the
+ * distance from the mean rather than to the last tick's move. Fitting
+ * `quote[t] = a + phi·quote[t−1] + e` measures exactly that pull, and the fit
+ * converts into a directional probability at any exit horizon:
+ *
+ *   E[Δh] = (x_t − mean)·(phi^h − 1),  sd[Δh] = σ·√((1 − phi^{2h}) / (1 − phi²))
+ *
+ * A random walk has phi ≈ 1, so the drift term vanishes and the published
+ * probability collapses to a coin flip — the model cannot invent an edge.
+ */
+export type LevelReversionModel = {
+  /** Quotes used in the fit. */
+  sample: number;
+  /** AR(1) coefficient on levels (1 = unit root / random walk). */
+  phi: number;
+  /** Equilibrium the fit pulls toward. */
+  mean: number;
+  /** Last quote in the fitted window. */
+  last: number;
+  /** One-tick residual standard deviation. */
+  sigma: number;
+  /** Stationary standard deviation of the level, σ/√(1 − phi²). */
+  levelSigma: number;
+  /** (last − mean) / levelSigma: how stretched the price is right now. */
+  displacementZ: number;
+  /** Half-life of a shock, in ticks. */
+  halfLifeTicks: number | null;
+  /** t-statistic of phi − 1 (H0: unit root). */
+  tStatistic: number;
+  /** Two-sided normal p-value of `tStatistic`. */
+  pValue: number;
+  /** True when the pull is strong enough to trade. */
+  significant: boolean;
+  /** Reads a rising quote as the winning side; false when the fit is unusable. */
+  active: boolean;
+};
+
 export type QuoteMarketState = {
   kind: 'quote';
   regime: QuoteRegime;
@@ -118,6 +160,8 @@ export type QuoteMarketState = {
   volatility: VolatilityState;
   /** P(next quote rises) suggested by the analysis engines, when validated. */
   prior: number | null;
+  /** AR(1)-on-levels reversion fit, or null when the market is too short. */
+  levelReversion: LevelReversionModel | null;
   priorBacktest: PriorBacktest;
   engines: AnalysisEngine[];
   metrics: {
@@ -141,6 +185,13 @@ export type QuoteMarketState = {
     driftTStatistic: number | null;
     ar1: number | null;
     halfLifeTicks: number | null;
+    /** AR(1)-on-levels coefficient (the mean-reversion engine's fit). */
+    levelReversionPhi: number | null;
+    /** t-statistic of phi − 1 against the unit-root null. */
+    levelReversionTStatistic: number | null;
+    levelReversionP: number | null;
+    /** Current stretch away from the fitted equilibrium, in stationary σ. */
+    displacementZ: number | null;
     cusum: number | null;
     cusumSignificance: number | null;
     cadenceVariation: number | null;
@@ -152,6 +203,10 @@ export type MarketState = DigitMarketState | QuoteMarketState;
 
 const UNIFORM = Array.from({ length: 10 }, () => 0.1);
 const TESTS_PER_FAMILY = 8;
+/** Unit-root t bar for the level-reversion engine (beyond Dickey–Fuller 1%). */
+const LEVEL_REVERSION_T = 3.5;
+/** Largest probability tilt one engine may publish. */
+const LEVEL_REVERSION_MAX_TILT = 0.2;
 
 function finiteDigits(digits: readonly number[]): number[] {
   return digits.filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9);
@@ -655,6 +710,96 @@ function returnDriftTStatistic(returns: readonly number[], window = 300): number
   return mean(values) / (deviation / Math.sqrt(values.length));
 }
 
+/**
+ * Fit the level-reversion model on the last `window` quotes.
+ *
+ * OLS on `quote[t] = a + phi·quote[t−1] + e` with the usual standard error, so
+ * `tStatistic` is a real unit-root test rather than a descriptive number. The
+ * engine's significance bar lives in `analyzeQuoteState`; the model itself just
+ * reports what the data says.
+ */
+export function fitLevelReversion(pricesInput: readonly number[], window = 600): LevelReversionModel | null {
+  const values = pricesInput.filter((value) => Number.isFinite(value) && value > 0).slice(-Math.max(120, window));
+  const n = values.length;
+  if (n < 120) return null;
+  const pairs = n - 1;
+  let sumX = 0;
+  let sumY = 0;
+  for (let index = 1; index < n; index += 1) {
+    sumX += values[index - 1];
+    sumY += values[index];
+  }
+  const meanX = sumX / pairs;
+  const meanY = sumY / pairs;
+  let sxx = 0;
+  let sxy = 0;
+  for (let index = 1; index < n; index += 1) {
+    const dx = values[index - 1] - meanX;
+    sxx += dx * dx;
+    sxy += dx * (values[index] - meanY);
+  }
+  if (!(sxx > 1e-12)) return null;
+  const phi = sxy / sxx;
+  const intercept = meanY - phi * meanX;
+  let sse = 0;
+  for (let index = 1; index < n; index += 1) {
+    const residual = values[index] - (intercept + phi * values[index - 1]);
+    sse += residual * residual;
+  }
+  const residualVariance = sse / Math.max(1, pairs - 1);
+  const sigma = Math.sqrt(Math.max(0, residualVariance));
+  const standardError = Math.sqrt(Math.max(1e-18, residualVariance / sxx));
+  const tStatistic = standardError > 1e-12 ? (phi - 1) / standardError : 0;
+  const stationary = phi > 0 && phi < 1;
+  const meanLevel = stationary ? intercept / (1 - phi) : meanY;
+  const levelSigma = stationary ? sigma / Math.sqrt(Math.max(1e-12, 1 - phi * phi)) : 0;
+  const last = values[n - 1];
+  const displacementZ = levelSigma > 1e-12 ? (last - meanLevel) / levelSigma : 0;
+  const halfLifeTicks = stationary ? -Math.log(2) / Math.log(phi) : null;
+  // Only a fit that is statistically distinguishable from a unit root, with a
+  // half-life the bot could actually trade (two ticks to two minutes), can move
+  // a probability. Anything else is descriptive.
+  const significant = stationary
+    && tStatistic <= -LEVEL_REVERSION_T
+    && halfLifeTicks !== null
+    && halfLifeTicks >= 2
+    && halfLifeTicks <= 120;
+  return {
+    sample: pairs,
+    phi,
+    mean: meanLevel,
+    last,
+    sigma,
+    levelSigma,
+    displacementZ,
+    halfLifeTicks,
+    tStatistic,
+    pValue: normalPValue(tStatistic),
+    significant,
+    active: significant,
+  };
+}
+
+/**
+ * P(the quote is higher after `horizonTicks`) under the fitted reversion model.
+ *
+ * Returns null when the fit is not significant, so callers cannot accidentally
+ * publish an edge that the level test never found.
+ */
+export function levelReversionProbabilityUp(model: LevelReversionModel | null, horizonTicks: number): number | null {
+  if (!model || !model.active) return null;
+  const horizon = clamp(Math.round(Number.isFinite(horizonTicks) ? horizonTicks : 5), 1, 120);
+  if (!(model.phi > 0 && model.phi < 1)) return null;
+  const decay = Math.pow(model.phi, horizon);
+  const expected = (model.last - model.mean) * (decay - 1);
+  const variance = (model.sigma * model.sigma * (1 - Math.pow(model.phi, 2 * horizon))) / Math.max(1e-12, 1 - model.phi * model.phi);
+  if (!(variance > 1e-18)) return null;
+  const raw = normalCdf(expected / Math.sqrt(variance));
+  // The tilt is capped the way the prior is: one engine may inform the
+  // probability, never take it over.
+  return clamp(0.5 + clamp(raw - 0.5, -LEVEL_REVERSION_MAX_TILT, LEVEL_REVERSION_MAX_TILT), 0.001, 0.999);
+}
+
 function tickSpacingMs(epochs: readonly number[]): number {
   const gaps: number[] = [];
   for (let index = Math.max(1, epochs.length - 500); index < epochs.length; index += 1) {
@@ -667,6 +812,26 @@ function tickSpacingMs(epochs: readonly number[]): number {
   // Feeds report epochs in seconds; an obviously millisecond-scale value is
   // accepted as-is so tests and replays can use either unit.
   return raw > 1e6 ? raw : raw * 1_000;
+}
+
+/**
+ * The prior probability of a rise that the analysis layer publishes.
+ *
+ * Two measured terms: the engine direction blend (drift, trend, structure) and
+ * the level-reversion pull at the exit horizon. The level term only exists when
+ * the unit-root test cleared its bar, so a random walk gets the trend term
+ * alone. `backtestQuotePrior` calls this exact function over a rolling window,
+ * so the published skill grades the prior that is actually shipped.
+ */
+export function quotePriorProbability(input: {
+  direction: number;
+  level: LevelReversionModel | null;
+  horizonTicks?: number;
+}): number {
+  const trendTilt = 0.08 * clamp(input.direction, -1, 1);
+  const levelProbability = levelReversionProbabilityUp(input.level, input.horizonTicks ?? 5);
+  const levelTilt = levelProbability === null ? 0 : (levelProbability - 0.5) * 0.6;
+  return clamp(0.5 + trendTilt + levelTilt, 0.3, 0.7);
 }
 
 function backtestQuotePrior(prices: readonly number[]): PriorBacktest {
@@ -691,7 +856,8 @@ function backtestQuotePrior(prices: readonly number[]): PriorBacktest {
       + (efficiency > 0.18 ? Math.sign(trend.slope) : 0) * 0.2
       + (vr.interpretation === 'persistent' ? Math.sign(trend.slope) : 0) * 0.15,
     );
-    const probability = clamp(0.5 + 0.08 * direction, 0.42, 0.58);
+    // Same recipe as the live prior, level pull included.
+    const probability = quotePriorProbability({ direction, level: fitLevelReversion(history), horizonTicks: 5 });
     const move = prices[origin + 5] - prices[origin];
     const won = move > 0 ? 1 : 0;
     brier += (probability - won) ** 2;
@@ -723,13 +889,14 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
     return {
       kind: 'quote', regime: 'insufficient', predictability: 0, confidence: 0, sample, direction: 0,
       tickSpacingMs: 1_000, volatility: { perTick: 0, atr: 0, shortLongRatio: 1, percentile: 0.5, regime: 'normal' },
-      prior: null, priorBacktest: emptyBacktest, engines: [],
+      prior: null, levelReversion: null, priorBacktest: emptyBacktest, engines: [],
       metrics: {
         efficiencyRatio100: null, efficiencyRatio300: null, hurst: null,
         varianceRatio: null, varianceRatioZ: null, varianceRatioP: null,
         ljungBoxP: null, maxAutocorrelation: null, lagOneAutocorrelation: null,
         runsZ: null, runsP: null, adx: null, plusDi: null, minusDi: null,
         trendSlope: null, trendTStatistic: null, driftTStatistic: null, ar1: null, halfLifeTicks: null,
+        levelReversionPhi: null, levelReversionTStatistic: null, levelReversionP: null, displacementZ: null,
         cusum: null, cusumSignificance: null, cadenceVariation: null,
       },
       summary: `Only ${sample} validated quotes — the analysis engines need at least 200 ticks to measure structure.`,
@@ -848,7 +1015,41 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
   };
   engines.push(meanReversionEngine);
 
-  // 9. Volatility regime.
+  // 9. Level reversion (Ornstein–Uhlenbeck on the quote itself). The AR(1)
+  //    engine above reads *returns*; a market can revert around an equilibrium
+  //    with almost no return autocorrelation, because the pull scales with the
+  //    distance from the mean, not with the last tick's move. This engine fits
+  //    the level directly, so "price is two σ above its equilibrium" becomes a
+  //    measured directional edge at any exit horizon instead of an invisible
+  //    one. A random walk fits phi ≈ 1 and publishes nothing.
+  const levelModel = fitLevelReversion(prices);
+  const levelStrength = levelModel === null
+    ? 0
+    : clamp(Math.abs(levelModel.tStatistic) / 6, 0, 1) * (levelModel.significant ? 1 : 0);
+  // Direction the reversion implies for the NEXT move: toward the equilibrium.
+  const levelDirection = levelModel === null || !levelModel.significant || Math.abs(levelModel.displacementZ) < 0.15
+    ? 0
+    : clamp(-Math.sign(levelModel.displacementZ) * Math.min(1, Math.abs(levelModel.displacementZ) / 2), -1, 1);
+  const levelEngine: AnalysisEngine = {
+    id: 'level-reversion', label: 'AR(1) on quote levels · pull to equilibrium', family: 'statistical',
+    verdict: levelModel === null
+      ? 'not enough quotes to fit a level model'
+      : levelModel.significant
+        ? `mean reversion confirmed (half-life ${(levelModel.halfLifeTicks ?? 0).toFixed(1)} ticks, price ${levelModel.displacementZ >= 0 ? '+' : ''}${levelModel.displacementZ.toFixed(2)}σ from equilibrium)`
+        : levelModel.phi >= 0.999
+          ? 'level behaves like a unit root (random walk); no pull measured'
+          : `no significant pull (phi ${levelModel.phi.toFixed(4)}, t ${levelModel.tStatistic.toFixed(2)})`,
+    value: levelModel === null ? null : Math.sign(levelDirection),
+    strength: levelStrength,
+    pValue: levelModel === null ? null : levelModel.pValue,
+    sample: levelModel === null ? 0 : levelModel.sample,
+    detail: levelModel === null
+      ? 'The level fit needs at least 120 quotes.'
+      : `quote[t] = a + phi·quote[t−1]; phi = ${levelModel.phi.toFixed(4)} (unit root = 1), t = ${levelModel.tStatistic.toFixed(2)} against phi = 1 (bar ${LEVEL_REVERSION_T}), implied half-life ${levelModel.halfLifeTicks === null ? '—' : `${levelModel.halfLifeTicks.toFixed(1)} ticks`}, equilibrium ${levelModel.mean.toFixed(4)}, current quote ${levelModel.last.toFixed(4)} (${levelModel.displacementZ >= 0 ? '+' : ''}${levelModel.displacementZ.toFixed(2)}σ).`,
+  };
+  engines.push(levelEngine);
+
+  // 10. Volatility regime.
   const shortAtr = mean(absoluteReturns.slice(-20));
   const longAtr = mean(absoluteReturns.slice(-300));
   const shortLongRatio = longAtr > 1e-12 ? shortAtr / longAtr : 1;
@@ -862,7 +1063,7 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
   };
   engines.push(volatilityEngine);
 
-  // 10. CUSUM structural break.
+  // 11. CUSUM structural break.
   const cusum = cusumChange(returns.slice(-400));
   const shiftEngine: AnalysisEngine = {
     id: 'cusum-break', label: 'CUSUM · structural break in returns', family: 'structure',
@@ -874,7 +1075,7 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
   };
   engines.push(shiftEngine);
 
-  // 11. Tick cadence — a quality check, not an edge.
+  // 12. Tick cadence — a quality check, not an edge.
   let cadenceVariation: number | null = null;
   if (epochsInput.length > 10) {
     const gaps: number[] = [];
@@ -900,6 +1101,7 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
   const vrSignificant = vr.pValue < alpha;
   const acfSignificant = lb.pValue < alpha;
   const runsSignificant = runs.pValue < alpha;
+  const levelSignificant = levelModel !== null && levelModel.significant && Math.abs(levelModel.displacementZ) >= 0.15;
   // Hurst is a noisier long-memory estimate; only counts when another test
   // agrees that the series is not a pure random walk.
   const hurstSignificant = (hurst.hurst > 0.56 || hurst.hurst < 0.44) && (vrSignificant || acfSignificant);
@@ -909,6 +1111,7 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
     acfSignificant ? clamp(Math.abs(lagOne) / 0.12, 0, 1) : 0,
     runsSignificant ? clamp(Math.abs(runs.zScore) / 3.5, 0, 1) : 0,
     hurstSignificant ? hurstStrength : 0,
+    levelSignificant ? levelStrength : 0,
   ];
   const combined = 1 - contributions.reduce((product, value) => product * (1 - 0.65 * clamp(value, 0, 1)), 1);
   const sampleFactor = clamp((sample - 200) / 1_000, 0.3, 1);
@@ -922,6 +1125,9 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
     { value: hurst.hurst > 0.56 ? Math.sign(trend.slope) * 0.4 : hurst.hurst < 0.44 ? -Math.sign(trend.slope) * 0.4 : 0, weight: 0.1 },
     { value: vrSignificant ? (vr.ratio > 1 ? Math.sign(trend.slope) : -Math.sign(trend.slope)) * 0.3 : 0, weight: 0.08 },
     { value: acfSignificant ? Math.sign(lagOne) * 0.3 : 0, weight: 0.08 },
+    // The level engine is a direct statement about the next move, so it carries
+    // real weight when it fires — and zero when it does not.
+    { value: levelSignificant ? levelDirection : 0, weight: levelSignificant ? 0.32 : 0.04 },
   ];
   const direction = clamp(directionParts.reduce((sum, part) => sum + part.value * part.weight, 0) / directionParts.reduce((sum, part) => sum + part.weight, 0), -1, 1);
   const priorBacktest = backtestQuotePrior(prices);
@@ -930,7 +1136,7 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
   // measured as random is noise, not a prior.
   const prior =
     priorBacktest.improved && predictability >= 0.1
-      ? clamp(0.5 + 0.08 * direction, 0.42, 0.58)
+      ? quotePriorProbability({ direction, level: levelModel, horizonTicks: 5 })
       : null;
 
   // A statistically significant drift is a trend even when ADX is muted: ADX
@@ -940,7 +1146,7 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
     (trendSignificant && er300 >= 0.1 && Math.abs(direction) >= 0.15) ||
     (vrSignificant && vr.ratio > 1 && er300 >= 0.12 && Math.abs(direction) >= 0.15) ||
     (driftP < 0.001 && adx.adx >= 25 && er300 >= 0.2 && Math.abs(direction) >= 0.2);
-  const reverting = (vrSignificant && vr.ratio < 1) || (acfSignificant && lagOne < -0.03) || (runsSignificant && runs.direction === 'alternating' && Math.abs(runs.zScore) >= 2.5);
+  const reverting = (vrSignificant && vr.ratio < 1) || (acfSignificant && lagOne < -0.03) || (runsSignificant && runs.direction === 'alternating' && Math.abs(runs.zScore) >= 2.5) || levelSignificant;
   const regime: QuoteRegime = trending
     ? direction >= 0 ? 'trending-up' : 'trending-down'
     : reverting
@@ -965,7 +1171,7 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
       percentile: volatilityPercentile,
       regime: shortLongRatio > 1.3 ? 'volatile' : shortLongRatio < 0.7 ? 'quiet' : 'normal',
     },
-    prior, priorBacktest, engines,
+    prior, levelReversion: levelModel, priorBacktest, engines,
     metrics: {
       efficiencyRatio100: er100, efficiencyRatio300: er300, hurst: hurst.hurst,
       varianceRatio: vr.ratio, varianceRatioZ: vr.zScore, varianceRatioP: vr.pValue,
@@ -974,6 +1180,10 @@ export function analyzeQuoteState(pricesInput: readonly number[], epochsInput: r
       adx: adx.adx, plusDi: adx.plusDi, minusDi: adx.minusDi,
       trendSlope: trend.slope, trendTStatistic: trend.tStatistic, driftTStatistic: driftT,
       ar1, halfLifeTicks: halfLife,
+      levelReversionPhi: levelModel === null ? null : levelModel.phi,
+      levelReversionTStatistic: levelModel === null ? null : levelModel.tStatistic,
+      levelReversionP: levelModel === null ? null : levelModel.pValue,
+      displacementZ: levelModel === null ? null : levelModel.displacementZ,
       cusum: Math.abs(cusum.statistic), cusumSignificance: cusum.significance,
       cadenceVariation,
     },
