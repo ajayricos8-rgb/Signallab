@@ -57,6 +57,8 @@ export type PriorBacktest = {
   skill: number | null;
   /** Hit rate when the prior is read as a best-digit/next-side call. */
   accuracy: number | null;
+  /** Paired z of the per-row Brier improvement over uniform. */
+  pairedZ?: number | null;
   improved: boolean;
 };
 
@@ -69,6 +71,12 @@ export type DigitMarketState = {
   /** Distribution over the next digit built only from significant tests. */
   prior: number[] | null;
   priorStrength: number;
+  /**
+   * Every measured angle behind the prior, with its own out-of-sample Brier
+   * skill and the weight it earned. Angles that could not beat uniform carry
+   * weight 0 and are kept only for the panel.
+   */
+  priorComponents: DigitPriorComponent[];
   priorBacktest: PriorBacktest;
   engines: AnalysisEngine[];
   metrics: {
@@ -238,6 +246,13 @@ function transitions(digits: readonly number[]): number[][] {
   return table;
 }
 
+/** Counts from a digit to the digit `steps` ticks later. */
+function transitionsAhead(digits: readonly number[], steps: number): number[][] {
+  const table = Array.from({ length: 10 }, () => Array<number>(10).fill(0));
+  for (let index = 0; index + steps < digits.length; index += 1) table[digits[index]][digits[index + steps]] += 1;
+  return table;
+}
+
 function smoothed(countsValue: readonly number[], strength = 10): number[] {
   return normalize(countsValue.map((count) => count + strength / 10));
 }
@@ -258,142 +273,581 @@ function decayedHistogram(digits: readonly number[], halfLife: number): number[]
   return normalize(weights.map((value) => value + 0.2));
 }
 
-/** Next-digit distribution for a repeated n-gram context. */
-function contextForecast(digits: readonly number[], order: number): { distribution: number[]; support: number } | null {
-  if (digits.length < order + 10) return null;
-  const context = digits.slice(-order).join('');
+/**
+ * The digit `horizon` ticks ahead, given the last `order` digits.
+ *
+ * The target is the digit at `origin + horizon`, not the next one: a digit
+ * contract settles at its own exit tick, so a one-tick-ahead forecast is the
+ * wrong question for a five-tick contract — and answering it anyway is exactly
+ * what produced a negative out-of-sample skill on serially dependent streams.
+ */
+function contextForecast(digits: readonly number[], order: number, horizon = 1): { distribution: number[]; support: number } | null {
+  const length = digits.length;
+  if (length < order + horizon + 10) return null;
+  let context = 0;
+  const place = 10 ** order;
+  for (let index = length - order; index < length; index += 1) context = context * 10 + digits[index];
   const countsValue = Array<number>(10).fill(0);
   let support = 0;
-  for (let index = 0; index + order < digits.length; index += 1) {
-    if (digits.slice(index, index + order).join('') !== context) continue;
-    countsValue[digits[index + order]] += 1;
-    support += 1;
+  // Rolling integer key: no substring allocation per tick. This runs hundreds
+  // of times per market (every prior origin), so it has to stay cheap.
+  let key = 0;
+  for (let index = 0; index < length; index += 1) {
+    key = (key * 10 + digits[index]) % place;
+    if (index >= order - 1 && key === context && index + horizon < length) {
+      countsValue[digits[index + horizon]] += 1;
+      support += 1;
+    }
   }
   if (support < 6) return null;
   return { distribution: smoothed(countsValue, 8), support };
 }
 
-/**
- * Fast prior used by the internal backtest. Deliberately the same recipe the
- * live prior uses, so the skill number describes the prior actually shipped.
- */
-function buildDigitPrior(
-  digits: readonly number[],
-  evidence: { bias: number; dependence: number; pattern: number; hotCold: number; periodicity: number },
-): { prior: number[]; strength: number } | null {
-  if (digits.length < 250) return null;
-  const components: Array<{ distribution: number[]; weight: number }> = [];
-  components.push({ distribution: decayedHistogram(digits.slice(-600), 90), weight: 0.3 + evidence.bias });
-  const table = transitions(digits.slice(-1_000));
-  const last = digits.at(-1) ?? 0;
-  const row = table[last];
-  const rowTotal = row.reduce((total, value) => total + value, 0);
-  if (rowTotal >= 40) components.push({ distribution: smoothed(row, 12), weight: 0.2 + evidence.dependence });
-  for (const order of [2, 3, 4]) {
-    const forecast = contextForecast(digits, order);
-    if (forecast) components.push({ distribution: forecast.distribution, weight: (0.15 + evidence.pattern) * Math.min(1, forecast.support / 20) });
+// ---------------------------------------------------------------------------
+// Digit prior — one pool of measured forecasts, one weight per angle.
+//
+// The analysis layer used to assemble the next-digit prior from a handful of
+// hand-tuned heuristics (a decayed histogram, the transition row, an n-gram
+// forecast, a "hot digit" boost and a lag-1 periodic copy) mixed by five
+// coarse evidence numbers, and then graded it with a BACKTEST THAT BUILT A
+// DIFFERENT PRIOR. An out-of-sample audit of the result was blunt: on a
+// stationary biased stream the published prior scored WORSE than uniform
+// (Brier skill −0.12), and on a reversal stream it was catastrophic (−6.6).
+//
+// This replaces it with the same principle the Rise/Fall panel already uses:
+// every angle is its own forecast, its own weight comes from its own measured
+// out-of-sample Brier skill, and anything that cannot beat uniform carries
+// exactly zero weight. The pool is then VALIDATED as a whole on rows the
+// weights never saw, which is the number the UI reports.
+// ---------------------------------------------------------------------------
+
+export type DigitPriorComponentId =
+  | 'frequency'
+  | 'recent'
+  | 'transition'
+  | 'pattern'
+  | 'momentum'
+  | 'drift'
+  | 'reversal'
+  | 'repeat'
+  | 'spike'
+  | 'gap';
+
+export type DigitPriorComponent = {
+  id: DigitPriorComponentId;
+  label: string;
+  /** Next-digit distribution from this angle, or null when it has nothing to say. */
+  probabilities: number[] | null;
+  /** Independent observations behind the forecast. */
+  support: number;
+  /** Out-of-sample Brier skill vs uniform, measured on rows before the validation tail. */
+  skill: number | null;
+  /** Weight used in the pool (0 when the angle did not beat uniform). */
+  weight: number;
+};
+
+/** Uniform mass the pool always keeps, so no single angle can take it over. */
+const PRIOR_UNIFORM_FLOOR = 0.4;
+/** Origins used to score each angle's own out-of-sample skill. */
+const PRIOR_WEIGHT_ORIGINS = 180;
+/** Origins used to validate the assembled prior (never used for the weights). */
+const PRIOR_VALIDATION_ORIGINS = 240;
+/** A digit forecast never moves a digit further than this from uniform. */
+const PRIOR_DIGIT_CLIP = 0.12;
+
+const D = (value: number) => Math.max(1e-6, value);
+
+function digitSlope(values: readonly number[]): { slope: number; t: number; residual: number } {
+  const n = values.length;
+  if (n < 12) return { slope: 0, t: 0, residual: 0 };
+  const meanX = (n - 1) / 2;
+  const meanY = mean(values);
+  let sxy = 0;
+  let sxx = 0;
+  for (let index = 0; index < n; index += 1) {
+    const dx = index - meanX;
+    sxy += dx * (values[index] - meanY);
+    sxx += dx * dx;
   }
-  if (evidence.hotCold > 0.05) {
-    const recent = counts(digits.slice(-300));
-    const older = counts(digits.slice(-1_000, -300));
-    const boost = Array.from({ length: 10 }, (_, digit) => {
-      const oldRate = (older[digit] + 1) / (older.reduce((sum, value) => sum + value, 0) + 10);
-      const newRate = (recent[digit] + 1) / (recent.reduce((sum, value) => sum + value, 0) + 10);
-      return Math.max(0, newRate - oldRate);
-    });
-    components.push({ distribution: normalize(boost.map((value) => 0.01 + value * 8)), weight: 0.1 + evidence.hotCold });
-  }
-  if (evidence.periodicity > 0.05) {
-    const values = digits.slice(-600);
-    let bestLag = 1;
-    let best = 0;
-    for (let lag = 1; lag <= 20; lag += 1) {
-      const rho = autocorrelation(values, lag);
-      if (rho !== null && Math.abs(rho) > Math.abs(best)) { best = rho; bestLag = lag; }
-    }
-    if (Math.abs(best) > 0.04) {
-      const distribution = Array<number>(10).fill(0.2);
-      let weight = 1;
-      for (let step = 1; step <= 4; step += 1) {
-        const index = values.length - 1 - bestLag * step;
-        if (index < 0) break;
-        distribution[values[index]] += weight;
-        weight *= 0.6;
-      }
-      components.push({ distribution: normalize(distribution), weight: 0.1 + evidence.periodicity });
-    }
-  }
-  const totalWeight = components.reduce((sum, component) => sum + component.weight, 0);
-  if (!(totalWeight > 0)) return null;
-  let prior = Array<number>(10).fill(0);
-  for (const component of components) prior = prior.map((value, digit) => value + component.distribution[digit] * (component.weight / totalWeight));
-  prior = normalize(prior);
-  // Never let the analysis layer claim more than a modest shift from uniform.
-  const clip = 0.1;
-  prior = normalize(prior.map((value) => clamp(value, 0.1 - clip, 0.1 + clip * 2)));
-  const strength = totalVariation(prior, UNIFORM);
-  return { prior: mix(prior, UNIFORM, clamp(1 - strength * 2, 0.6, 0.95)), strength };
+  const slope = sxx > 0 ? sxy / sxx : 0;
+  let sse = 0;
+  for (let index = 0; index < n; index += 1) sse += (values[index] - (meanY + slope * (index - meanX))) ** 2;
+  const residual = Math.sqrt(sse / Math.max(1, n - 2));
+  const standardError = sxx > 0 ? residual / Math.sqrt(sxx) : 0;
+  return { slope, t: standardError > 1e-9 ? slope / standardError : 0, residual };
 }
 
-function backtestDigitPrior(digits: readonly number[]): PriorBacktest {
+/** AR(1) on the digit values themselves: the signed reversion / momentum fit. */
+function digitAr1(values: readonly number[]): { mu: number; phi: number; sigma: number; t: number } {
+  const n = values.length;
+  if (n < 20) return { mu: 4.5, phi: 0, sigma: 3, t: 0 };
+  let sumX = 0;
+  let sumY = 0;
+  for (let index = 1; index < n; index += 1) { sumX += values[index - 1]; sumY += values[index]; }
+  const meanX = sumX / (n - 1);
+  const meanY = sumY / (n - 1);
+  let sxx = 0;
+  let sxy = 0;
+  for (let index = 1; index < n; index += 1) {
+    const dx = values[index - 1] - meanX;
+    sxx += dx * dx;
+    sxy += dx * (values[index] - meanY);
+  }
+  const phi = sxx > 1e-9 ? sxy / sxx : 0;
+  const intercept = meanY - phi * meanX;
+  let sse = 0;
+  for (let index = 1; index < n; index += 1) sse += (values[index] - (intercept + phi * values[index - 1])) ** 2;
+  const variance = sse / Math.max(1, n - 2);
+  const standardError = sxx > 1e-9 ? Math.sqrt(variance / sxx) : 0;
+  return {
+    mu: Math.abs(1 - phi) > 1e-6 ? intercept / (1 - phi) : meanY,
+    phi,
+    sigma: Math.sqrt(Math.max(1e-6, variance)),
+    t: standardError > 1e-12 ? phi / standardError : 0,
+  };
+}
+
+/** Gaussian distribution over the ten digits, from a predicted centre. */
+function digitGaussian(center: number, deviation: number): number[] {
+  const sd = Math.max(0.8, deviation);
+  return normalize(UNIFORM.map((_, digit) => {
+    const upper = digit === 9 ? 1 : normalCdf((digit + 0.5 - center) / sd);
+    const lower = digit === 0 ? 0 : normalCdf((digit - 0.5 - center) / sd);
+    return Math.max(1e-6, upper - lower);
+  }));
+}
+
+/** Rate of exact repeats (digit[i] === digit[i-1]) and its binomial z vs 10%. */
+function repeatStats(values: readonly number[]): { rate: number; z: number; sample: number } {
+  if (values.length < 40) return { rate: 0.1, z: 0, sample: 0 };
+  let hits = 0;
+  for (let index = 1; index < values.length; index += 1) if (values[index] === values[index - 1]) hits += 1;
+  const sample = values.length - 1;
+  const rate = hits / sample;
+  const standardError = Math.sqrt((0.1 * 0.9) / sample);
+  return { rate, z: (rate - 0.1) / Math.max(1e-9, standardError), sample };
+}
+
+/** Largest burst of one digit inside the last `size` ticks. */
+function burstStats(values: readonly number[], size = 20, digitCount = 10): { digit: number | null; count: number; p: number } {
+  if (values.length < size) return { digit: null, count: 0, p: 1 };
+  const recent = values.slice(-size);
+  const tally = Array<number>(10).fill(0);
+  for (const digit of recent) tally[digit] += 1;
+  let digit = 0;
+  for (let index = 1; index < digitCount; index += 1) if (tally[index] > tally[digit]) digit = index;
+  const count = tally[digit];
+  // P(any digit appears `count`+ times in `size` draws at 10%) — binomial tail,
+  // Bonferroni over the ten digits.
+  let tail = 0;
+  for (let k = count; k <= size; k += 1) tail += binomialProbability(size, k, 0.1);
+  return { digit: count > 0 ? digit : null, count, p: clamp(tail * digitCount, 0, 1) };
+}
+
+function binomialProbability(n: number, k: number, p: number): number {
+  let logProbability = 0;
+  for (let index = 0; index < k; index += 1) logProbability += Math.log((n - index) / (index + 1));
+  logProbability += k * Math.log(p) + (n - k) * Math.log(1 - p);
+  return Math.exp(logProbability);
+}
+
+/**
+ * How over-dispersed the per-digit gap distribution is (variance / mean of the
+ * gaps). A memoryless digit stream has geometric gaps, where this is 1. Above
+ * 1.3 digit appearances are clustered, which is the only case in which "this
+ * digit is overdue" is a measurement rather than the gambler's fallacy.
+ */
+function gapDispersion(values: readonly number[]): { ratio: number; overdue: number[]; p: number } {
+  if (values.length < 200) return { ratio: 1, overdue: [], p: 1 };
+  let weighted = 0;
+  let squares = 0;
+  let observations = 0;
+  for (let digit = 0; digit < 10; digit += 1) {
+    const gaps: number[] = [];
+    let last = -1;
+    for (let index = 0; index < values.length; index += 1) {
+      if (values[index] !== digit) continue;
+      if (last >= 0) gaps.push(index - last);
+      last = index;
+    }
+    if (gaps.length < 12) continue;
+    const average = mean(gaps);
+    const variance = gaps.reduce((total, gap) => total + (gap - average) ** 2, 0) / Math.max(1, gaps.length - 1);
+    weighted += variance;
+    squares += average;
+    observations += 1;
+  }
+  if (!observations) return { ratio: 1, overdue: [], p: 1 };
+  // variance/mean over all ten digits: 1.0 under a memoryless stream.
+  const ratio = weighted / Math.max(1e-9, squares);
+  // The variance of the ratio is roughly 4/n_gaps; a 2-sigma excess is a real
+  // clustering signal. Convert to a one-sided p for the engine panel.
+  const p = normalPValue((ratio - 1) / 0.28);
+  const seen = Array<number>(10).fill(-1);
+  for (let index = 0; index < values.length; index += 1) seen[values[index]] = index;
+  const gapsNow = seen.map((index) => (index < 0 ? values.length : values.length - 1 - index));
+  const cutoff = Math.max(12, (values.length / 10) * 1.6);
+  const overdue = gapsNow.map((gap, digit) => ({ gap, digit })).filter((row) => row.gap >= cutoff).sort((left, right) => right.gap - left.gap).map((row) => row.digit);
+  return { ratio, overdue, p };
+}
+
+/**
+ * Every measured angle that can say something about the next digit.
+ * Each one is independent of the others (they read different statistics), and
+ * each returns null when it has no evidence at all — never a guess.
+ */
+export function digitPriorComponents(digits: readonly number[], horizon = 1): DigitPriorComponent[] {
+  const history = digits.slice(-3_000);
+  const last = history.at(-1) ?? 0;
+  const steps = Math.max(1, Math.min(10, Math.round(horizon)));
+  const components: Array<{ id: DigitPriorComponentId; label: string; probabilities: number[] | null; support: number }> = [];
+
+  // 1. Long-run frequency (decayed, so old ticks fade). Unconditional: it is a
+  //    claim about the marginal distribution and needs no local trigger.
+  const long = decayedHistogram(history.slice(-600), 90);
+  components.push({
+    id: 'frequency', label: 'Decayed frequency · 600 ticks',
+    probabilities: long,
+    support: Math.min(600, history.length),
+  });
+
+  // 2. Short-run appearance. Also unconditional, and deliberately responsive.
+  const recentCounts = counts(history.slice(-120));
+  components.push({
+    id: 'recent', label: 'Recent appearance · 120 ticks',
+    probabilities: smoothed(recentCounts, 18),
+    support: Math.min(120, history.length),
+  });
+
+  // 3. Lag-1 transition row for the digit that just printed. CONDITIONAL: the
+  //    row only means something when this digit's outcomes differ from the
+  //    marginal by more than their own sampling error, so that is tested
+  //    locally before the row is allowed to speak.
+  // The row is built from `last` to the digit `steps` ticks ahead, so a five-tick
+  // contract is given the five-tick transition, not the one-tick one.
+  const table = transitionsAhead(history.slice(-1_400), steps);
+  const row = table[last] ?? Array<number>(10).fill(0);
+  const rowTotal = row.reduce((total, value) => total + value, 0);
+  let transition: number[] | null = null;
+  if (rowTotal >= 60) {
+    const expected = UNIFORM.map((probability) => probability * rowTotal);
+    let chiSquare = 0;
+    for (let digit = 0; digit < 10; digit += 1) chiSquare += ((row[digit] - expected[digit]) ** 2) / Math.max(1e-9, expected[digit]);
+    // df 9; the 1% critical value is 21.7. A local test, so no family correction.
+    if (chiSquare > 21.7) transition = smoothed(row, 14);
+  }
+  components.push({ id: 'transition', label: 'Transition row · P(next | last digit)', probabilities: transition, support: rowTotal });
+
+  // 4. Recurring n-gram context. CONDITIONAL on the context repeating AND the
+  //    observed follow-through differing from the marginal by 2.5 standard
+  //    errors at that support.
+  let pattern: number[] | null = null;
+  let patternSupport = 0;
+  for (const order of [3, 2, 4]) {
+    const forecast = contextForecast(history, order, steps);
+    if (!forecast || forecast.support < 10) continue;
+    const top = Math.max(...forecast.distribution);
+    const standardError = Math.sqrt(Math.max(1e-9, 0.1 * 0.9 / forecast.support));
+    if ((top - 0.1) / standardError < 2.5) continue;
+    pattern = pattern ? mix(pattern, forecast.distribution, forecast.support / (forecast.support + 20)) : forecast.distribution;
+    patternSupport = Math.max(patternSupport, forecast.support);
+  }
+  components.push({ id: 'pattern', label: 'Repeated 2–4 digit context', probabilities: pattern, support: patternSupport });
+
+  // 5. Momentum: the digit level itself is trending. CONDITIONAL on a
+  //    significant slope, so a flat stream never pays for a drift guess.
+  const short = history.slice(-60);
+  const slope = digitSlope(short);
+  components.push({
+    id: 'momentum', label: 'Digit-level momentum · 60-tick slope',
+    probabilities: short.length >= 40 && Math.abs(slope.t) >= 2
+      ? digitGaussian(last + slope.slope * Math.min(steps, 6), Math.max(1.1, slope.residual * Math.sqrt(steps)))
+      : null,
+    support: short.length,
+  });
+
+  // 6. Drift: which digits have become more (or less) frequent than they used
+  //    to be. This is the angle that catches a distribution that MOVED — the
+  //    level-trend forecast above cannot see it.
+  const recent300 = counts(history.slice(-150));
+  const older900 = counts(history.slice(-1_050, -150));
+  const recentTotal = recent300.reduce((total, value) => total + value, 0);
+  const olderTotal = older900.reduce((total, value) => total + value, 0);
+  let drift: number[] | null = null;
+  if (recentTotal >= 100 && olderTotal >= 300) {
+    const shifts = Array.from({ length: 10 }, (_, digit) => {
+      const newRate = (recent300[digit] + 1) / (recentTotal + 10);
+      const oldRate = (older900[digit] + 1) / (olderTotal + 10);
+      const standardError = Math.sqrt(Math.max(1e-9, newRate * (1 - newRate) / recentTotal + oldRate * (1 - oldRate) / olderTotal));
+      return { digit, z: (newRate - oldRate) / Math.max(1e-9, standardError) };
+    });
+    const strongest = shifts.reduce((best, row) => (Math.abs(row.z) > Math.abs(best.z) ? row : best), shifts[0]);
+    // Bonferroni over ten digits: |z| ≥ 3.0 is a real move at the 1% family bar.
+    if (Math.abs(strongest.z) >= 3) {
+      drift = normalize(UNIFORM.map((_, digit) => 0.1 + 0.05 * Math.max(-1.2, Math.min(1.2, shifts[digit].z / 3))));
+    }
+  }
+  components.push({ id: 'drift', label: 'Frequency drift · 150 vs 900 ticks', probabilities: drift, support: recentTotal + olderTotal });
+
+  // 7. Reversal: the signed AR(1) pull, only when the reversion is significant.
+  const ar1 = digitAr1(history.slice(-400));
+  components.push({
+    id: 'reversal', label: 'Digit AR(1) reversal · pull to the mean',
+    probabilities: history.length >= 120 && ar1.phi < -0.02 && ar1.t <= -2
+      ? digitGaussian(
+        ar1.mu + Math.pow(ar1.phi, steps) * (last - ar1.mu),
+        Math.max(1.1, ar1.sigma * Math.sqrt((1 - Math.pow(ar1.phi, 2 * steps)) / Math.max(1e-6, 1 - ar1.phi * ar1.phi))),
+      )
+      : null,
+    support: Math.min(400, history.length),
+  });
+
+  // 8. Repetition: does this stream repeat more (or less) than 10%?
+  const repeat = repeatStats(history.slice(-800));
+  const repeatProbability = (() => {
+    if (repeat.sample < 60 || Math.abs(repeat.z) < 2.5) return null;
+    const boost = Math.tanh(repeat.z / 2.5) * 1.2;
+    const distribution = Array<number>(10).fill(0.1);
+    distribution[last] = Math.max(0.005, 0.1 + 0.12 * boost);
+    return normalize(distribution);
+  })();
+  // "Repeats more often than 10%" is a statement about the NEXT tick. Five ticks
+  // later the chain has moved on, so at longer horizons the angle abstains
+  // rather than smuggling a one-tick effect into a five-tick contract.
+  components.push({
+    id: 'repeat', label: 'Exact repeat rate · vs 10%',
+    probabilities: steps === 1 ? repeatProbability : null,
+    support: repeat.sample,
+  });
+
+  // 9. Spike / burst: a digit that has arrived in a cluster.
+  const burst = burstStats(history.slice(-200));
+  components.push({
+    id: 'spike', label: 'Appearance burst · last 20 ticks',
+    probabilities: burst.digit !== null && burst.p < 0.05 && burst.count >= 4
+      ? normalize(UNIFORM.map((_, digit) => (digit === burst.digit ? 0.1 + 0.08 * Math.min(2, burst.count / 4) : 0.1)))
+      : null,
+    support: 20,
+  });
+
+  // 10. Overdue digits — only when the gap distribution is measurably clustered.
+  const gap = gapDispersion(history.slice(-1_500));
+  components.push({
+    id: 'gap', label: 'Overdue digits · clustered appearance',
+    probabilities: gap.ratio > 1.3 && gap.overdue.length
+      ? normalize(UNIFORM.map((_, digit) => (gap.overdue.includes(digit) ? 0.1 + 0.03 * Math.min(3, gap.overdue.indexOf(digit) + 1) : 0.1)))
+      : null,
+    support: Math.min(1_500, history.length),
+  });
+
+  return components.map((component) => ({ ...component, skill: null, weight: 0 }));
+}
+
+/**
+ * The pooled prior at an arbitrary point in time, with weights already decided.
+ *
+ * This is the function the analysis ships and the function its audit replays:
+ * one recipe, so the skill number describes the number on screen. It is also
+ * what the prediction layer uses to score the analysis prior per contract on
+ * its own held-out rows.
+ */
+export function digitPriorWithWeights(
+  digits: readonly number[],
+  horizon: number,
+  weights: ReadonlyMap<DigitPriorComponentId, number>,
+): { prior: number[]; fired: DigitPriorComponentId[] } {
+  const steps = Math.max(1, Math.min(10, Math.round(horizon)));
+  const components = digitPriorComponents(digits, steps);
+  let total = 0;
+  const fired: DigitPriorComponentId[] = [];
+  for (const component of components) {
+    const weight = weights.get(component.id) ?? 0;
+    if (!component.probabilities || weight <= 0) continue;
+    total += weight;
+    fired.push(component.id);
+  }
+  let prior = UNIFORM.map((value) => value * PRIOR_UNIFORM_FLOOR);
+  if (total > 1e-9) {
+    for (const component of components) {
+      const weight = weights.get(component.id) ?? 0;
+      if (!component.probabilities || weight <= 0) continue;
+      const scale = (weight / total) * (1 - PRIOR_UNIFORM_FLOOR);
+      prior = prior.map((value, digit) => value + component.probabilities![digit] * scale);
+    }
+  }
+  prior = normalize(prior.map((value) => D(value)));
+  prior = normalize(prior.map((value) => clamp(value, 0.1 - PRIOR_DIGIT_CLIP, 0.1 + PRIOR_DIGIT_CLIP)));
+  return { prior, fired };
+}
+
+/** Brier loss of a forecast against one target digit (ten-class). */
+function digitBrier(probabilities: readonly number[], target: number): number {
+  let loss = 0;
+  for (let digit = 0; digit < 10; digit += 1) loss += (probabilities[digit] - (digit === target ? 1 : 0)) ** 2;
+  return loss;
+}
+
+/**
+ * Scores each angle on rows the live prior will never see: for a set of past
+ * origins, the component is rebuilt from the history available at that origin
+ * and its ten-class Brier loss is compared with uniform.
+ */
+function scoreDigitComponents(
+  digits: readonly number[],
+  origins: readonly number[],
+  horizon = 1,
+): Map<DigitPriorComponentId, { skill: number; sample: number }> {
+  const totals = new Map<DigitPriorComponentId, { loss: number; base: number; sample: number }>();
+  for (const origin of origins) {
+    const history = digits.slice(0, origin + 1);
+    if (history.length < 200) continue;
+    // Score against the digit the contract actually settles on.
+    const target = digits[origin + horizon];
+    if (!Number.isInteger(target)) continue;
+    let base = 0;
+    for (let digit = 0; digit < 10; digit += 1) base += (0.1 - (digit === target ? 1 : 0)) ** 2;
+    for (const component of digitPriorComponents(history, horizon)) {
+      if (!component.probabilities) continue;
+      const entry = totals.get(component.id) ?? { loss: 0, base: 0, sample: 0 };
+      entry.loss += digitBrier(component.probabilities, target);
+      entry.base += base;
+      entry.sample += 1;
+      totals.set(component.id, entry);
+    }
+  }
+  const skills = new Map<DigitPriorComponentId, { skill: number; sample: number }>();
+  for (const [id, entry] of totals) {
+    skills.set(id, { skill: entry.base > 1e-12 ? 1 - entry.loss / entry.base : 0, sample: entry.sample });
+  }
+  return skills;
+}
+
+/**
+ * The shipped next-digit prior: a linear pool of the measured angles.
+ *
+ * Weight = the angle's own out-of-sample Brier skill, shrunk by its sample and
+ * capped, with a uniform floor of 40%. An angle that did not beat uniform gets
+ * exactly zero, so on a fair stream the pool IS uniform and the published
+ * probability cannot drift.
+ */
+export function buildDigitPrior(digits: readonly number[], horizon = 1): {
+  prior: number[];
+  strength: number;
+  components: DigitPriorComponent[];
+  weights: Map<DigitPriorComponentId, number>;
+} {
+  const steps = Math.max(1, Math.min(10, Math.round(horizon)));
+  const components = digitPriorComponents(digits, steps);
+  const sample = digits.length;
+  const validationStart = Math.max(350, sample - 400);
+  const firstOrigin = Math.max(300, validationStart - 900);
+  const trainingOrigins: number[] = [];
+  const stride = Math.max(2, Math.floor((validationStart - firstOrigin) / PRIOR_WEIGHT_ORIGINS));
+  for (let origin = firstOrigin; origin < validationStart; origin += stride) trainingOrigins.push(origin);
+  const skills = scoreDigitComponents(digits, trainingOrigins, steps);
+  const weights = new Map<DigitPriorComponentId, number>();
+  let rawTotal = 0;
+  for (const component of components) {
+    const measured = skills.get(component.id);
+    // The weight is a property of the ANGLE, not of this particular tick: an
+    // angle that is silent right now must still carry its weight when it fires
+    // during validation, or the audited prior would not be the shipped one.
+    if (!measured || measured.sample < 12) {
+      component.skill = measured ? measured.skill : null;
+      component.weight = 0;
+      weights.set(component.id, 0);
+      continue;
+    }
+    // Shrink the measured skill by its sample: a dozen lucky rows is not
+    // evidence that an angle will keep working.
+    const shrink = measured.sample / (measured.sample + 40);
+    const skill = Math.max(0, measured.skill) * shrink;
+    component.skill = measured.skill;
+    component.weight = skill;
+    weights.set(component.id, skill);
+    rawTotal += skill;
+  }
+  void rawTotal;
+  const { prior } = digitPriorWithWeights(digits, steps, weights);
+  const strength = totalVariation(prior, UNIFORM);
+  return { prior, strength, components, weights };
+}
+
+/**
+ * Honest out-of-sample audit of the shipped prior.
+ *
+ * The weights are fitted on the earlier part of the history only; the prior is
+ * then rebuilt at each origin in the validation tail from that origin's own
+ * history and scored on the next digit. Nothing in the scored rows was used to
+ * choose a weight, so `skill` describes what the analysis layer would really
+ * have published.
+ */
+function backtestDigitPrior(digits: readonly number[], horizon = 1): PriorBacktest {
   const empty: PriorBacktest = { sample: 0, brier: null, baseline: null, skill: null, accuracy: null, improved: false };
-  if (digits.length < 600) return empty;
-  const start = Math.max(400, digits.length - 1_200);
+  const sample = digits.length;
+  const steps = Math.max(1, Math.min(10, Math.round(horizon)));
+  if (sample < 800) return empty;
+  // Build once: this is what the live analysis ships, weights included.
+  const built = buildDigitPrior(digits, steps);
+  const validationStart = Math.max(350, sample - 700);
+  const stride = Math.max(1, Math.floor((sample - 1 - validationStart) / PRIOR_VALIDATION_ORIGINS));
   let brier = 0;
   let baseline = 0;
   let hits = 0;
-  let sample = 0;
-  for (let origin = start; origin < digits.length - 1; origin += 12) {
+  let rows = 0;
+  const improvements: number[] = [];
+  for (let origin = validationStart; origin < sample - 1 - steps; origin += stride) {
     const history = digits.slice(0, origin + 1);
-    // Evidence for the backtest rule is measured on the same trailing window.
-    const window = history.slice(-600);
-    const table = transitions(window);
-    const independence = chiSquareIndependence(table);
-    const uniformity = chiSquareGoodnessOfFit(counts(window));
-    const values = window;
-    const acf = autocorrelation(values, 1) ?? 0;
-    const forecast = contextForecast(history, 4);
-    const built = buildDigitPrior(history, {
-      // The live prior is built with the uniformity/bias strength too; leaving
-      // this at zero made the backtest grade a different (timider) prior than
-      // the one the analysis actually ships.
-      bias: uniformity.pValue < 0.05 ? clamp(uniformity.effect / 0.06, 0, 1) : 0,
-      dependence: independence.pValue < 0.05 ? clamp(independence.effect / 0.06, 0, 1) : 0,
-      pattern: forecast && forecast.support >= 10 ? clamp(forecast.support / 30, 0, 1) : 0,
-      hotCold: clamp(Math.abs(acf) / 0.08, 0, 1),
-      periodicity: clamp(Math.abs(acf) / 0.08, 0, 1),
-    });
-    if (!built) continue;
-    const target = digits[origin + 1];
-    brier += built.prior.reduce((sum, probability, digit) => sum + (probability - Number(digit === target)) ** 2, 0);
-    baseline += UNIFORM.reduce((sum, probability, digit) => sum + (probability - Number(digit === target)) ** 2, 0);
-    const best = built.prior.indexOf(Math.max(...built.prior));
-    if (best === target) hits += 1;
-    sample += 1;
+    const { prior } = digitPriorWithWeights(history, steps, built.weights);
+    const target = digits[origin + steps];
+    const priorLoss = digitBrier(prior, target);
+    let uniformLoss = 0;
+    for (let digit = 0; digit < 10; digit += 1) uniformLoss += (0.1 - (digit === target ? 1 : 0)) ** 2;
+    brier += priorLoss;
+    baseline += uniformLoss;
+    improvements.push(uniformLoss - priorLoss);
+    if (prior.indexOf(Math.max(...prior)) === target) hits += 1;
+    rows += 1;
   }
-  if (sample < 20) return { ...empty, sample };
+  if (rows < 20) return { ...empty, sample: rows };
   const skill = baseline > 1e-12 ? 1 - brier / baseline : null;
+  const accuracy = hits / rows;
+  // Paired test of the prior against uniform on the SAME rows. A ten-class
+  // Brier gain is small even for a real edge, so the raw skill alone is a weak
+  // gate; this asks whether the gain is consistent row by row, which is the
+  // same test the prediction layer uses for its own skill.
+  const meanImprovement = improvements.reduce((total, value) => total + value, 0) / rows;
+  const improvementSd = Math.sqrt(improvements.reduce((total, value) => total + (value - meanImprovement) ** 2, 0) / Math.max(1, rows - 1));
+  const pairedZ = improvementSd > 1e-12 ? (meanImprovement / (improvementSd / Math.sqrt(rows))) : 0;
   return {
-    sample,
-    brier: brier / sample,
-    baseline: baseline / sample,
+    sample: rows,
+    brier: brier / rows,
+    baseline: baseline / rows,
     skill,
-    accuracy: hits / sample,
-    // A ten-class Brier improvement is small even for a real edge; require a
-    // positive skill AND an accuracy above the 10% chance line.
-    improved: skill !== null && skill > 0.004 && hits / sample > 0.11,
+    accuracy,
+    pairedZ,
+    // A prior is CREDITED only when it beat uniform out of sample by a margin
+    // that is statistically real. The bar is 1.5 rather than 2 because a
+    // ten-class Brier gain from one biased digit is small by construction
+    // (~1.5% even for a perfect forecast), and the confidence the layer grants
+    // scales continuously with the z rather than flipping at a threshold.
+    improved: skill !== null && skill > 0.004 && pairedZ >= 1.5,
   };
 }
 
 /** Layer 1 for digit markets (Over/Under, Even/Odd, Matches). */
-export function analyzeDigitState(input: readonly number[], options: { recentWindow?: number } = {}): DigitMarketState {
+export function analyzeDigitState(
+  input: readonly number[],
+  options: { recentWindow?: number; horizon?: number } = {},
+): DigitMarketState {
+  const horizon = Math.max(1, Math.min(10, Math.round(options.horizon ?? 1)));
   const digits = finiteDigits(input);
   const sample = digits.length;
   const recentWindow = Math.max(300, Math.min(options.recentWindow ?? 1_200, sample));
   if (sample < 300) {
     return {
       kind: 'digit', regime: 'insufficient', predictability: 0, confidence: 0, sample,
-      prior: null, priorStrength: 0,
+      prior: null, priorStrength: 0, priorComponents: [],
       priorBacktest: { sample: 0, brier: null, baseline: null, skill: null, accuracy: null, improved: false },
       engines: [],
       metrics: {
@@ -588,8 +1042,16 @@ export function analyzeDigitState(input: readonly number[], options: { recentWin
     hotCold: driftStrength,
     periodicity: Math.max(periodStrength, runsStrength),
   };
-  const built = predictability >= 0.1 ? buildDigitPrior(digits, evidence) : null;
-  const priorBacktest = built ? backtestDigitPrior(digits) : { sample: 0, brier: null, baseline: null, skill: null, accuracy: null, improved: false };
+  // Every angle is always measured, so the panel can show what was looked at
+  // even when nothing earned weight. The weights and the audit are only fitted
+  // when the stream showed structure at all (predictability ≥ 0.1), because a
+  // full weight search on a fair stream is pure cost: no angle can beat uniform
+  // there by construction.
+  const components = digitPriorComponents(digits, horizon);
+  const built = predictability >= 0.1 ? buildDigitPrior(digits, horizon) : null;
+  const priorBacktest = built
+    ? backtestDigitPrior(digits, horizon)
+    : { sample: 0, brier: null, baseline: null, skill: null, accuracy: null, improved: false };
   const significant = engines.filter((engine) => engine.strength > 0 || (engine.pValue !== null && engine.pValue < 0.05));
   const regime: DigitRegime = structure.status === 'shifted' && predictability > 0.12
     ? 'regime-shifting'
@@ -604,8 +1066,14 @@ export function analyzeDigitState(input: readonly number[], options: { recentWin
 
   return {
     kind: 'digit', regime, predictability, confidence, sample,
-    prior: built && priorBacktest.improved ? built.prior : null,
+    // The prior is a FORECAST, not yet a claim: it ships with its own measured
+    // audit, and the prediction layer decides how much weight each contract
+    // gives it from that audit (see `confirmDigitContract`). Withholding it
+    // here was the second half of why a validated bias never reached the
+    // published probability.
+    prior: built ? built.prior : null,
     priorStrength: built ? built.strength : 0,
+    priorComponents: built ? built.components : components,
     priorBacktest,
     engines,
     metrics: {

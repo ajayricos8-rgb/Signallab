@@ -175,6 +175,15 @@ export function shrinkEdges(
      * still publishes no edge just because it was measured on few candidates.
      */
     independentEdge?: boolean;
+    /**
+     * The candidates share ONE underlying estimate (every digit contract is a
+     * deterministic function of the same next-digit distribution). Cochran's Q
+     * assumes independent estimates, so on a correlated pool it can never find
+     * heterogeneity and τ² stays 0 — which zeroed every contract of a market
+     * whose distribution forecast had been validated. With this flag the layer
+     * uses the specified prior instead of an unidentifiable estimate.
+     */
+    correlated?: boolean;
   } = {},
 ): ShrinkageResult {
   const measurable = candidates
@@ -200,7 +209,13 @@ export function shrinkEdges(
   // is the standard empirical-Bayes answer when τ is unidentified: an edge of
   // unknown size, typically small, and still shrunk by its own standard error.
   const smallPool = measurable.length < 3;
-  const tau = smallPool
+  // τ² is only identifiable from a pool of INDEPENDENT estimates: too few
+  // candidates, or candidates that all come from one underlying forecast, give
+  // no information about the spread of true edges. In both cases fall back to
+  // the specified prior — and only when an independent source measured an edge,
+  // so a structureless market still collapses to exactly fair.
+  const unidentifiable = smallPool || options.correlated === true;
+  const tau = unidentifiable
     ? options.independentEdge ? PRIOR_EDGE_SD : 0
     : trimmed.heterogeneous ? trimmed.tau : 0;
   const factors = candidates.map((candidate, index) => {

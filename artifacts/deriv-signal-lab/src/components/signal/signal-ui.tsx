@@ -356,7 +356,36 @@ export function AnalysisEnginePanel({
           </div>
         ))}
       </div>
-      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">The analysis layer only measures structure; it does not vote on a contract. Its validated prior is handed to the confirmation layer, which may move a probability by at most a couple of points.</p>
+      {'priorComponents' in state && state.priorComponents.length > 0 && (
+        <div className="mt-3 rounded-lg border border-border bg-background/30 p-3" data-testid="analysis-prior-panel">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div className="eyebrow">Prior composition · every angle measured out of sample</div>
+            <div className="text-[9px] text-muted-foreground">
+              {state.priorComponents.filter((component) => component.weight > 0).length}/{state.priorComponents.length} angles beat uniform
+            </div>
+          </div>
+          <div className="mt-2 divide-y divide-border/50">
+            {state.priorComponents.map((component) => (
+              <div key={component.id} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-1.5" data-testid={`prior-component-${component.id}`}>
+                <div className="text-[11px] font-semibold">{component.label}</div>
+                <div className="flex flex-wrap items-baseline gap-2 text-[9px] text-muted-foreground">
+                  <span>support {component.support}</span>
+                  <span>skill {component.skill === null ? 'unmeasured' : `${component.skill >= 0 ? '+' : ''}${(component.skill * 100).toFixed(1)}%`}</span>
+                  <span className={`mono font-bold ${component.weight > 0 ? 'text-primary' : 'text-muted-foreground'}`}>
+                    {component.weight > 0 ? `weight ${(component.weight * 100).toFixed(0)}%` : 'no weight'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+            Each angle is rebuilt at past origins and scored on the tick its contract settles on. An angle that cannot beat uniform carries exactly zero weight, so a fair stream leaves the prior uniform.
+          </p>
+        </div>
+      )}
+      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+        The analysis layer measures structure; it does not vote on a contract by itself. Its validated prior is pooled into the confirmation layer by its own measured out-of-sample skill, so it moves the published number only as far as that skill earns.
+      </p>
     </section>
   );
 }

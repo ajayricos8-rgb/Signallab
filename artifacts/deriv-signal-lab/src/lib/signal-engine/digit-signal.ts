@@ -25,7 +25,10 @@ import {
   confidenceScore, edgeShrinkage, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
   type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
 } from './confidence.ts';
-import { analyzeDigitState, type DigitMarketState } from './market-state.ts';
+import {
+  analyzeDigitState, digitPriorWithWeights,
+  type DigitMarketState, type DigitPriorComponent, type DigitPriorComponentId,
+} from './market-state.ts';
 import { synthesizeDigitAi, type AiSynthesis } from './ai-synthesis.ts';
 import { confirmDigitContract, type ConfirmationReport } from './confirmation.ts';
 import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
@@ -236,7 +239,19 @@ function historyContext(family: DigitSignalFamily, lastDigit: number | null): { 
 }
 
 /**
- * The three things a weighted average cannot say, for the AI meta-model:
+ * One line naming every analysis angle that earned weight and the measured
+ * skill behind it. Angles that did not beat uniform are listed as carrying no
+ * weight, so the panel never implies evidence it does not have.
+ */
+function priorSummary(components: readonly DigitPriorComponent[]): string {
+  if (!components.length) return 'none measured';
+  return components
+    .map((component) => `${component.label} ${component.weight > 0 ? `${(100 * component.weight).toFixed(0)}%` : 'no weight'}${component.skill === null ? '' : ` (skill ${(100 * component.skill).toFixed(1)}%)`}`)
+    .join('; ');
+}
+
+/**
+ * The features a weighted average cannot say, for the AI meta-model:
  *
  *  - dispersion: how far the engines are from their own consensus. A tight
  *    committee is usually more reliable than a split one even at the same
@@ -247,6 +262,10 @@ function historyContext(family: DigitSignalFamily, lastDigit: number | null): { 
  *    relative to fair. It is the only feature that does not come from the
  *    engine pool, so it can break a tie the engines agree on for structural
  *    reasons.
+ *  - priorEdge: what the validated analysis prior says about this contract
+ *    over and above the rolling-frequency baseline, rebuilt from the history
+ *    that was available at that row's own origin. This is how the analysis
+ *    engines' evidence reaches the meta-model instead of only the final pool.
  */
 function metaFeatures(
   values: readonly (number | null)[],
@@ -254,6 +273,7 @@ function metaFeatures(
   estimate: number,
   baselineProbability: number,
   fair: number,
+  priorEdge = 0,
 ): number[] {
   const direction = estimate >= fair ? 1 : -1;
   let totalWeight = 0;
@@ -273,6 +293,7 @@ function metaFeatures(
     dispersion,
     totalWeight > 1e-9 ? support / totalWeight : 0,
     baselineProbability - fair,
+    priorEdge,
   ];
 }
 
@@ -287,7 +308,10 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   onProgress?.(0.94, 'Measuring the market with the analysis engines');
   // Layer 1 runs on the same validated tick stream the 12 prediction engines
   // saw. It measures structure; it never votes on a contract by itself.
-  const state = analyzeDigitState(fit.sequence.digits);
+  // The analysis is told the contract length: every conditioned angle it
+  // measures (transitions, patterns, repeats) is a question about the digit at
+  // the EXIT tick, not the next one.
+  const state = analyzeDigitState(fit.sequence.digits, { horizon: input.horizon });
   onProgress?.(0.945, 'Ensembling quant measurement engines with AI synthesis');
   const aiSynthesis = synthesizeDigitAi(input.family, fit.sequence.digits);
   onProgress?.(0.947, 'Training the embedded neural model on this tick stream');
@@ -295,6 +319,21 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // It is additive — if it cannot be fitted, every layer below behaves exactly
   // as before.
   const neural = trainDigitNeuralModel(fit.sequence.digits);
+  // The analysis prior is rebuilt at a past origin with exactly the weights it
+  // ships with, so the meta-model can be told what the analysis engines knew at
+  // that moment without any look-ahead in the evidence itself. One rebuild per
+  // origin is shared by every contract on the market.
+  const priorWeights = new Map<DigitPriorComponentId, number>(state.priorComponents.map((component) => [component.id, component.weight]));
+  const priorHistory = new Map<number, number[] | null>();
+  const priorAt = (origin: number): number[] | null => {
+    const cached = priorHistory.get(origin);
+    if (cached !== undefined) return cached;
+    const built = origin >= 300 && origin < fit.sequence.digits.length
+      ? digitPriorWithWeights(fit.sequence.digits.slice(0, origin + 1), input.horizon, priorWeights).prior
+      : null;
+    priorHistory.set(origin, built);
+    return built;
+  };
   onProgress?.(0.96, 'Confirming every contract out of sample');
 
   const requested = input.contracts?.length ? input.contracts : DIGIT_SIGNAL_CONTRACTS[input.family];
@@ -413,7 +452,12 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       const estimate = replay.estimate;
       const won = contractWins(contract, row.target) ? 1 : 0;
       holdout.push({ probability: estimate, won: won as 0 | 1 });
-      metaHoldout.push(metaFeatures(replay.values, replay.weights, estimate, digitContractProbability(row.baseline, contract), fair));
+      const rowPrior = priorAt(row.origin);
+      metaHoldout.push(metaFeatures(
+        replay.values, replay.weights, estimate,
+        digitContractProbability(row.baseline, contract), fair,
+        rowPrior ? digitContractProbability(rowPrior, contract) - digitContractProbability(row.baseline, contract) : 0,
+      ));
       modelLoss += (estimate - won) ** 2;
       fairLoss += (fair - won) ** 2;
       modelErrors.push((estimate - won) ** 2);
@@ -466,6 +510,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         live.estimate,
         digitContractProbability(fit.baseline, contract),
         fair,
+        state.prior ? digitContractProbability(state.prior, contract) - digitContractProbability(fit.baseline, contract) : 0,
       ),
     });
     const audit = auditForecastBank(researchBank, contract, fair, contracts.length * Math.max(1, input.marketsInScan ?? 1));
@@ -520,12 +565,25 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     // honest model for the noise in its own reliability bins.
     const skillProven = (validationZ ?? 0) >= 2 && (validationSkill ?? 0) > 0;
     const miscalibration = skillProven ? null : confirmation.calibration.residualMiscalibration;
-    const standardError = measuredError === null && miscalibration === null
+    const ensembleError = measuredError === null && miscalibration === null
       ? null
       : Math.hypot(
         (measuredError ?? 0) / clamp(edgeShrinkage(validationSkill, validationZ), 0.3, 1),
         miscalibration ?? 0,
       );
+    // The published number is a MIXTURE of the consensus and the analysis
+    // prior, so its error bar is the mixture's: each source contributes its own
+    // measured uncertainty weighted by its own share. Charging the consensus's
+    // miscalibration at full size to a number the prior dominates was the last
+    // reason a validated prior arrived with an error bar that swallowed it.
+    const priorShare = confirmation.state.weight;
+    const priorRowCount = Math.max(60, state.priorBacktest.sample);
+    const priorError = statePriorProbability === null
+      ? null
+      : Math.sqrt(Math.max(1e-6, statePriorProbability * (1 - statePriorProbability)) / priorRowCount);
+    const standardError = priorShare > 0 && priorError !== null
+      ? Math.hypot((1 - priorShare) * (ensembleError ?? 0.05), priorShare * priorError)
+      : ensembleError;
     const reliability = reliabilityReport(holdout);
     // The neural model's own probability for THIS contract: the share of its
     // next-digit distribution that the contract wins on.
@@ -566,8 +624,8 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         skill: state.priorBacktest.skill,
         sample: state.priorBacktest.sample,
         detail: state.prior
-          ? `Validated analysis prior (${state.regime}, predictability ${(100 * state.predictability).toFixed(0)}%).`
-          : 'The analysis prior did not survive its own backtest, so it has no vote.',
+          ? `Analysis prior (${state.regime}, predictability ${(100 * state.predictability).toFixed(0)}%), pooled at ${(100 * confirmation.state.weight).toFixed(0)}% of the published number. Angles that beat uniform: ${priorSummary(state.priorComponents)}.`
+          : `No angle beat uniform on this market, so the prior is exactly uniform. Angles measured: ${priorSummary(state.priorComponents)}.`,
       },
       {
         id: 'research',
@@ -612,7 +670,11 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   const estimates = drafts.map((draft) => ({ edge: draft.edge, standardError: draft.standardError ?? 0.05 }));
   // Same rule as Rise/Fall: a small pool may use the specified prior only when
   // the analysis layer independently validated structure on this market.
-  const precisionFit = shrinkEdges(estimates, { independentEdge: state.prior !== null });
+  // Every contract in a digit family is the same next-digit distribution read
+  // through a different barrier, so the pool is correlated by construction and
+  // the specified prior may only be used when the analysis layer PROVED an edge
+  // on this market out of sample.
+  const precisionFit = shrinkEdges(estimates, { independentEdge: state.priorBacktest.improved, correlated: true });
 
   /** Turn a measured draft into a publishable signal at a given (shrunken) probability. */
   const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): DigitContractSignal => {

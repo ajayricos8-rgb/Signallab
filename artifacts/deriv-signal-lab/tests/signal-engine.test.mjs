@@ -336,6 +336,42 @@ test('the analysis layer finds digit structure only when the stream really has i
   assert.ok(cycle.predictability > 0.5, `cycle predictability ${cycle.predictability}`);
 });
 
+test('every digit angle is measured, and only the ones that beat uniform carry weight', () => {
+  // A fair stream must show all ten angles, all with zero weight: measuring is
+  // free, believing is not.
+  const noise = analyzeDigitState(randomDigits(41, 2_400));
+  assert.equal(noise.priorComponents.length, 10, 'every angle is reported even when none fires');
+  assert.ok(noise.priorComponents.every((component) => component.weight === 0), 'a fair stream gives no angle weight');
+  assert.equal(noise.prior, null, 'a fair stream ships no prior at all');
+
+  // A real five-tick bias: the angles are graded on the exit tick, and only a
+  // graded angle may carry weight.
+  const random = sfc32(42);
+  const biased = Array.from({ length: 2_600 }, () => (random() < 0.2 ? 8 : Math.floor(random() * 10)));
+  const state = analyzeDigitState(biased, { horizon: 5 });
+  assert.equal(state.priorComponents.length, 10);
+  const firing = state.priorComponents.filter((component) => component.weight > 0);
+  assert.ok(firing.length >= 1, 'the validated bias earns weight from at least one angle');
+  assert.ok(firing.every((component) => component.skill !== null && component.skill > 0), 'weight is only granted to measured skill');
+  assert.ok(state.priorComponents.filter((component) => component.weight === 0).every((component) => component.weight === 0));
+  // "Repeats more than 10%" is a one-tick claim; at five ticks the angle
+  // abstains instead of smuggling a one-tick effect into a five-tick contract.
+  const repeatAngle = state.priorComponents.find((component) => component.id === 'repeat');
+  assert.equal(repeatAngle.probabilities, null);
+  assert.equal(repeatAngle.weight, 0);
+});
+
+test('the validated prior survives its own out-of-sample replay on a planted bias', () => {
+  const random = sfc32(43);
+  const biased = Array.from({ length: 3_000 }, () => (random() < 0.2 ? 8 : Math.floor(random() * 10)));
+  const state = analyzeDigitState(biased, { horizon: 5 });
+  assert.ok(state.prior, 'a biased stream ships a prior');
+  assert.ok(state.priorBacktest.sample >= 100, `backtest rows ${state.priorBacktest.sample}`);
+  assert.ok((state.priorBacktest.skill ?? 0) > 0, 'the shipped recipe beats uniform out of sample');
+  const mass = state.prior[8];
+  assert.ok(mass > 0.1 && mass < 0.1 + 0.12 + 1e-9, `digit 8 mass ${mass} must stay inside the per-digit clip`);
+});
+
 test('the analysis layer separates random walks from directional markets', () => {
   const priced = (seed, drift) => {
     const random = sfc32(seed);

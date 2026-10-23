@@ -75,8 +75,16 @@ export type ConfirmationReport = {
     predictability: number;
     /** −1 opposes the trade, +1 supports it, 0 no measured opinion. */
     agreement: number;
+    /** Points the analysis layer moved the published probability, signed. */
     adjustmentPts: number;
     applied: boolean;
+    /**
+     * Share of the published probability the analysis prior carries (0–0.9).
+     * Zero when the prior has not cleared its own held-out test.
+     */
+    weight: number;
+    /** The prior's own measured Brier skill when it was trusted, else null. */
+    skill: number | null;
     detail: string;
   };
   engines: {
@@ -223,18 +231,41 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
 
   // Analysis-engine confirmation. The prior only exists when the analysis
   // backtest beat uniform out of sample, so this is measured, not decorative.
-  const statePrior = input.state.prior;
-  const priorProbability = input.state.prior && input.statePriorProbability !== null ? clamp(input.statePriorProbability, 0.001, 0.999) : null;
+  const priorProbability = input.state.prior && input.statePriorProbability !== null
+    ? clamp(input.statePriorProbability, 0.001, 0.999)
+    : null;
   let stateAgreement = 0;
-  let stateAdjustment = 0;
   let stateDetail = `Analysis regime is ${input.state.regime} with ${percent(input.state.predictability, 0)} predictability; no validated prior was applied.`;
+  // The prior is a forecast with its OWN measured out-of-sample accuracy, so it
+  // is pooled with the ensemble by that accuracy rather than nudged in by a
+  // fixed ±2 points. The old cap was the reason a nine-point bias at a five-tick
+  // horizon was published as exactly fair: the twelve-engine consensus has no
+  // edge at that horizon, while the analysis prior had a validated one worth
+  // four times the nudge it was allowed.
+  const priorSkill = input.state.priorBacktest.improved ? Math.max(0, input.state.priorBacktest.skill ?? 0) : 0;
+  const priorPairedZ = input.state.priorBacktest.pairedZ ?? 2;
+  const priorTrusted = priorProbability !== null && priorSkill > 0.004 && priorPairedZ >= 2;
+  const ensembleSkill = Math.max(0, input.validationSkill ?? 0);
+  // Share of the published number the analysis prior carries.
+  //   * both sources have measured skill → they split by that skill;
+  //   * the consensus has none (the usual case for a multi-tick contract, where
+  //     the one-tick engines average out) → the validated prior takes over, in
+  //     proportion to how conclusively it beat its own test, and never all of
+  //     it.
+  // Neither rule can manufacture an edge: `priorTrusted` already requires the
+  // prior to have beaten uniform out of sample with a paired z of 2.
+  const priorWeight = priorTrusted
+    ? ensembleSkill >= 0.002
+      ? clamp(priorSkill / (priorSkill + ensembleSkill), 0, 0.8)
+      : clamp(priorPairedZ / 3, 0, 0.9)
+    : 0;
   if (priorProbability !== null) {
     const edge = priorProbability - fair;
     if (edge > 0.004) stateAgreement = 1;
     else if (edge < -0.004) stateAgreement = -1;
-    const scale = clamp(input.state.confidence * 2.5, 0.25, 1);
-    stateAdjustment = clamp(edge * 0.5 * scale, -0.02, 0.02);
-    stateDetail = `The validated analysis prior puts this contract at ${percent(priorProbability)} against a ${percent(fair)} fair rate (${stateAgreement > 0 ? 'supporting' : stateAgreement < 0 ? 'opposing' : 'neutral'}, prior Brier skill ${signed((input.state.priorBacktest.skill ?? 0) * 100, 1)}% on ${input.state.priorBacktest.sample} ticks).`;
+    stateDetail = priorTrusted
+      ? `The validated analysis prior puts this contract at ${percent(priorProbability)} against a ${percent(fair)} fair rate (${stateAgreement > 0 ? 'supporting' : stateAgreement < 0 ? 'opposing' : 'neutral'}), measured at ${signed(priorSkill * 100, 1)}% Brier skill on ${input.state.priorBacktest.sample} held-out ticks, so it carries ${percent(priorWeight, 0)} of the published probability.`
+      : `The analysis prior puts this contract at ${percent(priorProbability)} (${stateAgreement > 0 ? 'supporting' : stateAgreement < 0 ? 'opposing' : 'neutral'}), but it has not cleared its own held-out test, so it does not move the published number.`;
     if (stateAgreement !== 0) reasons.push(stateDetail);
   } else if (input.state.prior) {
     stateDetail = 'The analysis prior did not beat a uniform baseline out of sample, so it was not applied.';
@@ -257,8 +288,14 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
   // An unconfirmed recalibration may not create an edge the base probability
   // did not already have; it can only re-shape that base.
   const source = confirmedEvidence ? modeled : base;
-  // Every correction is bounded: confirmation may not manufacture an edge.
-  const adjusted = boundedShift(base, source, 0.06) + stateAdjustment;
+  // With a trusted prior the published number is the skill-weighted MIXTURE of
+  // the two measured sources, so the move is bounded by construction (the
+  // prior's own share) and the error bar below describes exactly this number.
+  // Without one, calibration may only re-shape the consensus, by a bounded
+  // amount, and cannot invent an edge.
+  const adjusted = priorWeight > 0 && priorProbability !== null
+    ? clamp((1 - priorWeight) * source + priorWeight * priorProbability, 0.001, 0.999)
+    : boundedShift(base, source, 0.06);
   // No validation and no confirming backtest means the raw model is only a
   // hypothesis. That is reported, not silently rescaled: the STATUS, the
   // `decisive` flag and the strength label all say so, and the precision layer
@@ -273,6 +310,9 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
   let confidenceDelta = 0;
   if (calibration.improved) confidenceDelta += clamp(4 * (calibration.skill ?? 0) / 0.05, 0, 5);
   if (stack?.improved) confidenceDelta += clamp(3 * (stack.skill ?? 0) / 0.05, 0, 4);
+  // Evidence that carried weight is evidence that earns confidence; a prior
+  // worth 40% of the number is worth more than the agreement flag alone.
+  if (priorWeight > 0) confidenceDelta += clamp(8 * priorWeight, 0, 5);
   if (stateAgreement > 0) confidenceDelta += clamp(input.state.confidence * 6, 0, 4);
   if (stateAgreement < 0) confidenceDelta -= clamp(input.state.confidence * 8, 0, 6);
   if (edge < 0 && edgeBefore >= 0) confidenceDelta -= 6;
@@ -346,8 +386,12 @@ export function confirmDigitContract(input: DigitConfirmationInput): Confirmatio
       regime: input.state.regime,
       predictability: input.state.predictability,
       agreement: stateAgreement,
-      adjustmentPts: stateAdjustment * 100,
-      applied: Math.abs(stateAdjustment) > 1e-9,
+      adjustmentPts: (confirmed - base) * 100,
+      applied: Math.abs(confirmed - base) > 1e-9,
+      // How much of the published number the analysis prior carried, and the
+      // held-out skill that earned it.
+      weight: priorWeight,
+      skill: priorTrusted ? priorSkill : null,
       detail: stateDetail,
     },
     engines: {
@@ -579,6 +623,11 @@ export function confirmRiseFall(input: QuoteConfirmationInput): QuoteConfirmatio
       agreement: stateAgreement,
       adjustmentPts: stateAdjustment * 100,
       applied: Math.abs(stateAdjustment) > 1e-9,
+      // Rise/Fall keeps its two-point analysis nudge; the digit path is where
+      // the prior is pooled by measured skill (it is the one with a per-digit
+      // distribution to price every contract against).
+      weight: 0,
+      skill: null,
       detail: stateDetail,
     },
     engines: {

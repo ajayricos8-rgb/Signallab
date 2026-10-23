@@ -27,6 +27,8 @@ _Replace the heading above with the project's name, and this line with one sente
 - `artifacts/deriv-signal-lab/src/components/signal-bot-window.tsx` — the mini/expandable bot page that shows each taken trade, Stop and Reset.
 - `artifacts/deriv-signal-lab/src/hooks/use-signal-bot.ts` + `src/lib/signal-bot/` — the run loop and its pure rules (runs per signal, martingale ladder, stop decisions).
 - `artifacts/deriv-signal-lab/src/lib/signal-bot/auto.ts` — the Auto rule that decides whether a freshly generated signal should start Load and Run by itself.
+- `artifacts/deriv-signal-lab/src/lib/signal-engine/market-state.ts` — layer 1: the ten measured digit forecast angles (`frequency`, `recent`, `transition`, `pattern`, `momentum`, `drift`, `reversal`, `repeat`, `spike`, `gap`), their out-of-sample weights and the shipped `digitPriorWithWeights()` recipe.
+- `artifacts/deriv-signal-lab/scripts/digit-accuracy-benchmark.mjs` — ground-truth audit of the digit options: per-angle skill, the shipped recipe replayed at every out-of-sample origin, and a fair-stream neutrality check. `scripts/accuracy-benchmark.mjs` is the Rise/Fall equivalent.
 - `artifacts/deriv-signal-lab/src/lib/engine-lab/fusion.ts` — layer 4: how the 300-engine research ensemble is folded into the traded probability and evidence score.
 - `artifacts/deriv-signal-lab/src/components/signal-bot-provider.tsx` — shared bot state, mounted above the workspace tabs so a run survives tab switches.
 - `artifacts/deriv-signal-lab/src/lib/neural/` — layer 7: the embedded, free neural model (network, causal features, chronological training + validation, fusion).
@@ -84,6 +86,56 @@ _Replace the heading above with the project's name, and this line with one sente
   0.305. `tests/accuracy-level-reversion.test.mjs` holds the line: the fit must
   find the planted pull, match the realised frequency, and never clear its bar
   on a random walk.
+
+## Accuracy pass — digit options, every angle measured (2026-10-23)
+
+- **The digit prior is now a measured ensemble, not a nudge.** `market-state.ts`
+  builds ten independent forecast angles — `frequency`, `recent`, `transition`,
+  `pattern`, `momentum`, `drift`, `reversal`, `repeat`, `spike`, `gap` — and
+  scores each one out of sample on the tick the contract actually settles on
+  (`digitPriorComponents(digits, horizon)`). Weights are the angle's own Brier
+  skill versus uniform, shrunk by its sample and capped; an angle that cannot
+  beat uniform carries **exactly** zero weight and a uniform floor of 40% keeps
+  any single angle from taking the pool over. `digitPriorWithWeights()` is the
+  single recipe: `buildDigitPrior()` (live) and the validated backtest replay
+  the same function, so the skill shown is the skill of the number on screen.
+- **Every conditioned angle now forecasts the exit tick, not the next tick.**
+  Transitions, patterns and repeats are keyed at `index + horizon < length`
+  (`transitionsAhead`, `contextForecast(digits, order, horizon)`), the repeat
+  angle abstains above a one-tick contract, and momentum/reversal scale their
+  evidence by the number of steps. This was a real bug: at a five-tick duration
+  the whole prior used to answer a one-tick question.
+- **The validated prior now reaches the published number.** `confirmation.ts`
+  pools it with the calibrated ensemble **by measured skill** (skill split when
+  the consensus has skill, otherwise `pairedZ/3` capped at 0.9) instead of the
+  old hard ±2-point nudge, and only after the prior cleared its own held-out
+  test (skill > 0.004, paired z ≥ 2). The published number is then a weighted
+  mixture of two measured sources, so the move is bounded by construction and
+  the reported error bar is the mixture's own sampling error.
+- **The AI meta-model sees the analysis evidence.** The stacker's feature vector
+  gains `priorEdge` — the prior's per-contract view over the rolling-frequency
+  baseline, rebuilt at each replay row's own origin with the shipped weights, so
+  no look-ahead enters the evidence. It is still gated at z ≥ 3 out of sample;
+  when it does not clear that bar it carries zero weight.
+- **The precision layer no longer fits τ² it cannot identify.** On a pool of 16
+  correlated contracts, Cochran's Q cannot detect heterogeneity, so τ was always
+  0 and every edge collapsed. `shrinkEdges(..., { correlated: true })` now uses
+  the specified prior **only when an independent edge was measured**.
+- **UI.** `AnalysisEnginePanel` gains a *prior composition* block: every angle
+  with its support count, out-of-sample skill and the weight it earned (or
+  "no weight"), plus the pooled share in the confirmation panel.
+- **Measured** (`scripts/digit-accuracy-benchmark.mjs`, shipped recipe replayed
+  at every out-of-sample origin, 5-tick contracts, 9 synthetic markets × 2 seeds
+  × 300 origins): fair stream publishes **0.300 against a 0.300 fair rate**
+  (bias +0.0000, skill 0.000, realised 0.250 → z −1.9, pure sampling noise);
+  planted bias publishes 0.226 vs 0.157 fair and realises 0.263 (skill 0.051);
+  momentum 0.023; reversal 0.687 (0.850 published vs 0.990 realised — the
+  ±0.12 per-digit clip deliberately under-commits on near-deterministic
+  streams); parity and repeat streams publish exactly fair. End to end through
+  `analyzeDigitMarket` a five-tick bias publishes OVER 3 at **0.610 against
+  0.600 fair**, OVER 1 at 0.807 vs 0.800, UNDER 1 at 0.099 vs 0.100.
+- **Honest size.** A five-tick bias is worth about a probability point, not ten.
+  The edges above are what the structure supports; nothing here claims more.
 
 ## Embedded neural model (2026-10-22)
 
