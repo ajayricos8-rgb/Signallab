@@ -196,10 +196,29 @@ the scan workers) and does not mutate its inputs.
 On the biased 2,000-tick fixture (digit 7 at 28%) the master returns
 `TRADE_NOW`, conviction 99, edge +25.2 points, z 5.00, five-tick validity. On an
 unbiased stream it returns `NO_EDGE`, conviction 45, edge +0.3 points, and a
-one-tick window. The Rise/Fall path applies the same layer to its 14 engines and
+one-tick window. The Rise/Fall path applies the same layer to its 15 engines and
 25 durations, measuring delayed-entry outcomes from the delayed entry price
 rather than the original origin, so a trend cannot masquerade as an edge that
 survives every delay.
+
+## Level reversion (2026-10-23)
+
+`level-reversion` is the one analysis engine that reads the quote's LEVEL rather
+than its returns. It fits `quote[t] = a + phi·quote[t−1]` by OLS over the last
+600 ticks and tests `phi = 1` with the usual t-statistic, keeping the fit only
+when t ≤ −3.5 (beyond the Dickey–Fuller 1% bar), the half-life is between 2 and
+120 ticks, and the fit is stationary. From there it reports the equilibrium
+`a/(1−phi)`, the stationary sd `σ/√(1−phi²)` and the displacement in those units,
+and `levelReversionProbabilityUp(model, h)` turns it into a probability at any
+exit horizon:
+
+  E[Δh] = (x_t − mean)·(phi^h − 1),  sd[Δh] = σ·√((1 − phi^{2h}) / (1 − phi²))
+
+A random walk fits phi ≈ 1, so the expected move vanishes and the probability
+collapses to a coin flip: the engine cannot invent an edge. Measured on planted
+Ornstein–Uhlenbeck streams it fires on 100% of origins at θ = 0.15 and 0% of
+trending ones, and a 65–72% hit rate at one stationary σ of stretch is what the
+entry master uses to decide whether to fire now or wait for a better price.
 
 ## Candles, units and unavailable states
 

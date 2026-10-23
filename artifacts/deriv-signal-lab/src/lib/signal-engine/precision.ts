@@ -28,6 +28,9 @@
 // alone or moves it toward "no edge".
 import { chiSquarePValue, clamp, normalCdf } from './stats.ts';
 
+/** Prior sd of a true edge when the pool is too small to estimate τ. */
+const PRIOR_EDGE_SD = 0.05;
+
 export type CandidateEstimate = {
   /** Measured edge of this candidate over its no-edge (fair) probability. */
   edge: number;
@@ -161,7 +164,19 @@ export type ShrinkageResult = {
  * Net effect: noise pools collapse to nothing, and a real edge is never
  * propped up by — nor diluted by — the candidates around it.
  */
-export function shrinkEdges(candidates: readonly CandidateEstimate[]): ShrinkageResult {
+export function shrinkEdges(
+  candidates: readonly CandidateEstimate[],
+  options: {
+    /**
+     * An independent, out-of-sample source measured a real edge (for the
+     * callers here: the analysis prior passed its own Brier-skill gate). Only
+     * then may a small pool fall back to a specified prior instead of
+     * collapsing to zero — a market where nothing independent found structure
+     * still publishes no edge just because it was measured on few candidates.
+     */
+    independentEdge?: boolean;
+  } = {},
+): ShrinkageResult {
   const measurable = candidates
     .map((candidate, index) => ({ index, candidate, usable: Number.isFinite(candidate.edge) && Number.isFinite(candidate.standardError) && candidate.standardError > 1e-9 }))
     .filter((row) => row.usable);
@@ -176,7 +191,18 @@ export function shrinkEdges(candidates: readonly CandidateEstimate[]): Shrinkage
   const trimmedPool = candidates.filter((_, index) => !zScores.has(index) || Math.abs(zScores.get(index) as number) < threshold);
   const trimmed = heterogeneity(trimmedPool);
   const full = heterogeneity(candidates);
-  const tau = trimmed.heterogeneous ? trimmed.tau : 0;
+  // Empirical Bayes needs at least three candidates before Cochran's Q can say
+  // anything about the spread of TRUE edges. With one or two (a single duration,
+  // or a two-market scan) τ² is unidentifiable, and collapsing it to zero
+  // declared every edge imaginary — a genuine 5-point edge measured on one
+  // duration was published as a coin flip. With a small pool we therefore fall
+  // back to a SPECIFIED prior (PRIOR_EDGE_SD) instead of an estimated one, which
+  // is the standard empirical-Bayes answer when τ is unidentified: an edge of
+  // unknown size, typically small, and still shrunk by its own standard error.
+  const smallPool = measurable.length < 3;
+  const tau = smallPool
+    ? options.independentEdge ? PRIOR_EDGE_SD : 0
+    : trimmed.heterogeneous ? trimmed.tau : 0;
   const factors = candidates.map((candidate, index) => {
     if (!Number.isFinite(candidate.edge) || !Number.isFinite(candidate.standardError) || candidate.standardError <= 1e-9) return 0;
     if (Math.abs(zScores.get(index) ?? 0) >= threshold) return 1;

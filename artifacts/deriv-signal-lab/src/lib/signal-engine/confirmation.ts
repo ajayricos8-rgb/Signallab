@@ -382,6 +382,12 @@ export type QuoteConfirmationInput = {
   tally: VoteTally;
   backtest: BacktestSummary;
   validationSkill: number | null;
+  /**
+   * P(this duration's exit is higher) from the validated analysis prior,
+   * re-priced at the contract's own horizon. Falls back to the state prior's
+   * reference horizon when omitted.
+   */
+  statePriorProbability?: number | null;
   /** Share of held-out outcomes that were unchanged (excluded from fair odds). */
   flatRate: number;
   /** Durations × markets competing in the scan, for the best-of-pool bar. */
@@ -440,12 +446,15 @@ export function confirmRiseFall(input: QuoteConfirmationInput): QuoteConfirmatio
   let stateAdjustment = 0;
   let stateAgreement = 0;
   let stateDetail = `Analysis regime is ${input.state.regime} with ${percent(input.state.predictability, 0)} predictability; no validated directional prior was applied.`;
-  if (input.state.prior !== null && input.state.priorBacktest.improved) {
-    const directionalEdge = input.state.prior - 0.5;
+  const priorRise = input.statePriorProbability !== null && input.statePriorProbability !== undefined && Number.isFinite(input.statePriorProbability)
+    ? clamp(input.statePriorProbability, 0.001, 0.999)
+    : input.state.prior;
+  if (priorRise !== null && input.state.priorBacktest.improved) {
+    const directionalEdge = priorRise - 0.5;
     const scale = clamp(input.state.confidence * 2.5, 0.25, 1);
     stateAdjustment = clamp(directionalEdge * 0.5 * scale, -0.02, 0.02);
     stateAgreement = directionalEdge > 0.004 ? 1 : directionalEdge < -0.004 ? -1 : 0;
-    stateDetail = `The validated analysis prior favours ${input.state.prior >= 0.5 ? 'RISE' : 'FALL'} at ${percent(input.state.prior)} (Brier skill ${signed((input.state.priorBacktest.skill ?? 0) * 100, 1)}% on ${input.state.priorBacktest.sample} outcomes).`;
+    stateDetail = `The validated analysis prior favours ${priorRise >= 0.5 ? 'RISE' : 'FALL'} at ${percent(priorRise)} (Brier skill ${signed((input.state.priorBacktest.skill ?? 0) * 100, 1)}% on ${input.state.priorBacktest.sample} outcomes).`;
     if (stateAgreement !== 0) reasons.push(stateDetail);
   } else {
     stateDetail = `The analysis engines measured ${input.state.regime} conditions; their directional prior did not beat a coin flip out of sample, so it was not applied.`;

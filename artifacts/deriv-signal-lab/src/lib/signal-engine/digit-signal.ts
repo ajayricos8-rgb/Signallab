@@ -610,7 +610,9 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // keeps its size.
   // ---------------------------------------------------------------------------
   const estimates = drafts.map((draft) => ({ edge: draft.edge, standardError: draft.standardError ?? 0.05 }));
-  const precisionFit = shrinkEdges(estimates);
+  // Same rule as Rise/Fall: a small pool may use the specified prior only when
+  // the analysis layer independently validated structure on this market.
+  const precisionFit = shrinkEdges(estimates, { independentEdge: state.prior !== null });
 
   /** Turn a measured draft into a publishable signal at a given (shrunken) probability. */
   const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): DigitContractSignal => {
