@@ -78,9 +78,9 @@ export function evaluateMafiaEntry(input: MafiaDecisionInput): MafiaEvaluation {
   const reasons: string[] = [];
   const reasonCodes: string[] = [];
   const details: string[] = [];
-  const wait = (code: string, reason: string): MafiaEvaluation => {
-    reasonCodes.push(code);
-    reasons.push(reason);
+  const wait = (code: string, reason: string, extraReasons: readonly string[] = [], extraCodes: readonly string[] = []): MafiaEvaluation => {
+    reasonCodes.push(code, ...extraCodes);
+    reasons.push(reason, ...extraReasons);
     return {
       decision: {
         id: decisionId(now),
@@ -131,29 +131,32 @@ export function evaluateMafiaEntry(input: MafiaDecisionInput): MafiaEvaluation {
 
   const uniformityVerdict = verdictOnUniformity(analysis.uniformity, config);
   if (!uniformityVerdict.passes) {
-    return wait(uniformityVerdict.reasonCodes[0] ?? 'NO_UNIFORMITY', uniformityVerdict.headline);
+    // Every failed check is reported, not just the first, so a near miss is
+    // visible instead of looking like a single arbitrary threshold.
+    return wait(
+      uniformityVerdict.reasonCodes[0] ?? 'NO_UNIFORMITY',
+      uniformityVerdict.headline,
+      uniformityVerdict.reasons.slice(1),
+      uniformityVerdict.reasonCodes.slice(1),
+    );
   }
   const direction: MafiaDirection = analysis.uniformity.direction!;
   reasons.push(`Uniform direction: ${direction === 'CALL' ? 'Rise' : 'Fall'} (score ${analysis.uniformity.score.toFixed(2)}, directional z ${analysis.uniformity.directionalZ.toFixed(2)}, persistence z ${analysis.uniformity.persistenceZ.toFixed(2)}).`);
 
   // ── Evidence ──────────────────────────────────────────────────────────────
   const conditional = gated.available && gated.samples >= config.minDirectionSamples;
-  const measured = conditional
-    ? gated.winRate
-    : analysis.replay.directionProbability;
-  if (measured === null) {
-    return wait('NO_MEASUREMENT', 'Neither the gated replay nor the replay has enough printed windows to measure a 4-tick hit rate.');
-  }
+  const measured = conditional ? gated.winRate : analysis.replay.directionProbability;
   const samples = conditional ? gated.samples : analysis.replay.samples;
-  const evidence = evidenceProbability(measured, samples, config.evidenceZ);
-  if (evidence === null) return wait('NO_MEASUREMENT', 'The measured hit rate has no usable sample.');
-  if (conditional) {
-    reasons.push(`Gate-conditioned replay: ${(measured * 100).toFixed(1)}% of ${samples} gated four-tick windows went the gated way.`);
-  } else {
-    reasons.push(`Unconditional replay: ${(measured * 100).toFixed(1)}% of ${samples} four-tick windows went ${direction === 'CALL' ? 'up' : 'down'} (gate-conditioned sample still too small).`);
-    reasonCodes.push('UNCONDITIONAL_EVIDENCE');
+  const evidence = measured === null ? null : evidenceProbability(measured, samples, config.evidenceZ);
+  if (measured !== null && evidence !== null) {
+    if (conditional) {
+      reasons.push(`Gate-conditioned replay: ${(measured * 100).toFixed(1)}% of ${samples} gated four-tick windows went the gated way.`);
+    } else {
+      reasons.push(`Unconditional replay: ${(measured * 100).toFixed(1)}% of ${samples} four-tick windows went ${direction === 'CALL' ? 'up' : 'down'} (gate-conditioned sample still too small).`);
+      reasonCodes.push('UNCONDITIONAL_EVIDENCE');
+    }
+    reasons.push(`Evidence value after a ${config.evidenceZ.toFixed(2)}σ sample haircut: ${(evidence * 100).toFixed(1)}%.`);
   }
-  reasons.push(`Evidence value after a ${config.evidenceZ.toFixed(2)}σ sample haircut: ${(evidence * 100).toFixed(1)}%.`);
 
   // ── Money ─────────────────────────────────────────────────────────────────
   const sizing = sizeMafiaPair(config, {
@@ -240,22 +243,28 @@ export function evaluateMafiaEntry(input: MafiaDecisionInput): MafiaEvaluation {
   }
 
   if (config.requirePositiveExpectedValue) {
-    if (economics.breakEvenProbability === null) {
-      reasonCodes.push('BREAK_EVEN_UNDEFINED');
-      return wait('BREAK_EVEN_UNDEFINED', 'The pair has no break-even probability at these payouts, so it cannot be shown to be worth buying.');
+    if (measured === null || evidence === null) {
+      return wait('NO_MEASUREMENT', 'The expected-value gate needs a measured four-tick hit rate, and neither replay has enough printed windows yet.');
     }
-    if (evidence < economics.breakEvenProbability) {
-      reasonCodes.push('EVIDENCE_BELOW_BREAK_EVEN');
+    if (economics.expectedValue === null || economics.expectedValuePerStake === null) {
+      return wait('NO_EV', 'The pair cannot be priced, so the expected-value gate refuses it.');
+    }
+    if (economics.expectedValuePerStake < config.minExpectedValue) {
+      return wait(
+        'EV_BELOW_MIN',
+        `Expected value ${economics.expectedValuePerStake.toFixed(3)} per unit staked is below the ${config.minExpectedValue.toFixed(3)} floor — the pair would lose money on average at these payouts.`,
+      );
+    }
+    if (economics.breakEvenProbability !== null && evidence < economics.breakEvenProbability) {
       return wait(
         'EVIDENCE_BELOW_BREAK_EVEN',
         `Evidence ${(evidence * 100).toFixed(1)}% does not clear the ${(economics.breakEvenProbability * 100).toFixed(1)}% break-even this hedge size needs.`,
       );
     }
-    if (economics.expectedValuePerStake !== null && economics.expectedValuePerStake < config.minExpectedValue) {
-      reasonCodes.push('EV_BELOW_MIN');
-      return wait('EV_BELOW_MIN', `Expected value ${economics.expectedValuePerStake.toFixed(3)} per unit staked is below the ${config.minExpectedValue.toFixed(3)} floor.`);
-    }
-    reasons.push(`Evidence ${(evidence * 100).toFixed(1)}% clears the ${(economics.breakEvenProbability * 100).toFixed(1)}% break-even for a ${sizing.primaryStake.toFixed(2)} / ${sizing.coverStake.toFixed(2)} pair.`);
+    reasons.push(`Expected value ${economics.expectedValuePerStake.toFixed(3)} per unit staked clears the ${config.minExpectedValue.toFixed(3)} floor at these quotes.`);
+  } else {
+    reasons.push('Expected-value gate is off: the pair fires on the uniformity signal alone. The pair arithmetic below is shown so the cost is visible — this is not an edge.');
+    reasonCodes.push('EV_GATE_OFF');
   }
 
   // ── Risk ──────────────────────────────────────────────────────────────────

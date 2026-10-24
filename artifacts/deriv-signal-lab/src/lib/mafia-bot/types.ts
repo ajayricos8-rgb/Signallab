@@ -48,7 +48,15 @@ export type MafiaBotConfig = {
   primaryStake: number;
   minStake: number;
   maxStake: number;
-  /** COVER leg size as a percentage of the primary stake (10–100). */
+  /**
+   * COVER leg size as a percentage of the primary stake (10–100).
+   *
+   * The ratio is what decides whether a winning leg pays for both stakes. A leg
+   * covers the pair when `payoutRatio × h > 1 + h`, i.e. `h > 1 / (m − 1)` for a
+   * quoted payout multiple `m`: at Deriv's usual 4-tick quote (about 3×) any
+   * cover above 50% pays for the pair, and 90% keeps both legs close to equal,
+   * which is the cheapest hedge while the level-window risk is what it is.
+   */
   hedgeRatioPercent: number;
   stakeMode: MafiaStakeMode;
   /** Multiplier applied per consecutive losing pair in `martingale` mode. */
@@ -103,7 +111,7 @@ export function defaultMafiaBotConfig(): MafiaBotConfig {
     primaryStake: 2,
     minStake: 0.35,
     maxStake: 50,
-    hedgeRatioPercent: 40,
+    hedgeRatioPercent: 90,
     stakeMode: 'flat',
     martingaleFactor: 2,
     maxMartingaleSteps: 3,
@@ -111,13 +119,16 @@ export function defaultMafiaBotConfig(): MafiaBotConfig {
     maxStakeShareOfBalance: 5,
 
     uniformityWindow: 60,
-    minUniformity: 0.3,
-    minUniformityZ: 1.5,
-    minTicksBeforeTrade: 250,
+    minUniformity: 0.2,
+    minUniformityZ: 1,
+    minTicksBeforeTrade: 120,
     replayTicks: 1_200,
     minDirectionSamples: 60,
 
-    requirePositiveExpectedValue: true,
+    // The bot's job is to fire the moment uniformity appears. The expected-value
+    // gate is the optional brake, not the trigger; the pair arithmetic stays on
+    // screen either way.
+    requirePositiveExpectedValue: false,
     minExpectedValue: 0,
     evidenceZ: 1,
 
@@ -129,7 +140,7 @@ export function defaultMafiaBotConfig(): MafiaBotConfig {
     maxSessionMinutes: 0,
     cooldownMs: 1_000,
 
-    decisionIntervalMs: 1_500,
+    decisionIntervalMs: 1_000,
     maxTickAgeMs: 15_000,
   };
 }

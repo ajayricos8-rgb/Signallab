@@ -5,10 +5,11 @@
 // the other way. Both settle on the same tick, so one leg wins unless the
 // window ends exactly where it started.
 //
-// This panel shows the arithmetic rather than a promise. Deriv pays about 1.9×
-// a stake, so an equally sized pair returns less than it costs whichever leg
-// wins; the break-even hit rate the bot must clear is printed next to the
-// measured probability it actually has. Nothing on this page is a forecast.
+// This panel shows the arithmetic rather than a promise. The quoted payout of a
+// four-tick Rise/Fall contract is read from Deriv, never assumed: a pair only
+// profits on a win when the paying leg's payout exceeds both stakes, and a level
+// window costs both. The break-even hit rate the current hedge ratio needs is
+// printed next to the evidence the bot actually has. Nothing here is a forecast.
 import { useMemo, useState } from 'react';
 import {
   Activity,
@@ -49,7 +50,7 @@ import {
 
 const MODE_DETAILS: Array<{ id: MafiaMode; label: string; blurb: string; icon: typeof Terminal }> = [
   { id: 'analysis', label: 'Analysis only', blurb: 'Runs the uniformity gate and the four-tick replay, prices both legs with real Deriv quotes, and records what it would have bought. No order is sent.', icon: FlaskConical },
-  { id: 'live', label: 'Live pairs', blurb: 'Buys both four-tick legs together on the authorized Deriv account once the evidence clears the pair break-even and every risk limit allows it.', icon: Activity },
+  { id: 'live', label: 'Live pairs', blurb: 'Buys both four-tick legs together on the authorized account the moment the uniformity gate passes and every risk limit allows it. Turn on the expected-value gate to make the pair arithmetic a requirement too.', icon: Activity },
 ];
 
 const STATUS_TONE: Record<string, string> = {
@@ -199,10 +200,10 @@ function BotConfiguration({ bot }: { bot: MafiaBotController }) {
         </Field>
       </ConfigGroup>
 
-      <ConfigGroup title="Evidence gate" description="The measured four-tick hit rate is haircut for its sample size, then compared with the break-even the live quotes imply.">
+      <ConfigGroup title="Evidence gate" description="Off by default: the bot fires the moment uniformity appears. On: the measured four-tick hit rate, haircut for its sample size, must also clear the break-even your hedge ratio needs.">
         <ToggleField
           label="Require positive expected value"
-          hint="Off: buy on uniformity alone. That is a losing configuration at Deriv's payouts."
+          hint="Off (default): fire on uniformity and show what the pair costs. On: refuse a pair whose expected value per unit staked is below the floor."
           checked={config.requirePositiveExpectedValue}
           onChange={flag('requirePositiveExpectedValue')}
           testId="mafia-ev-gate"
@@ -282,8 +283,8 @@ function ActivationDialog({ open, onOpenChange, onConfirm, bot }: {
             <li>Each pair: primary {formatMoney(primary, currency)} and cover {formatMoney(cover, currency)}. The most a pair can lose is {formatMoney(worstCase, currency)}.</li>
             <li>Both legs enter together. One wins unless the window ends exactly where it started — then both lose.</li>
             <li className="text-amber-600 dark:text-amber-400">
-              Deriv pays roughly 1.9× a stake. Equal-sized legs therefore lose about 5% of the pair cost whichever one wins.
-              The bot only buys when the measured four-tick hit rate, after its evidence haircut, clears the break-even this hedge ratio needs.
+              Both legs enter together, so exactly one wins unless the window ends level — and a level window loses both stakes.
+              Deriv quotes both payouts live; the bot prints the two win branches, the level loss and the break-even hit rate beside the evidence it actually has.
             </li>
             <li>Daily loss limit {formatMoney(bot.config.maxDailyLoss, currency)} · take profit {formatMoney(bot.config.dailyTakeProfit, currency)} · losing-pair stop {bot.config.maxConsecutiveLosingPairs}.</li>
           </ul>
@@ -536,7 +537,11 @@ function SignalPanel({ bot }: { bot: MafiaBotController }) {
               </span>
             </div>
           ) : null}
-          <div className="mt-2"><ReasonList reasons={decision.reasons} limit={4} /></div>
+          <div className="mt-2"><ReasonList reasons={decision.reasons} limit={6} /></div>
+          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground" data-testid="mafia-firing-rule">
+            Firing rule: {bot.config.requirePositiveExpectedValue ? 'uniformity + positive expected value' : 'uniformity only — expected-value gate off'} ·
+            {' '}{MAFIA_DURATION_TICKS}-tick legs · both directions bought in the same cycle.
+          </p>
           {decision.reasonCodes.length ? (
             <p className="mono mt-2 text-[9px] uppercase tracking-[0.06em] text-muted-foreground">{decision.reasonCodes.join(' · ')}</p>
           ) : null}
@@ -671,8 +676,8 @@ function ProfitPanel({ bot }: { bot: MafiaBotController }) {
       </div>
 
       <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">
-        Realised P/L counts only money Deriv has reported. Open legs are shown as stake at risk, never as profit. A pair with one winning leg and one losing leg
-        usually nets a small loss: the payer pays about 1.9× its own stake, while both stakes were committed.
+        Realised P/L counts only money Deriv has reported. Open legs are shown as stake at risk, never as profit. Whether a winning pair nets a profit depends on
+        the payout Deriv quoted against both stakes — the arithmetic panel shows the two branches for the current pair instead of assuming a payout.
       </p>
     </Panel>
   );
@@ -793,11 +798,23 @@ function DecisionLogPanel({ bot }: { bot: MafiaBotController }) {
 function HonestyPanel({ bot }: { bot: MafiaBotController }) {
   const primary = bot.sizing?.primaryStake ?? bot.config.primaryStake;
   const cover = bot.sizing?.coverStake ?? (bot.config.primaryStake * bot.config.hedgeRatioPercent) / 100;
-  const equalPairLoss = useMemo(() => {
-    // Equal stakes at a 1.9× payout: one wins, both stakes were paid.
-    const stake = bot.config.primaryStake;
-    return Math.round((stake * 1.9 - stake * 2) * 100) / 100;
-  }, [bot.config.primaryStake]);
+  const currency = bot.accountCurrency;
+
+  /**
+   * The three figures that decide whether a pair can pay, all from the live
+   * quote rather than a constant: the payout multiple, the equal-stake result,
+   * and the level-window share above which an equal pair stops breaking even.
+   */
+  const arithmetic = useMemo(() => {
+    const ask = bot.pricing?.primary.ask ?? null;
+    const payout = bot.pricing?.primary.payout ?? null;
+    const multiple = ask !== null && ask > 0 && payout !== null ? payout / ask : null;
+    const equalStake = multiple === null ? null : Math.round((multiple * primary - primary * 2) * 100) / 100;
+    // Equal stakes: EV > 0 ⇔ (1 − f)·(m − 2)·s > f·2s ⇔ f < (m − 2) / m.
+    const levelCeiling = multiple === null || multiple <= 2 ? null : (multiple - 2) / multiple;
+    const levelSeen = bot.analysis.replay.flatProbability;
+    return { multiple, equalStake, levelCeiling, levelSeen };
+  }, [bot.pricing?.primary.ask, bot.pricing?.primary.payout, bot.analysis.replay.flatProbability, primary]);
 
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="mafia-limits">
@@ -810,12 +827,17 @@ function HonestyPanel({ bot }: { bot: MafiaBotController }) {
         <li>Both legs are bought in the same request round on the same tick. If the entry ticks differ, the pair is flagged in its note rather than passed off as hedged.</li>
         <li>It measures direction two ways — tick-sign uniformity and a four-tick replay — and keeps the level windows in the sample, because those are the windows where both legs lose.</li>
         <li>
-          With equal stakes this pair is a structural small loss: at a 1.9× payout, a {formatMoney(bot.config.primaryStake, bot.accountCurrency)} + {formatMoney(bot.config.primaryStake, bot.accountCurrency)} pair
-          returns about {formatMoney(equalPairLoss, bot.accountCurrency)} whichever leg wins. Sizing the cover below the primary is the only way a win covers both stakes.
+          Paying well or not is decided by the quote, not by the bot. Deriv is quoting {arithmetic.multiple === null ? '—' : `${arithmetic.multiple.toFixed(2)}×`} per leg right now,
+          so an equal-stake pair of {formatMoney(primary, currency)} + {formatMoney(primary, currency)} would return {formatMoney(arithmetic.equalStake, currency)} on a winning pair
+          and lose {formatMoney(primary * 2, currency)} on a level one.
         </li>
-        <li>The current pair is {formatMoney(primary, bot.accountCurrency)} primary + {formatMoney(cover, bot.accountCurrency)} cover, which needs a {formatPercent(bot.breakEven, 1)} hit rate to break even.</li>
-        <li>A level four-tick window loses both legs. The replay reports how often that happened instead of assuming it away.</li>
-        <li>The bot waits rather than trades when the evidence does not clear the break-even. Standing aside is a result, not a failure.</li>
+        <li>
+          A level window loses both legs, so an equal pair only breaks even while level windows stay below
+          {' '}{arithmetic.levelCeiling === null ? '— (the quote is under 2×, so no share works)' : formatPercent(arithmetic.levelCeiling * 100, 1)}.
+          The replay currently measures {formatPercent(arithmetic.levelSeen === null ? null : arithmetic.levelSeen * 100, 1)}.
+        </li>
+        <li>The current pair is {formatMoney(primary, currency)} primary + {formatMoney(cover, currency)} cover, which needs a {formatPercent(bot.breakEven, 1)} hit rate to break even at these quotes.</li>
+        <li>The bot fires as soon as the uniformity gate passes, then reports what the pair costs. That is a signal, not an edge.</li>
         <li>Only Deriv settlements move the ledger. A running profit is never counted as earned, and no payout is estimated.</li>
         <li>Every rule runs in this browser. Your token, account id and balance are never sent to a third party.</li>
       </ul>
