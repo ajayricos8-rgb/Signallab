@@ -147,7 +147,7 @@ function BotConfiguration({ bot }: { bot: RiseFallBotController }) {
         <Field label="Expiry unit">
           <SelectInput value={config.durationUnit} onChange={(value) => bot.updateConfig({ durationUnit: value as 't' | 's' | 'm' })} testId="rise-fall-duration-unit" options={DURATION_UNITS} />
         </Field>
-        <Field label="Decision cycle (ms)" hint="How often the engine may read the ticks and consider an entry.">
+        <Field label="Watchdog interval (ms)" hint="Every new tick is evaluated immediately; this interval only re-checks a quiet feed.">
           <NumberInput value={config.decisionIntervalMs} step={250} min={500} onChange={(value) => bot.updateConfig({ decisionIntervalMs: value })} testId="rise-fall-cycle-interval" />
         </Field>
         <Field label="Maximum tick age (ms)" hint="Older quotes are treated as a stale feed, and stale feeds never trade.">
@@ -460,7 +460,7 @@ function ControlPanel({ bot, onMinimize }: { bot: RiseFallBotController; onMinim
             <div className="eyebrow">Last cycle</div>
             <div className="mono mt-1 text-sm font-semibold">{bot.lastCycleAt ? formatClock(bot.lastCycleAt) : '—'}</div>
             <div className="mt-0.5 text-[10px] leading-tight text-muted-foreground">
-              {bot.cycleRunning ? 'cycle running' : bot.runState === 'running' ? `every ${bot.config.decisionIntervalMs} ms` : 'bot not running'}
+              {bot.cycleRunning ? 'cycle running' : bot.runState === 'running' ? 'on every new tick' : 'bot not running'}
             </div>
           </div>
         </div>

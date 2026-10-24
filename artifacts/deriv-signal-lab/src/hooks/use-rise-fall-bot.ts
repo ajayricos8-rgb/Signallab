@@ -14,6 +14,8 @@
 // settings in the browser. No token, account id or socket URL is stored here.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
+import { BOT_CYCLE_MIN_SPACING_MS, shouldStartBotCycle, useBotCycleTrigger } from '@/hooks/use-bot-cycle-trigger';
+import { configNeedsReset, markConfigVersion } from '@/lib/bot-config-version';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import type { DerivOpenPosition, DerivQuote, DerivTradeRequest } from '@/lib/deriv-trading';
 import { draftDurationIssue, supportedTradeTicks } from '@/lib/trade-duration';
@@ -199,7 +201,9 @@ export function useRiseFallBot(): RiseFallBotController {
   const trading = useDerivTrading();
 
   const [mode, setModeState] = useState<RiseFallBotMode>(readMode);
-  const [config, setConfig] = useState<RiseFallConfig>(() => sanitizeRiseFallConfig(readJson<Partial<RiseFallConfig>>(CONFIG_KEY, {})));
+  const [config, setConfig] = useState<RiseFallConfig>(() => sanitizeRiseFallConfig(
+    configNeedsReset(CONFIG_KEY) ? {} : readJson<Partial<RiseFallConfig>>(CONFIG_KEY, {}),
+  ));
   const [safety, setSafety] = useState<SafetyState>(createSafetyState);
   const [account, setAccount] = useState<RiseFallAccountState>(createRiseFallAccountState);
   const [features, setFeatures] = useState<RiseFallFeatures | null>(null);
@@ -223,10 +227,12 @@ export function useRiseFallBot(): RiseFallBotController {
   const predictionsRef = useRef(predictions);
   const purchaseRef = useRef(purchase);
   const busyRef = useRef(false);
+  /** A tick arrived while a cycle was pricing; re-run once it finishes. */
+  const pendingCycleRef = useRef(false);
   const lastCycleRef = useRef(0);
   const sequenceRef = useRef(0);
   const mountedRef = useRef(true);
-  const runCycleRef = useRef<() => Promise<void>>(async () => {});
+  const runCycleRef = useRef<(options?: { force?: boolean }) => Promise<void>>(async () => {});
 
   accountRef.current = account;
   configRef.current = config;
@@ -243,6 +249,12 @@ export function useRiseFallBot(): RiseFallBotController {
   useEffect(() => {
     writeJson(CONFIG_KEY, config);
   }, [config]);
+
+  // One-time migration marker: the defaults just applied are the shape future
+  // edits start from.
+  useEffect(() => {
+    markConfigVersion(CONFIG_KEY);
+  }, []);
 
   useEffect(() => {
     try {
@@ -675,14 +687,23 @@ export function useRiseFallBot(): RiseFallBotController {
   }, [commitAccount, commitContracts, commitPurchase, commitRecords, feed.serverClockOffsetMs, trading]);
 
   // ---- the decision cycle ----------------------------------------------------
-  const runCycle = useCallback(async () => {
-    if (busyRef.current) return;
+  const runCycle = useCallback(async (options?: { force?: boolean }) => {
+    if (busyRef.current) {
+      // A cycle is already pricing. The tick that just arrived would otherwise be
+      // dropped and the entry would wait for the next one, so it is re-run as soon
+      // as the current cycle releases the lock.
+      pendingCycleRef.current = true;
+      return;
+    }
     const safetyState = safetyRef.current;
-    if (safetyState.runState !== 'running') return;
+    const forced = options?.force === true;
+    if (!forced && safetyState.runState !== 'running') return;
     const entryConfig = configRef.current;
     const currentMode = modeRef.current;
     const startedAt = Date.now();
-    if (startedAt - lastCycleRef.current < entryConfig.decisionIntervalMs * 0.8) return;
+    // Dedupe only. A new tick starts the cycle; the old rule waited a whole
+    // decision interval, which is exactly the delay that missed entries.
+    if (!shouldStartBotCycle({ now: startedAt, lastCycleAt: lastCycleRef.current, minSpacingMs: BOT_CYCLE_MIN_SPACING_MS, force: forced })) return;
     const symbol = feed.selectedSymbol;
     const observations = feed.ticks;
     if (!symbol || !observations.length) return;
@@ -707,9 +728,12 @@ export function useRiseFallBot(): RiseFallBotController {
         config: entryConfig,
         account: accountSnapshot,
         mode: currentMode,
-        runState: safetyState.runState,
+        // A forced cycle is the one Start just triggered: the safety ref still
+        // holds the pre-Start state, so treating it as stopped would throw away
+        // the first opportunity after the operator pressed Start.
+        runState: forced ? 'running' : safetyState.runState,
         autoPauseReasons: safetyState.autoPauseReasons,
-        manualPause: safetyState.manualPause,
+        manualPause: forced ? false : safetyState.manualPause,
         accountAuthorized: trading.activeAccount !== null,
         connectionHealthy: trading.status === 'connected',
         feedFresh: feed.fresh,
@@ -880,19 +904,24 @@ export function useRiseFallBot(): RiseFallBotController {
     } finally {
       busyRef.current = false;
       if (mountedRef.current) setCycleRunning(false);
+      if (pendingCycleRef.current) {
+        pendingCycleRef.current = false;
+        // Unforced: the spacing floor still keeps a slow cycle from looping.
+        void runCycleRef.current();
+      }
     }
   }, [commitPurchase, executeEntry, feed.contracts, feed.contractsLoaded, feed.fresh, feed.selectedMarket?.pipSize, feed.selectedSymbol, feed.status, feed.ticks, nextDecisionId, trading]);
 
   runCycleRef.current = runCycle;
 
-  useEffect(() => {
-    if (safety.runState !== 'running') return undefined;
-    const interval = window.setInterval(() => {
-      void runCycleRef.current();
-    }, config.decisionIntervalMs);
-    void runCycleRef.current();
-    return () => window.clearInterval(interval);
-  }, [safety.runState, config.decisionIntervalMs]);
+  // Tick-driven: the newest tick is the event that can change the decision.
+  // The configured interval is the watchdog for a quiet feed, not the latency.
+  useBotCycleTrigger({
+    enabled: safety.runState === 'running',
+    tickEpoch: feed.ticks.at(-1)?.epoch ?? null,
+    watchdogMs: config.decisionIntervalMs,
+    run: () => { void runCycleRef.current(); },
+  });
 
   // ---- operator controls -----------------------------------------------------
   const start = useCallback(() => {
@@ -900,7 +929,9 @@ export function useRiseFallBot(): RiseFallBotController {
     commitAccount(beginSession(rollTradingDay(accountRef.current, now), now));
     setSafety((current) => startBot(current, modeRef.current));
     lastCycleRef.current = 0;
-    void runCycleRef.current();
+    // Forced: the safety ref still holds the pre-Start state, so an unforced
+    // cycle would return immediately and the first entry would wait a tick.
+    void runCycleRef.current({ force: true });
   }, [commitAccount]);
 
   const pause = useCallback(() => setSafety((current) => pauseBot(current, modeRef.current)), []);
@@ -913,7 +944,7 @@ export function useRiseFallBot(): RiseFallBotController {
 
   const runCycleNow = useCallback(() => {
     lastCycleRef.current = 0;
-    void runCycleRef.current();
+    void runCycleRef.current({ force: true });
   }, []);
 
   const setMode = useCallback((next: RiseFallBotMode) => {

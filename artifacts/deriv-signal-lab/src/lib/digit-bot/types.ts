@@ -175,14 +175,14 @@ export function defaultRiskConfig(): BotRiskConfig {
     maxEntriesPerSession: 20,
     maxTradesPerSymbol: 12,
     maxOpenContracts: 1,
-    minTicksBetweenEntries: 10,
-    cooldownAfterContractMs: 5_000,
+    minTicksBetweenEntries: 1,
+    cooldownAfterContractMs: 1_000,
     maxSessionMinutes: 120,
     minProbabilityEdge: 0.01,
     minEffectiveSample: 500,
     analysisWindows: [25, 50, 100, 250, 500, 1_000],
     durationTicks: 1,
-    decisionIntervalMs: 2_000,
+    decisionIntervalMs: 500,
     maxTickAgeMs: 15_000,
   };
 }

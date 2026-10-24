@@ -389,13 +389,20 @@ test('every configured limit blocks a purchase and names itself', () => {
     [{ account: { dailyPnl: 100 } }, 'DAILY_TAKE_PROFIT'],
     [{ config: { maxTrades: 10 }, account: { tradesThisSession: 10 } }, 'MAX_TRADES'],
     [{ openContracts: 1 }, 'MAX_OPEN_CONTRACTS'],
-    [{ account: { openExposure: 1 } }, 'MAX_OPEN_CONTRACTS'],
     [{ account: { lastSettlementAt: Date.now() } }, 'COOLDOWN'],
     [{ purchaseInFlight: true }, 'PURCHASE_IN_FLIGHT'],
     [{ unreconciledPurchase: true }, 'UNRECONCILED_PURCHASE'],
     [{ account: { balance: 0.2 } }, 'INSUFFICIENT_BALANCE'],
     [{ account: { currency: '' } }, 'CURRENCY_UNKNOWN'],
   ];
+  // Exposure was previously OR-ed into the open-contract check. It is a derived
+  // counter, and a settlement Deriv never repeated left it above zero, which
+  // blocked every later entry for the rest of the session. The contract count is
+  // the authority now; exposure is reporting only.
+  const exposureOnly = evaluateRiskGate(runningGateInput({ account: { openExposure: 9 } }));
+  assert.equal(exposureOnly.allowed, true, 'stale exposure no longer wedges the entry gate');
+  assert.ok(!exposureOnly.codes.includes('MAX_OPEN_CONTRACTS'));
+
   for (const [overrides, code] of cases) {
     const gate = evaluateRiskGate(runningGateInput(overrides));
     assert.equal(gate.allowed, false, `${code} should block`);

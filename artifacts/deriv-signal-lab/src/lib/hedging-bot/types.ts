@@ -84,9 +84,12 @@ export function defaultHedgingBotConfig(): HedgingBotConfig {
     selectionTicks: 500,
     minSelectionWindows: 200,
     minTickEdgeZ: 2,
-    minTicksBeforeTrade: 250,
+    minTicksBeforeTrade: 120,
 
-    requirePositiveExpectedValue: true,
+    // The selection is the trigger; the expected-value gate is the optional
+    // brake. Leaving it on by default made every pair wait for a replay sample
+    // it could not accumulate, so nothing was ever bought.
+    requirePositiveExpectedValue: false,
     minExpectedValue: 0,
 
     maxOpenPairs: 1,
@@ -95,9 +98,9 @@ export function defaultHedgingBotConfig(): HedgingBotConfig {
     maxDailyLoss: 20,
     dailyTakeProfit: 20,
     maxSessionMinutes: 0,
-    cooldownMs: 1_000,
+    cooldownMs: 500,
 
-    decisionIntervalMs: 1_500,
+    decisionIntervalMs: 500,
     maxTickAgeMs: 15_000,
   };
 }

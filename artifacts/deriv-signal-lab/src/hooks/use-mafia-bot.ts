@@ -16,6 +16,8 @@
 // numbers on screen are real; it simply never sends a `buy`.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
+import { BOT_CYCLE_MIN_SPACING_MS, shouldStartBotCycle, useBotCycleTrigger } from '@/hooks/use-bot-cycle-trigger';
+import { configNeedsReset, markConfigVersion } from '@/lib/bot-config-version';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import type { DerivBuyReceipt, DerivClosedPosition, DerivOpenPosition, DerivQuote, DerivTradeRequest } from '@/lib/deriv-trading';
 import {
@@ -96,7 +98,10 @@ const PREDICTION_LIMIT = 400;
 /** A prediction whose window has not printed by this age is expired, never guessed. */
 const PREDICTION_MAX_PENDING_MS = 10 * 60_000;
 /** Quotes are reused for this long before another preview is requested. */
-const QUOTE_TTL_MS = 2_500;
+// Reusing a quote saves a round trip, but a four-tick pair priced from a quote
+// that is already two ticks old is not the pair the analysis measured. One
+// second keeps the single-flight cycle fast without pricing off stale terms.
+const QUOTE_TTL_MS = 1_000;
 
 const UNCERTAIN_PURCHASE = /did not confirm the purchase in time|closed before Deriv answered/i;
 const ORPHAN_LEG_REASON = 'A Mafia leg is open without its partner; close it manually before any new pair.';
@@ -300,7 +305,9 @@ export function useMafiaBot(): MafiaBotController {
   const trading = useDerivTrading();
 
   const [mode, setModeState] = useState<MafiaMode>(readMode);
-  const [config, setConfig] = useState<MafiaBotConfig>(() => sanitizeMafiaBotConfig(readJson<Partial<MafiaBotConfig>>(CONFIG_KEY, {})));
+  const [config, setConfig] = useState<MafiaBotConfig>(() => sanitizeMafiaBotConfig(
+    configNeedsReset(CONFIG_KEY) ? {} : readJson<Partial<MafiaBotConfig>>(CONFIG_KEY, {}),
+  ));
   const [safety, setSafety] = useState<SafetyState>(createSafetyState);
   const [account, setAccount] = useState<RiseFallAccountState>(createRiseFallAccountState);
   const [evaluation, setEvaluation] = useState<MafiaEvaluation | null>(null);
@@ -323,12 +330,14 @@ export function useMafiaBot(): MafiaBotController {
   const tradingRef = useRef(trading);
   const feedRef = useRef(feed);
   const busyRef = useRef(false);
+  /** A tick arrived while a cycle was pricing; re-run once it finishes. */
+  const pendingCycleRef = useRef(false);
   const inFlightRef = useRef(false);
   const unreconciledRef = useRef(false);
   const mountedRef = useRef(true);
   const lastCycleRef = useRef(0);
   const sequenceRef = useRef(0);
-  const runCycleRef = useRef<() => Promise<void>>(async () => {});
+  const runCycleRef = useRef<(options?: { force?: boolean }) => Promise<void>>(async () => {});
   // The last priced pair, kept only while it is fresh AND was priced for the same
   // direction and stakes. A cached quote is a quote, never a reconstruction.
   const quoteCacheRef = useRef<{
@@ -367,6 +376,12 @@ export function useMafiaBot(): MafiaBotController {
   useEffect(() => {
     writeJson(CONFIG_KEY, config);
   }, [config]);
+
+  // The reset above is one-time: from here on, whatever the operator edits is
+  // what the next load keeps.
+  useEffect(() => {
+    markConfigVersion(CONFIG_KEY);
+  }, []);
 
   useEffect(() => {
     try {
@@ -455,16 +470,39 @@ export function useMafiaBot(): MafiaBotController {
   }, [feed.selectedSymbol, feed.selectedMarket?.name, feed.setSelectedSymbol, stepMarkets]);
 
   // ---- market analysis ------------------------------------------------------
+  // The gated replay scores up to 1 200 historical windows, which costs tens of
+  // milliseconds. Both the panel and the cycle read the same answer for the same
+  // tick, so it is computed once per tick and reused instead of twice — the
+  // duplicate pass was pure latency in front of the purchase.
+  const gatedCacheRef = useRef<{ key: string; result: MafiaGatedReplay } | null>(null);
+  const gatedFor = useCallback((ticks: readonly { epoch: number; quote: number }[], cfg: MafiaBotConfig, symbol: string) => {
+    const last = ticks[ticks.length - 1];
+    const key = [
+      symbol,
+      ticks.length,
+      last?.epoch ?? 0,
+      cfg.replayTicks,
+      cfg.uniformityWindow,
+      cfg.minUniformity,
+      cfg.minUniformityZ,
+      cfg.minDirectionSamples,
+    ].join(':');
+    if (gatedCacheRef.current?.key === key) return gatedCacheRef.current.result;
+    const result = replayGatedOutcomes(ticks, cfg);
+    gatedCacheRef.current = { key, result };
+    return result;
+  }, []);
   const symbolAllowed = isStepIndexMarket(feed.selectedSymbol, feed.selectedMarket?.name);
   const analysis = useMemo(() => analyseMafiaMarket(
     feed.ticks.map((tick) => ({ epoch: tick.epoch, quote: tick.quote })),
     config,
     { symbol: feed.selectedSymbol, now: clock },
   ), [feed.ticks, config, feed.selectedSymbol, clock]);
-  const gated = useMemo(() => replayGatedOutcomes(
+  const gated = useMemo(() => gatedFor(
     feed.ticks.map((tick) => ({ epoch: tick.epoch, quote: tick.quote })),
     config,
-  ), [feed.ticks, config]);
+    feed.selectedSymbol,
+  ), [feed.ticks, config, feed.selectedSymbol, gatedFor]);
 
   // ---- score the predictions ------------------------------------------------
   useEffect(() => {
@@ -818,13 +856,22 @@ export function useMafiaBot(): MafiaBotController {
   }, [commitAccount, commitPairs, setPurchaseInFlight]);
 
   // ---- the decision cycle ---------------------------------------------------
-  const runCycle = useCallback(async () => {
-    if (busyRef.current) return;
-    if (safetyRef.current.runState !== 'running') return;
+  const runCycle = useCallback(async (options?: { force?: boolean }) => {
+    if (busyRef.current) {
+      // A cycle is already pricing. The tick that just arrived would otherwise be
+      // dropped and the entry would wait for the next one, so it is re-run as soon
+      // as the current cycle releases the lock.
+      pendingCycleRef.current = true;
+      return;
+    }
+    const forced = options?.force === true;
+    if (!forced && safetyRef.current.runState !== 'running') return;
     const cfg = configRef.current;
     const currentMode = modeRef.current;
     const startedAt = Date.now();
-    if (startedAt - lastCycleRef.current < cfg.decisionIntervalMs * 0.8) return;
+    // Only dedupe: a new tick is the event that starts a cycle, so the floor is
+    // milliseconds, not the whole decision interval it used to wait for.
+    if (!shouldStartBotCycle({ now: startedAt, lastCycleAt: lastCycleRef.current, minSpacingMs: BOT_CYCLE_MIN_SPACING_MS, force: forced })) return;
     const symbol = feedRef.current.selectedSymbol;
     const observations = feedRef.current.ticks;
     if (!symbol || !observations.length) return;
@@ -840,9 +887,10 @@ export function useMafiaBot(): MafiaBotController {
         cfg,
         { symbol, now: startedAt },
       );
-      const nowGated = replayGatedOutcomes(
+      const nowGated = gatedFor(
         observations.map((tick) => ({ epoch: tick.epoch, quote: tick.quote })),
         cfg,
+        symbol,
       );
       const sizing = sizeMafiaPair(cfg, { balance: risk.balance, consecutiveLosingPairs: risk.consecutiveLosingPairs });
 
@@ -963,8 +1011,8 @@ export function useMafiaBot(): MafiaBotController {
         symbol,
         mode: currentMode,
         config: cfg,
-        running: safetyRef.current.runState === 'running',
-        paused: autoPauseReasons.length > 0,
+        running: forced || safetyRef.current.runState === 'running',
+        paused: !forced && autoPauseReasons.length > 0,
         analysis: nowAnalysis,
         gated: nowGated,
         risk,
@@ -1135,19 +1183,24 @@ export function useMafiaBot(): MafiaBotController {
     } finally {
       busyRef.current = false;
       if (mountedRef.current) setCycleRunning(false);
+      if (pendingCycleRef.current) {
+        pendingCycleRef.current = false;
+        // Unforced: the spacing floor still keeps a slow cycle from looping.
+        void runCycleRef.current();
+      }
     }
   }, [executePair, legRequests, nextDecisionId, previewQuotes, requestQuotes, risk, sessionStopReason, symbolAllowed]);
 
   runCycleRef.current = runCycle;
 
-  useEffect(() => {
-    if (safety.runState !== 'running') return undefined;
-    const interval = window.setInterval(() => {
-      void runCycleRef.current();
-    }, config.decisionIntervalMs);
-    void runCycleRef.current();
-    return () => window.clearInterval(interval);
-  }, [safety.runState, config.decisionIntervalMs]);
+  // Every new tick starts a cycle, with the configured interval acting as the
+  // watchdog for a quiet feed instead of as the entry latency.
+  useBotCycleTrigger({
+    enabled: safety.runState === 'running',
+    tickEpoch: feed.ticks.at(-1)?.epoch ?? null,
+    watchdogMs: config.decisionIntervalMs,
+    run: () => { void runCycleRef.current(); },
+  });
 
   // ---- operator controls ----------------------------------------------------
   const start = useCallback(() => {
@@ -1156,7 +1209,9 @@ export function useMafiaBot(): MafiaBotController {
     commitAccount(beginSession(rollTradingDay(accountRef.current, now), now));
     setSafety((current) => startBot(current, modeRef.current));
     lastCycleRef.current = 0;
-    void runCycleRef.current();
+    // The first cycle runs now: the safety ref still holds the pre-Start state,
+    // so it has to be forced rather than waiting for the next tick.
+    void runCycleRef.current({ force: true });
   }, [commitAccount]);
 
   const pause = useCallback(() => setSafety((current) => pauseBot(current, modeRef.current)), []);
@@ -1171,7 +1226,7 @@ export function useMafiaBot(): MafiaBotController {
 
   const runCycleNow = useCallback(() => {
     lastCycleRef.current = 0;
-    void runCycleRef.current();
+    void runCycleRef.current({ force: true });
   }, []);
 
   const setMode = useCallback((next: MafiaMode) => {

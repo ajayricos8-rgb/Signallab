@@ -125,7 +125,7 @@ function RiskSettings({ bot }: { bot: DigitBotController }) {
       <Field label="Minimum effective sample" hint="Serial-dependence adjusted digits required before a model may trade.">
         <NumberInput value={config.minEffectiveSample} step={50} onChange={(value) => bot.updateRiskConfig({ minEffectiveSample: value })} testId="bot-min-sample" />
       </Field>
-      <Field label="Decision cycle (ms)"><NumberInput value={config.decisionIntervalMs} step={500} min={500} onChange={(value) => bot.updateRiskConfig({ decisionIntervalMs: value })} testId="bot-cycle-interval" /></Field>
+      <Field label="Watchdog interval (ms)" hint="The bot re-decides on every new tick. This interval only re-checks a quiet feed."><NumberInput value={config.decisionIntervalMs} step={500} min={500} onChange={(value) => bot.updateRiskConfig({ decisionIntervalMs: value })} testId="bot-cycle-interval" /></Field>
       <Field label="Tick expiry for proposals" hint="Only expiries Deriv reports for this symbol are used.">
         <select
           value={config.durationTicks}

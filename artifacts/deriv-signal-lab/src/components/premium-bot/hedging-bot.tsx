@@ -208,7 +208,7 @@ function BotConfiguration({ bot }: { bot: HedgingBotController }) {
         <Field label="Cooldown after a settlement (ms)" hint="No new pair until this passes.">
           <NumberInput value={config.cooldownMs} onChange={num('cooldownMs')} step={500} min={0} max={600000} testId="hedging-cooldown" />
         </Field>
-        <Field label="Decision interval (ms)" hint="How often the bot evaluates the ticks.">
+        <Field label="Watchdog interval (ms)" hint="Every new tick is evaluated immediately; this interval only re-checks a quiet feed.">
           <NumberInput value={config.decisionIntervalMs} onChange={num('decisionIntervalMs')} step={250} min={500} max={60000} testId="hedging-interval" />
         </Field>
         <Field label="Max tick age (ms)" hint="A quote older than this is refused.">

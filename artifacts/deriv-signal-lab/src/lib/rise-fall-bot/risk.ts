@@ -156,7 +156,11 @@ export function evaluateRiskGate(input: RiskGateInput): RiskGate {
     violations.push(`Session trade limit reached: ${account.tradesThisSession} of ${config.maxTrades}.`);
     codes.push('MAX_TRADES');
   }
-  if (account.openExposure > 0 || input.openContracts >= config.maxOpenContracts) {
+  // The open-contract count is derived from the bot's own contract list, so it
+  // is the authority. `account.openExposure` used to be OR-ed in here, and a
+  // settlement Deriv never repeated left it above zero, permanently blocking
+  // every later entry. Exposure is still carried for reporting.
+  if (input.openContracts >= config.maxOpenContracts) {
     violations.push(`${input.openContracts} contract(s) already open; the limit is ${config.maxOpenContracts}.`);
     codes.push('MAX_OPEN_CONTRACTS');
   }

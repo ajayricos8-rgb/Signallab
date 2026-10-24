@@ -138,9 +138,9 @@ export function defaultMafiaBotConfig(): MafiaBotConfig {
     maxDailyLoss: 20,
     dailyTakeProfit: 20,
     maxSessionMinutes: 0,
-    cooldownMs: 1_000,
+    cooldownMs: 500,
 
-    decisionIntervalMs: 1_000,
+    decisionIntervalMs: 500,
     maxTickAgeMs: 15_000,
   };
 }
