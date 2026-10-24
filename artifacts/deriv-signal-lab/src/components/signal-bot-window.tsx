@@ -243,7 +243,7 @@ export function SignalBotWindow({
             </div>
             {plan.research && plan.research.total > 0 && (
               <div className="rounded-lg border border-border bg-background/40 px-2.5 py-2 text-[10px] leading-relaxed text-muted-foreground" data-testid="bot-research">
-                <span className="font-bold text-foreground">Research library </span>
+                <span className="font-bold text-foreground">Analysis, prediction and entry </span>
                 {plan.research.agreeing}/{plan.research.total} models favour this outcome ·{' '}
                 {plan.research.weight > 0
                   ? `folded into the traded estimate at ${Math.round(plan.research.weight * 100)}% weight (${plan.research.contributionPts >= 0 ? '+' : ''}${plan.research.contributionPts.toFixed(2)} pts)`

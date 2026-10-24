@@ -114,7 +114,7 @@ export function fuseResearch(input: ResearchFusionInput): { probability: number;
       fusion: {
         weight: 0, contributionPts: 0, probability: research ?? finiteProbability(input.probability) ?? 0.5, agreeing, total,
         agreement, validated, skill, sample, stance,
-        note: `Research library unavailable for this contract (${summary}). The signal keeps its own estimate.`,
+        note: `Analysis, prediction and entry unavailable for this contract (${summary}). The signal keeps its own estimate.`,
       },
     };
   }
@@ -132,10 +132,10 @@ export function fuseResearch(input: ResearchFusionInput): { probability: number;
   const probability = clamp(fair + (1 - weight) * baseEdge + weight * researchEdge, 0.0005, 0.9995);
   const contributionPts = 100 * (probability - base);
   const note = weight <= 0
-    ? `Research library checked this contract and left the estimate alone (${summary}).`
+    ? `Analysis, prediction and entry checked this contract and left the estimate alone (${summary}).`
     : stance === 'contradicting'
-      ? `Research library pulls this estimate down ${Math.abs(contributionPts).toFixed(2)} pts: ${summary}.`
-      : `Research library folded in at ${(100 * weight).toFixed(0)}% weight, ${contributionPts >= 0 ? '+' : ''}${contributionPts.toFixed(2)} pts: ${summary}.`;
+      ? `Analysis, prediction and entry pulls this estimate down ${Math.abs(contributionPts).toFixed(2)} pts: ${summary}.`
+      : `Analysis, prediction and entry folded in at ${(100 * weight).toFixed(0)}% weight, ${contributionPts >= 0 ? '+' : ''}${contributionPts.toFixed(2)} pts: ${summary}.`;
 
   return {
     probability,

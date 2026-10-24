@@ -35,7 +35,7 @@ export function researchAdvisory(decision?: ResearchDecision | null): string | n
   if (!decision) return 'No research audit is attached to this signal; the bot trades the analysis estimate as it stands.';
   if (!decision.eligible || decision.action !== 'candidate') {
     const reasons = decision.reasons.filter((reason) => !reason.startsWith('Evidence gates passed'));
-    return `Research library advice: ${reasons.join(' ') || 'the evidence gates did not pass for this contract.'}`;
+    return `Analysis, prediction and entry advice: ${reasons.join(' ') || 'the evidence gates did not pass for this contract.'}`;
   }
   return null;
 }

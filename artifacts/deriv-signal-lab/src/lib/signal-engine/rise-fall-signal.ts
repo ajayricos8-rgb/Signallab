@@ -763,7 +763,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       const conditionalWin = winEstimate / Math.max(0.001, 1 - flatRate);
       confirmation.probabilityRise = directionSign > 0 ? conditionalWin : 1 - conditionalWin;
       confirmation.edgePts = 100 * (winEstimate - fair);
-      confirmation.reasons.push(`Research library: ${research.note}`);
+      confirmation.reasons.push(`Analysis, prediction and entry: ${research.note}`);
     }
     // Report the latest 500 completed outcomes (not 500 start ticks) so the
     // historical panel uses comparable sample sizes across every duration.
@@ -834,7 +834,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       },
       {
         id: 'research',
-        label: 'Research library',
+        label: 'Analysis, prediction and entry',
         probability: research.probability,
         skill: research.skill,
         sample: research.sample,
@@ -1063,9 +1063,9 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     candidates: signals.map((signal) => ({ label: `${signal.direction} · ${formatRiseFallHorizon(signal.horizon)}`, probability: signal.winEstimate, fair: signal.fairProbability, confidence: signal.confidence })),
     settlements: input.settlements, settlementCurrency: input.settlementCurrency,
   });
-  if (best.research.weight > 0) notes.push(`Research library: ${best.research.note}`);
+  if (best.research.weight > 0) notes.push(`Analysis, prediction and entry: ${best.research.note}`);
   notes.push(`Master decision: ${best.master.headline}. ${best.master.entry.instruction}`);
-  if (!best.researchDecision.eligible) notes.push(`Research advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
+  if (!best.researchDecision.eligible) notes.push(`Analysis, prediction and entry advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
   onProgress?.(1, 'Signal and 300-engine audit ready');
   return {
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,

@@ -70,7 +70,7 @@ export function EngineLabPanel({ report }: { report?: EngineLabReport | null }) 
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-primary"><FlaskConical size={19} /></div>
-            <div><div className="eyebrow">Research library · 17 groups</div><h3 className="mt-1 text-base font-extrabold tracking-tight">300 engines. Every result explained.</h3><p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground">Measurements, forecasts, validation and execution rules—not 300 independent votes. Open any engine for its formula, live-snapshot reading, sample and sources.</p></div>
+            <div><div className="eyebrow">Analysis, prediction and entry · 17 groups</div><h3 className="mt-1 text-base font-extrabold tracking-tight">300 engines. Every result explained.</h3><p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground">Measurements, forecasts, validation and execution rules—not 300 independent votes. Open any engine for its formula, live-snapshot reading, sample and sources.</p></div>
           </div>
           {report && <button type="button" onClick={() => downloadReport(report)} className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-border bg-background/50 px-3 py-2 text-[10px] font-semibold hover:bg-secondary" data-testid="export-engine-audit"><Download size={13} /> Export audit</button>}
         </div>
@@ -80,7 +80,7 @@ export function EngineLabPanel({ report }: { report?: EngineLabReport | null }) 
           </div>
           <div className={`mt-4 flex gap-2.5 rounded-lg border p-3 ${eligible ? 'border-emerald-500/25 bg-emerald-500/5' : 'border-amber-500/25 bg-amber-500/5'}`} data-testid="research-decision">
             {eligible ? <ShieldCheck size={17} className="mt-0.5 shrink-0 text-emerald-500" /> : <ShieldAlert size={17} className="mt-0.5 shrink-0 text-amber-500" />}
-            <div><div className="text-xs font-bold">{eligible ? 'Evidence-qualified candidate · Load and Run can trade it' : 'Research advice · Load and Run still trades this signal'}</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{report.decision.reasons.join(' ')}</p><p className="mt-1 text-[10px] text-muted-foreground">Advice only: the gates below never hide the ranked signal and never disable automatic execution. A favourable estimated probability is not a guarantee of profit.</p></div>
+            <div><div className="text-xs font-bold">{eligible ? 'Evidence-qualified candidate · Load and Run can trade it' : 'Analysis, prediction and entry advice · Load and Run still trades this signal'}</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{report.decision.reasons.join(' ')}</p><p className="mt-1 text-[10px] text-muted-foreground">Advice only: the gates below never hide the ranked signal and never disable automatic execution. A favourable estimated probability is not a guarantee of profit.</p></div>
           </div>
           {report.fusion && report.fusion.total > 0 && (
             <div className="mt-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-[10px] leading-relaxed" data-testid="research-fusion">
@@ -96,10 +96,10 @@ export function EngineLabPanel({ report }: { report?: EngineLabReport | null }) 
           )}
           {report.accounting && report.accounting.sample > 0 && <p className="mt-3 text-[10px] text-muted-foreground">P&amp;L snapshot: {report.accounting.sample} loaded settlements · {report.accounting.currency ?? 'currency not specified'} · account active at scan time. Rerun after switching accounts.</p>}
           <div className="mt-3 text-[10px] text-muted-foreground">{report.symbol} · {report.horizon.value} {report.horizon.unit} · snapshot {report.asOfEpoch ? new Date(report.asOfEpoch * 1000).toISOString().replace('T', ' ').replace('.000Z', ' UTC') : '—'} · {report.sample.digits.toLocaleString()} digits / {report.sample.quotes.toLocaleString()} quotes / {report.sample.candles} closed 1m candles</div>
-        </> : <div className="mt-4 rounded-lg border border-dashed border-border p-3 text-[11px] text-muted-foreground">Browse the complete library now. Run Analysis to evaluate all entries, reveal data gaps and inspect the evidence behind a specific contract.</div>}
+        </> : <div className="mt-4 rounded-lg border border-dashed border-border p-3 text-[11px] text-muted-foreground">Browse the complete analysis workspace now. Run Analysis to evaluate all entries, reveal data gaps and inspect the evidence behind a specific contract.</div>}
       </div>
       {audit && <div className="border-b border-border p-4 sm:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2"><div className="eyebrow">Independent research forecast · {audit.models.length} models</div><span className={`text-[10px] font-semibold ${audit.validated ? 'text-emerald-500' : 'text-amber-500'}`}>{audit.validated ? 'Validation passed' : 'Not independently validated · cannot boost signal'}</span></div>
+        <div className="flex flex-wrap items-center justify-between gap-2"><div className="eyebrow">Independent analysis forecast · {audit.models.length} models</div><span className={`text-[10px] font-semibold ${audit.validated ? 'text-emerald-500' : 'text-amber-500'}`}>{audit.validated ? 'Validation passed' : 'Not independently validated · cannot boost signal'}</span></div>
         <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-5">
           {[
             ['Tune / calibrate / test', `${audit.tuningSample} / ${audit.calibrationSample} / ${audit.sample}`, 'Chronological, purged, non-overlapping'],

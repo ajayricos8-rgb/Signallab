@@ -252,7 +252,7 @@ export function RiseFallTool() {
     <div className="animate-rise-in space-y-5 pt-5" data-testid="rise-fall-analysis">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <div className="eyebrow">Rise/Fall · {ENGINE_COUNT} base predictors · 300-entry research library</div>
+          <div className="eyebrow">Rise/Fall · {ENGINE_COUNT} base predictors · 300-entry analysis, prediction and entry</div>
           <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">Rise/Fall signals</h2>
           <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">Scan every volatility market across 25 durations (1–10 ticks, 1–15 minutes). The 300-entry library measures trend, momentum, completed candles, volatility, price structure and sequence statistics. It independently audits the existing 14-model predictor with purged chronological validation, explains every reading and filters automatic entry when evidence is weak. Flat expiry loses both strict directions.</p>
         </div>
@@ -323,7 +323,7 @@ export function RiseFallTool() {
                 { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: `Held-out ${signal.direction} calls at this duration: win rate and number of calls` },
                 { label: 'Consensus', value: formatSigned(signal.consensusScore), hint: 'Skill-weighted engine score from -1 (fall) to +1 (rise)' },
                 {
-                  label: 'Research library',
+                  label: 'Analysis, prediction and entry',
                   value: signal.research.total ? `${signal.research.agreeing}/${signal.research.total}${signal.research.weight > 0 ? ` · ${signal.research.contributionPts >= 0 ? '+' : ''}${signal.research.contributionPts.toFixed(1)} pts` : ''}` : '—',
                   hint: signal.research.note,
                 },

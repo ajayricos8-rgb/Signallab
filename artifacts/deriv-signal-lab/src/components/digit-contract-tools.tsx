@@ -37,7 +37,7 @@ const FAMILY_DETAILS: Record<DigitFamily, { title: string; eyebrow: string; desc
   'over-under': {
     title: 'Over/Under signals',
     eyebrow: 'DIGITOVER · DIGITUNDER',
-    description: 'Scan every volatility market for the strongest Over/Under barrier (1–8). The 12-model predictor is now audited by a 300-entry research library: strict barrier probabilities, frequency and transition models, chronological validation, transparent diagnostics and execution filters. Equality always loses.',
+    description: 'Scan every volatility market for the strongest Over/Under barrier (1–8). The 12-model predictor is now audited by a 300-entry analysis, prediction and entry: strict barrier probabilities, frequency and transition models, chronological validation, transparent diagnostics and execution filters. Equality always loses.',
   },
   'even-odd': {
     title: 'Even/Odd signals',
@@ -47,7 +47,7 @@ const FAMILY_DETAILS: Record<DigitFamily, { title: string; eyebrow: string; desc
   matches: {
     title: 'Matches signals',
     eyebrow: 'DIGITMATCH',
-    description: 'Find the target digit (0–9) with the strongest measured evidence. A 300-entry research library audits the existing predictor with digit distributions, recurrence, conditional probabilities and chronological tests. A missing or overdue digit is not automatically more likely.',
+    description: 'Find the target digit (0–9) with the strongest measured evidence. A 300-entry analysis, prediction and entry audits the existing predictor with digit distributions, recurrence, conditional probabilities and chronological tests. A missing or overdue digit is not automatically more likely.',
   },
 };
 
@@ -363,7 +363,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid={`${family}-analysis`}>
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div><div className="eyebrow">{details.eyebrow} · {ENGINE_COUNT} base predictors · 300-entry research library</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{details.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{details.description}</p></div>
+        <div><div className="eyebrow">{details.eyebrow} · {ENGINE_COUNT} base predictors · 300-entry analysis, prediction and entry</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{details.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{details.description}</p></div>
         <FeedStatusBadge feed={feed} />
       </div>
 
@@ -442,7 +442,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                   hint: `When the bot opens this contract: ${signal.entry.detail}`,
                 },
                 {
-                  label: 'Research library',
+                  label: 'Analysis, prediction and entry',
                   value: signal.research.total ? `${signal.research.agreeing}/${signal.research.total}${signal.research.weight > 0 ? ` · ${signal.research.contributionPts >= 0 ? '+' : ''}${signal.research.contributionPts.toFixed(1)} pts` : ''}` : '—',
                   hint: signal.research.note,
                 },

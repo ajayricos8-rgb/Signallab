@@ -242,7 +242,7 @@ export type MasterDecisionInput = {
   structureStable: boolean;
   /** Confirmation layer: the edge survived its out-of-sample calibration. */
   confirmed: boolean;
-  /** Research library: a validated ensemble contradicts this call. */
+  /** Analysis, prediction and entry: a validated ensemble contradicts this call. */
   contradicted: boolean;
 };
 
@@ -697,7 +697,7 @@ export function buildMasterDecision(input: MasterDecisionInput): MasterDecision 
   } else {
     reasons.push(`The ${entryLabel} did not beat buying at the signal on newer rows, so the master enters at the next tick instead of waiting.`);
   }
-  if (input.contradicted) reasons.push('The research library validated a contrary estimate; the verdict cannot be decisive.');
+  if (input.contradicted) reasons.push('The analysis layer validated a contrary estimate; the verdict cannot be decisive.');
   if (input.marketRandom) reasons.push('The analysis engines measured no exploitable market structure; only measured out-of-sample skill can carry this call.');
   if (!input.marketMeasured) reasons.push('The market could not be measured reliably yet; treat the decision as provisional.');
   if (input.dataQuality < 0.9) reasons.push(`Data quality is ${(input.dataQuality * 100).toFixed(0)}% of a full sample, which lowers the evidence score.`);
