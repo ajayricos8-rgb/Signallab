@@ -16,6 +16,8 @@
 // Requesting a quote never buys anything, so analysis mode still sends no `buy`.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
+import { BOT_CYCLE_MIN_SPACING_MS, shouldStartBotCycle, useBotCycleTrigger } from '@/hooks/use-bot-cycle-trigger';
+import { configNeedsReset, markConfigVersion } from '@/lib/bot-config-version';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import type {
   DerivBuyReceipt,
@@ -276,7 +278,11 @@ export function useHedgingBot(): HedgingBotController {
   const trading = useDerivTrading();
 
   const [mode, setModeState] = useState<HedgingBotMode>(readMode);
-  const [config, setConfig] = useState<HedgingBotConfig>(() => sanitizeHedgingBotConfig(readJson<Partial<HedgingBotConfig>>(CONFIG_KEY, {})));
+  const [config, setConfig] = useState<HedgingBotConfig>(() => sanitizeHedgingBotConfig(
+    // A config written by an older build is rebuilt from the current defaults
+    // once, otherwise a stored slow interval would keep the old pacing forever.
+    configNeedsReset(CONFIG_KEY) ? {} : readJson<Partial<HedgingBotConfig>>(CONFIG_KEY, {}),
+  ));
   const [safety, setSafety] = useState<SafetyState>(createSafetyState);
   const [account, setAccount] = useState<RiseFallAccountState>(createRiseFallAccountState);
   const [decision, setDecision] = useState<HedgeDecision | null>(null);
@@ -300,11 +306,13 @@ export function useHedgingBot(): HedgingBotController {
   const tradingRef = useRef(trading);
   const feedRef = useRef(feed);
   const busyRef = useRef(false);
+  /** A tick arrived while a cycle was pricing; re-run once it finishes. */
+  const pendingCycleRef = useRef(false);
   const lastCycleRef = useRef(0);
   const lastPreviewRef = useRef(0);
   const sequenceRef = useRef(0);
   const mountedRef = useRef(true);
-  const runCycleRef = useRef<() => Promise<void>>(async () => {});
+  const runCycleRef = useRef<(options?: { force?: boolean }) => Promise<void>>(async () => {});
 
   accountRef.current = account;
   configRef.current = config;
@@ -327,6 +335,12 @@ export function useHedgingBot(): HedgingBotController {
   useEffect(() => {
     writeJson(CONFIG_KEY, config);
   }, [config]);
+
+  // The reset above is one-time: from here on, whatever the operator edits is
+  // what the next load keeps.
+  useEffect(() => {
+    markConfigVersion(CONFIG_KEY);
+  }, []);
 
   useEffect(() => {
     try {
@@ -739,14 +753,24 @@ export function useHedgingBot(): HedgingBotController {
   }, [commitAccount, commitPairs, commitPurchase, requestPair, unwindLegs]);
 
   // ---- the decision cycle ----------------------------------------------------
-  const runCycle = useCallback(async () => {
-    if (busyRef.current) return;
+  const runCycle = useCallback(async (options?: { force?: boolean }) => {
+    if (busyRef.current) {
+      // A cycle is already pricing. The tick that just arrived would otherwise be
+      // dropped and the entry would wait for the next one, so it is re-run as soon
+      // as the current cycle releases the lock.
+      pendingCycleRef.current = true;
+      return;
+    }
     const safetyState = safetyRef.current;
-    if (safetyState.runState !== 'running') return;
+    const forced = options?.force === true;
+    if (!forced && safetyState.runState !== 'running') return;
     const cfg = configRef.current;
     const currentMode = modeRef.current;
     const startedAt = Date.now();
-    if (startedAt - lastCycleRef.current < cfg.decisionIntervalMs * 0.8) return;
+    // Dedupe only: a new verified tick starts the cycle, so the pair is opened
+    // the moment the selection and the gate agree instead of up to a full
+    // decision interval later.
+    if (!shouldStartBotCycle({ now: startedAt, lastCycleAt: lastCycleRef.current, minSpacingMs: BOT_CYCLE_MIN_SPACING_MS, force: forced })) return;
     const symbol = feed.selectedSymbol;
     const observations = feed.ticks;
     if (!symbol || !observations.length) return;
@@ -772,8 +796,8 @@ export function useHedgingBot(): HedgingBotController {
         account: accountSnapshot,
         pairs: pairsRef.current,
         mode: currentMode,
-        runState: safetyState.runState,
-        manualPause: safetyState.manualPause,
+        runState: forced ? 'running' : safetyState.runState,
+        manualPause: forced ? false : safetyState.manualPause,
         autoPauseReasons: safetyState.autoPauseReasons,
         accountAuthorized: trading.activeAccount !== null,
         connectionHealthy: trading.status === 'connected',
@@ -921,19 +945,23 @@ export function useHedgingBot(): HedgingBotController {
     } finally {
       busyRef.current = false;
       if (mountedRef.current) setCycleRunning(false);
+      if (pendingCycleRef.current) {
+        pendingCycleRef.current = false;
+        // Unforced: the spacing floor still keeps a slow cycle from looping.
+        void runCycleRef.current();
+      }
     }
   }, [commitPurchase, executePair, feed.contracts, feed.contractsLoaded, feed.fresh, feed.selectedSymbol, feed.status, feed.ticks, nextDecisionId, previewPair, trading]);
 
   runCycleRef.current = runCycle;
 
-  useEffect(() => {
-    if (safety.runState !== 'running') return undefined;
-    const interval = window.setInterval(() => {
-      void runCycleRef.current();
-    }, config.decisionIntervalMs);
-    void runCycleRef.current();
-    return () => window.clearInterval(interval);
-  }, [safety.runState, config.decisionIntervalMs]);
+  // Tick-driven cycles, with the configured interval kept as the watchdog.
+  useBotCycleTrigger({
+    enabled: safety.runState === 'running',
+    tickEpoch: feed.ticks.at(-1)?.epoch ?? null,
+    watchdogMs: config.decisionIntervalMs,
+    run: () => { void runCycleRef.current(); },
+  });
 
   // ---- operator controls -----------------------------------------------------
   const start = useCallback(() => {
@@ -941,7 +969,9 @@ export function useHedgingBot(): HedgingBotController {
     commitAccount(beginSession(rollTradingDay(accountRef.current, now), now));
     setSafety((current) => startBot(current, modeRef.current));
     lastCycleRef.current = 0;
-    void runCycleRef.current();
+    // Forced: the safety ref still holds the pre-Start state, so an unforced
+    // first cycle would return without evaluating the market.
+    void runCycleRef.current({ force: true });
   }, [commitAccount]);
 
   const pause = useCallback(() => setSafety((current) => pauseBot(current, modeRef.current)), []);
@@ -953,7 +983,7 @@ export function useHedgingBot(): HedgingBotController {
 
   const runCycleNow = useCallback(() => {
     lastCycleRef.current = 0;
-    void runCycleRef.current();
+    void runCycleRef.current({ force: true });
   }, []);
 
   const setMode = useCallback((next: HedgingBotMode) => {

@@ -339,11 +339,12 @@ export function defaultRiseFallConfig(): RiseFallConfig {
     strongRatio: 0.65,
     continuationRatio: 0.55,
 
-    requirePositiveExpectedValue: true,
+    // The rule is the trigger; the expected-value gate is the optional brake.
+    requirePositiveExpectedValue: false,
     minEvidenceSample: 30,
     minExpectedValue: 0,
 
-    decisionIntervalMs: 1_500,
+    decisionIntervalMs: 500,
     maxTickAgeMs: 15_000,
   };
 }

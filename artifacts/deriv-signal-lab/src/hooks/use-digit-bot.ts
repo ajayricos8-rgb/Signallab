@@ -13,6 +13,8 @@
 // ever stored by, or sent on behalf of, the bot.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDerivDigitFeed } from '@/hooks/use-deriv-digit-feed';
+import { BOT_CYCLE_MIN_SPACING_MS, shouldStartBotCycle, useBotCycleTrigger } from '@/hooks/use-bot-cycle-trigger';
+import { configNeedsReset, markConfigVersion } from '@/lib/bot-config-version';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import type { DerivTradeRequest } from '@/lib/deriv-trading';
 import { supportedTradeTicks } from '@/lib/trade-duration';
@@ -218,7 +220,9 @@ export function useDigitBot(): DigitBotController {
   const trading = useDerivTrading();
 
   const [mode, setModeState] = useState<BotMode>(readMode);
-  const [riskConfig, setRiskConfig] = useState<BotRiskConfig>(() => sanitizeRiskConfig(readJson<BotRiskConfig>(CONFIG_KEY, defaultRiskConfig())));
+  const [riskConfig, setRiskConfig] = useState<BotRiskConfig>(() => sanitizeRiskConfig(
+    configNeedsReset(CONFIG_KEY) ? defaultRiskConfig() : readJson<BotRiskConfig>(CONFIG_KEY, defaultRiskConfig()),
+  ));
   const [safety, setSafety] = useState<SafetyState>(createSafetyState);
   const [account, setAccount] = useState<BotAccountState>(createAccountState);
   const [decision, setDecision] = useState<DecisionCycleResult | null>(null);
@@ -247,9 +251,11 @@ export function useDigitBot(): DigitBotController {
   const recordsRef = useRef(records);
   const modelReportRef = useRef<CyclePlan['modelReport']>(null);
   const busyRef = useRef(false);
+  /** A tick arrived while a cycle was pricing; re-run once it finishes. */
+  const pendingCycleRef = useRef(false);
   const lastCycleRef = useRef(0);
   const mountedRef = useRef(true);
-  const runCycleRef = useRef<() => Promise<void>>(async () => {});
+  const runCycleRef = useRef<(options?: { force?: boolean }) => Promise<void>>(async () => {});
   const selectionModeRef = useRef(selectionMode);
   const manualFamilyRef = useRef(manualFamily);
 
@@ -268,6 +274,12 @@ export function useDigitBot(): DigitBotController {
   useEffect(() => {
     writeJson(CONFIG_KEY, riskConfig);
   }, [riskConfig]);
+
+  // One-time migration marker: the defaults just applied are the shape future
+  // edits start from.
+  useEffect(() => {
+    markConfigVersion(CONFIG_KEY);
+  }, []);
 
   useEffect(() => {
     writeJson(SELECTION_KEY, selectionMode);
@@ -379,15 +391,23 @@ export function useDigitBot(): DigitBotController {
     }
   }, [trading]);
 
-  const runCycle = useCallback(async () => {
-    if (busyRef.current) return;
+  const runCycle = useCallback(async (options?: { force?: boolean }) => {
+    if (busyRef.current) {
+      // A cycle is already pricing. The tick that just arrived would otherwise be
+      // dropped and the entry would wait for the next one, so it is re-run as soon
+      // as the current cycle releases the lock.
+      pendingCycleRef.current = true;
+      return;
+    }
     const currentMode = modeRef.current;
     const config = configRef.current;
-    if (safetyRef.current.runState !== 'running') return;
+    const forced = options?.force === true;
+    if (!forced && safetyRef.current.runState !== 'running') return;
     const startedAt = Date.now();
-    // The decision cycle has its own cadence; a dashboard refresh or a burst of
-    // ticks can never make the bot buy twice for the same opportunity.
-    if (startedAt - lastCycleRef.current < config.decisionIntervalMs * 0.8) return;
+    // A new tick is the event that starts a cycle. The floor only stops the same
+    // tick being evaluated twice, so an entry is never left waiting a full
+    // decision interval after its conditions are met.
+    if (!shouldStartBotCycle({ now: startedAt, lastCycleAt: lastCycleRef.current, minSpacingMs: BOT_CYCLE_MIN_SPACING_MS, force: forced })) return;
     const symbol = feed.selectedSymbol;
     if (!symbol) return;
     const ticks = bufferRef.current.window(symbol, config.analysisWindows.at(-1) ?? 1_000);
@@ -416,7 +436,15 @@ export function useDigitBot(): DigitBotController {
         contractSupport: feed.contracts,
         riskConfig: config,
         account: accountSnapshot,
-        safety: { ...safetyRef.current, runState: 'running', manualPause: false },
+        // The scheduler only runs while the bot is running, so the state below
+        // is normally already 'running'. It is not overwritten unconditionally:
+        // a manual pause or an automatic pause has to reach the gate, otherwise
+        // the decision log would claim a check that never ran.
+        safety: {
+          ...safetyRef.current,
+          runState: forced ? 'running' : safetyRef.current.runState,
+          manualPause: forced ? false : safetyRef.current.manualPause,
+        },
         currency: accountSnapshot.currency,
         activeContracts: executionRef.current.contracts,
         accountAuthorized: trading.activeAccount !== null,
@@ -433,7 +461,11 @@ export function useDigitBot(): DigitBotController {
 
       const quotes: Record<string, ProposalSnapshot> = {};
       if (trading.status === 'connected' && plan.shortlist.length) {
-        for (const candidate of plan.shortlist.slice(0, PROPOSAL_LIMIT)) {
+        // Requested in parallel: waiting for each proposal in turn added the
+        // round-trip of every candidate to the cycle, and a shortlist of five
+        // could push the decision past the next tick entirely.
+        const requested = plan.shortlist.slice(0, PROPOSAL_LIMIT);
+        const responses = await Promise.all(requested.map(async (candidate) => {
           try {
             const response = await trading.requestQuote({
               contractType: candidate.contractType,
@@ -444,13 +476,18 @@ export function useDigitBot(): DigitBotController {
               durationUnit: 't',
               barrier: candidate.barrier === null ? null : String(candidate.barrier),
             });
-            if (!mountedRef.current) return;
-            quotes[candidate.id] = toProposalSnapshot(response);
+            return { candidate, response };
           } catch {
             // A rejected quote simply leaves that candidate without economics;
             // the expectancy engine reports a missing payout instead of
             // inventing one.
+            return null;
           }
+        }));
+        if (!mountedRef.current) return;
+        for (const entry of responses) {
+          if (!entry) continue;
+          quotes[entry.candidate.id] = toProposalSnapshot(entry.response);
         }
       }
 
@@ -553,6 +590,11 @@ export function useDigitBot(): DigitBotController {
     } finally {
       busyRef.current = false;
       if (mountedRef.current) setCycleRunning(false);
+      if (pendingCycleRef.current) {
+        pendingCycleRef.current = false;
+        // Unforced: the spacing floor still keeps a slow cycle from looping.
+        void runCycleRef.current();
+      }
     }
   }, [executeLiveEntry, feed.contracts, feed.fresh, feed.selectedMarket?.precision, feed.selectedSymbol, feed.serverClockOffsetMs, feed.status, trading]);
 
@@ -682,22 +724,28 @@ export function useDigitBot(): DigitBotController {
   }, [feed.ticks]);
 
   // ---- cycle scheduler -------------------------------------------------------
-  useEffect(() => {
-    if (safety.runState !== 'running') return undefined;
-    const interval = window.setInterval(() => {
-      void runCycleRef.current();
-    }, riskConfig.decisionIntervalMs);
-    void runCycleRef.current();
-    return () => window.clearInterval(interval);
-  }, [safety.runState, riskConfig.decisionIntervalMs]);
+  // Tick-driven, with the configured interval as the watchdog for a quiet feed.
+  useBotCycleTrigger({
+    enabled: safety.runState === 'running',
+    tickEpoch: feed.ticks.at(-1)?.epoch ?? null,
+    watchdogMs: riskConfig.decisionIntervalMs,
+    run: () => { void runCycleRef.current(); },
+  });
 
   // ---- controls --------------------------------------------------------------
   const start = useCallback(() => {
     const now = Date.now();
-    setAccount((current) => beginSession(rollTradingDay(current, now), now));
+    // Written to the ref as well as to state: the forced first cycle below reads
+    // the ref, and a session that only exists in the next render would make it
+    // return before evaluating anything.
+    const started = beginSession(rollTradingDay(accountRef.current, now), now);
+    accountRef.current = started;
+    setAccount(started);
     setSafety((current) => startBot(current, modeRef.current));
     lastCycleRef.current = 0;
-    void runCycleRef.current();
+    // Forced so the first cycle runs with the state Start just committed; an
+    // unforced call would see the stale safety ref and do nothing.
+    void runCycleRef.current({ force: true });
   }, []);
 
   const pause = useCallback(() => setSafety((current) => pauseBot(current, modeRef.current)), []);

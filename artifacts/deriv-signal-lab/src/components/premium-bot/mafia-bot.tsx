@@ -238,7 +238,7 @@ function BotConfiguration({ bot }: { bot: MafiaBotController }) {
         <Field label="Cooldown after a pair (ms)" hint="No new pair until this passes.">
           <NumberInput value={config.cooldownMs} onChange={num('cooldownMs')} step={250} min={0} max={600000} testId="mafia-cooldown" />
         </Field>
-        <Field label="Decision interval (ms)" hint="How often the gate is evaluated.">
+        <Field label="Watchdog interval (ms)" hint="Every new tick is evaluated immediately; this interval only re-checks a quiet feed.">
           <NumberInput value={config.decisionIntervalMs} onChange={num('decisionIntervalMs')} step={250} min={500} max={60000} testId="mafia-interval" />
         </Field>
         <Field label="Max tick age (ms)" hint="A quote older than this is refused.">
