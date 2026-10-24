@@ -534,7 +534,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     if (research.weight > 0) {
       confirmation.probability = fused.probability;
       confirmation.edgePts = 100 * (fused.probability - fair);
-      confirmation.reasons.push(`Research library: ${research.note}`);
+      confirmation.reasons.push(`Analysis, prediction and entry: ${research.note}`);
     }
     const probability = clamp(confirmation.probability, 0.0005, 0.9995);
     const edge = probability - fair;
@@ -630,7 +630,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       },
       {
         id: 'research',
-        label: 'Research library',
+        label: 'Analysis, prediction and entry',
         probability: research.probability,
         skill: research.skill,
         sample: research.sample,
@@ -907,9 +907,9 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     candidates: signals.map((signal) => ({ label: signal.label, probability: signal.probability, fair: signal.fairProbability, confidence: signal.confidence })),
     settlements: input.settlements, settlementCurrency: input.settlementCurrency,
   });
-  if (best.research.weight > 0) notes.push(`Research library: ${best.research.note}`);
+  if (best.research.weight > 0) notes.push(`Analysis, prediction and entry: ${best.research.note}`);
   notes.push(`Master decision: ${best.master.headline}. ${best.master.entry.instruction}`);
-  if (!best.researchDecision.eligible) notes.push(`Research advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
+  if (!best.researchDecision.eligible) notes.push(`Analysis, prediction and entry advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
   onProgress?.(1, 'Signal and 300-engine audit ready');
   return {
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,

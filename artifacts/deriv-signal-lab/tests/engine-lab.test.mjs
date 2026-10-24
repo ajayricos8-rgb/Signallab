@@ -439,7 +439,7 @@ const baseAudit = (overrides = {}) => ({
   ...overrides,
 });
 
-test('the research library is folded into the traded estimate when it validated out of sample', () => {
+test('the analysis, prediction and entry layer is folded into the traded estimate when it validated out of sample', () => {
   const supportive = fuseResearch({ audit: baseAudit(), probability: 0.2, fair: 0.1 });
   assert.ok(supportive.fusion.weight > 0 && supportive.fusion.weight <= 0.35);
   assert.ok(supportive.probability > 0.2, `${supportive.probability} should exceed the base estimate`);
