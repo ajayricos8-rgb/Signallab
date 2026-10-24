@@ -53,12 +53,17 @@ function flatTape(count, quote = 1_000) {
   return ticks(Array.from({ length: count }, () => quote));
 }
 
-const quotesFor = (primaryStake = 2, coverStake = 0.8) => ({
+/**
+ * A live-shaped 4-tick Rise/Fall quote. Deriv's Step-index quotes in the app
+ * have been around 3.08× a stake, which is why the bot reads the payout from the
+ * proposal instead of assuming a constant.
+ */
+const PAYOUT_MULTIPLE = 3.08;
+const quotesFor = (primaryStake = 2, coverStake = 1.8) => ({
   primaryAsk: primaryStake,
   coverAsk: coverStake,
-  // Deriv's synthetic Rise/Fall payout is about 1.9× the stake.
-  primaryPayout: Math.round(primaryStake * 1.9 * 100) / 100,
-  coverPayout: Math.round(coverStake * 1.9 * 100) / 100,
+  primaryPayout: Math.round(primaryStake * PAYOUT_MULTIPLE * 100) / 100,
+  coverPayout: Math.round(coverStake * PAYOUT_MULTIPLE * 100) / 100,
 });
 
 function market(symbol, name, overrides = {}) {
@@ -374,11 +379,14 @@ test('the share cap never risks more than the balance and a tiny balance is bloc
 
 // ---- pair economics ------------------------------------------------------
 
-test('an equal-stake pair cannot profit at Deriv payouts', () => {
+test('an equal-stake pair cannot profit when the payout is under 2x', () => {
   const economics = evaluatePairEconomics({
     primaryStake: 2,
     coverStake: 2,
-    ...quotesFor(2, 2),
+    primaryAsk: 2,
+    coverAsk: 2,
+    primaryPayout: 3.8,
+    coverPayout: 3.8,
     probability: 0.6,
     flatProbability: 0,
   });
@@ -395,7 +403,10 @@ test('a smaller cover leg gives the pair a real break-even probability', () => {
   const economics = evaluatePairEconomics({
     primaryStake: 2,
     coverStake: 0.8,
-    ...quotesFor(2, 0.8),
+    primaryAsk: 2,
+    coverAsk: 0.8,
+    primaryPayout: 3.8,
+    coverPayout: 1.52,
     probability: 0.6,
     flatProbability: 0,
   });
@@ -408,8 +419,9 @@ test('a smaller cover leg gives the pair a real break-even probability', () => {
 });
 
 test('a level window charges both stakes and lowers the expected value', () => {
-  const base = evaluatePairEconomics({ primaryStake: 2, coverStake: 0.8, ...quotesFor(), probability: 0.7, flatProbability: 0 });
-  const flat = evaluatePairEconomics({ primaryStake: 2, coverStake: 0.8, ...quotesFor(), probability: 0.7, flatProbability: 0.2 });
+  const quote = { primaryAsk: 2, coverAsk: 0.8, primaryPayout: 3.8, coverPayout: 1.52 };
+  const base = evaluatePairEconomics({ primaryStake: 2, coverStake: 0.8, ...quote, probability: 0.7, flatProbability: 0 });
+  const flat = evaluatePairEconomics({ primaryStake: 2, coverStake: 0.8, ...quote, probability: 0.7, flatProbability: 0.2 });
   assert.equal(flat.flatLoss, -2.8);
   assert.ok((flat.expectedValue ?? 0) < (base.expectedValue ?? 0));
   assert.ok((flat.breakEvenProbability ?? 0) > (base.breakEvenProbability ?? 0));
@@ -423,7 +435,7 @@ test('a uniform tape with clearing evidence and quotes is a TRADE', () => {
   assert.equal(evaluation.decision.action, 'TRADE', evaluation.decision.reasons.join(' | '));
   assert.equal(evaluation.decision.direction, 'CALL');
   assert.equal(evaluation.decision.primaryStake, 2);
-  assert.equal(evaluation.decision.coverStake, 0.8);
+  assert.equal(evaluation.decision.coverStake, 1.8);
   assert.ok((evaluation.evidence ?? 0) >= (evaluation.breakEven ?? 1));
   assert.ok(evaluation.decision.reasonCodes.includes('READY'));
 });
@@ -530,6 +542,83 @@ test('stale ticks stop the gate before any analysis is trusted', () => {
   });
   assert.equal(evaluation.decision.action, 'WAIT');
   assert.ok(evaluation.decision.reasonCodes.includes('STALE_TICKS'));
+});
+
+test('by default the bot fires the moment uniformity appears', () => {
+  const defaults = defaultMafiaBotConfig();
+  assert.equal(defaults.requirePositiveExpectedValue, false);
+  assert.equal(defaults.minUniformity, 0.2);
+  assert.equal(defaults.minUniformityZ, 1);
+  assert.equal(defaults.hedgeRatioPercent, 90);
+
+  // The screenshot case: a lean of about z 1.1 / 1.0 with a 0.29 score. It was
+  // refused by the old 0.30 / 1.5 floors; it must fire now.
+  const weakLean = {
+    ...measureUniformity(uptrend(120), sanitizeMafiaBotConfig(defaultMafiaBotConfig())),
+    score: 0.29,
+    directionalZ: 1.1,
+    persistenceZ: 1.0,
+    direction: 'CALL',
+  };
+  assert.equal(verdictOnUniformity(weakLean, sanitizeMafiaBotConfig(defaultMafiaBotConfig())).passes, true);
+  const oldFloors = sanitizeMafiaBotConfig({ ...defaultMafiaBotConfig(), minUniformity: 0.3, minUniformityZ: 1.5 });
+  const oldVerdict = verdictOnUniformity(weakLean, oldFloors);
+  assert.equal(oldVerdict.passes, false);
+  assert.ok(oldVerdict.reasonCodes.includes('UNIFORMITY_BELOW_MIN'));
+  assert.ok(oldVerdict.reasonCodes.includes('DIRECTIONAL_Z_LOW'));
+});
+
+test('the expected-value gate is the optional brake, not the trigger', () => {
+  const config = sanitizeMafiaBotConfig(defaultMafiaBotConfig());
+  const observations = uptrend(400);
+  const last = observations[observations.length - 1];
+  const now = last.epoch * 1_000 + 200;
+  const baseAnalysis = analyseMafiaMarket(observations, config, { symbol: 'stpRNG', now });
+  // A level-heavy replay: 30% of four-tick windows end where they started. That
+  // is the regime where a hedge costs more than the directional lean earns.
+  const analysis = {
+    ...baseAnalysis,
+    replay: { ...baseAnalysis.replay, flatProbability: 0.3 },
+  };
+  const gated = { ...replayGatedOutcomes(observations, config), winRate: 0.5, samples: 200 };
+  const quotes = { primaryAsk: 2, coverAsk: 1.8, primaryPayout: 4.4, coverPayout: 3.96 };
+  const run = (requirePositiveExpectedValue) => evaluateMafiaEntry({
+    now,
+    symbol: 'stpRNG',
+    mode: 'live',
+    config: sanitizeMafiaBotConfig({ ...config, requirePositiveExpectedValue }),
+    running: true,
+    paused: false,
+    analysis,
+    gated,
+    risk: riskSnapshot(),
+    quotes,
+    stopReason: null,
+  });
+
+  const lossy = run(true);
+  assert.equal(lossy.decision.action, 'WAIT');
+  assert.ok(lossy.decision.reasonCodes.includes('EV_BELOW_MIN'), lossy.decision.reasonCodes.join(','));
+
+  const firing = run(false);
+  assert.equal(firing.decision.action, 'TRADE', firing.decision.reasons.join(' | '));
+  assert.ok(firing.decision.reasonCodes.includes('EV_GATE_OFF'));
+  assert.ok(firing.decision.reasons.some((reason) => reason.includes('not an edge')));
+});
+
+test('every failed uniformity check is reported, not just the first', () => {
+  const { evaluation } = scenario(sawtooth(400));
+  assert.equal(evaluation.decision.action, 'WAIT');
+  assert.ok(evaluation.decision.reasonCodes.includes('NO_DIRECTION'));
+  assert.ok(evaluation.decision.reasonCodes.includes('UNIFORMITY_BELOW_MIN'));
+  assert.ok(evaluation.decision.reasons.length >= 2);
+});
+
+test('a pair that cannot profit is still refused with the brake off', () => {
+  // Neither branch covers both stakes at this quote.
+  const { evaluation } = scenario(uptrend(400), { requirePositiveExpectedValue: false }, {}, { primaryPayout: 2.7, coverPayout: 1 });
+  assert.equal(evaluation.decision.action, 'BLOCKED');
+  assert.equal(evaluation.decision.actionLabel, 'Blocked by payout');
 });
 
 test('the gate is deterministic for identical inputs', () => {

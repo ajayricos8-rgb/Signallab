@@ -617,8 +617,8 @@ export function useMafiaBot(): MafiaBotController {
   );
 
   // ---- proposals ------------------------------------------------------------
-  /** Requests both legs' quotes together. Nothing is bought by this. */
-  const requestQuotes = useCallback(async (
+  /** The two requests a pair consists of. Deterministic, so they can be rebuilt. */
+  const legRequests = useCallback((
     symbol: string,
     currency: string,
     primaryStake: number,
@@ -633,14 +633,27 @@ export function useMafiaBot(): MafiaBotController {
       barrier: null,
       selectedTick: null,
     };
-    const primaryRequest: DerivTradeRequest = { ...base, contractType: direction, stake: primaryStake };
-    const coverRequest: DerivTradeRequest = { ...base, contractType: oppositeDirection(direction), stake: coverStake };
+    return {
+      primaryRequest: { ...base, contractType: direction, stake: primaryStake } as DerivTradeRequest,
+      coverRequest: { ...base, contractType: oppositeDirection(direction), stake: coverStake } as DerivTradeRequest,
+    };
+  }, []);
+
+  /** Requests both legs' quotes together. Nothing is bought by this. */
+  const requestQuotes = useCallback(async (
+    symbol: string,
+    currency: string,
+    primaryStake: number,
+    coverStake: number,
+    direction: 'CALL' | 'PUT',
+  ) => {
+    const { primaryRequest, coverRequest } = legRequests(symbol, currency, primaryStake, coverStake, direction);
     const [primary, cover] = await Promise.allSettled([
       trading.requestQuote(primaryRequest),
       trading.requestQuote(coverRequest),
     ]);
     return { primaryRequest, coverRequest, primary, cover };
-  }, [trading]);
+  }, [legRequests, trading]);
 
   /** Prices the pair without buying: used every cycle, in both modes. */
   const previewQuotes = useCallback(async (
@@ -859,8 +872,18 @@ export function useMafiaBot(): MafiaBotController {
         }
       }
 
-      // Price both legs before deciding, in both modes. Quotes never buy.
+      // Price both legs before deciding, in both modes. Quotes never buy, and
+      // the pair that is bought uses exactly the quotes this cycle priced — no
+      // second round trip once uniformity has fired.
       let quotes: MafiaDecisionInput['quotes'] = null;
+      let priced: {
+        at: number;
+        direction: 'CALL' | 'PUT';
+        primaryStake: number;
+        coverStake: number;
+        primary: DerivQuote;
+        cover: DerivQuote;
+      } | null = null;
       const direction = nowAnalysis.uniformity.direction;
       if (direction !== null && !sizing.blocked) {
         const currency = trading.currency || accountRef.current.currency;
@@ -879,6 +902,14 @@ export function useMafiaBot(): MafiaBotController {
               coverAsk: cached.cover.askPrice,
               primaryPayout: cached.primary.payout,
               coverPayout: cached.cover.payout,
+            };
+            priced = {
+              at: cached.at,
+              direction,
+              primaryStake: cached.primaryStake,
+              coverStake: cached.coverStake,
+              primary: cached.primary,
+              cover: cached.cover,
             };
             setPricing({
               at: cached.at,
@@ -903,6 +934,16 @@ export function useMafiaBot(): MafiaBotController {
                 };
               }
               quotes = preview.quotes;
+              if (preview.primaryQuote && preview.coverQuote) {
+                priced = {
+                  at: startedAt,
+                  direction,
+                  primaryStake: sizing.primaryStake,
+                  coverStake: sizing.coverStake,
+                  primary: preview.primaryQuote,
+                  cover: preview.coverQuote,
+                };
+              }
               setPricing(preview.pricing);
             } catch (failure) {
               quotes = null;
@@ -955,14 +996,26 @@ export function useMafiaBot(): MafiaBotController {
         } else if (inFlightRef.current) {
           finalDecision = { ...finalDecision, action: 'WAIT', actionLabel: 'Waiting · a purchase is in flight', reasonCodes: [...finalDecision.reasonCodes, 'PURCHASE_IN_FLIGHT'] };
         } else {
-          // Re-quote immediately before buying so the pair is priced at the moment of entry.
+          // Buy on the quotes this cycle already priced. Only a missing or stale
+          // price costs another round trip, so uniformity fires straight into the
+          // two purchases instead of waiting for a second quote.
           const currency = trading.currency || accountRef.current.currency;
-          const fresh = await requestQuotes(symbol, currency, result.sizing.primaryStake, result.sizing.coverStake, finalDecision.direction ?? nowAnalysis.uniformity.direction ?? 'CALL');
-          const primaryQuote = fresh.primary.status === 'fulfilled' ? fresh.primary.value : null;
-          const coverQuote = fresh.cover.status === 'fulfilled' ? fresh.cover.value : null;
+          const buyDirection = finalDecision.direction ?? nowAnalysis.uniformity.direction ?? 'CALL';
+          const reusablePair = priced !== null
+            && priced.direction === buyDirection
+            && priced.primaryStake === result.sizing.primaryStake
+            && priced.coverStake === result.sizing.coverStake
+            && startedAt - priced.at <= QUOTE_TTL_MS;
+          const fresh = reusablePair
+            ? null
+            : await requestQuotes(symbol, currency, result.sizing.primaryStake, result.sizing.coverStake, buyDirection);
+          const primaryQuote = reusablePair ? (priced?.primary ?? null) : (fresh && fresh.primary.status === 'fulfilled' ? fresh.primary.value : null);
+          const coverQuote = reusablePair ? (priced?.cover ?? null) : (fresh && fresh.cover.status === 'fulfilled' ? fresh.cover.value : null);
+          const buyRequests = legRequests(symbol, currency, result.sizing.primaryStake, result.sizing.coverStake, buyDirection);
           if (!primaryQuote || !coverQuote) {
-            const message = [primaryQuote ? '' : fresh.primary.status === 'rejected' ? errorText(fresh.primary.reason) : 'no Rise quote']
-              .concat([coverQuote ? '' : fresh.cover.status === 'rejected' ? errorText(fresh.cover.reason) : 'no Fall quote'])
+            const primaryIssue = fresh && fresh.primary.status === 'rejected' ? errorText(fresh.primary.reason) : 'no Rise quote';
+            const coverIssue = fresh && fresh.cover.status === 'rejected' ? errorText(fresh.cover.reason) : 'no Fall quote';
+            const message = [!primaryQuote ? primaryIssue : '', !coverQuote ? coverIssue : '']
               .filter(Boolean)
               .join(' ');
             finalDecision = {
@@ -990,7 +1043,11 @@ export function useMafiaBot(): MafiaBotController {
               && refreshed.breakEvenProbability !== null
               && result.evidence !== null
               && result.evidence >= refreshed.breakEvenProbability;
+            // A pair whose winning leg cannot cover both stakes is never bought,
+            // whatever the gate setting. The evidence test only applies when the
+            // expected-value gate is on.
             const mustBlock = refreshed.paysLessThanCost || (config.requirePositiveExpectedValue && !stillClears);
+            const spotAge = reusablePair && priced !== null ? startedAt - priced.at : 0;
             if (mustBlock) {
               finalDecision = {
                 ...finalDecision,
@@ -1010,11 +1067,11 @@ export function useMafiaBot(): MafiaBotController {
                 decisionId,
                 symbol,
                 currency,
-                direction: finalDecision.direction ?? 'CALL',
+                direction: buyDirection,
                 primaryQuote,
                 coverQuote,
-                primaryRequest: fresh.primaryRequest,
-                coverRequest: fresh.coverRequest,
+                primaryRequest: buyRequests.primaryRequest,
+                coverRequest: buyRequests.coverRequest,
                 sizing: result.sizing,
                 analysis: nowAnalysis,
                 evaluation: result,
@@ -1025,7 +1082,7 @@ export function useMafiaBot(): MafiaBotController {
                   actionLabel: 'Bought both legs · 4 ticks',
                   executed: true,
                   pairId: executed.pairId,
-                  reasons: [...finalDecision.reasons, executed.message],
+                  reasons: [...finalDecision.reasons, executed.message, spotAge > 0 ? `Entry priced ${(spotAge / 1_000).toFixed(1)}s before the purchase.` : 'Entry priced and bought in the same cycle.'],
                   reasonCodes: [...finalDecision.reasonCodes, 'ORDER_SENT'],
                 };
               } else {
@@ -1079,7 +1136,7 @@ export function useMafiaBot(): MafiaBotController {
       busyRef.current = false;
       if (mountedRef.current) setCycleRunning(false);
     }
-  }, [executePair, nextDecisionId, previewQuotes, requestQuotes, risk, sessionStopReason, symbolAllowed]);
+  }, [executePair, legRequests, nextDecisionId, previewQuotes, requestQuotes, risk, sessionStopReason, symbolAllowed]);
 
   runCycleRef.current = runCycle;
 
