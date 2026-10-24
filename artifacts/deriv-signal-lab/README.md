@@ -63,6 +63,7 @@ The **Premium bots** tab hosts the autonomous engines. One bot is mounted at a t
 - **Digit AI engine** (`src/components/premium-bot/digit-ai-bot.tsx`, engine modules in `src/lib/digit-bot/`, controller `src/hooks/use-digit-bot.ts`) — Even/Odd, Over/Under and Matches candidates ranked by walk-forward-validated models against live Deriv proposals. It never martingales.
 - **Rise/Fall AI** (`src/components/premium-bot/rise-fall-ai-bot.tsx`, engine modules in `src/lib/rise-fall-bot/`, controller `src/hooks/use-rise-fall-bot.ts`) — a port of the reference "Deriv Rise/Fall AI Bot" script. Live ticks feed a feature window (up/down ratios, momentum, mean tick move, last move, streak), two rules name a direction (strong momentum, then continuation of the last move), the risk manager sizes and gates the order, and Deriv settles the CALL or PUT contract.
 - **High/Low hedge** (`src/components/premium-bot/hedging-bot.tsx`, engine modules in `src/lib/hedging-bot/`, controller `src/hooks/use-hedging-bot.ts`) — buys a High Tick and a Low Tick on the same market at the same moment. The bot chooses the tick position each leg predicts from the verified history. See *High/Low hedge specifics* below.
+- **Mafia bot** (`src/components/premium-bot/mafia-bot.tsx`, engine modules in `src/lib/mafia-bot/`, controller `src/hooks/use-mafia-bot.ts`) — Step indices only. It scores tick-direction uniformity, replays the four-tick windows that actually printed, and buys a 4-tick Rise and a 4-tick Fall leg together with money management and a full profit/loss breakdown. See *Mafia bot specifics* below.
 
 Rise/Fall bot specifics:
 
@@ -100,6 +101,26 @@ Rise/Fall bot specifics:
 **Not verified here.** The contract documentation says High/Low Tick contracts run for their full five ticks. The bot's early-sale path (`sell`) is used for unwinding and for the manual *Sell* button, and it works only when Deriv reports the contract as sellable. Confirm this on a demo account before relying on the unwind path.
 
 **Disclaimer.** The house edge applies to every contract, including each leg of a hedge. A hedge changes the spread of outcomes, not the expected loss. Use a demo account first.
+
+## Mafia bot specifics
+
+**The universe.** Step indices carry a fixed step per tick, which gives a four-tick Rise/Fall window a clean up / down / level structure. The bot allows `stpRNG`, `stpRNG2` … `stpRNG5` and refuses every other market — volatility indices, 1-second indices, forex, commodities — even when Deriv would quote a Rise/Fall contract on them. If the shared feed is on another symbol the bot moves it to a Step index rather than trading what is selected.
+
+**The pair.** Every entry is two 4-tick Rise/Fall contracts on the same market, requested and bought in the same round: the primary leg trades the direction the analysis measured, the cover leg trades the other way at `hedgeRatioPercent` of the primary stake. Both legs settle on the same tick, so exactly one wins — unless the window ends exactly where it started, in which case both lose. The pair has three outcomes and the bot prices all three.
+
+**The arithmetic, stated plainly.** Deriv pays roughly 1.9× a stake. Equal stakes cost `2s` and return at most `1.9s`, so an equal pair is a structural loss of about 5% whichever leg wins; the bot says so on the page. Sizing the cover below the primary is what lets one win pay for both legs, and it raises the hit rate the primary direction must reach: with a 40% cover, `p·(m − 1 − h) + (1 − p)·(h·m − 1 − h) = 0` solves to a break-even near 56% for `m = 1.9`. The gate compares the measured probability with that break-even, never with a constant.
+
+**Uniformity.** The last `uniformityWindow` ticks are reduced to the signs of tick-to-tick moves. The bot reports the up/down/level split, the binomial z of the directional imbalance, the sign-persistence z (does an up tick follow an up tick, or does the tape alternate), the longest run against the `log2(n)` a fair coin produces, and how cleanly the market steps. A tape passes only when the count and the persistence agree on the same direction and both clear `minUniformityZ`.
+
+**The replay.** Every historical four-tick window is scored for the direction the gate pointed at. Level windows stay in the sample — they are the windows where both legs lose — and a second replay counts only the windows where the gate itself would have fired, so the probability describes the rule rather than the market's unconditional drift. An in-sample win rate is optimistic, so `evidenceZ` standard errors are subtracted before the break-even comparison (default one sigma). A thin conditional sample falls back to the unconditional rate, labelled as such.
+
+**Money management.** Stake mode (flat / martingale after losing pairs / fixed fraction of balance), primary stake, cover ratio, maximum stake, balance share per pair, martingale factor and step cap, open pairs, pairs per session, losing pairs in a row, daily loss limit, daily take profit, session minutes, cooldown and decision interval. Every input is clamped by `sanitizeMafiaBotConfig`. A cover leg that would fall below Deriv's minimum stake blocks the pair instead of being dropped.
+
+**Execution safety.** Purchases are single-flight; a missing receipt marks the pair *unreconciled* and the bot adopts the legs only when the account reports contracts matching type, symbol, stake to the cent and start time — otherwise it pauses. If one leg is refused, the other is sold back. Quotes are re-requested immediately before buying, and the pair is not bought if the fresh payout no longer clears the break-even.
+
+**Profit and loss.** Realised P/L comes only from Deriv settlements, summed per leg and per pair, with wins/losses/level windows, average pair, best/worst, return on stake, losing streak and a session summary. Open pairs contribute their stake at risk, never an assumed profit. The rule record scores every gate pass — bought or not — against the ticks that followed.
+
+**Disclaimer.** A two-sided pair does not create an edge; it changes the shape of the outcome. With option-C execution (both legs at once) the bot only trades when the measured four-tick hit rate clears the break-even its own sizing demands, and it will stand aside most of the time. Use a demo account first.
 
 ## Derived trading protocol (used by the dock and history tab)
 
