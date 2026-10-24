@@ -1,7 +1,7 @@
 kind = "web"
 previewPath = "/"
 title = "Deriv Signal Lab"
-description = "A focused Deriv market analysis workspace for continuous indices, with configurable match, even/odd, over/under, and rise/fall signal views, transparent scoring, and risk-aware decision support."
+description = "A focused Deriv market analysis workspace for continuous indices, with configurable match, even/odd, over/under, and rise/fall signal views, transparent scoring, and risk-aware decis[...]
 version = "1.0.0"
 id = "artifacts/deriv-signal-lab"
 router = "path"
@@ -17,7 +17,7 @@ run = "pnpm --filter @workspace/deriv-signal-lab run dev"
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/deriv-signal-lab", "run", "build" ]
 serve = "static"
-publicDir = "artifacts/deriv-signal-lab/dist/public"
+publicDir = "artifacts/deriv-signal-lab/dist"
 
 [[services.production.rewrites]]
 from = "/*"

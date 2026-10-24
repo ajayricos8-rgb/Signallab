@@ -1,209 +1,59 @@
-import { useEffect, useState } from 'react';
-import {
-  Activity,
-  AlertTriangle,
-  BarChart3,
-  Clock3,
-  Database,
-  Play,
-  Radio,
-  ShieldAlert,
-  Wifi,
-  WifiOff,
-  Zap,
-} from 'lucide-react';
-import {
-  analyzeDigits,
-  evaluateHistoricalContract,
-  supportedTickDurations,
-  type DigitAnalysis,
-  type DigitContractCandidate,
-  type HistoricalContractOutcomes,
-} from '@/lib/digit-analysis';
+import { useMemo, useState } from 'react';
+import { Activity, AlertTriangle, Play, Radio, ShieldAlert, Square, Wifi, WifiOff, Zap } from 'lucide-react';
+import { analyzeDigits, supportedTickDurations, type DigitAnalysis, type DigitContractCandidate } from '@/lib/digit-analysis';
 import { analyzePriceContext } from '@/lib/price-context';
-import { useDerivDigitFeed, type DigitContractSupport } from '@/hooks/use-deriv-digit-feed';
+import { FAMILY_CONTRACTS, type DigitFamily } from '@/lib/digit-signals';
+import { digitTicksOf } from '@/lib/market-feed';
+import { DIGIT_SIGNAL_MIN_TICKS, type DigitContractSignal, type DigitMarketAnalysis } from '@/lib/signal-engine/digit-signal';
+import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner';
+import type { OverUnderReport } from '@/lib/over-under/ensemble';
+import type { TradeRecommendation } from '@/lib/trade-draft';
+import { explainSignal } from '@/lib/signal-engine/confidence';
+import { recommendedRuns } from '@/lib/signal-bot/plan.ts';
+import { effectiveWindowTicks, entryModeLabel } from '@/lib/signal-engine/entry.ts';
+import { useMarketFeed, type MarketFeedEntry, type MarketFeedValue } from '@/components/market-feed-provider';
+import { useSignalScan } from '@/hooks/use-signal-scan';
+import { TradeDock } from '@/components/trade-dock';
+import { EngineLabPanel } from '@/components/signal/engine-lab-panel';
+import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { scopeSettlements } from '@/lib/engine-lab/execution';
+import { EntryPlanCard } from '@/components/signal/entry-plan-card';
+import { MasterDecisionCard } from '@/components/signal/master-decision-card';
+import { NeuralModelCard } from '@/components/signal/neural-model-card';
+import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
+import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
+import {
+  AiSynthesisCard, AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, PrecisionPanel, SignalCard, StrengthBadge, formatPercent, shortMarketName,
+} from '@/components/signal/signal-ui';
 
-type DigitFamily = 'over-under' | 'even-odd' | 'matches';
-type Feed = ReturnType<typeof useDerivDigitFeed>;
-type RankedCandidate = {
-  contract: DigitContractCandidate;
-  outcomes: HistoricalContractOutcomes;
-  baseline: HistoricalContractOutcomes;
-  label: string;
-};
-type DigitScanSnapshot = {
-  ranAt: number;
-  symbol: string;
-  selectedDuration: number | null;
-  latestDigit: number | null;
-  analysis: DigitAnalysis;
-  freshAtRun: boolean;
-  candidate: RankedCandidate | null;
-  candidates: RankedCandidate[];
-  reason: string;
-};
-
+const ALL_MARKETS = 'all';
 const DIGITS = Array.from({ length: 10 }, (_, digit) => digit);
-const MINIMUM_DIGIT_TICKS = 500;
-const MINIMUM_CONDITIONAL_OUTCOMES = 100;
-const FAMILY_CONTRACTS: Record<DigitFamily, string[]> = {
-  'over-under': ['DIGITOVER', 'DIGITUNDER'],
-  'even-odd': ['DIGITEVEN', 'DIGITODD'],
-  matches: ['DIGITMATCH'],
-};
-const FAMILY_DETAILS: Record<DigitFamily, { title: string; eyebrow: string; description: string; empty: string }> = {
+const DEFAULT_DURATIONS = Array.from({ length: 10 }, (_, index) => index + 1);
+const ENGINE_COUNT = 17;
+
+type DigitRunMeta = { family: DigitFamily; duration: number; scope: string };
+
+const FAMILY_DETAILS: Record<DigitFamily, { title: string; eyebrow: string; description: string }> = {
   'over-under': {
-    title: 'Over/Under digit research',
+    title: 'Over/Under signals',
     eyebrow: 'DIGITOVER · DIGITUNDER',
-    description: 'Choose a tick expiry reported by Deriv. The engine compares only Deriv-reported barriers, applies strict greater-than / less-than settlement rules, and selects the research barrier automatically.',
-    empty: 'No contract-and-barrier combination has enough validated evidence at this expiry to rank yet.',
+    description: 'Scan every volatility market for the strongest Over/Under barrier (1–8). The 12-model predictor is now audited by a 300-entry analysis, prediction and entry: strict barrier probabilities, frequency and transition models, chronological validation, transparent diagnostics and execution filters. Equality always loses.',
   },
   'even-odd': {
-    title: 'Even/Odd digit research',
+    title: 'Even/Odd signals',
     eyebrow: 'DIGITEVEN · DIGITODD',
-    description: 'Choose a tick expiry reported by Deriv. Even and Odd are compared using historical outcomes conditioned on the current digit parity. Zero is even; both sides use actual final digits.',
-    empty: 'No parity combination has enough validated evidence at this expiry to rank yet.',
+    description: 'Scan every volatility market for an Even or Odd candidate. The 300-entry library adds parity frequency, runs, alternation, transitions and independent forecast validation to the existing 12-model predictor. Zero is even; price trends are context, not proof of a parity edge.',
   },
   matches: {
-    title: 'Matches digit research',
+    title: 'Matches signals',
     eyebrow: 'DIGITMATCH',
-    description: 'Choose a tick expiry reported by Deriv. When DIGITMATCH is supported, the engine ranks the full valid final-digit domain from 0 through 9—including zero—using outcomes conditioned on the current final digit.',
-    empty: 'No target digit has enough validated evidence at this expiry to rank yet.',
+    description: 'Find the target digit (0–9) with the strongest measured evidence. A 300-entry analysis, prediction and entry audits the existing predictor with digit distributions, recurrence, conditional probabilities and chronological tests. A missing or overdue digit is not automatically more likely.',
   },
 };
 
-function candidateLabel(candidate: DigitContractCandidate): string {
-  if (candidate.family === 'over-under') return `${candidate.contractType === 'DIGITOVER' ? 'OVER' : 'UNDER'} ${candidate.barrier}`;
-  if (candidate.family === 'even-odd') return candidate.contractType === 'DIGITEVEN' ? 'EVEN' : 'ODD';
-  return `MATCH ${candidate.targetDigit}`;
-}
-
-function contractDisplayLabel(candidate: DigitContractCandidate): string {
-  return candidate.family === 'over-under' ? `${candidateLabel(candidate)} · strict barrier` : candidateLabel(candidate);
-}
-
-function familySupports(feed: Feed, contractType: string): DigitContractSupport[] {
-  return feed.contracts.filter((contract) => contract.contractType === contractType && contract.expiryType.toLowerCase() === 'tick');
-}
-
-function conditionalContext(family: DigitFamily, latestDigit: number | null): { digit?: number; parity?: 0 | 1 } | null {
-  if (latestDigit === null) return null;
-  if (family === 'even-odd') return { parity: (latestDigit % 2) as 0 | 1 };
-  return { digit: latestDigit };
-}
-
-function runResearchRanking(
-  family: DigitFamily,
-  feed: Feed,
-  analysis: DigitAnalysis,
-  selectedDuration: number | null,
-): { candidates: RankedCandidate[]; reason: string } {
-  const latestDigit = analysis.lastDigit;
-  if (!feed.selectedMarket) return { candidates: [], reason: 'No selected symbol metadata is available.' };
-  if (!feed.contractsLoaded) return { candidates: [], reason: 'Waiting for Deriv to verify the selected symbol’s available contracts.' };
-  if (!feed.historyLoaded || feed.ticks.length < MINIMUM_DIGIT_TICKS) {
-    return { candidates: [], reason: `At least ${MINIMUM_DIGIT_TICKS} validated digit ticks are required.` };
-  }
-  if (!feed.fresh) return { candidates: [], reason: 'Live tick freshness is not confirmed; this scan is not eligible.' };
-  if (feed.precisionError || feed.selectedMarket.precision === null) {
-    return { candidates: [], reason: feed.precisionError || 'Verified decimal precision is unavailable.' };
-  }
-  if (feed.selectedMarket.tradingSuspended === true) return { candidates: [], reason: 'Deriv reports that trading is suspended for this symbol.' };
-  if (feed.selectedMarket.exchangeOpen === false) return { candidates: [], reason: 'Deriv reports that the selected market is closed.' };
-  if (latestDigit === null) return { candidates: [], reason: 'No validated final digit is available.' };
-  if (selectedDuration === null) return { candidates: [], reason: 'Choose a tick expiry reported by Deriv; the engine does not infer a duration.' };
-  if (!Number.isInteger(selectedDuration) || selectedDuration < 1) {
-    return { candidates: [], reason: 'The selected tick expiry is invalid.' };
-  }
-
-  const context = conditionalContext(family, latestDigit);
-  if (!context) return { candidates: [], reason: 'The current digit context is unavailable.' };
-  const supportedContracts = FAMILY_CONTRACTS[family].flatMap((contractType) => familySupports(feed, contractType));
-  if (!supportedContracts.length) return { candidates: [], reason: 'Deriv did not report the required digit contract for this symbol.' };
-  const supportsAtDuration = supportedContracts.filter((support) =>
-    supportedTickDurations(support.minDuration, support.maxDuration).includes(selectedDuration),
-  );
-  if (!supportsAtDuration.length) {
-    return { candidates: [], reason: `Deriv did not report ${selectedDuration} ticks as a supported expiry for this contract family.` };
-  }
-
-  const ranked: RankedCandidate[] = [];
-  const addCandidate = (contract: DigitContractCandidate, support: DigitContractSupport) => {
-    if (!supportedTickDurations(support.minDuration, support.maxDuration).includes(selectedDuration)) return;
-    const outcomes = evaluateHistoricalContract(feed.ticks, contract, selectedDuration, context);
-    const baseline = evaluateHistoricalContract(feed.ticks, contract, selectedDuration);
-    if (outcomes.sample < MINIMUM_CONDITIONAL_OUTCOMES || outcomes.smoothedHistoricalHitRate === null || baseline.empiricalHitRate === null) return;
-    ranked.push({ contract, outcomes, baseline, label: candidateLabel(contract) });
-  };
-
-  if (family === 'over-under') {
-    for (const contractType of FAMILY_CONTRACTS[family]) {
-      for (const support of supportsAtDuration.filter((item) => item.contractType === contractType)) {
-        for (const barrier of support.barriers) {
-          if (!Number.isInteger(barrier) || barrier < 0 || barrier > 9) continue;
-          if (contractType === 'DIGITOVER' && barrier >= 9) continue;
-          if (contractType === 'DIGITUNDER' && barrier <= 0) continue;
-          addCandidate({ family, contractType: contractType as 'DIGITOVER' | 'DIGITUNDER', barrier }, support);
-        }
-      }
-    }
-  } else if (family === 'even-odd') {
-    for (const contractType of FAMILY_CONTRACTS[family]) {
-      for (const support of supportsAtDuration.filter((item) => item.contractType === contractType)) {
-        addCandidate({ family, contractType: contractType as 'DIGITEVEN' | 'DIGITODD' }, support);
-      }
-    }
-  } else {
-    for (const support of supportsAtDuration.filter((item) => item.contractType === 'DIGITMATCH')) {
-      for (const targetDigit of support.targets) {
-        if (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9) continue;
-        addCandidate({ family, contractType: 'DIGITMATCH', targetDigit }, support);
-      }
-    }
-  }
-
-  const uniqueRanked = [...new Map(ranked.map((candidate) => {
-    const contract = candidate.contract;
-    const discriminator = contract.family === 'over-under'
-      ? `${contract.contractType}:${contract.barrier}`
-      : contract.family === 'matches'
-        ? `${contract.contractType}:${contract.targetDigit}`
-        : contract.contractType;
-    return [`${contract.family}:${discriminator}:${candidate.outcomes.durationTicks}`, candidate];
-  })).values()];
-  uniqueRanked.sort((left, right) => {
-    const rateDifference = (right.outcomes.smoothedHistoricalHitRate ?? -Infinity) - (left.outcomes.smoothedHistoricalHitRate ?? -Infinity);
-    return rateDifference || right.outcomes.sample - left.outcomes.sample || left.label.localeCompare(right.label);
-  });
-  if (!uniqueRanked.length) {
-    if (family === 'over-under' && !supportsAtDuration.some((support) => support.barriers.length > 0)) {
-      return { candidates: [], reason: 'Deriv did not provide a verifiable barrier list for this expiry; the engine will not guess barrier limits.' };
-    }
-    if (family === 'matches' && !supportsAtDuration.some((support) => support.targets.length > 0)) {
-      return { candidates: [], reason: 'The valid Matches target-digit domain could not be verified for this contract response.' };
-    }
-    return { candidates: [], reason: `No candidate had ${MINIMUM_CONDITIONAL_OUTCOMES} conditional historical outcomes at ${selectedDuration} ticks.` };
-  }
-  return { candidates: uniqueRanked, reason: '' };
-}
-
 function formatQuote(value: number | undefined, precision: number | null): string {
-  if (value === undefined || !Number.isFinite(value) || precision === null) return '—';
-  return value.toFixed(precision);
-}
-
-function formatRate(value: number | null): string {
-  return value === null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(1)}%`;
-}
-
-function formatInterval(interval: { lower: number; upper: number } | null): string {
-  return interval ? `${formatRate(interval.lower)}–${formatRate(interval.upper)}` : '—';
-}
-
-function formatDifference(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return '—';
-  const points = value * 100;
-  return `${points > 0 ? '+' : ''}${points.toFixed(1)} pp`;
+  if (value === undefined || !Number.isFinite(value)) return '—';
+  return precision === null ? String(value) : value.toFixed(precision);
 }
 
 function formatMetric(value: number | null, decimalPlaces = 3): string {
@@ -214,85 +64,88 @@ function formatIndicator(value: number | null): string {
   return value === null || !Number.isFinite(value) ? '—' : Number(value.toPrecision(5)).toString();
 }
 
-function feedStatusLabel(feed: Feed): string {
-  if (feed.status === 'live') return feed.fresh ? 'Live · fresh' : 'Live · stale';
-  if (feed.status === 'connecting') return 'Connecting to Deriv';
-  if (feed.status === 'loading') return 'Loading verified market data';
-  if (feed.status === 'reconnecting') return 'Reconnecting';
-  return 'Feed error';
+function directionOf(contract: DigitContractCandidate): 'up' | 'down' | 'neutral' {
+  if (contract.family !== 'over-under') return 'neutral';
+  return contract.contractType === 'DIGITOVER' ? 'up' : 'down';
 }
 
-function FeedStatusBadge({ feed }: { feed: Feed }) {
-  const live = feed.status === 'live' && feed.fresh;
-  const error = feed.status === 'error' || Boolean(feed.feedError);
-  const tone = live
-    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
-    : error
-      ? 'border-destructive/30 bg-destructive/10 text-destructive'
+function durationLabel(ticks: number): string {
+  return `${ticks} ${ticks === 1 ? 'tick' : 'ticks'}`;
+}
+
+/** Contracts Deriv reports for this market and duration (defaults when not yet loaded). */
+function contractsFor(entry: MarketFeedEntry, family: DigitFamily, duration: number): { contracts?: DigitContractCandidate[]; skip?: string } {
+  if (!entry.contractsLoaded || !entry.contracts.length) return {};
+  const supports = entry.contracts.filter((contract) => FAMILY_CONTRACTS[family].includes(contract.contractType) && contract.expiryType.toLowerCase() === 'tick');
+  if (!supports.length) return { skip: 'Deriv does not list this contract type here' };
+  const atDuration = supports.filter((support) => supportedTickDurations(support.minDuration, support.maxDuration).includes(duration));
+  if (!atDuration.length) return { skip: `${durationLabel(duration)} expiry is not offered here` };
+  const contracts: DigitContractCandidate[] = [];
+  for (const support of atDuration) {
+    if (family === 'over-under' && (support.contractType === 'DIGITOVER' || support.contractType === 'DIGITUNDER')) {
+      for (const barrier of support.barriers) if (Number.isInteger(barrier) && barrier >= 1 && barrier <= 8) contracts.push({ family, contractType: support.contractType, barrier });
+    } else if (family === 'even-odd' && (support.contractType === 'DIGITEVEN' || support.contractType === 'DIGITODD')) {
+      contracts.push({ family, contractType: support.contractType });
+    } else if (family === 'matches' && support.contractType === 'DIGITMATCH') {
+      for (const targetDigit of support.targets) if (Number.isInteger(targetDigit) && targetDigit >= 0 && targetDigit <= 9) contracts.push({ family, contractType: 'DIGITMATCH', targetDigit });
+    }
+  }
+  return contracts.length ? { contracts } : { skip: 'No supported contract in the scanned range' };
+}
+
+function recommendationFor(result: DigitMarketAnalysis, signal: DigitContractSignal): TradeRecommendation {
+  const contract = signal.contract;
+  return {
+    symbol: result.symbol,
+    contractType: contract.contractType,
+    barrier: contract.family === 'over-under' ? contract.barrier : contract.family === 'matches' ? contract.targetDigit : undefined,
+    duration: result.horizon,
+    durationUnit: 't',
+    label: signal.label,
+  };
+}
+
+function FeedStatusBadge({ feed }: { feed: MarketFeedValue }) {
+  const total = feed.markets.length;
+  const live = feed.status === 'live' && feed.freshCount > 0;
+  const tone = live ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
+    : feed.status === 'error' ? 'border-destructive/30 bg-destructive/10 text-destructive'
       : 'border-amber-500/30 bg-amber-500/10 text-amber-500';
+  const label = live ? `${feed.freshCount}/${total} markets live`
+    : feed.status === 'reconnecting' ? 'Reconnecting to Deriv'
+      : feed.status === 'error' ? 'Feed error'
+        : `Loading markets · ${feed.loadedCount}/${total}`;
   return (
     <div className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${tone}`} aria-live="polite" data-testid="digit-feed-status">
-      {live ? <Wifi size={14} /> : error ? <WifiOff size={14} /> : <Radio size={14} className={feed.status === 'connecting' || feed.status === 'reconnecting' ? 'animate-pulse-line' : ''} />}
-      {feedStatusLabel(feed)}
+      {live ? <Wifi size={14} /> : feed.status === 'error' ? <WifiOff size={14} /> : <Radio size={14} className="animate-pulse-line" />}
+      {label}
     </div>
   );
 }
 
-function SymbolPicker({ feed, family }: { feed: Feed; family: DigitFamily }) {
-  return (
-    <label className="block min-w-0">
-      <span className="eyebrow">Market · Deriv active symbols</span>
-      <select
-        value={feed.selectedSymbol}
-        onChange={(event) => feed.setSelectedSymbol(event.target.value)}
-        disabled={!feed.symbols.length}
-        className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-        aria-label={`Choose market for ${family} analysis`}
-        data-testid={`${family}-symbol-select`}
-      >
-        {!feed.symbols.length && <option value="">Loading available markets…</option>}
-        {feed.symbols.map((symbol) => (
-          <option key={symbol.symbol} value={symbol.symbol}>
-            {symbol.name} · {symbol.symbol}{symbol.precision === null ? ' · digit precision unavailable' : ''}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function DigitFrequencyPanel({ analysis }: { analysis: DigitAnalysis }) {
+function DigitFrequencyPanel({ analysis, marketName }: { analysis: DigitAnalysis; marketName: string }) {
   const window1000 = analysis.windows.find((window) => window.window === 1_000)!;
-  const currentRow = analysis.lastDigit === null ? null : analysis.transitionProbabilities[analysis.lastDigit];
-  const currentCounts = analysis.lastDigit === null ? null : analysis.transitionCounts[analysis.lastDigit];
-  const currentTransitionSample = currentCounts?.reduce((sum, count) => sum + count, 0) ?? 0;
   const currentParity = analysis.lastDigit === null ? null : analysis.lastDigit % 2;
   const parityCounts = currentParity === null ? null : analysis.parityTransitions[currentParity];
   const parityTransitionSample = parityCounts?.reduce((sum, count) => sum + count, 0) ?? 0;
-  const nextDigits = currentRow && currentTransitionSample > 0
-    ? currentRow.map((probability, digit) => ({ probability, digit, count: currentCounts?.[digit] ?? 0 })).filter((item) => item.probability !== null).sort((left, right) => (right.probability ?? 0) - (left.probability ?? 0)).slice(0, 3)
-    : [];
-
+  const secondOrderContexts = analysis.secondOrderTransitionProbabilities.flat().filter((row) => row.some((probability) => probability !== null)).length;
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="digit-frequency-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><div className="eyebrow">Shared digit engine</div><h3 className="mt-1 text-sm font-bold">All ten final digits</h3><p className="mt-1 text-[11px] text-muted-foreground">Validated observations only · rolling features use the latest 1,000 digits.</p></div>
+        <div><div className="eyebrow">Digit distribution · {marketName}</div><h3 className="mt-1 text-sm font-bold">All ten final digits</h3><p className="mt-1 text-[11px] text-muted-foreground">Validated live ticks · rolling features use the latest 1,000 digits.</p></div>
         <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-[10px] text-muted-foreground">N <span className="mono ml-1 font-semibold text-foreground">{analysis.sampleSize}</span></div>
       </div>
       <div className="mt-4 space-y-2.5">
         {DIGITS.map((digit) => {
           const count = analysis.digitCounts[digit];
           const rate = analysis.digitFrequencies[digit];
-          const weighted = analysis.weightedFrequencies[digit];
           const gap = window1000.gapsSinceAppearance[digit];
-          const width = rate === null ? 0 : rate * 100;
           return (
-            <div key={digit} className="grid grid-cols-[22px_52px_38px_minmax(0,1fr)_74px] items-center gap-2 text-[10px]" data-testid={`digit-frequency-${digit}`}>
+            <div key={digit} className="grid grid-cols-[22px_112px_46px_minmax(0,1fr)] items-center gap-2 text-[10px]" data-testid={`digit-frequency-${digit}`}>
               <span className="mono font-bold">{digit}</span>
-              <span className="mono text-muted-foreground">{count} · {formatRate(rate)}</span>
-              <span className="mono text-muted-foreground" title="Ticks since last appearance in the current rolling window">{gap === null ? 'gap —' : `gap ${gap}`}</span>
-              <div className="h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary" style={{ width: `${width}%` }} /></div>
-              <span className="mono text-right text-muted-foreground">EW {formatRate(weighted)}</span>
+              <div className="leading-tight"><span className="mono text-muted-foreground">{count} · {formatPercent(rate)}</span><span className="mono block text-[8px] text-muted-foreground">95% Wilson {analysis.digitIntervals95[digit] ? `${formatPercent(analysis.digitIntervals95[digit]!.lower)}–${formatPercent(analysis.digitIntervals95[digit]!.upper)}` : '—'}</span></div>
+              <span className="mono text-muted-foreground" title="Ticks since last appearance">{gap === null ? 'gap —' : `gap ${gap}`}</span>
+              <div className="h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary" style={{ width: `${rate === null ? 0 : Math.min(100, rate * 500)}%` }} /></div>
             </div>
           );
         })}
@@ -301,31 +154,17 @@ function DigitFrequencyPanel({ analysis }: { analysis: DigitAnalysis }) {
         <div><div className="eyebrow">Entropy</div><div className="mono mt-1 text-xs font-semibold">{analysis.entropyBits === null ? '—' : `${analysis.entropyBits.toFixed(3)} bits`} <span className="text-[9px] text-muted-foreground">/ 3.322 max</span></div></div>
         <div><div className="eyebrow">Parity count</div><div className="mono mt-1 text-xs font-semibold">Even {analysis.parityCounts[0]} · Odd {analysis.parityCounts[1]}</div></div>
         <div><div className="eyebrow">Current runs</div><div className="mono mt-1 text-xs font-semibold">Digit {analysis.currentDigitRun} · parity {analysis.currentParityRun}</div></div>
-        <div><div className="eyebrow">Observed parity transitions</div><div className="mono mt-1 text-[10px] font-semibold">{parityTransitionSample ? `from ${currentParity === 0 ? 'even' : 'odd'} · E ${formatRate(parityCounts![0] / parityTransitionSample)} · O ${formatRate(parityCounts![1] / parityTransitionSample)} (n=${parityTransitionSample})` : '—'}</div></div>
+        <div><div className="eyebrow">Parity after current</div><div className="mono mt-1 text-[10px] font-semibold">{parityTransitionSample ? `from ${currentParity === 0 ? 'even' : 'odd'} · E ${formatPercent(parityCounts![0] / parityTransitionSample)} · O ${formatPercent(parityCounts![1] / parityTransitionSample)}` : '—'}</div></div>
+        <div><div className="eyebrow">Conditional entropy</div><div className="mono mt-1 text-[10px] font-semibold">{analysis.conditionalEntropyBits === null ? '—' : `${analysis.conditionalEntropyBits.toFixed(3)} bits`} · MI {analysis.mutualInformationBits === null ? '—' : `${analysis.mutualInformationBits.toFixed(3)} bits`}</div></div>
+        <div><div className="eyebrow">Second-order contexts</div><div className="mono mt-1 text-[10px] font-semibold">{secondOrderContexts}/100 with ≥5 observations</div></div>
       </div>
-      <div className="mt-4 rounded-lg border border-border bg-background/30 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-xs font-semibold">Rolling distribution and parity</div><div className="mt-0.5 text-[9px] text-muted-foreground">Window comparisons overlap and are descriptive, not independent samples.</div></div><span className="mono text-[9px] text-muted-foreground">LAST DIGIT {analysis.lastDigit ?? '—'}</span></div>
-        <div className="mt-2 space-y-1.5">
-          {analysis.windows.filter((window) => [50, 100, 500, 1_000].includes(window.window)).map((window) => (
-            <div key={window.window} className="grid grid-cols-[64px_48px_minmax(0,1fr)_auto] items-center gap-2 text-[10px]">
-              <span>{window.window} ticks</span><span className="mono text-muted-foreground">n={window.sample}</span><span className="mono text-muted-foreground">H {window.normalizedEntropy === null ? '—' : window.normalizedEntropy.toFixed(2)}</span><span className="mono text-right">E {formatRate(window.evenRate)} · O {formatRate(window.oddRate)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="mt-3 rounded-lg border border-border bg-background/30 p-3">
-        <div className="text-xs font-semibold">Observed transitions from current digit</div>
-        <p className="mt-0.5 text-[9px] leading-relaxed text-muted-foreground">{currentTransitionSample ? `${currentTransitionSample} historical transitions out of digit ${analysis.lastDigit}; Laplace-smoothed row estimates are shown only as descriptive statistics.` : 'No preceding transitions from the current digit are present.'}</p>
-        {nextDigits.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{nextDigits.map(({ digit, probability, count }) => <span key={digit} className="rounded-md border border-border px-2 py-1 text-[10px]"><span className="mono font-semibold">→ {digit}</span><span className="ml-2 text-muted-foreground">{count} · {formatRate(probability)}</span></span>)}</div>}
-      </div>
-      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-muted-foreground"><span>Most frequent: {analysis.mostFrequentDigit ?? '—'}</span><span>Least observed: {analysis.leastObservedDigit ?? '—'}</span><span>All digits 0–9 remain in the distribution.</span></div>
+      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-muted-foreground"><span>Most frequent: {analysis.mostFrequentDigit ?? '—'}</span><span>Least observed: {analysis.leastObservedDigit ?? '—'}</span><span>Bars are scaled so 20% fills the bar.</span></div>
+      <p className="mt-2 text-[9px] leading-relaxed text-muted-foreground">Intervals are one-vs-rest Wilson estimates, not simultaneous intervals across all digits; observed hot/cold frequencies and entropy describe history, not a next-tick guarantee.</p>
     </section>
   );
 }
 
-
-function PriceContextPanel({ feed, analysis }: { feed: Feed; analysis: ReturnType<typeof analyzePriceContext> }) {
-  const precision = feed.selectedMarket?.precision ?? null;
+export function PriceContextPanel({ precision, analysis }: { precision: number | null; analysis: ReturnType<typeof analyzePriceContext> }) {
   const asOf = analysis.asOfEpoch === null ? '—' : new Date(analysis.asOfEpoch * 1_000).toLocaleTimeString();
   const priceMetrics = [
     { label: 'EMA 9', value: formatQuote(analysis.ema9 ?? undefined, precision) },
@@ -333,13 +172,20 @@ function PriceContextPanel({ feed, analysis }: { feed: Feed; analysis: ReturnTyp
     { label: 'EMA 50', value: formatQuote(analysis.ema50 ?? undefined, precision) },
     { label: 'RSI 14', value: analysis.rsi14 === null ? '—' : `${formatMetric(analysis.rsi14, 1)} / 100` },
     { label: 'ROC · 14 ticks', value: analysis.roc14Percent === null ? '—' : `${formatMetric(analysis.roc14Percent, 3)}%` },
-    { label: 'Log-return volatility · 50 ticks', value: analysis.realizedVolatility50Percent === null ? '—' : `${formatMetric(analysis.realizedVolatility50Percent, 4)}%` },
+    { label: 'Volatility · 50 ticks', value: analysis.realizedVolatility50Percent === null ? '—' : `${formatMetric(analysis.realizedVolatility50Percent, 4)}%` },
+    { label: 'Latest Δ price', value: analysis.latestDelta === null ? '—' : formatIndicator(analysis.latestDelta) },
+    { label: 'Latest simple return', value: analysis.latestSimpleReturn === null ? '—' : `${formatMetric(analysis.latestSimpleReturn * 100, 4)}%` },
+    { label: 'Mean return · 20 ticks', value: analysis.meanReturn20 === null ? '—' : `${formatMetric(analysis.meanReturn20 * 100, 4)}%` },
+    { label: 'Return volatility · 20 ticks', value: analysis.returnVolatility20 === null ? '—' : `${formatMetric(analysis.returnVolatility20 * 100, 4)}%` },
+    { label: 'Momentum · 10 ticks', value: analysis.momentum10 === null ? '—' : formatIndicator(analysis.momentum10) },
+    { label: 'Normalized momentum · 10', value: formatMetric(analysis.normalizedMomentum10, 2) },
+    { label: 'MAD of price changes · 50', value: formatIndicator(analysis.medianAbsoluteDeviation50) },
+    { label: 'Return autocorrelation · lag 1', value: formatMetric(analysis.returnAutocorrelation1, 3) },
   ];
-
   return (
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="price-context-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><div className="eyebrow">Separate evidence family · price only</div><h3 className="mt-1 text-sm font-bold">Tick-price technical context</h3><p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Calculated from validated quotes in the latest 1,000 ticks; this context is not used to rank or predict digit outcomes.</p></div>
+        <div><div className="eyebrow">Price context</div><h3 className="mt-1 text-sm font-bold">Tick-price technical context</h3><p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Calculated from validated quotes in the latest 1,000 ticks. These describe recent price behaviour; they do not by themselves establish a profitable next-outcome signal.</p></div>
         <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-[10px] text-muted-foreground">N <span className="mono ml-1 font-semibold text-foreground">{analysis.sampleSize}</span><span className="ml-2">as of {asOf}</span></div>
       </div>
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -347,206 +193,353 @@ function PriceContextPanel({ feed, analysis }: { feed: Feed; analysis: ReturnTyp
           <div key={label} className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">{label}</div><div className="mono mt-1 text-xs font-semibold">{value}</div></div>
         ))}
       </div>
-      <div className="mt-3 grid gap-2 lg:grid-cols-[1fr_1fr_1.4fr]">
+      <div className="mt-3 grid gap-2 lg:grid-cols-2">
         <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">MACD · 12 / 26 / 9</div><div className="mono mt-1 text-[10px] font-semibold">Line {formatIndicator(analysis.macdLine)} · Signal {formatIndicator(analysis.macdSignal)} · Hist {formatIndicator(analysis.macdHistogram)}</div></div>
         <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Confirmed tick swings · 3-tick pivot</div><div className="mt-1 text-[10px] font-semibold">{analysis.swingStructure}</div></div>
-        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Interpretation limits</div><div className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Tick-indexed context only; no candle OHLC, traded-volume confirmation, formal primary/secondary Dow trend, ATR or ADX. It cannot justify a specific final digit.</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Price-change quantiles · last 50</div><div className="mono mt-1 text-[10px] font-semibold">P05 {formatIndicator(analysis.priceChangeQuantiles50?.p05 ?? null)} · Median {formatIndicator(analysis.priceChangeQuantiles50?.p50 ?? null)} · P95 {formatIndicator(analysis.priceChangeQuantiles50?.p95 ?? null)}</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Tick direction · last 50</div><div className="mono mt-1 text-[10px] font-semibold">↑ {formatMetric(analysis.positiveTickRate50 === null ? null : analysis.positiveTickRate50 * 100, 1)}% · ↓ {formatMetric(analysis.negativeTickRate50 === null ? null : analysis.negativeTickRate50 * 100, 1)}% · flat {formatMetric(analysis.unchangedTickRate50 === null ? null : analysis.unchangedTickRate50 * 100, 1)}%</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Return shape · last 50</div><div className="mono mt-1 text-[10px] font-semibold">Skew {formatMetric(analysis.returnSkewness50, 2)} · lag-1 autocorrelation {formatMetric(analysis.returnAutocorrelation1, 2)}</div></div>
+        <div className="rounded-lg border border-border bg-background/30 px-3 py-2"><div className="eyebrow">Bollinger bands · 20 ticks ±2σ</div><div className="mono mt-1 text-[10px] font-semibold">{analysis.bollinger20 ? `Lower ${formatQuote(analysis.bollinger20.lower, precision)} · Mid ${formatQuote(analysis.bollinger20.mid, precision)} · Upper ${formatQuote(analysis.bollinger20.upper, precision)}` : 'Need 20 valid quotes'}</div></div>
       </div>
     </section>
   );
 }
 
-function HistoricalRanking({ family, candidates }: { family: DigitFamily; candidates: RankedCandidate[] }) {
-  const rows = family === 'matches'
-    ? (() => {
-      const latestDuration = candidates[0]?.outcomes.durationTicks;
-      return candidates.filter((candidate) => candidate.outcomes.durationTicks === latestDuration).slice(0, 10);
-    })()
-    : candidates.slice(0, 8);
+function ContractTable({ result }: { result: DigitMarketAnalysis }) {
+  const rows = result.contracts.slice(0, result.family === 'over-under' ? 8 : 10);
   return (
-    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid={`${family}-candidate-ranking`}>
-      <div><div className="eyebrow">Historical candidate ranking</div><h3 className="mt-1 text-sm font-bold">{family === 'matches' ? 'Target digits · selected expiry' : family === 'even-odd' ? 'Parity · selected expiry' : 'Barriers · selected expiry'}</h3><p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Sorted by smoothed current-context hit rate at the selected expiry. The all-history baseline and in-sample difference are separate; this is not a calibrated or payout-adjusted forecast.</p></div>
-      {rows.length ? (
-        <div className="mt-3 space-y-2">
-          {rows.map((candidate, index) => (
-            <div key={`${candidate.outcomes.durationTicks}-${candidate.label}-${index}`} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md border px-3 py-2 ${index === 0 ? 'border-primary/25 bg-primary/5' : 'border-border bg-background/25'}`}>
-              <div className="min-w-0"><div className="truncate text-[11px] font-semibold">{candidate.label} <span className="text-muted-foreground">· {candidate.outcomes.durationTicks} ticks</span></div><div className="mt-0.5 text-[9px] text-muted-foreground">{candidate.outcomes.hits} / {candidate.outcomes.sample} conditioned · baseline {formatRate(candidate.baseline.empiricalHitRate)} · Δ {formatDifference(candidate.outcomes.empiricalHitRate === null || candidate.baseline.empiricalHitRate === null ? null : candidate.outcomes.empiricalHitRate - candidate.baseline.empiricalHitRate)}{candidate.outcomes.barrierEqual ? ` · ${candidate.outcomes.barrierEqual} exact-barrier losses` : ''}</div></div>
-              <div className="text-right"><div className="eyebrow">Observed</div><div className="mono text-xs font-semibold">{formatRate(candidate.outcomes.empiricalHitRate)}</div><div className="eyebrow mt-1">Nominal 95% range</div><div className="mono text-[9px] text-muted-foreground">{formatInterval(candidate.outcomes.wilson95)}</div></div>
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="contract-ranking">
+      <div className="eyebrow">{shortMarketName(result.name)} · every contract</div>
+      <h3 className="mt-1 text-sm font-bold">{result.family === 'over-under' ? 'Barriers ranked by confidence' : result.family === 'even-odd' ? 'Even vs Odd' : 'Target digits ranked by confidence'}</h3>
+      <div className="mt-3 space-y-2">
+        {rows.map((signal, index) => (
+          <div key={signal.label} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border px-3 py-2 ${index === 0 ? 'border-primary/30 bg-primary/5' : 'border-border bg-background/25'}`} data-testid={`contract-row-${signal.label.replace(/\s+/g, '-')}`}>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2"><span className="text-xs font-extrabold">{signal.label}</span><StrengthBadge strength={signal.strength} className="px-1.5 py-0.5 text-[8px]" /></div>
+              <div className="mt-1 text-[10px] text-muted-foreground">{signal.tally.agreeing}/{signal.tally.total} engines agree · win {formatPercent(signal.probability)} vs fair {formatPercent(signal.fairProbability, 0)} · backtest {signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} (n=${signal.backtest.sample})`}</div>
             </div>
-          ))}
-        </div>
-      ) : <div className="mt-4 rounded-lg border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">No qualified ranking is available yet.</div>}
+            <div className="mono text-right text-sm font-extrabold">{signal.confidence}%</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LiveMarketPanel({ entry }: { entry: MarketFeedEntry | undefined }) {
+  const recent = entry ? entry.ticks.slice(-24) : [];
+  const latest = entry?.ticks.at(-1);
+  return (
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="live-market-panel">
+      <div className="flex items-center justify-between gap-3"><div><div className="eyebrow">Live market</div><h3 className="mt-1 text-sm font-bold">{entry?.name ?? 'Waiting for markets'}</h3></div><Activity size={18} className={entry?.fresh ? 'text-emerald-500' : 'text-muted-foreground'} /></div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Quote</div><div className="mono mt-1 text-sm font-semibold">{formatQuote(latest?.quote, entry?.precision ?? null)}</div></div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Last digit</div><div className="mono mt-1 text-sm font-semibold">{latest?.digit ?? '—'}</div></div>
+        <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Ticks</div><div className="mono mt-1 text-sm font-semibold">{entry?.ticks.length ?? 0}</div></div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-1" aria-label="Most recent final digits">
+        {recent.map((tick) => (
+          <span key={tick.epoch} className={`mono flex h-6 w-6 items-center justify-center rounded text-[11px] font-bold ${tick.digit === null ? 'bg-secondary text-muted-foreground' : tick.digit % 2 === 0 ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300' : 'bg-violet-500/15 text-violet-600 dark:text-violet-300'}`}>{tick.digit ?? '·'}</span>
+        ))}
+        {!recent.length && <span className="text-[11px] text-muted-foreground">Waiting for live ticks…</span>}
+      </div>
+      <div className="mt-2 text-[10px] text-muted-foreground">{entry ? (entry.fresh ? 'Live · updating' : entry.historyLoaded ? 'Waiting for the next live tick' : entry.error || 'Loading history…') : ''}</div>
     </section>
   );
 }
 
 function DigitContractTool({ family }: { family: DigitFamily }) {
-  const feed = useDerivDigitFeed();
-  const [snapshot, setSnapshot] = useState<DigitScanSnapshot | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
-  const latestTick = feed.ticks.at(-1) ?? null;
-  const currentAnalysis = analyzeDigits(feed.ticks);
-  const currentPriceContext = analyzePriceContext(feed.ticks);
-  const familyDetails = FAMILY_DETAILS[family];
-  const relevantContracts = feed.contracts.filter((contract) => FAMILY_CONTRACTS[family].includes(contract.contractType));
-  const availableDurations = [...new Set(relevantContracts
-    .filter((contract) => contract.expiryType.toLowerCase() === 'tick')
-    .flatMap((contract) => supportedTickDurations(contract.minDuration, contract.maxDuration)))].sort((left, right) => left - right);
-  const supportedDurationCount = availableDurations.length;
+  const trading = useDerivTrading();
+  const feed = useMarketFeed();
+  const scan = useSignalScan<DigitMarketAnalysis, DigitRunMeta>(`digit:${family}`);
+  const [scope, setScope] = useState<string>(ALL_MARKETS);
+  const [duration, setDuration] = useState<number>(() => scan.run?.meta.duration ?? 1);
+  const [viewSymbol, setViewSymbol] = useState<string | null>(null);
+  const [tradeMarket, setTradeMarket] = useState<string | null>(() => scan.run?.results[0]?.symbol ?? null);
+  const [tradeExpiry, setTradeExpiry] = useState<number | null>(() => scan.run?.meta.duration ?? 1);
+  const [applyRequest, setApplyRequest] = useState(0);
+  const details = FAMILY_DETAILS[family];
+  const run = scan.run;
+  const markets = feed.markets;
 
-  useEffect(() => {
-    setSnapshot(null);
-    setSelectedDuration(null);
-  }, [feed.selectedSymbol]);
+  const durations = useMemo(() => {
+    const reported = new Set<number>();
+    for (const entry of markets) {
+      for (const contract of entry.contracts) {
+        if (FAMILY_CONTRACTS[family].includes(contract.contractType) && contract.expiryType.toLowerCase() === 'tick') {
+          for (const ticks of supportedTickDurations(contract.minDuration, contract.maxDuration)) if (ticks <= 10) reported.add(ticks);
+        }
+      }
+    }
+    return reported.size ? [...reported].sort((a, b) => a - b) : DEFAULT_DURATIONS;
+  }, [markets, family]);
 
-  useEffect(() => {
-    setSnapshot(null);
-  }, [selectedDuration]);
+  const selectedResult = run ? run.results.find((result) => result.symbol === viewSymbol) ?? run.results[0] : null;
+  const isBest = Boolean(run && selectedResult && selectedResult.symbol === run.results[0].symbol);
+  const signal = selectedResult?.best ?? null;
+  const detailSymbol = selectedResult?.symbol ?? tradeMarket ?? (scope !== ALL_MARKETS ? scope : markets[0]?.symbol);
+  const detailEntry = markets.find((entry) => entry.symbol === detailSymbol);
+  const detailDigits = useMemo(() => digitTicksOf(detailEntry?.ticks ?? []), [detailEntry?.ticks]);
+  const detailAnalysis = useMemo(() => analyzeDigits(detailDigits), [detailDigits]);
+  const priceContext = useMemo(() => analyzePriceContext(detailEntry?.ticks ?? []), [detailEntry?.ticks]);
+  const recommendation = selectedResult && signal ? recommendationFor(selectedResult, signal) : null;
+  // Passed to the trade dock so it can pop open and offer Load and Run.
+  const analysis = selectedResult && signal
+    ? {
+        runId: run?.id ?? 0,
+        confidence: signal.confidence,
+        strength: signal.strength,
+        marketName: selectedResult.name,
+        ranAt: run?.ranAt ?? 0,
+        entry: signal.entry,
+        master: signal.master,
+        researchDecision: signal.researchDecision,
+        research: signal.research,
+        probability: signal.probability,
+        // Every contract the analysis measured, for the bot's hit-rate aim.
+        candidates: selectedResult.contracts.map((candidate) => ({
+          label: candidate.label,
+          contractType: candidate.contract.contractType,
+          barrier: (candidate.contract as { barrier?: number; targetDigit?: number }).barrier
+            ?? (candidate.contract as { targetDigit?: number }).targetDigit
+            ?? null,
+          probability: candidate.probability,
+          fairProbability: candidate.fairProbability,
+          entry: candidate.entry,
+          confidence: candidate.confidence,
+          strength: candidate.strength,
+          recommendedRuns: recommendedRuns({ confidence: candidate.confidence, strength: candidate.strength }),
+          master: candidate.master,
+          researchDecision: candidate.researchDecision,
+          research: candidate.research,
+          confirmation: {
+            status: candidate.deep.confirmation.status,
+            edgePts: candidate.deep.confirmation.edgePts,
+            decisive: candidate.deep.confirmation.decisive,
+          },
+        })),
+        confirmation: {
+          status: signal.deep.confirmation.status,
+          edgePts: signal.deep.confirmation.edgePts,
+          decisive: signal.deep.confirmation.decisive,
+        },
+      }
+    : null;
+  const tradeEntry = markets.find((entry) => entry.symbol === (tradeMarket ?? detailSymbol));
 
-  function handleRunAnalysis() {
-    if (isScanning) return;
-    setIsScanning(true);
-    window.setTimeout(() => {
-      const analysis = analyzeDigits(feed.ticks);
-      const ranking = runResearchRanking(family, feed, analysis, selectedDuration);
-      const blockingReason = !feed.selectedMarket
-        ? 'No selected market metadata is available.'
-        : feed.precisionError
-          ? feed.precisionError
-          : !feed.historyLoaded
-            ? 'Waiting for real historical tick data.'
-            : feed.ticks.length < MINIMUM_DIGIT_TICKS
-              ? `Only ${feed.ticks.length} validated digit ticks; ${MINIMUM_DIGIT_TICKS} are required.`
-              : !feed.fresh
-                ? 'Live tick freshness is not confirmed; no research candidate is published.'
-                : !feed.contractsLoaded
-                  ? 'Contract availability has not been verified by Deriv.'
-                  : '';
-      setSnapshot({
-        ranAt: Date.now(),
-        symbol: feed.selectedSymbol,
-        selectedDuration,
-        latestDigit: analysis.lastDigit,
-        analysis,
-        freshAtRun: feed.fresh,
-        candidate: blockingReason ? null : ranking.candidates[0] ?? null,
-        candidates: blockingReason ? [] : ranking.candidates,
-        reason: blockingReason || ranking.reason,
-      });
-      setIsScanning(false);
-    }, 30);
+  async function handleRunAnalysis() {
+    if (scan.scanning) return;
+    const symbols = scope === ALL_MARKETS ? feed.getSnapshot().map((entry) => entry.symbol) : [scope];
+    const next = await scan.start({
+      symbols,
+      minimumTicks: DIGIT_SIGNAL_MIN_TICKS,
+      usableTicks: (entry) => entry.ticks.reduce((count, tick) => count + (tick.digit === null ? 0 : 1), 0),
+      meta: { family, duration, scope },
+      buildJobs: (entries) => {
+        const jobs: ScanMarketJob[] = [];
+        const skipped: ScanFailure[] = [];
+        const usable = entries.filter((entry) => symbols.includes(entry.symbol));
+        for (const entry of usable) {
+          const ticks = digitTicksOf(entry.ticks);
+          if (ticks.length < DIGIT_SIGNAL_MIN_TICKS) {
+            skipped.push({ symbol: entry.symbol, name: entry.name, message: entry.error || (entry.ticks.length && !ticks.length ? 'digit precision unavailable' : `only ${ticks.length} ticks loaded`) });
+            continue;
+          }
+          if (entry.tradingSuspended === true) { skipped.push({ symbol: entry.symbol, name: entry.name, message: 'trading suspended' }); continue; }
+          const support = contractsFor(entry, family, duration);
+          if (support.skip) { skipped.push({ symbol: entry.symbol, name: entry.name, message: support.skip }); continue; }
+          jobs.push({ kind: 'digit', symbol: entry.symbol, name: entry.name, input: { family, symbol: entry.symbol, name: entry.name, horizon: duration, ticks, quoteTicks: entry.ticks.map(({ epoch, quote }) => ({ epoch, quote })), settlements: scopeSettlements(trading.closedPositions, entry.symbol, family, trading.currency), settlementCurrency: trading.currency, fresh: entry.fresh, contracts: support.contracts, marketsInScan: usable.length } });
+        }
+        return { jobs, skipped };
+      },
+    });
+    if (next) {
+      setViewSymbol(next.results[0].symbol);
+      setTradeMarket(next.results[0].symbol);
+      setTradeExpiry(next.meta.duration);
+    }
   }
-
-  const snapshotMatchesSelected = snapshot?.symbol === feed.selectedSymbol && snapshot.selectedDuration === selectedDuration;
-  const shownSnapshot = snapshotMatchesSelected ? snapshot : null;
-  const resultCandidate = shownSnapshot?.candidate ?? null;
-  const candidates = shownSnapshot?.candidates ?? [];
-  const isReady = Boolean(feed.selectedMarket && feed.historyLoaded && feed.contractsLoaded && feed.fresh && !feed.precisionError);
-  const dataQualityLabel = feed.precisionError
-    ? 'Blocked · precision mismatch'
-    : feed.selectedMarket?.precision !== null && feed.selectedMarket && feed.historyLoaded && feed.contractsLoaded && feed.fresh
-      ? 'Precision-checked · fresh'
-      : 'Incomplete or stale';
 
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid={`${family}-analysis`}>
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div><div className="eyebrow">{familyDetails.eyebrow} · multi-engine research</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{familyDetails.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{familyDetails.description} No orders are placed from this tool.</p></div>
+        <div><div className="eyebrow">{details.eyebrow} · {ENGINE_COUNT} base predictors · 300-entry analysis, prediction and entry</div><h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">{details.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{details.description}</p></div>
         <FeedStatusBadge feed={feed} />
       </div>
 
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-        <div className="grid gap-4 lg:grid-cols-[minmax(220px,0.75fr)_minmax(180px,0.55fr)_minmax(260px,1.2fr)_auto] lg:items-end">
-          <SymbolPicker feed={feed} family={family} />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1.3fr)_minmax(0,0.8fr)_auto] sm:items-end">
           <label className="block min-w-0">
-            <span className="eyebrow">Tick expiry · Deriv metadata</span>
-            <select
-              value={selectedDuration ?? ''}
-              onChange={(event) => setSelectedDuration(event.target.value ? Number(event.target.value) : null)}
-              disabled={!feed.contractsLoaded || !availableDurations.length}
-              className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-              aria-label={`Choose Deriv-supported tick expiry for ${family} analysis`}
-              data-testid={`${family}-duration-select`}
-            >
-              <option value="">{feed.contractsLoaded ? 'Choose tick expiry…' : 'Loading contract rules…'}</option>
-              {availableDurations.map((duration) => <option key={duration} value={duration}>{duration} {duration === 1 ? 'tick' : 'ticks'}</option>)}
+            <span className="eyebrow">Markets to scan</span>
+            <select value={scope} onChange={(event) => setScope(event.target.value)} disabled={scan.scanning} className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary disabled:opacity-60" data-testid={`${family}-scope-select`} aria-label="Markets to scan">
+              <option value={ALL_MARKETS}>All {markets.length} volatility markets · auto-pick the best</option>
+              {markets.map((entry) => <option key={entry.symbol} value={entry.symbol}>{entry.name} · {entry.symbol}</option>)}
             </select>
           </label>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Quote</div><div className="mono mt-1 text-sm font-semibold">{formatQuote(latestTick?.quote, feed.selectedMarket?.precision ?? null)}</div></div>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Final digit</div><div className="mono mt-1 text-sm font-semibold">{latestTick?.digit ?? '—'}</div></div>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Verified precision</div><div className="mono mt-1 text-sm font-semibold">{feed.selectedMarket?.precision === null || !feed.selectedMarket ? '—' : `${feed.selectedMarket.precision} dp`}</div></div>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Valid digit ticks</div><div className="mono mt-1 text-sm font-semibold">{feed.ticks.length}</div></div>
-          </div>
-          <button type="button" onClick={handleRunAnalysis} disabled={isScanning} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60" data-testid={`button-run-analysis-${family}`}>
-            <Play size={16} fill="currentColor" />{isScanning ? 'Analyzing digits…' : 'Run Analysis'}
-          </button>
+          <label className="block min-w-0">
+            <span className="eyebrow">Contract duration</span>
+            <select value={duration} onChange={(event) => setDuration(Number(event.target.value))} disabled={scan.scanning} className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary disabled:opacity-60" data-testid={`${family}-duration-select`} aria-label="Contract duration in ticks">
+              {durations.map((ticks) => <option key={ticks} value={ticks}>{durationLabel(ticks)}</option>)}
+            </select>
+          </label>
+          {scan.scanning ? (
+            <button type="button" onClick={scan.cancel} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg border border-border bg-background px-5 text-sm font-bold text-foreground transition-colors hover:bg-secondary" data-testid="button-cancel-analysis">
+              <Square size={14} fill="currentColor" /> Stop
+            </button>
+          ) : (
+            <button type="button" onClick={handleRunAnalysis} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-6 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90" data-testid="button-run-analysis">
+              <Play size={16} fill="currentColor" /> Run Analysis
+            </button>
+          )}
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
-          <span>{feed.selectedMarket?.name ?? 'No market selected'}{feed.selectedMarket?.market ? ` · ${feed.selectedMarket.market}` : ''}</span>
-          <span>{feed.selectedMarket?.exchangeOpen === null || !feed.selectedMarket ? 'Market hours unverified' : feed.selectedMarket.exchangeOpen ? 'Exchange open' : 'Exchange closed'}</span>
-          <span>{feed.selectedMarket?.tradingSuspended ? 'Trading suspended' : feed.selectedMarket ? 'Suspension check passed' : 'Suspension unknown'}</span>
-          <span>{feed.contractsLoaded ? `${relevantContracts.length} Deriv-supported contract types` : 'Checking contract support'}</span>
-          <span>{supportedDurationCount} unique Deriv-supported tick expiries · choose one</span>
-          <span>{feed.usingTestAppId ? 'Test app ID 1089' : 'Configured Deriv app ID'}</span>
-          <span>Digit count is not traded volume</span>
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
+          <span>{feed.loadedCount}/{markets.length} markets loaded</span>
+          <span>{ENGINE_COUNT} base predictors · 300 registered research entries · 10-model independent audit per market</span>
+          <span>{feed.usingTestAppId ? 'Deriv test app ID' : 'Configured Deriv app ID'}</span>
+          {run && <span>Last scan {new Date(run.ranAt).toLocaleTimeString()} · {run.marketsScanned} markets · {(run.durationMs / 1000).toFixed(1)}s</span>}
         </div>
-        {feed.feedError && <div className="mt-3 flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive" role="alert"><AlertTriangle size={15} className="mt-0.5 shrink-0" /><span>{feed.feedError}</span></div>}
-        {feed.contractError && <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground" role="status"><AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-500" /><span>{feed.contractError}</span></div>}
-        {feed.precisionError && <div className="mt-3 flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive" role="alert" data-testid="digit-precision-error"><AlertTriangle size={15} className="mt-0.5 shrink-0" /><span>{feed.precisionError}</span></div>}
+        {feed.error && <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400" role="status"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{feed.error}</div>}
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]" data-testid={`${family}-signal-summary`}>
-        <article className="signal-panel rounded-xl border border-card-border p-5 panel-glow sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div className="eyebrow">Trade-grade decision</div><span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-amber-500">WAIT · no auto-trading</span></div>
-          <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div><div className="text-5xl font-extrabold tracking-[-0.06em] text-amber-500">WAIT</div><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{shownSnapshot ? resultCandidate ? `Analysis ranked ${resultCandidate.label} for ${shownSnapshot.symbol} at the selected ${resultCandidate.outcomes.durationTicks}-tick expiry from available historical outcomes.` : shownSnapshot.reason || familyDetails.empty : 'Choose a Deriv-reported tick expiry, then press Run Analysis to evaluate this market’s expiry-specific digit outcomes.'}</p></div>
-            {shownSnapshot && resultCandidate ? (
-              <div className="w-full max-w-sm rounded-xl border border-primary/25 bg-primary/5 px-4 py-3" data-testid={`${family}-research-candidate`}>
-                <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-primary">Research candidate · not validated</div>
-                <div className="mt-2 text-xl font-extrabold">{resultCandidate.label}</div>
-                <div className="mt-1 text-[10px] text-muted-foreground">{shownSnapshot.symbol} · selected {resultCandidate.outcomes.durationTicks}-tick expiry</div>
-                <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/70 pt-3 text-xs sm:grid-cols-4"><div><div className="eyebrow">Conditioned rate</div><div className="mono mt-1 font-semibold">{formatRate(resultCandidate.outcomes.empiricalHitRate)}</div></div><div><div className="eyebrow">All-history base</div><div className="mono mt-1 font-semibold">{formatRate(resultCandidate.baseline.empiricalHitRate)}</div></div><div><div className="eyebrow">Nominal 95% interval</div><div className="mono mt-1 font-semibold">{formatInterval(resultCandidate.outcomes.wilson95)}</div></div><div><div className="eyebrow">Sample</div><div className="mono mt-1 font-semibold">{resultCandidate.outcomes.hits} / {resultCandidate.outcomes.sample}</div></div></div>
-                <div className="mt-2 text-[10px] text-muted-foreground">Conditional difference vs all-history base: {formatDifference(resultCandidate.outcomes.empiricalHitRate === null || resultCandidate.baseline.empiricalHitRate === null ? null : resultCandidate.outcomes.empiricalHitRate - resultCandidate.baseline.empiricalHitRate)} (in-sample only).</div>
-                {resultCandidate.outcomes.barrierEqual > 0 && <div className="mt-2 text-[10px] text-muted-foreground">Exact barrier was observed {resultCandidate.outcomes.barrierEqual} times and counted as a loss.</div>}
-                <div className="mt-2 text-[10px] text-muted-foreground">Conditioned on {resultCandidate.outcomes.contextDigit !== null ? `starting digit ${resultCandidate.outcomes.contextDigit}` : resultCandidate.outcomes.contextParity === 0 ? 'an even starting digit' : 'an odd starting digit'}.</div>
-              </div>
-            ) : (
-              <div className="w-full max-w-sm rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">{shownSnapshot ? shownSnapshot.reason || familyDetails.empty : 'No scan has been run for this market yet.'}</div>
-            )}
+      {scan.progress && <AnalysisProgressPanel progress={scan.progress} engineCount={ENGINE_COUNT} />}
+      {scan.error && !scan.progress && (
+        <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive" role="alert" data-testid="analysis-error"><AlertTriangle size={16} className="mt-0.5 shrink-0" /><span>{scan.error}</span></div>
+      )}
+
+      {run && selectedResult && signal ? (
+        <section className={`grid grid-cols-1 gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined}>
+          <div className="space-y-4">
+            <SignalCard
+              eyebrow={isBest ? `Best signal · ${run.marketsScanned} markets scanned` : `Signal · ${selectedResult.name}`}
+              label={signal.label}
+              direction={directionOf(signal.contract)}
+              marketName={selectedResult.name}
+              marketCode={selectedResult.symbol}
+              duration={durationLabel(selectedResult.horizon)}
+              confidence={signal.confidence}
+              strength={signal.strength}
+              tally={signal.tally}
+              insight={explainSignal(signal.strength, signal.breakdown, signal.tally)}
+              verified={signal.verified}
+              generatedAt={run.ranAt}
+              now={feed.now}
+              notes={selectedResult.notes}
+              metrics={[
+                { label: 'Master call', value: `${signal.master.verdict.replaceAll('_', ' ')} · ${signal.master.validity.ticks}t`, hint: signal.master.headline },
+                { label: 'Win chance', value: formatPercent(signal.probability), hint: 'Confirmed probability after out-of-sample calibration, stacking and the analysis check' },
+                { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
+                { label: 'Fair odds', value: formatPercent(signal.fairProbability, 0), hint: 'Win probability with uniformly random digits' },
+                ...(signal.precision.interval ? [{
+                  label: '95% range',
+                  value: `${formatPercent(signal.precision.interval.lower, 0)}–${formatPercent(signal.precision.interval.upper, 0)}`,
+                  hint: `Measured on ${signal.precision.reliability.sample} held-out ticks. If the bottom of this range still clears the fair odds, the edge is real enough to trade.`,
+                }] : []),
+                { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: 'Held-out ticks where the engines favoured this contract: win rate and number of calls' },
+                { label: 'History', value: signal.history?.rate == null ? '—' : `${formatPercent(signal.history.rate)}`, hint: signal.history ? `${signal.history.hits}/${signal.history.sample} ${signal.history.context}` : undefined },
+                {
+                  label: 'Entry point',
+                  value: signal.entry.mode === 'immediate' ? 'Next tick' : 'Digit context',
+                  hint: `When the bot opens this contract: ${signal.entry.detail}`,
+                },
+                {
+                  label: 'Analysis, prediction and entry',
+                  value: signal.research.total ? `${signal.research.agreeing}/${signal.research.total}${signal.research.weight > 0 ? ` · ${signal.research.contributionPts >= 0 ? '+' : ''}${signal.research.contributionPts.toFixed(1)} pts` : ''}` : '—',
+                  hint: signal.research.note,
+                },
+                {
+                  label: 'Neural model',
+                  value: selectedResult.neural
+                    ? `${formatPercent(signal.neural.probability)}${signal.neural.weight > 0 ? ` · ${signal.neural.contributionPts >= 0 ? '+' : ''}${signal.neural.contributionPts.toFixed(1)} pts` : ' · no vote'}`
+                    : '—',
+                  hint: signal.neural.note,
+                },
+                {
+                  label: 'Entry time',
+                  value: signal.entry.mode === 'immediate' ? 'Signal tick' : signal.entry.expectedWaitTicks <= 1 ? 'Next matches' : `~${signal.entry.expectedWaitTicks} ticks`,
+                  hint: `The entry stays valid for ${effectiveWindowTicks(signal.entry)} ticks — the shorter of the plan's window and the measured edge validity; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed ticks matched`}.`,
+                },
+              ]}
+              onUse={() => { setTradeMarket(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+            />
+            <MasterDecisionCard
+              master={signal.master}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={durationLabel(selectedResult.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
+            />
+            <ConfirmationPanel report={signal.deep.confirmation} />
+            {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={signal.fairProbability} /> : null}
+            {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
+            {selectedResult.neural ? <NeuralModelCard forecast={selectedResult.neural} fusion={signal.neural} /> : null}
+            <EntryPlanCard
+              entry={signal.entry}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={durationLabel(selectedResult.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
+            />
+            <MarketRankingTable
+              rows={run.results.map((result) => ({
+                symbol: result.symbol, name: result.name, label: result.best.label, direction: directionOf(result.best.contract),
+                duration: durationLabel(result.horizon), confidence: result.best.confidence, strength: result.best.strength,
+                agreeing: result.best.tally.agreeing, total: result.best.tally.total, winChance: formatPercent(result.best.probability), fresh: result.fresh,
+                entry: entryModeLabel(result.best.entry),
+              }))}
+              selected={selectedResult.symbol}
+              onSelect={setViewSymbol}
+              failures={run.failures}
+            />
           </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3" data-testid={`${family}-evidence-status`}>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Data quality</div><div className="mt-1 text-[11px] font-semibold">{dataQualityLabel}</div></div>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Model reliability</div><div className="mt-1 text-[11px] font-semibold">Not validated</div></div>
-            <div className="rounded-lg border border-border bg-background/35 px-3 py-2"><div className="eyebrow">Signal strength</div><div className="mt-1 text-[11px] font-semibold">Not scored · WAIT</div></div>
+          <div className="space-y-4">
+            <EngineVotesPanel votes={signal.votes} title={`Why ${signal.label} on ${shortMarketName(selectedResult.name)}`} valueKind="probability" fair={signal.fairProbability} />
+            <AnalysisEnginePanel state={selectedResult.state} marketName={selectedResult.name} />
+            <ContractTable result={selectedResult} />
           </div>
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground"><ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" /><span>Historical frequencies and smoothed rankings are descriptive research, not calibrated probabilities. The nominal 95% Wilson interval assumes independent Bernoulli outcomes; overlapping tick horizons violate that simplifying assumption, so it is not a calibrated forecast interval. No account currency, authorized proposal, live payout, break-even, expected-value, out-of-sample validation or risk service is connected. Actionable signal remains WAIT.</span></div>
-          {shownSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Snapshot {new Date(shownSnapshot.ranAt).toLocaleTimeString()} · {shownSnapshot.analysis.sampleSize} validated digits · live freshness at scan: {shownSnapshot.freshAtRun ? 'confirmed' : 'not confirmed'}</div>}
-        </article>
+        </section>
+      ) : !scan.progress && (
+        <section className="rounded-xl border border-dashed border-border bg-card/60 p-6 text-center" data-testid="analysis-empty">
+          <Zap size={22} className="mx-auto text-primary" />
+          <h3 className="mt-2 text-base font-bold">Press Run Analysis for a signal</h3>
+          <p className="mx-auto mt-1 max-w-xl text-xs leading-relaxed text-muted-foreground">The scan starts immediately, shows its progress as a percentage, and finishes with a signal, its confidence score and how many of the {ENGINE_COUNT} engines agree — for the strongest market and every other market scanned.</p>
+        </section>
+      )}
 
-        <article className="rounded-xl border border-card-border bg-card/90 p-5 panel-glow">
-          <div className="flex items-center justify-between gap-3"><div><div className="eyebrow">Live selected market</div><h3 className="mt-1 text-base font-bold">{feed.selectedMarket?.name ?? 'Waiting for active symbols'}</h3></div><Activity size={18} className={feed.fresh ? 'text-emerald-500' : 'text-muted-foreground'} /></div>
-          <div className="mt-1 text-[10px] text-muted-foreground">{feed.selectedSymbol || 'No active symbol'} · {feed.selectedMarket?.market ?? 'market metadata unavailable'}</div>
-          <div className="mt-5 grid grid-cols-2 gap-3 border-t border-border pt-4"><div><div className="eyebrow">Feed status</div><div className="mt-1 text-sm font-semibold">{feedStatusLabel(feed)}</div></div><div><div className="eyebrow">Source age</div><div className="mono mt-1 text-sm font-semibold">{feed.sourceAgeMs === null ? '—' : `${Math.max(0, Math.floor(feed.sourceAgeMs / 1000))}s`}</div></div><div><div className="eyebrow">History</div><div className="mt-1 text-sm font-semibold">{feed.historyLoaded ? 'Loaded' : 'Waiting / unavailable'}</div></div><div><div className="eyebrow">Contract rules</div><div className="mt-1 text-sm font-semibold">{feed.contractsLoaded ? 'Queried' : 'Waiting / unavailable'}</div></div></div>
-          {feed.selectedMarket?.precision !== null && feed.selectedMarket && <div className="mt-4 rounded-md border border-border bg-background/35 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">Final digits use Deriv pip_size = {feed.selectedMarket.pipSize} and {feed.selectedMarket.precision} displayed decimal places. Any metadata mismatch blocks digit analysis.</div>}
-        </article>
+      <EngineLabPanel report={selectedResult?.engineLab} />
+
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+        <LiveMarketPanel entry={detailEntry} />
+        <DigitFrequencyPanel analysis={detailAnalysis} marketName={detailEntry ? shortMarketName(detailEntry.name) : '—'} />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-        <DigitFrequencyPanel analysis={shownSnapshot?.analysis ?? currentAnalysis} />
-        <HistoricalRanking family={family} candidates={candidates} />
-      </section>
+      {family === 'over-under' && selectedResult && (
+        <OverUnderEnginePanel report={selectedResult.report as unknown as OverUnderReport} isScanning={scan.scanning} />
+      )}
 
-      <PriceContextPanel feed={feed} analysis={currentPriceContext} />
+      <PriceContextPanel precision={detailEntry?.precision ?? null} analysis={priceContext} />
 
-      <section className="grid gap-3 md:grid-cols-3">
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Database size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Verified input pipeline</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Active-symbol pip_size, history pip_size and live tick pip_size must agree. Quotes are decimal-scaled before extracting the last displayed digit; invalid precision blocks analysis.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><BarChart3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Expiry-aware research</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Each candidate uses the final observed digit exactly N ticks after each historical entry and conditions on the current digit or parity. Overlapping comparisons are not independent and are not a calibration set.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Not implemented yet</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Formal multi-horizon Dow analysis, candle-based ATR / ADX, account-currency proposal quotes, payout/EV gating, model calibration, walk-forward backtesting, persistent signal storage, machine learning and execution remain unavailable.</p></div></div>
-      </section>
+      <DigitDeepPanel digits={detailDigits.map((tick) => tick.digit)} family={family} />
 
-      <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite"><Zap size={12} className="mr-1 inline text-primary" />{shownSnapshot ? `${shownSnapshot.analysis.sampleSize} real validated digits were analyzed for ${shownSnapshot.symbol}.` : isReady ? `Choose one of ${supportedDurationCount} Deriv-supported tick expiries, then run analysis.` : 'Waiting for live data, pip precision, contract metadata and sufficient history.'} No simulated digits, fabricated probabilities or order placement are used.</div>
+      <div className="flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-[11px] leading-relaxed text-muted-foreground">
+        <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
+        <span>Every engine is fitted on each market's own recent ticks with a train / tune / held-out split, so backtests never see the data they are scored on. Deriv's synthetic indices are generated by a random number generator: no model can guarantee a win, and confidence is evidence strength rather than a promise. Orders are only placed from the trade ticket after you confirm a live Deriv price.</span>
+      </div>
+
+      <TradeDock
+        family={family}
+        recommendation={recommendation}
+        analysis={analysis}
+        applyRequest={applyRequest}
+        marketCode={tradeMarket ?? detailSymbol ?? null}
+        marketName={tradeEntry?.name ?? null}
+        marketChoices={markets.map((entry) => ({ code: entry.symbol, name: entry.name }))}
+        onMarketChange={setTradeMarket}
+        expiry={tradeExpiry}
+        expiryOptions={durations}
+        onExpiryChange={setTradeExpiry}
+        contracts={tradeEntry?.contractsLoaded ? tradeEntry.contracts : undefined}
+        expiryVerified={Boolean(tradeEntry?.contractsLoaded)}
+      />
     </div>
   );
 }

@@ -1,169 +1,37 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { AlertTriangle, BarChart3, Clock3, Play, Radio, ShieldAlert, Square, TrendingDown, Wifi, WifiOff, Zap } from 'lucide-react';
+import { TradeDock } from '@/components/trade-dock';
+import { EngineLabPanel } from '@/components/signal/engine-lab-panel';
+import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { scopeSettlements } from '@/lib/engine-lab/execution';
+import { digitTicksOf } from '@/lib/market-feed';
+import { EntryPlanCard } from '@/components/signal/entry-plan-card';
+import { MasterDecisionCard } from '@/components/signal/master-decision-card';
+import { NeuralModelCard } from '@/components/signal/neural-model-card';
+import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
+import { PriceContextPanel } from '@/components/digit-contract-tools';
+import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
+import { useSignalScan } from '@/hooks/use-signal-scan';
 import {
-  Activity,
-  AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
-  BarChart3,
-  CheckCircle2,
-  Clock3,
-  Database,
-  Play,
-  Radio,
-  ShieldAlert,
-  TrendingDown,
-  TrendingUp,
-  Wifi,
-  WifiOff,
-  Zap,
-} from 'lucide-react';
-import { analyzeRiseFall, type Bias, type HistoricalOutcomes, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
+  AiSynthesisCard, AnalysisEnginePanel, AnalysisProgressPanel, ConfirmationPanel, EngineVotesPanel, MarketRankingTable, PrecisionPanel, SignalCard, StrengthBadge, formatPercent, shortMarketName,
+} from '@/components/signal/signal-ui';
+import { analyzeRiseFall, type MarketTick, type RiseFallAnalysis } from '@/lib/rise-fall-analysis';
+import { analyzePriceContext } from '@/lib/price-context';
+import {
+  RISE_FALL_ENGINES, RISE_FALL_MIN_TICKS, formatRiseFallHorizon,
+  type RiseFallHorizonSignal, type RiseFallMarketAnalysis,
+} from '@/lib/signal-engine/rise-fall-signal';
+import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner';
+import type { TradeRecommendation } from '@/lib/trade-draft';
+import { explainSignal } from '@/lib/signal-engine/confidence';
+import { effectiveWindowTicks, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 
-type DerivWireMessage = {
-  msg_type?: string;
-  req_id?: number;
-  time?: number | string;
-  echo_req?: { ticks_history?: string };
-  error?: { code?: string; message?: string };
-  history?: { prices?: Array<number | string>; times?: Array<number | string> };
-  tick?: { quote?: number | string; epoch?: number | string; symbol?: string };
-};
+const ALL_MARKETS = 'all';
+const ENGINE_COUNT = RISE_FALL_ENGINES.length;
+// The trade ticket accepts tick expiries 1–10; minute signals use the minutes field.
+const DRAFT_TICK_EXPIRIES = Array.from({ length: 10 }, (_, index) => index + 1);
 
-type FeedStatus = 'connecting' | 'loading' | 'live' | 'reconnecting' | 'error';
-type Horizon = { unit: 'ticks' | 'minutes'; value: number };
-type FeedTick = MarketTick;
-type MarketInfo = {
-  historyLoaded: boolean;
-  lastLiveTickAt: number | null;
-  rejectedTicks: number;
-  error: string;
-};
-type HorizonEvaluation = {
-  horizon: Horizon;
-  historical: HistoricalOutcomes;
-  directionalSupport: number | null;
-  qualified: boolean;
-  reasons: string[];
-};
-type MarketRow = {
-  market: (typeof SYMBOLS)[number];
-  ticks: FeedTick[];
-  info: MarketInfo;
-  analysis: RiseFallAnalysis;
-  fresh: boolean;
-  sourceAgeMs: number | null;
-  technicalEligible: boolean;
-  reasons: string[];
-  horizonEvaluations: HorizonEvaluation[];
-  bestHorizon: HorizonEvaluation | null;
-};
-type ScanSnapshot = {
-  ranAt: number;
-  rows: MarketRow[];
-  bestCandidate: { marketCode: string; horizon: Horizon } | null;
-};
-
-const REQUIRED_TICKS = 500;
-const REQUIRED_HISTORICAL_SAMPLES = 100;
-const REQUIRED_DIRECTIONAL_OUTCOMES = 50;
-const STALE_AFTER_MS = 15_000;
-const HISTORY_COUNT = 2_000;
-const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim() || '1089';
-const USING_TEST_APP_ID = !import.meta.env.VITE_DERIV_APP_ID?.trim();
-const SYMBOLS = [
-  { code: 'R_10', name: 'Volatility 10 Index' },
-  { code: 'R_25', name: 'Volatility 25 Index' },
-  { code: 'R_50', name: 'Volatility 50 Index' },
-  { code: 'R_75', name: 'Volatility 75 Index' },
-  { code: 'R_100', name: 'Volatility 100 Index' },
-  { code: '1HZ10V', name: 'Volatility 10 (1s) Index' },
-  { code: '1HZ15V', name: 'Volatility 15 (1s) Index' },
-  { code: '1HZ25V', name: 'Volatility 25 (1s) Index' },
-  { code: '1HZ30V', name: 'Volatility 30 (1s) Index' },
-  { code: '1HZ50V', name: 'Volatility 50 (1s) Index' },
-  { code: '1HZ75V', name: 'Volatility 75 (1s) Index' },
-  { code: '1HZ90V', name: 'Volatility 90 (1s) Index' },
-  { code: '1HZ100V', name: 'Volatility 100 (1s) Index' },
-] as const;
-const HORIZONS: Horizon[] = [
-  ...Array.from({ length: 10 }, (_, index) => ({ unit: 'ticks' as const, value: index + 1 })),
-  ...Array.from({ length: 15 }, (_, index) => ({ unit: 'minutes' as const, value: index + 1 })),
-];
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-
-function emptyMarketInfo(): MarketInfo {
-  return { historyLoaded: false, lastLiveTickAt: null, rejectedTicks: 0, error: '' };
-}
-
-function emptyMarketMap<T>(symbols: readonly { code: string }[], makeValue: () => T): Record<string, T> {
-  return Object.fromEntries(symbols.map(({ code }) => [code, makeValue()]));
-}
-
-function normalizeHistory(prices: Array<number | string>, times: Array<number | string>): FeedTick[] {
-  const ticks: FeedTick[] = [];
-  const count = Math.min(prices.length, times.length);
-  for (let index = 0; index < count; index += 1) {
-    const quote = Number(prices[index]);
-    const epoch = Number(times[index]);
-    if (Number.isFinite(quote) && Number.isFinite(epoch) && quote > 0 && epoch > 0) ticks.push({ quote, epoch });
-  }
-  return deduplicateAndSort(ticks);
-}
-
-function deduplicateAndSort(ticks: FeedTick[]): FeedTick[] {
-  const unique = new Map<string, FeedTick>();
-  for (const tick of ticks) {
-    if (!Number.isFinite(tick.quote) || !Number.isFinite(tick.epoch) || tick.quote <= 0 || tick.epoch <= 0) continue;
-    unique.set(`${tick.epoch}:${tick.quote}`, tick);
-  }
-  return [...unique.values()].sort((left, right) => left.epoch - right.epoch).slice(-HISTORY_COUNT);
-}
-
-function historicalOutcomesByTicks(ticks: FeedTick[], horizonTicks: number): HistoricalOutcomes {
-  const prices = ticks.map(({ quote }) => quote);
-  const expiry = Math.max(1, Math.floor(horizonTicks));
-  const sampleEnd = prices.length - expiry;
-  const sampleStart = Math.max(0, prices.length - 500);
-  let rise = 0;
-  let fall = 0;
-  let unchanged = 0;
-
-  for (let index = sampleStart; index < sampleEnd; index += 1) {
-    const entry = prices[index];
-    const exit = prices[index + expiry];
-    if (exit > entry) rise += 1;
-    else if (exit < entry) fall += 1;
-    else unchanged += 1;
-  }
-
-  return { horizon: expiry, sample: rise + fall + unchanged, rise, fall, unchanged };
-}
-
-function historicalOutcomesByMinutes(ticks: FeedTick[], minutes: number): HistoricalOutcomes {
-  const durationSeconds = Math.max(60, Math.floor(minutes) * 60);
-  const sampleStart = Math.max(0, ticks.length - HISTORY_COUNT);
-  const firstCompleteAt = ticks.length ? ticks.at(-1)!.epoch - durationSeconds : 0;
-  let endIndex = sampleStart + 1;
-  let rise = 0;
-  let fall = 0;
-  let unchanged = 0;
-
-  for (let startIndex = sampleStart; startIndex < ticks.length; startIndex += 1) {
-    const entry = ticks[startIndex];
-    if (entry.epoch > firstCompleteAt) break;
-    const targetEpoch = entry.epoch + durationSeconds;
-    if (endIndex <= startIndex) endIndex = startIndex + 1;
-    while (endIndex < ticks.length && ticks[endIndex].epoch < targetEpoch) endIndex += 1;
-    if (endIndex >= ticks.length) break;
-    const exit = ticks[endIndex].quote;
-    if (exit > entry.quote) rise += 1;
-    else if (exit < entry.quote) fall += 1;
-    else unchanged += 1;
-  }
-
-  return { horizon: durationSeconds, sample: rise + fall + unchanged, rise, fall, unchanged };
-}
+type RiseFallRunMeta = { scope: string };
 
 function formatQuote(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';
@@ -179,332 +47,35 @@ function formatSigned(value: number | null, digits = 2): string {
   return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`;
 }
 
-function formatAge(milliseconds: number | null): string {
-  if (milliseconds === null || !Number.isFinite(milliseconds)) return '—';
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  return seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ${seconds % 60}s ago`;
-}
-
-function formatEpoch(epoch: number | null): string {
-  if (epoch === null) return '—';
-  return new Date(epoch * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-function formatHorizon(horizon: Horizon): string {
-  return `${horizon.value} ${horizon.unit === 'ticks' ? (horizon.value === 1 ? 'tick' : 'ticks') : (horizon.value === 1 ? 'minute' : 'minutes')}`;
-}
-
-function sameHorizon(left: Horizon, right: Horizon): boolean {
-  return left.unit === right.unit && left.value === right.value;
-}
-
-function biasTone(bias: Bias): string {
-  if (bias === 'RISE') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500';
-  if (bias === 'FALL') return 'border-rose-500/30 bg-rose-500/10 text-rose-500';
-  return 'border-amber-500/30 bg-amber-500/10 text-amber-500';
-}
-
-function useDerivMarkets(symbols: typeof SYMBOLS) {
-  const [ticksBySymbol, setTicksBySymbol] = useState<Record<string, FeedTick[]>>(() => emptyMarketMap(symbols, () => []));
-  const [marketInfo, setMarketInfo] = useState<Record<string, MarketInfo>>(() => emptyMarketMap(symbols, emptyMarketInfo));
-  const [feedStatus, setFeedStatus] = useState<FeedStatus>('connecting');
-  const [feedError, setFeedError] = useState('');
-  const [serverClockOffsetMs, setServerClockOffsetMs] = useState<number | null>(null);
-  const latestTickRef = useRef<Record<string, FeedTick | null>>({});
-
-  useEffect(() => {
-    let disposed = false;
-    let reconnectTimer: number | undefined;
-    let heartbeatTimer: number | undefined;
-    let requestTimers: number[] = [];
-    let reconnectAttempt = 0;
-    let socket: WebSocket | null = null;
-    const requestSymbols = new Map<number, string>();
-
-    latestTickRef.current = {};
-    setTicksBySymbol(emptyMarketMap(symbols, () => []));
-    setMarketInfo(emptyMarketMap(symbols, emptyMarketInfo));
-    setFeedStatus('connecting');
-    setFeedError('');
-    setServerClockOffsetMs(null);
-
-    const clearConnectionTimers = () => {
-      if (heartbeatTimer !== undefined) window.clearInterval(heartbeatTimer);
-      heartbeatTimer = undefined;
-      requestTimers.forEach((timer) => window.clearTimeout(timer));
-      requestTimers = [];
-    };
-
-    const scheduleReconnect = () => {
-      if (disposed) return;
-      const delayMs = Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempt, 5));
-      reconnectAttempt += 1;
-      reconnectTimer = window.setTimeout(connect, delayMs);
-    };
-
-    const connect = () => {
-      if (disposed) return;
-      setFeedStatus(reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
-      try {
-        socket = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`);
-        socket.onopen = () => {
-          if (disposed || !socket) return;
-          reconnectAttempt = 0;
-          requestSymbols.clear();
-          clearConnectionTimers();
-          setFeedStatus('loading');
-          setFeedError('');
-          setServerClockOffsetMs(null);
-          setMarketInfo((current) => Object.fromEntries(symbols.map(({ code }) => [code, {
-            ...current[code], historyLoaded: false, lastLiveTickAt: null, error: '',
-          }])));
-          heartbeatTimer = window.setInterval(() => {
-            if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ ping: 1 }));
-          }, 30_000);
-          socket.send(JSON.stringify({ time: 1, req_id: 1 }));
-
-          symbols.forEach((market, index) => {
-            const reqId = 100 + index;
-            requestSymbols.set(reqId, market.code);
-            const timer = window.setTimeout(() => {
-              if (socket?.readyState !== WebSocket.OPEN) return;
-              socket.send(JSON.stringify({
-                ticks_history: market.code,
-                end: 'latest',
-                count: HISTORY_COUNT,
-                style: 'ticks',
-                subscribe: 1,
-                req_id: reqId,
-              }));
-            }, index * 100);
-            requestTimers.push(timer);
-          });
-        };
-
-        socket.onmessage = (event) => {
-          if (disposed) return;
-          let message: DerivWireMessage;
-          try {
-            message = JSON.parse(String(event.data)) as DerivWireMessage;
-          } catch {
-            setFeedError('Deriv sent a message that could not be parsed.');
-            return;
-          }
-
-          if (message.error) {
-            const code = message.req_id === undefined ? undefined : requestSymbols.get(message.req_id);
-            if (code) {
-              setMarketInfo((current) => ({
-                ...current,
-                [code]: { ...(current[code] ?? emptyMarketInfo()), error: message.error?.message || message.error?.code || 'Deriv rejected this market request.' },
-              }));
-            } else {
-              setFeedError(message.error.message || message.error.code || 'Deriv returned a market-data error.');
-            }
-            return;
-          }
-
-          if (message.msg_type === 'time' && message.time !== undefined) {
-            const serverTime = Number(message.time);
-            if (Number.isFinite(serverTime) && serverTime > 0) setServerClockOffsetMs(serverTime * 1000 - Date.now());
-            return;
-          }
-
-          if (message.history?.prices && message.history.times) {
-            const code = (message.req_id === undefined ? undefined : requestSymbols.get(message.req_id)) ?? message.echo_req?.ticks_history;
-            if (!code || !symbols.some((market) => market.code === code)) return;
-            const historical = normalizeHistory(message.history.prices, message.history.times);
-            setTicksBySymbol((current) => {
-              const merged = deduplicateAndSort([...historical, ...(current[code] ?? [])]);
-              latestTickRef.current[code] = merged.at(-1) ?? null;
-              return { ...current, [code]: merged };
-            });
-            setMarketInfo((current) => ({
-              ...current,
-              [code]: {
-                ...(current[code] ?? emptyMarketInfo()),
-                historyLoaded: historical.length > 0,
-                error: historical.length ? '' : 'Deriv returned no valid tick history for this symbol.',
-              },
-            }));
-            return;
-          }
-
-          if (!message.tick) return;
-          const code = message.tick.symbol;
-          if (!code || !symbols.some((market) => market.code === code)) return;
-          const quote = Number(message.tick.quote);
-          const epoch = Number(message.tick.epoch);
-          if (!Number.isFinite(quote) || !Number.isFinite(epoch) || quote <= 0 || epoch <= 0) {
-            setMarketInfo((current) => ({
-              ...current,
-              [code]: { ...(current[code] ?? emptyMarketInfo()), rejectedTicks: (current[code]?.rejectedTicks ?? 0) + 1 },
-            }));
-            return;
-          }
-
-          const previous = latestTickRef.current[code];
-          if (previous && epoch < previous.epoch) {
-            setMarketInfo((current) => ({
-              ...current,
-              [code]: { ...(current[code] ?? emptyMarketInfo()), rejectedTicks: (current[code]?.rejectedTicks ?? 0) + 1 },
-            }));
-            return;
-          }
-          if (previous && epoch === previous.epoch && quote === previous.quote) {
-            setMarketInfo((current) => ({
-              ...current,
-              [code]: { ...(current[code] ?? emptyMarketInfo()), lastLiveTickAt: Date.now() },
-            }));
-            return;
-          }
-
-          const liveTick = { quote, epoch };
-          latestTickRef.current[code] = liveTick;
-          setTicksBySymbol((current) => ({
-            ...current,
-            [code]: deduplicateAndSort([...(current[code] ?? []), liveTick]),
-          }));
-          setMarketInfo((current) => ({
-            ...current,
-            [code]: { ...(current[code] ?? emptyMarketInfo()), lastLiveTickAt: Date.now(), error: '' },
-          }));
-          setFeedStatus('live');
-        };
-
-        socket.onerror = () => {
-          if (!disposed) {
-            setFeedError('The Deriv WebSocket reported a connection error. Retrying automatically.');
-            setFeedStatus('reconnecting');
-          }
-        };
-        socket.onclose = () => {
-          if (disposed) return;
-          clearConnectionTimers();
-          setFeedStatus('reconnecting');
-          setServerClockOffsetMs(null);
-          setMarketInfo((current) => Object.fromEntries(symbols.map(({ code }) => [code, {
-            ...(current[code] ?? emptyMarketInfo()), historyLoaded: false, lastLiveTickAt: null,
-          }])));
-          scheduleReconnect();
-        };
-      } catch (error) {
-        setFeedError(error instanceof Error ? error.message : 'Could not open the Deriv WebSocket.');
-        setFeedStatus('error');
-        scheduleReconnect();
-      }
-    };
-
-    connect();
-    return () => {
-      disposed = true;
-      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
-      clearConnectionTimers();
-      if (socket) {
-        socket.onclose = null;
-        socket.close();
-      }
-    };
-  }, [symbols]);
-
-  return { ticksBySymbol, marketInfo, feedStatus, feedError, serverClockOffsetMs };
-}
-
-function createMarketRow(
-  market: (typeof SYMBOLS)[number],
-  ticks: FeedTick[],
-  info: MarketInfo,
-  now: number,
-  feedStatus: FeedStatus,
-  serverClockOffsetMs: number | null,
-): MarketRow {
-  const analysis = analyzeRiseFall(ticks, 5);
-  const receiveAgeMs = info.lastLiveTickAt === null ? null : now - info.lastLiveTickAt;
-  const sourceAgeMs = analysis.lastEpoch === null || serverClockOffsetMs === null
-    ? null
-    : now + serverClockOffsetMs - analysis.lastEpoch * 1000;
-  const fresh = feedStatus === 'live'
-    && receiveAgeMs !== null
-    && Math.abs(receiveAgeMs) <= STALE_AFTER_MS
-    && sourceAgeMs !== null
-    && Math.abs(sourceAgeMs) <= STALE_AFTER_MS;
-
-  const reasons: string[] = [];
-  if (info.error) reasons.push(info.error);
-  if (!info.historyLoaded) reasons.push('Waiting for validated history.');
-  if (ticks.length < REQUIRED_TICKS) reasons.push(`Need ${REQUIRED_TICKS - ticks.length} more valid ticks.`);
-  if (!fresh) reasons.push('Live tick or server-time freshness is not confirmed.');
-  if (analysis.bias === 'WAIT') reasons.push('Composite directional evidence is mixed or below threshold.');
-
-  const directionSign = analysis.bias === 'RISE' ? 1 : analysis.bias === 'FALL' ? -1 : 0;
-  const requiredStructure = analysis.bias === 'RISE'
-    ? 'Higher highs and higher lows'
-    : analysis.bias === 'FALL'
-      ? 'Lower highs and lower lows'
-      : '';
-  if (directionSign && analysis.dowStructure !== requiredStructure) reasons.push('Swing structure does not confirm the directional bias.');
-  if (directionSign && analysis.trendScore * directionSign < 0.12) reasons.push('Rolling-window trend does not align strongly enough.');
-  if (directionSign && analysis.momentumScore * directionSign < 0.1) reasons.push('Momentum does not align with the directional bias.');
-  if (directionSign && analysis.entryState !== 'Directional alignment (unconfirmed)') reasons.push(`Entry alignment is ${analysis.entryState.toLowerCase()}.`);
-  if (directionSign && (analysis.volatilityRatio === null || analysis.volatilityRegime === 'Insufficient history')) reasons.push('Volatility context is unavailable.');
-
-  const technicalEligible = reasons.length === 0 && directionSign !== 0;
-  return { market, ticks, info, analysis, fresh, sourceAgeMs, technicalEligible, reasons, horizonEvaluations: [], bestHorizon: null };
-}
-
-function evaluateHorizon(row: MarketRow, horizon: Horizon): HorizonEvaluation {
-  const historical = horizon.unit === 'ticks'
-    ? historicalOutcomesByTicks(row.ticks, horizon.value)
-    : historicalOutcomesByMinutes(row.ticks, horizon.value);
-  const reasons = [...row.reasons];
-  if (historical.sample < REQUIRED_HISTORICAL_SAMPLES) {
-    reasons.push(`Only ${historical.sample} completed outcomes at this duration; ${REQUIRED_HISTORICAL_SAMPLES} required.`);
-  }
-
-  const isRise = row.analysis.bias === 'RISE';
-  const isFall = row.analysis.bias === 'FALL';
-  const alignedCount = isRise ? historical.rise : isFall ? historical.fall : 0;
-  const oppositeCount = isRise ? historical.fall : isFall ? historical.rise : 0;
-  const directionalCount = alignedCount + oppositeCount;
-  const directionalSupport = directionalCount > 0 ? (alignedCount - oppositeCount) / directionalCount : null;
-  if (row.analysis.bias !== 'WAIT' && directionalCount < REQUIRED_DIRECTIONAL_OUTCOMES) {
-    reasons.push(`Only ${directionalCount} non-equal outcomes; ${REQUIRED_DIRECTIONAL_OUTCOMES} required for duration comparison.`);
-  }
-  if (row.analysis.bias !== 'WAIT' && directionalSupport !== null && directionalSupport <= 0) {
-    reasons.push('Observed Rise/Fall outcomes at this duration do not align with the composite direction.');
-  }
-  if (row.analysis.bias !== 'WAIT' && directionalSupport === null) {
-    reasons.push('No non-equal outcomes are available to compare this duration.');
-  }
-
+function recommendationFor(result: RiseFallMarketAnalysis, signal: RiseFallHorizonSignal): TradeRecommendation {
   return {
-    horizon,
-    historical,
-    directionalSupport,
-    qualified: row.technicalEligible && reasons.length === 0 && directionalSupport !== null && directionalSupport > 0,
-    reasons,
+    symbol: result.symbol,
+    contractType: signal.direction === 'RISE' ? 'CALL' : 'PUT',
+    duration: signal.horizon.value,
+    durationUnit: signal.horizon.unit === 'ticks' ? 't' : 'm',
+    label: signal.direction,
   };
 }
 
-function evaluateMarketDurations(row: MarketRow): MarketRow {
-  const horizonEvaluations = HORIZONS.map((horizon) => evaluateHorizon(row, horizon));
-  const bestHorizon = horizonEvaluations
-    .filter((evaluation) => evaluation.qualified)
-    .sort((left, right) => (right.directionalSupport ?? -Infinity) - (left.directionalSupport ?? -Infinity))[0] ?? null;
-  return { ...row, horizonEvaluations, bestHorizon };
+function FeedBadge({ feed }: { feed: MarketFeedValue }) {
+  const total = feed.markets.length;
+  const live = feed.status === 'live' && feed.freshCount > 0;
+  const tone = live ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
+    : feed.status === 'error' ? 'border-destructive/30 bg-destructive/10 text-destructive'
+      : 'border-amber-500/30 bg-amber-500/10 text-amber-500';
+  const label = live ? `${feed.freshCount}/${total} markets live`
+    : feed.status === 'reconnecting' ? 'Reconnecting to Deriv'
+      : feed.status === 'error' ? 'Feed error'
+        : `Loading markets · ${feed.loadedCount}/${total}`;
+  return (
+    <div className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${tone}`} aria-live="polite" data-testid="deriv-feed-status">
+      {live ? <Wifi size={14} /> : feed.status === 'error' ? <WifiOff size={14} /> : <Radio size={14} className="animate-pulse-line" />}
+      {label}
+    </div>
+  );
 }
 
-function bestCandidate(rows: MarketRow[]): { row: MarketRow; evaluation: HorizonEvaluation } | null {
-  return rows
-    .filter((row) => row.bestHorizon !== null)
-    .map((row) => ({ row, evaluation: row.bestHorizon! }))
-    .sort((left, right) => {
-      const supportDifference = (right.evaluation.directionalSupport ?? -Infinity) - (left.evaluation.directionalSupport ?? -Infinity);
-      return supportDifference || Math.abs(right.row.analysis.biasScore) - Math.abs(left.row.analysis.biasScore);
-    })[0] ?? null;
-}
-
-function PricePath({ ticks, marketName }: { ticks: FeedTick[]; marketName: string }) {
+function PricePath({ ticks, marketName }: { ticks: MarketTick[]; marketName: string }) {
   const points = ticks.slice(-100);
   if (points.length < 2) {
     return (
@@ -541,25 +112,10 @@ function PricePath({ ticks, marketName }: { ticks: FeedTick[]; marketName: strin
   );
 }
 
-function FeedBadge({ status, freshMarkets }: { status: FeedStatus; freshMarkets: number }) {
-  const tone = status === 'live' && freshMarkets > 0
-    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
-    : status === 'error'
-      ? 'border-destructive/30 bg-destructive/10 text-destructive'
-      : 'border-amber-500/30 bg-amber-500/10 text-amber-500';
-  const label = status === 'live' ? `${freshMarkets} fresh markets` : status === 'connecting' ? 'Connecting to Deriv' : status === 'loading' ? 'Loading market history' : status === 'reconnecting' ? 'Reconnecting' : 'Feed error';
-  return (
-    <div className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${tone}`} aria-live="polite" data-testid="deriv-feed-status">
-      {status === 'live' && freshMarkets > 0 ? <Wifi size={14} /> : status === 'error' ? <WifiOff size={14} /> : <Radio size={14} className={status === 'connecting' || status === 'reconnecting' ? 'animate-pulse-line' : ''} />}
-      {label}
-    </div>
-  );
-}
-
 function WindowTable({ analysis }: { analysis: RiseFallAnalysis }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-card-border bg-card/80">
-      <table className="w-full min-w-[520px] text-left text-xs">
+      <table className="w-full min-w-[420px] text-left text-xs">
         <thead><tr className="border-b border-border text-[10px] uppercase tracking-[0.12em] text-muted-foreground"><th className="px-3 py-3">Window</th><th className="px-3 py-3">Read</th><th className="px-3 py-3 text-right">Score</th></tr></thead>
         <tbody>{analysis.windows.map((window) => (
           <tr key={window.window} className="border-b border-border/60 last:border-0">
@@ -573,7 +129,8 @@ function WindowTable({ analysis }: { analysis: RiseFallAnalysis }) {
   );
 }
 
-function HistoricalOutcomeCard({ row, historical, horizon }: { row: MarketRow; historical: HistoricalOutcomes | null; horizon: Horizon | null }) {
+function HistoricalOutcomeCard({ marketName, signal }: { marketName: string; signal: RiseFallHorizonSignal | null }) {
+  const historical = signal?.historical ?? null;
   const sample = historical?.sample ?? 0;
   const items = [
     { name: 'Rise', count: historical?.rise ?? 0, tone: 'bg-emerald-500' },
@@ -583,10 +140,10 @@ function HistoricalOutcomeCard({ row, historical, horizon }: { row: MarketRow; h
   return (
     <article className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="expiry-baseline">
       <div className="flex items-center justify-between gap-3">
-        <div><div className="eyebrow">{horizon ? `Observed outcomes · ${formatHorizon(horizon)}` : 'Observed outcomes · no selected duration'}</div><h3 className="mt-1 text-base font-bold">{row.market.name}</h3></div>
+        <div><div className="eyebrow">{signal ? `Recent outcomes · ${formatRiseFallHorizon(signal.horizon)}` : 'Recent outcomes'}</div><h3 className="mt-1 text-base font-bold">{marketName}</h3></div>
         <BarChart3 size={17} className="text-primary" />
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{historical ? `${sample} completed historical comparisons. Rise is final > entry; Fall is final < entry; equality is separate.` : 'No duration has been selected by the engines. Run Analysis to test all supported horizons; no duration is implied here.'}</p>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{historical ? `${sample} completed comparisons over the latest ~500 ticks. Rise is exit > entry; Fall is exit < entry.` : 'Run Analysis to see outcomes at the selected duration.'}</p>
       <div className="mt-4 space-y-3">
         {items.map((item) => {
           const share = sample ? (item.count / sample) * 100 : 0;
@@ -596,210 +153,293 @@ function HistoricalOutcomeCard({ row, historical, horizon }: { row: MarketRow; h
           </div>;
         })}
       </div>
-      <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-[11px] leading-relaxed text-muted-foreground">Past movement only—not forecast probability, calibrated win rate, or a replay of actual contract terms. Minute horizons use the first observed tick at/after the target timestamp.</div>
     </article>
   );
 }
 
-function MarketScanTable({ rows, hasScan }: { rows: MarketRow[]; hasScan: boolean }) {
+function DurationTable({ result }: { result: RiseFallMarketAnalysis }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-card-border bg-card/80" data-testid="market-scan-table">
-      <table className="w-full min-w-[980px] text-left text-xs">
-        <thead><tr className="border-b border-border text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-          <th className="px-3 py-3">Market</th><th className="px-3 py-3">Feed</th><th className="px-3 py-3">Composite bias</th><th className="px-3 py-3">Swing structure</th><th className="px-3 py-3">Trend / momentum</th><th className="px-3 py-3">Auto duration</th><th className="px-3 py-3">Outcomes</th><th className="px-3 py-3 text-right">Engine decision</th>
-        </tr></thead>
-        <tbody>{rows.map((row) => {
-          const firstReason = row.bestHorizon ? '' : row.horizonEvaluations.find((evaluation) => evaluation.reasons.length > 0)?.reasons[0] ?? row.reasons[0];
-          return <tr key={row.market.code} className="border-b border-border/60 align-top last:border-0">
-            <td className="px-3 py-3"><div className="font-semibold">{row.market.name}</div><div className="mt-0.5 text-[10px] text-muted-foreground mono">{row.market.code}</div></td>
-            <td className="px-3 py-3">{row.info.error ? <span className="text-destructive">Unavailable</span> : row.fresh ? <span className="text-emerald-500">Fresh</span> : <span className="text-amber-500">Waiting / stale</span>}<div className="mt-1 text-[10px] text-muted-foreground">{row.ticks.length} ticks</div></td>
-            <td className="px-3 py-3"><span className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${biasTone(row.analysis.bias)}`}>{row.analysis.bias}</span><div className="mt-1 text-[10px] text-muted-foreground mono">{formatSigned(row.analysis.biasScore)} evidence</div></td>
-            <td className="px-3 py-3 text-muted-foreground">{row.analysis.dowStructure}</td>
-            <td className="px-3 py-3 text-muted-foreground mono">{formatSigned(row.analysis.trendScore)} / {formatSigned(row.analysis.momentumScore)}</td>
-            <td className="px-3 py-3 font-semibold">{row.bestHorizon ? formatHorizon(row.bestHorizon.horizon) : '—'}</td>
-            <td className="px-3 py-3 text-muted-foreground mono">{row.bestHorizon ? row.bestHorizon.historical.sample : '—'}</td>
-            <td className="px-3 py-3 text-right">{row.bestHorizon ? <span className="inline-flex items-center gap-1 text-emerald-500"><CheckCircle2 size={13} /> Candidate</span> : <span className="text-muted-foreground">{hasScan ? 'No qualifying duration' : 'Run Analysis to scan'}</span>}{row.bestHorizon === null && hasScan && firstReason && <div className="mt-1 max-w-52 text-left text-[10px] leading-relaxed text-muted-foreground">{firstReason}</div>}</td>
-          </tr>;
-        })}</tbody>
-      </table>
-    </div>
+    <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="duration-ranking">
+      <div className="eyebrow">{shortMarketName(result.name)} · all {result.horizons.length} durations</div>
+      <h3 className="mt-1 text-sm font-bold">Durations ranked by confidence</h3>
+      <div className="mt-3 space-y-2">
+        {result.horizons.slice(0, 8).map((signal, index) => (
+          <div key={`${signal.horizon.unit}-${signal.horizon.value}`} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border px-3 py-2 ${index === 0 ? 'border-primary/30 bg-primary/5' : 'border-border bg-background/25'}`}>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2"><span className={`text-xs font-extrabold ${signal.direction === 'RISE' ? 'text-emerald-500' : 'text-rose-500'}`}>{signal.direction}</span><span className="text-xs font-semibold">{formatRiseFallHorizon(signal.horizon)}</span><StrengthBadge strength={signal.strength} className="px-1.5 py-0.5 text-[8px]" /></div>
+              <div className="mt-1 text-[10px] text-muted-foreground">{signal.tally.agreeing}/{signal.tally.total} engines agree · backtest {signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} (n=${signal.backtest.sample})`} · AI P(rise) {formatPercent(signal.aiProbability)}</div>
+            </div>
+            <div className="mono text-right text-sm font-extrabold">{signal.confidence}%</div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
 export function RiseFallTool() {
-  const [now, setNow] = useState(Date.now());
-  const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const { ticksBySymbol, marketInfo, feedStatus, feedError, serverClockOffsetMs } = useDerivMarkets(SYMBOLS);
+  const trading = useDerivTrading();
+  const feed = useMarketFeed();
+  const scan = useSignalScan<RiseFallMarketAnalysis, RiseFallRunMeta>('rise-fall');
+  const [scope, setScope] = useState<string>(ALL_MARKETS);
+  const [viewSymbol, setViewSymbol] = useState<string | null>(null);
+  const [draftMarketCode, setDraftMarketCode] = useState<string | null>(() => scan.run?.results[0]?.symbol ?? null);
+  const [draftExpiry, setDraftExpiry] = useState<number | null>(1);
+  const [applyRequest, setApplyRequest] = useState(0);
+  const markets = feed.markets;
+  const run = scan.run;
 
-  useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(interval);
-  }, []);
+  const selectedResult = run ? run.results.find((result) => result.symbol === viewSymbol) ?? run.results[0] : null;
+  const isBest = Boolean(run && selectedResult && selectedResult.symbol === run.results[0].symbol);
+  const signal = selectedResult?.best ?? null;
+  const chartSymbol = selectedResult?.symbol ?? draftMarketCode ?? (scope !== ALL_MARKETS ? scope : markets.find((entry) => entry.ticks.length > 1)?.symbol ?? markets[0]?.symbol);
+  const chartEntry = markets.find((entry) => entry.symbol === chartSymbol);
+  const chartTicks = chartEntry?.ticks ?? [];
+  const liveAnalysis = useMemo(() => analyzeRiseFall(chartTicks.slice(-500), 5), [chartTicks]);
+  const priceContext = useMemo(() => analyzePriceContext(chartTicks), [chartTicks]);
+  const recommendation = selectedResult && signal ? recommendationFor(selectedResult, signal) : null;
+  // Passed to the trade dock so it can pop open and offer Load and Run.
+  const analysis = selectedResult && signal
+    ? {
+        runId: run?.id ?? 0,
+        confidence: signal.confidence,
+        strength: signal.strength,
+        marketName: selectedResult.name,
+        ranAt: run?.ranAt ?? 0,
+        entry: signal.entry,
+        master: signal.master,
+        researchDecision: signal.researchDecision,
+        research: signal.research,
+        confirmation: {
+          status: signal.deep.confirmation.status,
+          edgePts: signal.deep.confirmation.edgePts,
+          decisive: signal.deep.confirmation.decisive,
+        },
+      }
+    : null;
+  const draftMarket = draftMarketCode ?? chartSymbol ?? null;
 
-  const liveRows = useMemo(() => SYMBOLS.map((market) => createMarketRow(
-    market,
-    ticksBySymbol[market.code] ?? [],
-    marketInfo[market.code] ?? emptyMarketInfo(),
-    now,
-    feedStatus,
-    serverClockOffsetMs,
-  )), [ticksBySymbol, marketInfo, now, feedStatus, serverClockOffsetMs]);
-  const freshCount = liveRows.filter((row) => row.fresh).length;
-  const resultRows = scanSnapshot?.rows ?? liveRows;
-  const candidateRef = scanSnapshot?.bestCandidate;
-  const candidateRow = candidateRef ? scanSnapshot?.rows.find((row) => row.market.code === candidateRef.marketCode) ?? null : null;
-  const candidateEvaluation = candidateRow?.horizonEvaluations.find((evaluation) => candidateRef && sameHorizon(evaluation.horizon, candidateRef.horizon)) ?? null;
-  const scanCandidate = candidateRow && candidateEvaluation?.qualified ? { row: candidateRow, evaluation: candidateEvaluation } : null;
-  const chartRow = scanCandidate?.row ?? resultRows.find((row) => row.ticks.length > 1) ?? resultRows[0];
-  const chartHorizon = scanCandidate?.evaluation.horizon ?? null;
-  const chartHistorical = scanCandidate?.evaluation.historical ?? null;
-
-  function handleRunAnalysis() {
-    if (isScanning) return;
-    setIsScanning(true);
-    window.setTimeout(() => {
-      const rows = liveRows.map((row) => evaluateMarketDurations({
-        ...row,
-        info: { ...row.info },
-        ticks: [...row.ticks],
-        reasons: [...row.reasons],
-      }));
-      const candidate = bestCandidate(rows);
-      setScanSnapshot({
-        ranAt: Date.now(),
-        rows,
-        bestCandidate: candidate ? { marketCode: candidate.row.market.code, horizon: candidate.evaluation.horizon } : null,
-      });
-      setIsScanning(false);
-    }, 80);
+  async function handleRunAnalysis() {
+    if (scan.scanning) return;
+    const symbols = scope === ALL_MARKETS ? feed.getSnapshot().map((entry) => entry.symbol) : [scope];
+    const next = await scan.start({
+      symbols,
+      minimumTicks: RISE_FALL_MIN_TICKS,
+      usableTicks: (entry) => entry.ticks.length,
+      meta: { scope },
+      buildJobs: (entries) => {
+        const jobs: ScanMarketJob[] = [];
+        const skipped: ScanFailure[] = [];
+        const usable = entries.filter((entry) => symbols.includes(entry.symbol));
+        for (const entry of usable) {
+          if (entry.ticks.length < RISE_FALL_MIN_TICKS) { skipped.push({ symbol: entry.symbol, name: entry.name, message: entry.error || `only ${entry.ticks.length} ticks loaded` }); continue; }
+          if (entry.tradingSuspended === true) { skipped.push({ symbol: entry.symbol, name: entry.name, message: 'trading suspended' }); continue; }
+          jobs.push({
+            kind: 'rise-fall', symbol: entry.symbol, name: entry.name,
+            input: { symbol: entry.symbol, name: entry.name, ticks: entry.ticks.map(({ epoch, quote }) => ({ epoch, quote })), digitTicks: digitTicksOf(entry.ticks), settlements: scopeSettlements(trading.closedPositions, entry.symbol, 'rise-fall', trading.currency), settlementCurrency: trading.currency, fresh: entry.fresh, marketsInScan: usable.length },
+          });
+        }
+        return { jobs, skipped };
+      },
+    });
+    if (next) {
+      setViewSymbol(next.results[0].symbol);
+      setDraftMarketCode(next.results[0].symbol);
+    }
   }
-
-  const scanSummary = !scanSnapshot
-    ? 'Run Analysis checks every configured market against all 25 durations. It chooses a duration only when the data, combined engines and that duration’s observed outcomes pass the gates.'
-    : scanCandidate
-      ? `${scanCandidate.row.market.name} is the highest-ranked qualifying research candidate at ${formatHorizon(scanCandidate.evaluation.horizon)}. Duration is selected automatically; this remains unvalidated and is not a trade-ready signal.`
-      : 'No market-and-duration pair passed every gate. The system returns WAIT rather than forcing a direction or expiry.';
 
   return (
     <div className="animate-rise-in space-y-5 pt-5" data-testid="rise-fall-analysis">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <div className="eyebrow">Rise/Fall · multi-market research</div>
-          <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">Market scan and analysis</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">The scanner requests Deriv tick history and live updates for the supported volatility markets. Run Analysis combines trend, swing structure, momentum, volatility, data quality and expiry-specific historical outcomes; unavailable or stale feeds stay unqualified.</p>
+          <div className="eyebrow">Rise/Fall · {ENGINE_COUNT} base predictors · 300-entry analysis, prediction and entry</div>
+          <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">Rise/Fall signals</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">Scan every volatility market across 25 durations (1–10 ticks, 1–15 minutes). The 300-entry library measures trend, momentum, completed candles, volatility, price structure and sequence statistics. It independently audits the existing 14-model predictor with purged chronological validation, explains every reading and filters automatic entry when evidence is weak. Flat expiry loses both strict directions.</p>
         </div>
-        <FeedBadge status={feedStatus} freshMarkets={freshCount} />
+        <FeedBadge feed={feed} />
       </div>
 
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-        <div className="grid gap-4 sm:grid-cols-[minmax(220px,1fr)_auto] sm:items-end">
-          <div>
-            <div className="eyebrow">Automatic duration selection</div>
-            <div className="mt-2 text-sm font-semibold">1–10 ticks · 1–15 minutes</div>
-            <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground">No manual duration choice. The engines test all 25 horizons per market and select the top qualifying horizon only when technical alignment and expiry-specific historical checks agree; otherwise the output is WAIT.</p>
-          </div>
-          <button type="button" onClick={handleRunAnalysis} disabled={isScanning} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60" data-testid="button-run-analysis">
-            <Play size={16} fill="currentColor" />{isScanning ? 'Analyzing markets and durations…' : 'Run Analysis'}
-          </button>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <label className="block min-w-0">
+            <span className="eyebrow">Markets to scan · duration is chosen automatically</span>
+            <select value={scope} onChange={(event) => setScope(event.target.value)} disabled={scan.scanning} className="mt-2 h-11 w-full rounded-lg border border-input bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-primary disabled:opacity-60" data-testid="rise-fall-scope-select" aria-label="Markets to scan">
+              <option value={ALL_MARKETS}>All {markets.length} volatility markets · auto-pick the best</option>
+              {markets.map((entry) => <option key={entry.symbol} value={entry.symbol}>{entry.name} · {entry.symbol}</option>)}
+            </select>
+          </label>
+          {scan.scanning ? (
+            <button type="button" onClick={scan.cancel} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg border border-border bg-background px-5 text-sm font-bold text-foreground transition-colors hover:bg-secondary" data-testid="button-cancel-analysis">
+              <Square size={14} fill="currentColor" /> Stop
+            </button>
+          ) : (
+            <button type="button" onClick={handleRunAnalysis} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-6 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90" data-testid="button-run-analysis">
+              <Play size={16} fill="currentColor" /> Run Analysis
+            </button>
+          )}
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
-          <span>{SYMBOLS.length} configured synthetic markets</span>
-          <span>{freshCount} currently fresh</span>
-          <span>{HORIZONS.length} durations per market</span>
-          <span>{USING_TEST_APP_ID ? 'Deriv test app ID 1089' : 'Configured Deriv app ID'}</span>
-          <span>{serverClockOffsetMs === null ? 'Server clock unverified' : 'Deriv server time synced'}</span>
-          <span>Synthetic tick count is not traded volume</span>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
+          <span>{feed.loadedCount}/{markets.length} markets loaded</span>
+          <span>{feed.freshCount} currently live</span>
+          <span>{ENGINE_COUNT} base predictors · 300 registered research entries · 12-model audit across 25 durations</span>
+          <span>{feed.usingTestAppId ? 'Deriv test app ID' : 'Configured Deriv app ID'}</span>
+          {run && <span>Last scan {new Date(run.ranAt).toLocaleTimeString()} · {run.marketsScanned} markets · {(run.durationMs / 1000).toFixed(1)}s</span>}
         </div>
-        {feedError && <div className="mt-3 flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive" role="alert"><AlertTriangle size={15} className="mt-0.5 shrink-0" /><span>{feedError}</span></div>}
+        {feed.error && <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400" role="status"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{feed.error}</div>}
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]" data-testid="analysis-summary">
-        <article className="signal-panel rounded-xl border border-card-border p-5 panel-glow sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="eyebrow">Trade-grade decision</div>
-            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-amber-500">No auto-trading</span>
-          </div>
-          <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <div className="text-5xl font-extrabold tracking-[-0.06em] text-amber-500">WAIT</div>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{scanSummary}</p>
-            </div>
-            {scanCandidate ? (
-              <div className={`w-full max-w-sm rounded-xl border px-4 py-3 ${biasTone(scanCandidate.row.analysis.bias)}`}>
-                <div className="text-[10px] font-bold uppercase tracking-[0.1em] opacity-80">Auto-selected research candidate · unvalidated</div>
-                <div className="mt-2 text-base font-extrabold">{scanCandidate.row.market.name}</div>
-                <div className="mt-0.5 text-[10px] mono opacity-80">{scanCandidate.row.market.code}</div>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-sm font-bold">
-                  <span className="inline-flex items-center gap-1.5">{scanCandidate.row.analysis.bias === 'RISE' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}{scanCandidate.row.analysis.bias}</span>
-                  <span className="rounded-full border border-current/20 px-2 py-1 text-xs">{formatHorizon(scanCandidate.evaluation.horizon)}</span>
-                </div>
-                <div className="mt-2 text-[10px] opacity-80">Observed direction aligns at this expiry · not a probability or forecast.</div>
-              </div>
-            ) : (
-              <div className="w-full max-w-sm rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-                {scanSnapshot ? 'No market and duration passed all data, technical and expiry-specific gates.' : 'No analysis has been run yet; no duration is selected.'}
-              </div>
-            )}
-          </div>
-          <div className="mt-5 flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-xs leading-relaxed text-muted-foreground">
-            <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
-            <span>The automatic horizon is a research heuristic based on current engine alignment and historical outcomes, not a calibrated forecast. No out-of-sample calibration, live Deriv proposal, payout, break-even or expected-value check is connected; actionable output therefore remains WAIT.</span>
-          </div>
-          {scanSnapshot && <div className="mt-3 text-[10px] text-muted-foreground">Last scan: {new Date(scanSnapshot.ranAt).toLocaleTimeString()} · every supported horizon evaluated automatically</div>}
-        </article>
+      {scan.progress && <AnalysisProgressPanel progress={scan.progress} engineCount={ENGINE_COUNT} />}
+      {scan.error && !scan.progress && (
+        <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive" role="alert" data-testid="analysis-error"><AlertTriangle size={16} className="mt-0.5 shrink-0" /><span>{scan.error}</span></div>
+      )}
 
-        <article className="rounded-xl border border-card-border bg-card/90 p-5 panel-glow">
-          <div className="flex items-center justify-between gap-3"><div><div className="eyebrow">{scanCandidate ? 'Auto-selected candidate market' : 'Live diagnostics · not a candidate'}</div><h3 className="mt-1 text-base font-bold">{chartRow.market.name}</h3></div><Activity size={18} className={chartRow.fresh ? 'text-emerald-500' : 'text-muted-foreground'} /></div>
-          <div className="mt-5 text-3xl font-extrabold tracking-[-0.04em] mono">{formatQuote(chartRow.analysis.currentQuote)}</div>
-          <div className="mt-1 text-xs text-muted-foreground">Validated quote · {formatEpoch(chartRow.analysis.lastEpoch)} · source {formatAge(chartRow.sourceAgeMs)}</div>
-          <div className="mt-5 grid grid-cols-2 gap-3 border-t border-border pt-4">
-            <div><div className="eyebrow">Feed sample</div><div className="mt-1 text-sm font-bold">{chartRow.ticks.length} ticks</div></div>
-            <div><div className="eyebrow">Auto duration</div><div className="mt-1 text-sm font-bold">{chartHorizon ? formatHorizon(chartHorizon) : '—'}</div></div>
-            <div><div className="eyebrow">Expiry outcomes</div><div className="mt-1 text-sm font-bold">{chartHistorical ? `${chartHistorical.sample} observed` : 'No duration selected'}</div></div>
-            <div><div className="eyebrow">Swing structure</div><div className="mt-1 text-sm font-bold">{chartRow.analysis.dowStructure}</div></div>
+      {run && selectedResult && signal ? (
+        <section className={`grid grid-cols-1 gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined} data-testid="analysis-summary">
+          <div className="space-y-4">
+            <SignalCard
+              eyebrow={isBest ? `Best signal · ${run.marketsScanned} markets × 25 durations` : `Signal · ${selectedResult.name}`}
+              label={signal.direction}
+              direction={signal.direction === 'RISE' ? 'up' : 'down'}
+              marketName={selectedResult.name}
+              marketCode={selectedResult.symbol}
+              duration={formatRiseFallHorizon(signal.horizon)}
+              confidence={signal.confidence}
+              strength={signal.strength}
+              tally={signal.tally}
+              insight={explainSignal(signal.strength, signal.breakdown, signal.tally)}
+              generatedAt={run.ranAt}
+              now={feed.now}
+              notes={selectedResult.notes}
+              metrics={[
+                { label: 'Master call', value: `${signal.master.verdict.replaceAll('_', ' ')} · ${signal.master.validity.ticks}t`, hint: signal.master.headline },
+                { label: 'Win chance', value: formatPercent(signal.winEstimate), hint: 'Confirmed probability for this direction after calibration, stacking and the analysis check' },
+                { label: 'Confirmed edge', value: `${signal.deep.confirmation.edgePts >= 0 ? '+' : ''}${signal.deep.confirmation.edgePts.toFixed(1)} pts`, hint: `${signal.deep.confirmation.status} · out-of-sample calibration ${signal.deep.confirmation.calibration.method}` },
+                { label: 'AI P(rise)', value: formatPercent(signal.aiProbability), hint: 'Raw logistic-regression meta-model output' },
+                ...(signal.precision.interval ? [{
+                  label: '95% range',
+                  value: `${formatPercent(signal.precision.interval.lower, 0)}–${formatPercent(signal.precision.interval.upper, 0)}`,
+                  hint: `Measured on ${signal.precision.reliability.sample} held-out ticks. If the bottom of this range still clears 50%, the edge is real enough to trade.`,
+                }] : []),
+                { label: 'Backtest', value: signal.backtest.winRate === null ? '—' : `${formatPercent(signal.backtest.winRate)} · ${signal.backtest.sample}`, hint: `Held-out ${signal.direction} calls at this duration: win rate and number of calls` },
+                { label: 'Consensus', value: formatSigned(signal.consensusScore), hint: 'Skill-weighted engine score from -1 (fall) to +1 (rise)' },
+                {
+                  label: 'Analysis, prediction and entry',
+                  value: signal.research.total ? `${signal.research.agreeing}/${signal.research.total}${signal.research.weight > 0 ? ` · ${signal.research.contributionPts >= 0 ? '+' : ''}${signal.research.contributionPts.toFixed(1)} pts` : ''}` : '—',
+                  hint: signal.research.note,
+                },
+                {
+                  label: 'Neural model',
+                  value: selectedResult.neural
+                    ? `${formatPercent(signal.neural.probability)}${signal.neural.weight > 0 ? ` · ${signal.neural.contributionPts >= 0 ? '+' : ''}${signal.neural.contributionPts.toFixed(1)} pts` : ' · no vote'}`
+                    : '—',
+                  hint: signal.neural.note,
+                },
+                {
+                  label: 'Entry point',
+                  value: signal.entry.mode === 'immediate' ? 'Next tick' : signal.entry.mode === 'pullback' ? `Pullback ${signal.entry.priceCondition === 'below' ? '↓' : '↑'}` : `Breakout ${signal.entry.priceCondition === 'above' ? '↑' : '↓'}`,
+                  hint: `Where the bot waits to open the trade: ${signal.entry.detail}`,
+                },
+                {
+                  label: 'Entry time',
+                  value: signal.entry.mode === 'immediate' ? 'Signal tick' : `~${signal.entry.expectedWaitTicks} tick${signal.entry.expectedWaitTicks === 1 ? '' : 's'}${signal.entry.expectedWaitMs > 0 ? ` · ~${(signal.entry.expectedWaitMs / 1_000).toFixed(1)}s` : ''}`,
+                  hint: `The entry stays valid for ${effectiveWindowTicks(signal.entry)} ticks — the shorter of the plan's window and the measured edge validity; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed signals got there`}.`,
+                },
+              ]}
+              onUse={() => { setDraftMarketCode(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+            />
+            <MasterDecisionCard
+              master={signal.master}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={formatRiseFallHorizon(signal.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
+            />
+            <ConfirmationPanel report={signal.deep.confirmation} />
+            {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={0.5} /> : null}
+            {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
+            {selectedResult.neural ? <NeuralModelCard forecast={selectedResult.neural} fusion={signal.neural} /> : null}
+            <EntryPlanCard
+              entry={signal.entry}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={formatRiseFallHorizon(signal.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
+            />
+            <MarketRankingTable
+              rows={run.results.map((result) => ({
+                symbol: result.symbol, name: result.name, label: result.best.direction, direction: result.best.direction === 'RISE' ? 'up' : 'down',
+                duration: formatRiseFallHorizon(result.best.horizon), confidence: result.best.confidence, strength: result.best.strength,
+                agreeing: result.best.tally.agreeing, total: result.best.tally.total, winChance: formatPercent(result.best.winEstimate), fresh: result.fresh,
+                entry: entryModeLabel(result.best.entry),
+              }))}
+              selected={selectedResult.symbol}
+              onSelect={setViewSymbol}
+              failures={run.failures}
+            />
           </div>
-        </article>
-      </section>
+          <div className="space-y-4">
+            <EngineVotesPanel votes={signal.votes} title={`Why ${signal.direction} · ${formatRiseFallHorizon(signal.horizon)} on ${shortMarketName(selectedResult.name)}`} valueKind="score" />
+            <AnalysisEnginePanel state={selectedResult.state} marketName={selectedResult.name} />
+            <DurationTable result={selectedResult} />
+          </div>
+        </section>
+      ) : !scan.progress && (
+        <section className="rounded-xl border border-dashed border-border bg-card/60 p-6 text-center" data-testid="analysis-empty">
+          <Zap size={22} className="mx-auto text-primary" />
+          <h3 className="mt-2 text-base font-bold">Press Run Analysis for a signal</h3>
+          <p className="mx-auto mt-1 max-w-xl text-xs leading-relaxed text-muted-foreground">The scan starts immediately, shows its progress as a percentage, and finishes with a RISE or FALL signal, the best duration, its confidence score and how many of the {ENGINE_COUNT} engines agree.</p>
+        </section>
+      )}
 
-      <section className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+      <EngineLabPanel report={selectedResult?.engineLab} />
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-[1.3fr_0.7fr]">
         <article className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow">Validated tick price path</div><h3 className="mt-1 text-base font-bold">{chartRow.market.name}</h3></div><div className="text-xs text-muted-foreground">Price only · no synthetic volume</div></div>
-          <PricePath ticks={chartRow.ticks} marketName={chartRow.market.name} />
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow">Validated tick price path</div><h3 className="mt-1 text-base font-bold">{chartEntry?.name ?? 'Waiting for markets'}</h3></div><div className="text-xs text-muted-foreground">{chartEntry?.fresh ? 'Live' : 'Waiting for live ticks'} · quote {formatQuote(chartTicks.at(-1)?.quote)}</div></div>
+          <PricePath ticks={chartTicks} marketName={chartEntry?.name ?? ''} />
         </article>
-        <HistoricalOutcomeCard row={chartRow} historical={chartHistorical} horizon={chartHorizon} />
+        <HistoricalOutcomeCard marketName={chartEntry?.name ?? '—'} signal={selectedResult?.symbol === chartSymbol ? signal : null} />
       </section>
 
-      <section className="grid gap-3 md:grid-cols-3">
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Database size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Data validation</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Requests up to 2,000 historical ticks and a live subscription per market. Invalid, duplicate and out-of-order ticks are excluded; stale markets do not qualify.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><TrendingUp size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Engines that must agree</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Requires fresh data, 500 valid ticks, aligned rolling windows, RSI/EMA/MACD momentum, Dow-style swings, 100-tick breadth, volatility-normalized ROC20, EMA50 position, entry alignment and expiry-specific historical direction.</p></div></div>
-        <div className="flex items-start gap-3 rounded-xl border border-card-border bg-card/80 p-4"><Clock3 size={17} className="mt-0.5 shrink-0 text-primary" /><div><div className="text-xs font-bold">Automatic duration limits</div><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">All 1–10 tick and 1–15 minute horizons are compared automatically. Minute horizons use observed timestamps, not a Deriv contract replay; equality is separate and contract terms are not queried.</p></div></div>
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow">Cross-market scan</div><h3 className="mt-1 text-base font-bold">Automatic duration by symbol</h3></div><span className="text-[10px] text-muted-foreground">{scanSnapshot ? 'Frozen at last Run Analysis' : 'Duration not selected until analysis runs'}</span></div>
-        <MarketScanTable rows={resultRows} hasScan={Boolean(scanSnapshot)} />
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[0.8fr_1.2fr]">
         <article className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-          <div className="eyebrow">Rolling technical detail</div><h3 className="mt-1 text-base font-bold">{chartRow.market.name}</h3>
+          <div className="eyebrow">Rolling technical detail</div><h3 className="mt-1 text-base font-bold">{chartEntry?.name ?? '—'}</h3>
           <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
-            <div><div className="eyebrow">RSI · 14</div><div className="mt-1 font-bold mono">{chartRow.analysis.rsi14 === null ? '—' : chartRow.analysis.rsi14.toFixed(1)}</div></div>
-            <div><div className="eyebrow">Volatility regime</div><div className="mt-1 font-bold">{chartRow.analysis.volatilityRegime}</div></div>
-            <div><div className="eyebrow">EMA · 9 / 21</div><div className="mt-1 font-bold mono">{formatQuote(chartRow.analysis.ema9)} / {formatQuote(chartRow.analysis.ema21)}</div></div>
-            <div><div className="eyebrow">MACD histogram</div><div className="mt-1 font-bold mono">{formatQuote(chartRow.analysis.macdHistogram)}</div></div>
-            <div><div className="eyebrow">Mean absolute tick move</div><div className="mt-1 font-bold mono">{formatQuote(chartRow.analysis.averageTickMove14)}</div></div>
-            <div><div className="eyebrow">100-tick breadth</div><div className="mt-1 font-bold mono">{formatPct(chartRow.analysis.upPercent100)} up / {formatPct(chartRow.analysis.downPercent100)} down</div></div>
-            <div className="col-span-2 flex items-center gap-2 border-t border-border pt-3 text-muted-foreground"><Zap size={14} className="shrink-0 text-primary" />Composite inputs · trend {formatSigned(chartRow.analysis.trendScore)} · momentum {formatSigned(chartRow.analysis.momentumScore)} · swing {formatSigned(chartRow.analysis.dowScore)} · breadth {formatSigned(chartRow.analysis.breadthScore)} · ROC20 {formatSigned(chartRow.analysis.rocScore)} · EMA50 {formatSigned(chartRow.analysis.ema50Score)}</div>
+            <div><div className="eyebrow">RSI · 14</div><div className="mt-1 font-bold mono">{liveAnalysis.rsi14 === null ? '—' : liveAnalysis.rsi14.toFixed(1)}</div></div>
+            <div><div className="eyebrow">Volatility regime</div><div className="mt-1 font-bold">{liveAnalysis.volatilityRegime}</div></div>
+            <div><div className="eyebrow">EMA · 9 / 21</div><div className="mt-1 font-bold mono">{formatQuote(liveAnalysis.ema9)} / {formatQuote(liveAnalysis.ema21)}</div></div>
+            <div><div className="eyebrow">MACD histogram</div><div className="mt-1 font-bold mono">{formatQuote(liveAnalysis.macdHistogram)}</div></div>
+            <div><div className="eyebrow">Swing structure</div><div className="mt-1 font-bold">{liveAnalysis.dowStructure}</div></div>
+            <div><div className="eyebrow">100-tick breadth</div><div className="mt-1 font-bold mono">{formatPct(liveAnalysis.upPercent100)} up / {formatPct(liveAnalysis.downPercent100)} down</div></div>
+            <div className="col-span-2 flex items-center gap-2 border-t border-border pt-3 text-muted-foreground"><Clock3 size={14} className="shrink-0 text-primary" />Trend {formatSigned(liveAnalysis.trendScore)} · momentum {formatSigned(liveAnalysis.momentumScore)} · swing {formatSigned(liveAnalysis.dowScore)} · breadth {formatSigned(liveAnalysis.breadthScore)} · ROC20 {formatSigned(liveAnalysis.rocScore)} · EMA50 {formatSigned(liveAnalysis.ema50Score)}</div>
           </div>
         </article>
-        <div className="space-y-3"><div className="flex items-center gap-2"><TrendingDown size={16} className="text-primary" /><h3 className="text-sm font-bold">Rolling-window consensus</h3></div><WindowTable analysis={chartRow.analysis} /></div>
+        <div className="space-y-3"><div className="flex items-center gap-2"><TrendingDown size={16} className="text-primary" /><h3 className="text-sm font-bold">Rolling-window trend</h3></div><WindowTable analysis={liveAnalysis} /></div>
       </section>
 
-      <div className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite">
-        {scanSnapshot ? `Run Analysis examined ${scanSnapshot.rows.length} configured markets across all ${HORIZONS.length} durations at ${new Date(scanSnapshot.ranAt).toLocaleTimeString()}.` : 'Run Analysis to evaluate all markets and durations together. Live feed diagnostics continue updating in the background.'} No automatic order placement is available.
+      <PriceContextPanel precision={chartEntry?.precision ?? null} analysis={priceContext} />
+
+      <RiseFallDeepPanel prices={chartTicks.map((tick) => tick.quote)} />
+
+      <div className="flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-[11px] leading-relaxed text-muted-foreground">
+        <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
+        <span>Engine weights come from accuracy on one held-out slice and the backtest from a later one, so the score is never graded on data it was tuned on. Minute durations have less validation data than tick durations, which lowers their confidence. Volatility indices are random walks: confidence is evidence strength, not a guaranteed result. Orders are only placed from the trade ticket after you confirm a live Deriv price.</span>
       </div>
+
+      <TradeDock
+        family="rise-fall"
+        recommendation={recommendation}
+        analysis={analysis}
+        applyRequest={applyRequest}
+        marketCode={draftMarket}
+        marketName={markets.find(({ symbol }) => symbol === draftMarket)?.name ?? null}
+        marketChoices={markets.map((entry) => ({ code: entry.symbol, name: entry.name }))}
+        onMarketChange={setDraftMarketCode}
+        expiry={draftExpiry}
+        expiryOptions={DRAFT_TICK_EXPIRIES}
+        onExpiryChange={setDraftExpiry}
+        expiryVerified={false}
+      />
     </div>
   );
 }

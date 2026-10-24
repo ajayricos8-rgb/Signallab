@@ -3,17 +3,27 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { RiseFallTool } from '@/components/rise-fall-tool';
 import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
+import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
+import { SignalBotProvider } from '@/components/signal-bot-provider';
+import { MarketFeedProvider } from '@/components/market-feed-provider';
+import { DigitAiBot } from '@/components/premium-bot/digit-ai-bot';
+import { RiseFallAiBot } from '@/components/premium-bot/rise-fall-ai-bot';
+import { HedgingBot } from '@/components/premium-bot/hedging-bot';
+import { MafiaBot } from '@/components/premium-bot/mafia-bot';
+import { SettingsPanel } from '@/components/settings-panel';
+import { TradeHistoryPanel } from '@/components/trade-history-panel';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Activity, Bot, Clock3, Menu, Moon, Sun, Wrench, X } from 'lucide-react';
+import { Activity, Bot, Clock3, Menu, Moon, Settings, Sun, Wrench, X } from 'lucide-react';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 
 const queryClient = new QueryClient();
 
 type Theme = 'light' | 'dark';
-type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots';
+type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots' | 'settings';
 type ToolsMiniTab = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
+type PremiumBotTab = 'digit-ai' | 'rise-fall' | 'hedging-high-low' | 'mafia';
 
 const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
   { id: 'rise-fall', label: 'Rise/Fall' },
@@ -22,10 +32,18 @@ const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
   { id: 'matches', label: 'Matches' },
 ];
 
+const premiumBotTabs: { id: PremiumBotTab; label: string; blurb: string }[] = [
+  { id: 'digit-ai', label: 'Digit AI engine', blurb: 'Even/Odd, Over/Under and Matches, ranked by walk-forward-validated models.' },
+  { id: 'rise-fall', label: 'Rise/Fall AI', blurb: 'Tick momentum and continuation signals that buy real CALL and PUT contracts.' },
+  { id: 'hedging-high-low', label: 'High/Low hedge', blurb: 'Buys a High Tick and a Low Tick together on the same window, with the tick positions chosen automatically.' },
+  { id: 'mafia', label: 'Mafia bot', blurb: 'Step indices only: waits for directionally uniform ticks, then buys a 4-tick Rise and a 4-tick Fall leg together, with money management and a full profit/loss breakdown.' },
+];
+
 const workspaceTabs = [
   { id: 'tools', label: 'Tools', icon: Wrench },
-  { id: 'trade-history', label: 'Signal history', icon: Clock3 },
+  { id: 'trade-history', label: 'Trade history', icon: Clock3 },
   { id: 'premium-bots', label: 'Premium bots', icon: Bot },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
 function readSavedTheme(): Theme {
@@ -36,11 +54,23 @@ function readSavedTheme(): Theme {
   }
 }
 
+function readSavedBotTab(): PremiumBotTab {
+  try {
+    const saved = window.localStorage.getItem('signal-lab-premium-bot-tab');
+    return saved === 'rise-fall' || saved === 'hedging-high-low' || saved === 'mafia' ? saved : 'digit-ai';
+  } catch {
+    return 'digit-ai';
+  }
+}
+
 function Home() {
   const [mobileNav, setMobileNav] = useState(false);
   const [activeToolsMiniTab, setActiveToolsMiniTab] = useState<ToolsMiniTab>('rise-fall');
+  const [activeBotTab, setActiveBotTab] = useState<PremiumBotTab>(readSavedBotTab);
   const [theme, setTheme] = useState<Theme>(readSavedTheme);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('tools');
+  const trading = useDerivTrading();
+  const openPositions = trading.openPositions.length;
   const selectedTab = workspaceTabs.find(({ id }) => id === activeTab);
   const tabLabel = selectedTab?.label ?? 'Tools';
 
@@ -85,7 +115,7 @@ function Home() {
             <div className="eyebrow px-3 pb-2">Workspace</div>
             {workspaceTabs.map(({ id, label, icon: Icon }) => {
               const active = activeTab === id;
-              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'trade-history' ? 'button-history-nav' : 'button-premium-bots-nav';
+              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'trade-history' ? 'button-history-nav' : id === 'settings' ? 'button-settings-nav' : 'button-premium-bots-nav';
               return (
                 <button
                   key={id}
@@ -95,7 +125,12 @@ function Home() {
                 >
                   <Icon size={16} className={active ? 'text-primary' : ''} />
                   {label}
-                  {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}
+                  {id === 'trade-history' && openPositions > 0 && (
+                    <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary" data-testid="badge-open-positions">
+                      {openPositions}
+                    </span>
+                  )}
+                  {active && <span className={`${id === 'trade-history' && openPositions > 0 ? '' : 'ml-auto '}h-1.5 w-1.5 rounded-full bg-primary`} />}
                 </button>
               );
             })}
@@ -117,22 +152,13 @@ function Home() {
             </button>
           </header>
 
-          <div className="min-h-[calc(100dvh-76px)] px-4 py-5 pb-24 sm:px-6 sm:py-7 lg:px-8">
+          <div className={`min-h-[calc(100dvh-76px)] px-4 pt-5 sm:px-6 sm:pt-7 lg:px-8 ${activeTab === 'tools' ? 'pb-[340px] lg:pb-[230px]' : 'pb-24'}`}>
             {activeTab === 'trade-history' ? (
-              <div className="mx-auto w-full max-w-[1500px]">
-                <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-                  <div className="eyebrow">Workspace records</div>
-                  <h2 className="mt-1 text-xl font-bold tracking-tight">Trade history</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">No verified records have been stored. The analysis tools do not yet persist signals or run a walk-forward contract backtest.</p>
-                  <div className="mt-4 rounded-lg border border-dashed border-border bg-background/40 px-4 py-8 text-center text-sm text-muted-foreground">Signal history will remain empty until real, gated outputs are recorded.</div>
-                </section>
-              </div>
+              <TradeHistoryPanel />
             ) : activeTab === 'premium-bots' ? (
-              <div className="mx-auto w-full max-w-3xl rounded-xl border border-card-border bg-card/90 p-6 panel-glow sm:p-8">
-                <div className="eyebrow">Premium tools</div>
-                <h2 className="mt-1 text-xl font-bold tracking-tight">Premium bots</h2>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Premium bots will be listed here when they are configured for this workspace.</p>
-              </div>
+              <PremiumBotsWorkspace activeTab={activeBotTab} onTabChange={setActiveBotTab} />
+            ) : activeTab === 'settings' ? (
+              <SettingsPanel />
             ) : (
               <ToolsWorkspace activeTab={activeToolsMiniTab} onTabChange={setActiveToolsMiniTab} />
             )}
@@ -158,6 +184,9 @@ function Home() {
                 <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8 ${active ? 'bg-primary/10' : ''}`}><Icon size={16} strokeWidth={active ? 2.4 : 1.8} /></span>
                 <span className="truncate sm:hidden">{compactLabel}</span>
                 <span className="hidden truncate sm:inline">{label}</span>
+                {id === 'trade-history' && openPositions > 0 && (
+                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary">{openPositions}</span>
+                )}
               </button>
             );
           })}
@@ -193,8 +222,61 @@ function ToolsWorkspace({
           );
         })}
       </div>
+      {/* One shared multi-market feed for all four tools. It is mounted app-wide
+          (see App below) so the loaded history, and the ticks the signal bot
+          waits on for its entry, survive switching tools or workspace tabs. */}
       <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
         {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Premium bots workspace.
+ *
+ * One bot is mounted at a time: each keeps its own public market-data socket
+ * and its own decision cycle, and the choice is remembered per browser. A
+ * minimized bot stays minimized when its tab is reopened.
+ */
+function PremiumBotsWorkspace({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: PremiumBotTab;
+  onTabChange: (tab: PremiumBotTab) => void;
+}) {
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('signal-lab-premium-bot-tab', activeTab);
+    } catch {
+      // Storage is optional; the selection is still held in memory.
+    }
+  }, [activeTab]);
+
+  const selected = premiumBotTabs.find(({ id }) => id === activeTab);
+  return (
+    <section className="mx-auto w-full max-w-[1500px]" data-testid="premium-bots-workspace">
+      <div role="group" aria-label="Premium bots" className="flex w-full items-center gap-1 overflow-x-auto border-b border-border">
+        {premiumBotTabs.map(({ id, label }) => {
+          const active = activeTab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onTabChange(id)}
+              aria-pressed={active}
+              className={`focus-ring -mb-px shrink-0 border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${active ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'}`}
+              data-testid={`premium-bot-tab-${id}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {selected ? <p className="pt-3 text-[11px] leading-relaxed text-muted-foreground" data-testid="premium-bot-blurb">{selected.blurb}</p> : null}
+      <div className="min-h-[45vh] pt-4" data-testid={`premium-bot-panel-${activeTab}`}>
+        {activeTab === 'rise-fall' ? <RiseFallAiBot /> : activeTab === 'hedging-high-low' ? <HedgingBot /> : activeTab === 'mafia' ? <MafiaBot /> : <DigitAiBot />}
       </div>
     </section>
   );
@@ -220,9 +302,18 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <Router />
-        </WouterRouter>
+        <DerivTradingProvider>
+          {/* Above the bot because every run waits for the entry the analysis
+              planned, and that wait reads live ticks even while the user is on
+              another workspace tab. */}
+          <MarketFeedProvider>
+            <SignalBotProvider>
+              <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+                <Router />
+              </WouterRouter>
+            </SignalBotProvider>
+          </MarketFeedProvider>
+        </DerivTradingProvider>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>
