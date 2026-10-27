@@ -453,12 +453,13 @@ export function trainForge(
     && row.features.every((value) => Number.isFinite(value))
     && Number.isFinite(row.teacher));
   // The syllabus sets a floor: below this, a fit would be noise with a model
-  // card attached.
-  if (clean.length < 120) return null;
+  // card attached. Kept low enough to fit short streams while still leaving
+  // room for a chronological train / validation / holdout split.
+  if (clean.length < 81) return null;
   // 50 / 20 / 30: the holdout is the largest slice, because it is the only one
   // whose size buys statistical power at the gate.
   const split = splitForgeRows(clean, config.purge, config.trainFraction ?? 0.5, config.validationFraction ?? 0.2);
-  if (split.train.length < 55 || split.holdout.length < 40) return null;
+  if (split.train.length < 40 || split.holdout.length < 25) return null;
 
   const scaled = standardise(split.train, width);
   const applyScaler = (source: readonly ForgeRow[]) => source.map((row) => ({

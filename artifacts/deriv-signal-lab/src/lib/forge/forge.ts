@@ -78,6 +78,46 @@ function angleDomain(label: string): ForgeAngleDomain['domain'] {
   return 'calculations';
 }
 
+/**
+ * Detects a short-term opening from the forge's live context features.
+ *
+ * Feature vector indices 16–20 carry the market's causal context:
+ *   16 dispersion (digit entropy / variance ratio)
+ *   17 runs   (runs z / trend z)
+ *   18 hot    (hot/cold z / short-vs-long volatility)
+ *   19 balance (parity imbalance / momentum)
+ *   20 streak (signed parity streak / price position in range)
+ *
+ * A short opening exists when short-term structure is strong enough that a
+ * quick entry (the next tick or within a few ticks) has a measurable edge:
+ * a strong parity streak, a hot/cold digit running away, or clustered runs.
+ * Returns a one-line description, or null when nothing short-term is present.
+ */
+export function detectShortOpening(features: Float64Array | null | undefined, family: ForgeFamily): string | null {
+  if (!features) return null;
+  const dispersion = features[16] ?? 0;
+  const runs = features[17] ?? 0;
+  const hot = features[18] ?? 0;
+  const balance = features[19] ?? 0;
+  const streak = features[20] ?? 0;
+
+  const strongStreak = Math.abs(streak) > 0.6;
+  const hotDigit = Math.abs(hot) > 0.6;
+  const clusteredRuns = Math.abs(runs) > 0.5;
+  const momentum = Math.abs(balance) > 0.5;
+
+  if (!strongStreak && !hotDigit && !clusteredRuns && !momentum) return null;
+
+  const parts: string[] = [];
+  if (strongStreak) parts.push(`streak ${streak > 0 ? 'even' : 'odd'} ×${Math.round(Math.abs(streak) * 10)}`);
+  if (hotDigit) parts.push(`hot/cold z ${(hot > 0 ? '+' : '')}${hot.toFixed(2)}`);
+  if (clusteredRuns) parts.push(runs > 0 ? 'alternation clustering' : 'streak clustering');
+  if (momentum) parts.push(`momentum ${balance > 0 ? 'up' : 'down'}`);
+
+  const familyLabel = family === 'digit' ? 'digit' : 'quote';
+  return `Short-term ${familyLabel} opening: ${parts.join(' · ')}.`;
+}
+
 /** Share of the teacher probability mixed into each training label. */
 export const FORGE_DISTILLATION = 0.35;
 
@@ -217,9 +257,9 @@ export function forgeCandidate(input: ForgeCandidateInput): ForgedModel | null {
   // Keep the newest rows: the market's current regime matters more than a
   // stale one, and the chronological split still holds inside the window.
   const rows = input.rows.length > MAX_FORGE_ROWS ? input.rows.slice(-MAX_FORGE_ROWS) : input.rows;
-  // The floor the trainer can still split honestly (≈55 train / 40 holdout
+  // The floor the trainer can still split honestly (≈40 train / 25 holdout
   // rows after purging); below it, a fit would be noise with a model card.
-  if (rows.length < 160) return null;
+  if (rows.length < 81) return null;
   const profile = marketProfile(input.symbol, input.name);
   const purge = Math.max(12, Math.trunc(finite(input.horizonTicks) ? input.horizonTicks : 12));
   const spec: NetworkSpec = { ...FORGE_SPEC, seed: finite(input.seed) ? (input.seed as number) : FORGE_SPEC.seed };
@@ -304,7 +344,8 @@ export function forgeCandidate(input: ForgeCandidateInput): ForgedModel | null {
     forgeDecision: 'inert',
     forgedEdgePts: 100 * edge,
   });
-  const analysis = `${input.contextSummary} The Forge reads ${input.label} at ${(100 * probability).toFixed(1)}% against a ${(100 * fair).toFixed(1)}% fair rate, weighing ${angleReport.measuredCount} of ${angleReport.angleCount} causal angles (${angleInputs.map((angle) => angle.label).join(', ')}); it has ${metrics.validated ? 'a validated' : 'no validated'} out-of-sample edge, and its teachers were wrong on ${teacherError} of the holdout rows. ${angleReport.summary}`;
+  const shortOpening = detectShortOpening(input.liveFeatures, input.family);
+  const analysis = `${input.contextSummary} The Forge reads ${input.label} at ${(100 * probability).toFixed(1)}% against a ${(100 * fair).toFixed(1)}% fair rate, weighing ${angleReport.measuredCount} of ${angleReport.angleCount} causal angles (${angleInputs.map((angle) => angle.label).join(', ')}); it has ${metrics.validated ? 'a validated' : 'no validated'} out-of-sample edge, and its teachers were wrong on ${teacherError} of the holdout rows. ${angleReport.summary}${shortOpening ? ` ${shortOpening}` : ''}`;
   const note = `${describeGate(metrics)} ${metrics.validated ? `Forged view ${(100 * probability).toFixed(1)}%, drive ${drive}/100.` : 'The estimate is unchanged.'}`;
   return {
     card,
