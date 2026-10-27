@@ -158,3 +158,23 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* DBot Space's surrounding shell; the actual builder lives in an isolated frame. */
+.dbot-outline-button { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: 2rem; padding: .45rem .75rem; border: 1px solid hsl(var(--border)); border-radius: .55rem; background: hsl(var(--card)); font-size: .7rem; font-weight: 700; transition: border-color .15s, color .15s; }
+.dbot-outline-button:hover { border-color: hsl(var(--primary) / .5); color: hsl(var(--primary)); }
+.dbot-outline-button:disabled { opacity: .6; cursor: wait; }
+.dbot-store-intro { background: radial-gradient(circle at 95% 0%, hsl(var(--primary) / .12), transparent 42%), linear-gradient(125deg, hsl(var(--card)), hsl(var(--background))); }
+.dbot-kicker { display: inline-flex; align-items: center; gap: .35rem; color: hsl(var(--primary)); font-size: .6rem; font-weight: 800; letter-spacing: .13em; }
+.dbot-strategy-card { transition: border-color .18s, transform .18s; }
+.dbot-strategy-card:hover { border-color: hsl(var(--primary) / .42); transform: translateY(-2px); }
+.dbot-strategy-icon { display: inline-flex; align-items: center; justify-content: center; height: 2.5rem; width: 2.5rem; border-radius: .7rem; }
+.dbot-icon-blue { color: #5894ff; background: #5894ff1c; }
+.dbot-icon-violet { color: #a78bfa; background: #a78bfa1c; }
+.dbot-icon-amber { color: #d99620; background: #d996201c; }
+.dbot-icon-teal { color: #19ad9f; background: #19ad9f1c; }
+.dbot-icon-rose { color: #ed7185; background: #ed71851c; }
+.dbot-icon-indigo { color: #858df3; background: #858df31c; }
+
+/* Keep focused workspace controls above the fixed navigation bar. */
+html { scroll-padding-bottom: 96px; }
+[data-testid='dbot-frame'] { scroll-margin-bottom: 96px; }

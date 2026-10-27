@@ -67,6 +67,8 @@ export type DerivTradingSession = {
   confirmBuy: (quote: DerivQuote, request: DerivTradeRequest) => Promise<DerivBuyReceipt>;
   sellContract: (contractId: number) => Promise<void>;
   refresh: () => void;
+  /** Issue a separate single-use socket URL without directly passing the PAT. The iframe shares this origin. */
+  createBotSocket: () => Promise<{ url: string; accountId: string; accountType: 'demo' | 'real' | null }>;
   clearError: () => void;
 };
 
@@ -497,6 +499,20 @@ export function useDerivTradingSession(): DerivTradingSession {
     setStatus('disconnected');
   }, [closeSocket, rejectAllPending]);
 
+  const createBotSocket = useCallback(async () => {
+    const token = tokenRef.current;
+    const account = accountRef.current;
+    const generation = generationRef.current;
+    if (!token || !account || socketRef.current?.readyState !== WebSocket.OPEN) {
+      throw new Error('Connect a Deriv account in Settings first.');
+    }
+    const url = await requestDerivOtp(token, account.accountId);
+    if (generation !== generationRef.current || accountRef.current?.accountId !== account.accountId || socketRef.current?.readyState !== WebSocket.OPEN) {
+      throw new Error('The account changed while connecting DBot. Please try again.');
+    }
+    return { url, accountId: account.accountId, accountType: account.accountType };
+  }, []);
+
   const refresh = useCallback(() => {
     if (status !== 'connected') return;
     void sendRequest((reqId) => buildBalanceRequest(reqId), 'balance').catch(() => undefined);
@@ -594,6 +610,7 @@ export function useDerivTradingSession(): DerivTradingSession {
       confirmBuy,
       sellContract,
       refresh,
+      createBotSocket,
       clearError,
     }),
     [
@@ -606,6 +623,7 @@ export function useDerivTradingSession(): DerivTradingSession {
       confirmBuy,
       connectedAt,
       currency,
+      createBotSocket,
       disconnect,
       error,
       openPositions,

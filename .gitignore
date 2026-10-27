@@ -52,3 +52,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Generated Deriv Bot build, rebuilt from vendor/deriv-bot by the app scripts
+/artifacts/deriv-signal-lab/public/dbot/
