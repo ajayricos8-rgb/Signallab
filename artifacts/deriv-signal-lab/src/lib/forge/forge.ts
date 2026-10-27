@@ -64,6 +64,20 @@ const clamp = (value: number, low: number, high: number) => Math.max(low, Math.m
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const safeProbability = (value: number) => clamp(value, 0.0005, 0.9995);
 
+/** Bucket a named forge input into the angle domain it represents. */
+function angleDomain(label: string): ForgeAngleDomain['domain'] {
+  const lower = label.toLowerCase();
+  if (/engine|ensemble|agreement|disagreement|balance|abstain|vote/.test(lower)) return 'engines';
+  if (/\bai\b|meta-model|neural/.test(lower)) {
+    if (/neural/.test(lower)) return 'neural';
+    return 'ai';
+  }
+  if (/research/.test(lower)) return 'research';
+  if (/market|cadence|volatility|family|instrument/.test(lower)) return 'market-structure';
+  if (/knowledge|uncertainty|syllabus/.test(lower)) return 'knowledge';
+  return 'calculations';
+}
+
 /** Share of the teacher probability mixed into each training label. */
 export const FORGE_DISTILLATION = 0.35;
 
@@ -278,7 +292,19 @@ export function forgeCandidate(input: ForgeCandidateInput): ForgedModel | null {
     }),
   };
   const teacherError = metrics.teacherErrorRate === null ? '—' : `${(100 * metrics.teacherErrorRate).toFixed(0)}%`;
-  const analysis = `${input.contextSummary} The Forge reads ${input.label} at ${(100 * probability).toFixed(1)}% against a ${(100 * fair).toFixed(1)}% fair rate, using ${card.inputs.length} causal layer inputs; it has ${metrics.validated ? 'a validated' : 'no validated'} out-of-sample edge, and its teachers were wrong on ${teacherError} of the holdout rows.`;
+  const angleInputs = (input.inputs ?? []).map((label) => ({
+    domain: angleDomain(label),
+    label,
+    measured: true,
+    verdict: 'neutral' as const,
+  }));
+  const angleReport = forgeAllAnglesReport({
+    angles: angleInputs,
+    forgeValidated: metrics.validated,
+    forgeDecision: 'inert',
+    forgedEdgePts: 100 * edge,
+  });
+  const analysis = `${input.contextSummary} The Forge reads ${input.label} at ${(100 * probability).toFixed(1)}% against a ${(100 * fair).toFixed(1)}% fair rate, weighing ${angleReport.measuredCount} of ${angleReport.angleCount} causal angles (${angleInputs.map((angle) => angle.label).join(', ')}); it has ${metrics.validated ? 'a validated' : 'no validated'} out-of-sample edge, and its teachers were wrong on ${teacherError} of the holdout rows. ${angleReport.summary}`;
   const note = `${describeGate(metrics)} ${metrics.validated ? `Forged view ${(100 * probability).toFixed(1)}%, drive ${drive}/100.` : 'The estimate is unchanged.'}`;
   return {
     card,
@@ -440,6 +466,108 @@ export function forgeEvidence(fusion: ForgeFusion): {
 /** True when the forge measured this call as weaker than the chain claims. */
 export function forgeVetoed(fusion: ForgeFusion | null | undefined): boolean {
   return Boolean(fusion && fusion.decision === 'veto');
+}
+
+/** One angle the forge weighed when it formed its view of a call. */
+export type ForgeAngleDomain = {
+  domain: 'engines' | 'calculations' | 'market-structure' | 'knowledge' | 'ai' | 'research' | 'neural';
+  /** Human label for the card. */
+  label: string;
+  /** True when this angle had real, non-missing data at the live origin. */
+  measured: boolean;
+  /** Which way this angle leans, when it was measured. */
+  verdict: 'supports' | 'opposes' | 'neutral' | 'unmeasured';
+  detail?: string;
+};
+
+/** The complete, auditable inventory of every angle the forge considered. */
+export type ForgeAllAnglesReport = {
+  angles: ForgeAngleDomain[];
+  /** How many named angles the forge was built from. */
+  angleCount: number;
+  /** How many of those angles had real data at the live origin. */
+  measuredCount: number;
+  /** Share of named angles that were measured (0-1). */
+  coverage: number;
+  /** Measured angles that support the call. */
+  supportCount: number;
+  /** Measured angles that oppose the call. */
+  opposeCount: number;
+  /** Share of measured angles that support the call (null when none measured). */
+  supportShare: number | null;
+  /** Overall bias of the measured angles. */
+  dominantVerdict: 'supports' | 'opposes' | 'neutral' | 'unmeasured' | 'mixed';
+  /** Whether the forged model cleared its out-of-sample gate. */
+  forgeValidated: boolean;
+  /** How the forge treated the published call. */
+  forgeDecision: ForgeFusion['decision'];
+  /** Forged edge in probability points. */
+  forgedEdgePts: number;
+  /** One-sentence, auditable reading of the all-angles view. */
+  summary: string;
+};
+
+/**
+ * Inventories every angle the forge looked at and rolls it into one auditable
+ * reading. Used by the model card and the analysis so the user can see that
+ * the forged probability was built from engines, baseline, prior, market
+ * structure, knowledge, AI, research and neural layers — not from one of them
+ * in isolation.
+ */
+export function forgeAllAnglesReport(input: {
+  angles: readonly ForgeAngleDomain[];
+  forgeValidated: boolean;
+  forgeDecision: ForgeFusion['decision'];
+  forgedEdgePts: number;
+}): ForgeAllAnglesReport {
+  const angles = [...input.angles];
+  const angleCount = angles.length;
+  const measured = angles.filter((angle) => angle.measured);
+  const measuredCount = measured.length;
+  const coverage = angleCount ? measuredCount / angleCount : 0;
+  const supportCount = measured.filter((angle) => angle.verdict === 'supports').length;
+  const opposeCount = measured.filter((angle) => angle.verdict === 'opposes').length;
+  const neutralCount = measured.filter((angle) => angle.verdict === 'neutral').length;
+  const supportShare = measuredCount ? supportCount / measuredCount : null;
+
+  let dominantVerdict: ForgeAllAnglesReport['dominantVerdict'] = 'unmeasured';
+  if (measuredCount) {
+    const top = Math.max(supportCount, opposeCount, neutralCount);
+    if (top === supportCount && supportCount > opposeCount && supportCount > neutralCount) dominantVerdict = 'supports';
+    else if (top === opposeCount && opposeCount > supportCount && opposeCount > neutralCount) dominantVerdict = 'opposes';
+    else if (top === neutralCount && neutralCount > 0) dominantVerdict = 'neutral';
+    else dominantVerdict = 'mixed';
+  }
+
+  const edgeSign = input.forgedEdgePts > 0 ? 'above' : input.forgedEdgePts < 0 ? 'below' : 'at';
+  const measuredList = measured.map((angle) => angle.label).join(', ') || 'none';
+  let summary: string;
+  if (!input.forgeValidated) {
+    summary = `The forge weighed ${measuredCount} of ${angleCount} angles (${measuredList}) but did not clear its out-of-sample gate, so it carries no weight on this call.`;
+  } else if (input.forgeDecision === 'veto') {
+    summary = `The forge weighed ${measuredCount} of ${angleCount} angles and validated a contrary read (${(input.forgedEdgePts).toFixed(1)} pts ${edgeSign} fair); entry is vetoed.`;
+  } else if (input.forgeDecision === 'trim') {
+    summary = `The forge weighed ${measuredCount} of ${angleCount} angles (${(100 * supportShare!).toFixed(0)}% supporting) and trimmed the call by ${(input.forgedEdgePts).toFixed(1)} pts.`;
+  } else if (input.forgeDecision === 'confirm') {
+    summary = `The forge weighed ${measuredCount} of ${angleCount} angles (${(100 * supportShare!).toFixed(0)}% supporting) and confirmed the call (${(input.forgedEdgePts).toFixed(1)} pts ${edgeSign} fair).`;
+  } else {
+    summary = `The forge weighed ${measuredCount} of ${angleCount} angles (${measuredList}) but left the published estimate unchanged (inert).`;
+  }
+
+  return {
+    angles,
+    angleCount,
+    measuredCount,
+    coverage,
+    supportCount,
+    opposeCount,
+    supportShare,
+    dominantVerdict,
+    forgeValidated: input.forgeValidated,
+    forgeDecision: input.forgeDecision,
+    forgedEdgePts: input.forgedEdgePts,
+    summary,
+  };
 }
 
 /** The syllabus, the atlas and the input list, for the UI and the docs. */

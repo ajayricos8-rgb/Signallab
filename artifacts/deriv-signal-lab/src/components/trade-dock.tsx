@@ -38,7 +38,13 @@ import type { ResearchFusion } from '@/lib/engine-lab/fusion';
 import { masterBlocksEntry, type MasterDecision } from '@/lib/signal-engine/master-decision.ts';
 import type { ResearchDecision } from '@/lib/engine-lab/types';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
-import { describeEntryEvidence, entryModeLabel, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
+import {
+  describeEntryEvidence,
+  entryModeLabel,
+  isEntryPlan,
+  type EntryForgeEvidence,
+  type EntryPlan,
+} from '@/lib/signal-engine/entry.ts';
 import {
   TRADE_DURATION_UNITS,
   draftDurationIssue,
@@ -153,6 +159,30 @@ function readBotConfig(): SignalBotConfig {
   } catch {
     return defaultSignalBotConfig();
   }
+}
+
+const percent1 = (value: number | null | undefined): string =>
+  value === null || !Number.isFinite(value) ? '—' : `${(100 * value).toFixed(1)}%`;
+
+function forgeChipClass(decision: EntryForgeEvidence['decision']): string {
+  switch (decision) {
+    case 'confirm':
+      return 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200';
+    case 'trim':
+      return 'border-amber-400/40 bg-amber-400/10 text-amber-200';
+    case 'veto':
+      return 'border-rose-400/40 bg-rose-400/10 text-rose-200';
+    default:
+      return 'border-slate-500/40 bg-slate-500/10 text-slate-300';
+  }
+}
+
+function forgeChipTitle(forge: EntryForgeEvidence, fairRate: number): string {
+  const direction =
+    forge.modelProbability === null ? 'no view' : forge.modelProbability > fairRate ? 'supports' : 'opposes';
+  return `Forged model: ${forge.decision} — ${percent1(forge.modelProbability)} vs ${percent1(
+    fairRate,
+  )} fair rate; ${forge.validated ? 'validated' : 'unvalidated'} (${forge.sample} holdout rows), ${forge.edgePts >= 0 ? '+' : ''}${forge.edgePts.toFixed(1)} pts.`;
 }
 
 /** Compact numeric field for the bot row of the dock. */
@@ -495,7 +525,12 @@ export function TradeDock({
       return;
     }
     if (masterVetoed) {
-      setTicketIssue('The master decision is NO_EDGE and explicitly vetoes entry. Run Analysis again before loading the bot.');
+      const forge = botPlan?.entry.evidence.forge;
+      setTicketIssue(
+        forge?.decision === 'veto'
+          ? `The forged model validated a contrary estimate on this market (${percent1(forge.modelProbability)} vs ${percent1(botPlan.entry.evidence.fairRate)} fair) and the master vetoed entry. Run Analysis again before loading the bot.`
+          : 'The master decision is NO_EDGE and explicitly vetoes entry. Run Analysis again before loading the bot.',
+      );
       return;
     }
     if (!connected) {
@@ -913,6 +948,15 @@ export function TradeDock({
                       data-testid="dock-master-verdict"
                     >
                       Master {botPlan.master.verdict.replaceAll('_', ' ')} · valid ~{botPlan.master.validity.ticks} tick{botPlan.master.validity.ticks === 1 ? '' : 's'} · conviction {botPlan.master.conviction}
+                    </span>
+                  ) : null}
+                  {botPlan?.entry.evidence.forge ? (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.06em] ${forgeChipClass(botPlan.entry.evidence.forge.decision)}`}
+                      title={forgeChipTitle(botPlan.entry.evidence.forge, botPlan.entry.evidence.fairRate)}
+                      data-testid="dock-forge-verdict"
+                    >
+                      Forge {botPlan.entry.evidence.forge.decision} · {percent1(botPlan.entry.evidence.modelProbability)} vs {percent1(botPlan.entry.evidence.fairRate)} fair · {botPlan.entry.evidence.validated ? 'validated' : 'unvalidated'}
                     </span>
                   ) : null}
                 </div>
