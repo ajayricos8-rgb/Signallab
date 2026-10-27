@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import * as math from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/vision-math.mjs';
 import * as ai from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/vision-ai.mjs';
 import * as memory from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/vision-memory.mjs';
+import { createMarketPicker, scoreMarket, VOLATILITY_MARKETS } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/vision-markets.mjs';
 
 /** A deterministic random walk, so every assertion below is reproducible. */
 function walk(size, { start = 1234.56, step = 0.37, decimals = 2, seed = 7 } = {}) {
@@ -347,4 +348,117 @@ test('the bars are the only thing standing between a fair market and a trade', (
     }
     assert.equal(strictFired, 0, 'the bars are what keep a fair market quiet');
     assert.equal(relaxedFired, trials, 'taking them off is what makes the bot trade');
+});
+
+/* ------------------------------------------------------------------ *
+ * Choosing a market
+ * ------------------------------------------------------------------ */
+
+/** A picker whose clock we control, so a dwell timer can be tested. */
+function fakeClock() {
+    let t = 0;
+    return { now: () => t, advance: seconds => (t += seconds * 1000) };
+}
+
+test('the bot leaves the market it started on', () => {
+    // Regression: the dwell clock used to sit at zero until the first switch,
+    // so "seconds on market" was always 0 < dwell and the guard returned early
+    // on every tick. The bot was pinned to its opening market forever.
+    const clock = fakeClock();
+    const picker = createMarketPicker({ now: clock.now });
+    const start = 'R_100';
+
+    assert.equal(picker.choose({ mode: 'next', dwell: 2, current: start }), start, 'dwell not elapsed yet');
+    clock.advance(1);
+    assert.equal(picker.choose({ mode: 'next', dwell: 2, current: start }), start, 'still inside the dwell');
+
+    clock.advance(1.5);
+    const moved = picker.choose({ mode: 'next', dwell: 2, current: start });
+    assert.notEqual(moved, start, 'the bot must move once the dwell has passed');
+    assert.ok(VOLATILITY_MARKETS.includes(moved));
+});
+
+test('after a switch the dwell clock restarts', () => {
+    const clock = fakeClock();
+    const picker = createMarketPicker({ now: clock.now });
+    picker.start(); // the bot has been on R_100 since the session began
+
+    clock.advance(3);
+    const first = picker.choose({ mode: 'next', dwell: 2, current: 'R_100' });
+    picker.markSwitched();
+    assert.notEqual(first, 'R_100');
+
+    // One tick later it must not move again, or it would thrash the API.
+    clock.advance(0.5);
+    assert.equal(picker.choose({ mode: 'next', dwell: 2, current: first }), first);
+
+    clock.advance(2);
+    assert.notEqual(picker.choose({ mode: 'next', dwell: 2, current: first }), first);
+});
+
+test('the bot walks every market in turn', () => {
+    const clock = fakeClock();
+    const picker = createMarketPicker({ now: clock.now });
+    const visited = ['R_100'];
+
+    for (let step = 0; step < 10; step++) {
+        clock.advance(3);
+        const next = picker.choose({ mode: 'next', dwell: 2, current: visited[visited.length - 1] });
+        picker.markSwitched();
+        if (next !== visited[visited.length - 1]) visited.push(next);
+    }
+    assert.equal(visited.length, VOLATILITY_MARKETS.length, 'a full lap should reach every market');
+    assert.equal(new Set(visited).size, VOLATILITY_MARKETS.length, 'and never repeat one');
+});
+
+test('random mode moves, and can reach more than one market', () => {
+    const clock = fakeClock();
+    const picker = createMarketPicker({ now: clock.now });
+    picker.start();
+    clock.advance(5);
+    const seen = new Set();
+    let current = 'R_100';
+    for (let step = 0; step < 40; step++) {
+        clock.advance(3);
+        const next = picker.choose({ mode: 'random', dwell: 2, current });
+        picker.markSwitched();
+        assert.notEqual(next, current, 'random mode never stays put once the dwell is up');
+        current = next;
+        seen.add(next);
+    }
+    assert.ok(seen.size > 1, 'a random walk should visit more than one market');
+});
+
+test('the best mode goes to the market that scored highest', () => {
+    const clock = fakeClock();
+    const picker = createMarketPicker({ now: clock.now });
+    picker.recordScore('R_10', 20);
+    picker.recordScore('R_50', 80);
+    picker.recordScore('R_75', 40);
+
+    picker.start();
+    clock.advance(5);
+    assert.equal(picker.choose({ mode: 'best', dwell: 2, current: 'R_100' }), 'R_50');
+    // Standing on the best one, it should go to the next best.
+    assert.equal(picker.choose({ mode: 'best', dwell: 2, current: 'R_50' }), 'R_75');
+});
+
+test('the suitable mode stays on a good market and leaves a bad one', () => {
+    const clock = fakeClock();
+    const picker = createMarketPicker({ now: clock.now });
+    picker.recordScore('R_100', 70);
+
+    picker.start();
+    clock.advance(5);
+    assert.equal(picker.choose({ mode: 'suitable', minScore: 50, dwell: 2, current: 'R_100' }), 'R_100');
+    assert.notEqual(picker.choose({ mode: 'suitable', minScore: 90, dwell: 2, current: 'R_100' }), 'R_100');
+});
+
+test('a market score reflects the strength of the read', () => {
+    const relaxed = { horizon: 1, minLean: 0, minConfidence: 0, minAgreement: 0, minEdge: -100, risk: 0.6 };
+    const quiet = ai.planTrade(walk(600, { seed: 5 }), relaxed);
+    const loud = ai.planTrade(biasedDigits(1200, { rate: 0.6, seed: 3 }), relaxed);
+    assert.ok(scoreMarket(loud) > scoreMarket(quiet), 'a market with a measurable lean should score higher');
+    assert.ok(scoreMarket(loud) <= 100 && scoreMarket(quiet) >= 0);
+    assert.equal(scoreMarket(null), 0);
 });
