@@ -303,3 +303,48 @@ test('learning from a run of outcomes shifts the forecast toward what happened',
     assert.ok(after[3] > before[3], 'the net should move toward the digit it was taught');
     assert.ok(Math.abs(math.sum(after) - 1) < 1e-9);
 });
+
+test('a min lean of zero means trade, not wait', () => {
+    // The shipped bot runs with the bars off so it actually opens positions.
+    // Everything is still measured and published — only the gate moves.
+    const relaxed = { horizon: 1, minLean: 0, minConfidence: 0, minAgreement: 0, minEdge: -100, risk: 0.6 };
+
+    let fired = 0;
+    const trials = 20;
+    for (let trial = 0; trial < trials; trial++) {
+        if (ai.planTrade(walk(1000, { seed: 71 + trial * 13 }), relaxed).go) fired += 1;
+    }
+    assert.equal(fired, trials, 'with the bars off a fair market is still traded');
+});
+
+test('a relaxed entry is a real contract, not the largest shortfall', () => {
+    const relaxed = { horizon: 1, minLean: 0, minConfidence: 0, minAgreement: 0, minEdge: -100, risk: 0.6 };
+
+    for (let trial = 0; trial < 20; trial++) {
+        const plan = ai.planTrade(walk(1000, { seed: 71 + trial * 13 }), relaxed);
+        assert.equal(plan.go, true);
+        assert.ok(plan.barrier >= 0 && plan.barrier <= 9);
+        assert.ok(['over', 'under'].includes(plan.direction));
+        assert.ok(plan.best.bias > 0, 'the contract it buys has to lean past the fair odds');
+        // Over 9 and under 0 win on no digit at all; the API rejects them.
+        assert.ok(ai.winningDigitCount(plan.direction, plan.barrier) > 0);
+        assert.ok(plan.payout > 0 && Number.isFinite(plan.payout));
+        assert.ok(Number.isFinite(plan.edge), 'the expected value is still reported, however bad');
+    }
+});
+
+test('the bars are the only thing standing between a fair market and a trade', () => {
+    const strict = { horizon: 1, minLean: 1.5, minConfidence: 55, minAgreement: 0.7, minEdge: -100, risk: 0.6 };
+    const relaxed = { ...strict, minLean: 0, minConfidence: 0, minAgreement: 0 };
+
+    let strictFired = 0;
+    let relaxedFired = 0;
+    const trials = 20;
+    for (let trial = 0; trial < trials; trial++) {
+        const stream = walk(1000, { seed: 71 + trial * 13 });
+        if (ai.planTrade(stream, strict).go) strictFired += 1;
+        if (ai.planTrade(stream, relaxed).go) relaxedFired += 1;
+    }
+    assert.equal(strictFired, 0, 'the bars are what keep a fair market quiet');
+    assert.equal(relaxedFired, trials, 'taking them off is what makes the bot trade');
+});

@@ -25,8 +25,8 @@ import { ensurePayouts, payoutSnapshot, refreshPayouts } from '../utils/vision-p
 const PLAN_TTL_MS = 4_000;
 const DEFAULT_HORIZON = 5;
 const DEFAULT_MIN_EDGE = -100; // the block default: significance decides, the value gate is off
-const DEFAULT_MIN_CONFIDENCE = 55;
-const DEFAULT_MIN_LEAN = 1.5;
+const DEFAULT_MIN_CONFIDENCE = 0;
+const DEFAULT_MIN_LEAN = 0; // the block default: trade the strongest measured lean
 const DEFAULT_RISK = 0.6;
 const DEFAULT_TARGET_EDGE = 0.04;
 
@@ -145,12 +145,14 @@ const getVisionInterface = tradeEngine => {
         const minConfidence = num(overrides.minConfidence ?? DEFAULT_MIN_CONFIDENCE);
         const minAgreement = clamp((overrides.minAgreement ?? 0.7) + scrutinyAdjustment(), 0, 1);
         const strictValue = minEdge > -50;
+        const relaxed = minLean <= 0;
         const go =
             plan.best.bias > 0 &&
-            plan.best.rawBias > 0 &&
-            plan.best.tStat >= minLean &&
-            plan.confidence >= minConfidence &&
-            plan.agreementRatio >= minAgreement &&
+            (relaxed ||
+                (plan.best.rawBias > 0 &&
+                    plan.best.tStat >= minLean &&
+                    plan.confidence >= minConfidence &&
+                    plan.agreementRatio >= minAgreement)) &&
             (!strictValue || plan.best.adjusted >= minEdge / 100);
         return { ...plan, go, reason: go ? 'entry confirmed' : plan.reason };
     };
@@ -178,6 +180,124 @@ const getVisionInterface = tradeEngine => {
         if (!plan?.best) return 'warn';
         if (!plan.go) return 'info';
         return plan.best.edge >= 0.03 ? 'success' : 'info';
+    };
+
+    /* ------------------------------------------------------------------ *
+     * All markets
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Every volatility index the bot is allowed to walk through. These are the
+     * Deriv synthetic indices with digit contracts: five one-second markets and
+     * five two-second ones.
+     */
+    const MARKETS = [
+        '1HZ10V',
+        '1HZ25V',
+        '1HZ50V',
+        '1HZ75V',
+        '1HZ100V',
+        'R_10',
+        'R_25',
+        'R_50',
+        'R_75',
+        'R_100',
+    ];
+
+    /** How well this market has looked each time we have read it. */
+    const marketScores = new Map();
+    let marketSwitchedAt = 0;
+
+    const secondsOnMarket = () => (marketSwitchedAt ? (Date.now() - marketSwitchedAt) / 1000 : 0);
+
+    /**
+     * A 0-100 read on how worth trading this market is right now: how far past
+     * the noise the strongest lean sits, how confident the ensemble is, how
+     * many models agree, and how much data is behind the lot. It is a ranking
+     * device for choosing where to stand, not a forecast of profit.
+     */
+    const scoreMarket = plan => {
+        if (!plan?.best) return 0;
+        const lean = clamp(Math.abs(plan.best.tStat) / 3, 0, 1);
+        const confidence = clamp((plan.confidence ?? 0) / 100, 0, 1);
+        const agreement = clamp(plan.agreementRatio ?? 0, 0, 1);
+        const quality = clamp(plan.dataQuality ?? 0, 0, 1);
+        return round(100 * (0.4 * lean + 0.25 * confidence + 0.2 * agreement + 0.15 * quality), 1);
+    };
+
+    /** Remember how this market looked, so "best" has something to compare. */
+    const rememberMarket = (symbol, score) => {
+        if (!symbol) return;
+        const previous = marketScores.get(symbol);
+        const smoothed = previous ? previous.score * 0.6 + score * 0.4 : score;
+        marketScores.set(symbol, { score: round(smoothed, 1), at: Date.now() });
+    };
+
+    const otherMarkets = symbol => MARKETS.filter(market => market !== symbol);
+
+    const pickRandom = symbol => {
+        const options = otherMarkets(symbol);
+        if (!options.length) return symbol;
+        return options[Math.floor(Math.random() * options.length)];
+    };
+
+    const pickNext = symbol => {
+        const index = MARKETS.indexOf(symbol);
+        return index < 0 ? MARKETS[0] : MARKETS[(index + 1) % MARKETS.length];
+    };
+
+    /**
+     * Turn a choice into a symbol. Anything that is not one of our markets and
+     * not a mode name is passed through untouched, so a strategy can name a
+     * market the list does not carry.
+     */
+    const resolveMarket = (wanted, current) => {
+        const key = String(wanted || '').trim();
+        if (!key) return current;
+        if (MARKETS.includes(key)) return key;
+        if (key === 'random') return pickRandom(current);
+        if (key === 'next') return pickNext(current);
+        if (key === 'best' || key === 'suitable') return pickBestKnown(current);
+        return key;
+    };
+
+    /** The remembered best market we are not already standing on. */
+    const pickBestKnown = symbol => {
+        let best = null;
+        marketScores.forEach((entry, market) => {
+            if (market === symbol) return;
+            if (!best || entry.score > best.score) best = { market, score: entry.score };
+        });
+        if (best && best.score > 0) return best.market;
+        return pickRandom(symbol);
+    };
+
+    /**
+     * Move the running bot to another market: swap the symbol the engine trades
+     * and proposes on, resubscribe the tick stream, wait for that market's
+     * history, and warm its payout table without holding up the tick.
+     */
+    const switchToMarket = async symbol => {
+        const previous = symbolOf();
+        if (!symbol || symbol === previous) return previous;
+
+        planCache.delete(previous);
+        if (tradeEngine?.options) tradeEngine.options.symbol = symbol;
+        if (tradeEngine?.tradeOptions) tradeEngine.tradeOptions.symbol = symbol;
+
+        try {
+            await tradeEngine.switchSymbol(symbol);
+        } catch {
+            // A market we could not stream is not worth crashing a session for.
+            if (tradeEngine?.options) tradeEngine.options.symbol = previous;
+            if (tradeEngine?.tradeOptions) tradeEngine.tradeOptions.symbol = previous;
+            return previous;
+        }
+
+        planCache.delete(symbol);
+        marketSwitchedAt = Date.now();
+        ensurePayouts(payoutOptions()); // price the new market in the background
+        return symbol;
     };
 
     return {
@@ -554,6 +674,80 @@ const getVisionInterface = tradeEngine => {
             const plan = await getPlan();
             if (!plan) return localize('warming up');
             return `${plan.go ? 'TRADE' : 'WAIT'} · ${plan.summary} · ${plan.reason}`;
+        },
+
+        /* ---------------- all markets ---------------- */
+
+        /** The market the bot is trading right now. */
+        visionMarket: async () => symbolOf(),
+
+        /** Every market the bot may walk through, as a comma separated list. */
+        visionMarketList: async () => MARKETS.join(','),
+
+        visionMarketCount: async () => MARKETS.length,
+
+        /** True once this market has enough history behind it to be read. */
+        visionMarketReady: async () => (await readTicks()).length >= 80,
+
+        /** Seconds since the bot last changed market. */
+        visionMarketSeconds: async () => round(secondsOnMarket(), 1),
+
+        /** 0-100: how worth trading the current market looks right now. */
+        visionMarketScore: async () => {
+            const plan = await getPlan();
+            return scoreMarket(plan);
+        },
+
+        /**
+         * Move the bot onto a market right now. Accepts a symbol (R_100) or one
+         * of the choices: 'random', 'next', 'best'.
+         */
+        visionSwitchMarket: async symbol => {
+            const current = symbolOf();
+            const wanted = String(symbol || '').trim();
+            if (!wanted) return current;
+            return switchToMarket(resolveMarket(wanted, current));
+        },
+
+        /** The market the bot would move to for this choice, without moving. */
+        visionPickMarket: async mode => resolveMarket(String(mode || '').trim(), symbolOf()),
+
+        /**
+         * Let the bot choose its own market.
+         *
+         * Every market it visits is scored and remembered, so "best" is a real
+         * comparison rather than a guess. Modes:
+         *   'suitable' — stay while this market scores at or above the floor,
+         *                otherwise move to the best market seen so far;
+         *   'random'   — jump to any other market once the dwell time is up;
+         *   'next'     — walk the list in order;
+         *   'best'     — always the best-scoring market seen so far.
+         *
+         * The dwell time keeps the bot from thrashing the API: it will not
+         * change market more often than that, however bad the market looks.
+         */
+        visionAutoMarket: async (mode, minScore, dwell) => {
+            const symbol = symbolOf();
+            const wanted = String(mode || 'suitable').toLowerCase();
+            const dwellSeconds = Math.max(0, num(dwell, 2));
+            const floor = clamp(num(minScore, 0), 0, 100);
+
+            // Score where we are standing, using the decision we already have
+            // for this market rather than paying for another one.
+            const cached = planCache.get(symbol);
+            const score = cached?.plan ? scoreMarket(cached.plan) : 0;
+            rememberMarket(symbol, score);
+
+            if (secondsOnMarket() < dwellSeconds) return symbol;
+
+            let target = symbol;
+            if (wanted === 'random') target = pickRandom(symbol);
+            else if (wanted === 'next') target = pickNext(symbol);
+            else if (wanted === 'best') target = pickBestKnown(symbol);
+            else if (score < floor) target = pickBestKnown(symbol);
+            else return symbol;
+
+            return switchToMarket(target);
         },
     };
 };

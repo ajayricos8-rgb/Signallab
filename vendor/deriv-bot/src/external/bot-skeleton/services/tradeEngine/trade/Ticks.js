@@ -36,6 +36,41 @@ export default Engine =>
             }
         }
 
+        /**
+         * Move a running bot to another market.
+         *
+         * watchTicks() tears down the previous stream with the *new* symbol
+         * (stopMonitor is keyed by symbol and key, so the old listener is left
+         * subscribed and the old market keeps streaming), which is fine when it
+         * is called once at start-up and leaks a subscription every time it is
+         * called after that. Switching markets mid-session has to stop the old
+         * stream with its own symbol and key, then wait for the new market's
+         * history before handing control back, so the first analysis on the new
+         * market has a full thousand ticks behind it instead of the two or
+         * three that arrived since the switch.
+         */
+        async switchSymbol(symbol) {
+            if (!symbol || symbol === this.symbol) return this.symbol;
+
+            const { ticksService } = this.$scope;
+            const previousSymbol = this.symbol;
+            const previousKey = tickListenerKey;
+
+            if (previousSymbol && previousKey) {
+                try {
+                    await ticksService.stopMonitor({ symbol: previousSymbol, key: previousKey });
+                } catch {
+                    // A stream we could not stop is not worth failing a switch for.
+                }
+            }
+
+            tickListenerKey = null;
+            this.symbol = null; // force watchTicks to subscribe afresh
+            await this.watchTicks(symbol);
+            await this.getTicks(); // resolves once the new market's history is in
+            return this.symbol;
+        }
+
         checkTicksPromiseExists() {
             return this.$scope.ticksService.ticks_history_promise;
         }

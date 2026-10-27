@@ -524,16 +524,27 @@ export function planTrade(values, options = {}) {
         return { agreementRatio, confidence };
     };
 
+    /**
+     * A min lean at or below zero means "no significance bar": take the
+     * strongest lean the data can offer, however thin, rather than sit out.
+     * Nothing stops being measured — the lean, its sigma, the payout and the
+     * true expected value are all still published — only the gate moves. That
+     * is the difference between a bot that trades the noise and one that waits
+     * for a signal no fair market will ever give it.
+     */
+    const relaxed = minLean <= 0;
+
     candidates.forEach(candidate => {
         const { agreementRatio, confidence } = scoreCandidate(candidate);
         candidate.agreementRatio = agreementRatio;
         candidate.confidence = confidence;
         candidate.passes =
             candidate.bias > 0 &&
-            candidate.rawBias > 0 &&
-            candidate.tStat >= minLean &&
-            confidence >= minConfidence &&
-            agreementRatio >= minAgreement &&
+            (relaxed ||
+                (candidate.rawBias > 0 &&
+                    candidate.tStat >= minLean &&
+                    confidence >= minConfidence &&
+                    agreementRatio >= minAgreement)) &&
             (!strictValue || candidate.adjusted >= rawMinEdge / 100);
     });
 
@@ -544,9 +555,13 @@ export function planTrade(values, options = {}) {
     // the long shots the broker taxes hardest.
     candidates.sort((a, b) => b.tStat - a.tStat);
     const eligible = candidates.filter(candidate => candidate.passes);
+    // When nothing clears the bars, fall back to the strongest positive lean
+    // rather than the largest deviation, which is just as often the largest
+    // shortfall. A relaxed strategy needs a barrier it can actually buy.
+    const fallback = candidates.length ? candidates.reduce((a, b) => (b.bias > a.bias ? b : a)) : null;
     const best = eligible.length
         ? eligible.reduce((a, b) => (b.adjusted > a.adjusted ? b : a))
-        : candidates[0] || null;
+        : fallback;
 
     const agreementRatio = best?.agreementRatio ?? 0;
     const decisionConfidence = best?.confidence ?? 0;
@@ -556,7 +571,9 @@ export function planTrade(values, options = {}) {
     // Stake sizing: how far past the significance bar this lean is, times the
     // confidence, times how much risk the strategy is willing to take. (Kelly is
     // published as information but is unusably small on a long-shot payout.)
-    const conviction = best ? clamp(best.tStat / Math.max(minLean * 2.2, 0.4), 0, 1) : 0;
+    // The 1.0 floor keeps sizing meaningful with the bar off: a 1σ lean is a
+    // full stake, a 0.3σ lean is a third of one.
+    const conviction = best ? clamp(best.tStat / Math.max(minLean * 2.2, 1.0), 0, 1) : 0;
     const valueScale = strictValue ? clamp(best ? best.edge / Math.max(0.005, safe(options.targetEdge, 0.04)) : 0, 0, 1) : 1;
     const stakeFactor = best
         ? clamp(conviction * valueScale * (0.55 + 0.45 * (decisionConfidence / 100)) * (0.4 + 0.6 * riskFactor), 0, 1)

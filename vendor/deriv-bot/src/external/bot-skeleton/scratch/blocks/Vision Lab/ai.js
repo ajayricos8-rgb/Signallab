@@ -52,20 +52,20 @@ defineStatementBlock({
     args: [
         numberInput('HORIZON', '5'),
         numberInput('MIN_EDGE', '-100'),
-        numberInput('MIN_LEAN', '1.5'),
-        numberInput('MIN_CONFIDENCE', '55'),
-        numberInput('AGREEMENT', '0.7'),
+        numberInput('MIN_LEAN', '0'),
+        numberInput('MIN_CONFIDENCE', '0'),
+        numberInput('AGREEMENT', '0'),
         numberInput('RISK', '0.6'),
     ],
     inputsInline: false,
     colour,
     category,
     tooltip: localize(
-        'Runs the full AI read once per tick: seven models forecast the last digit, the payout table prices every barrier, and the best expected value is cached for the other AI blocks. A minimum edge below -50 switches the expected-value gate off and leaves the significance gate in charge.'
+        'Runs the full AI read once per tick: seven models forecast the last digit, the payout table prices every barrier, and the best expected value is cached for the other AI blocks. A minimum edge below -50 switches the expected-value gate off, and a minimum lean of 0 switches the significance gate off too, which is the default: the bot trades the strongest lean it can measure on every tick. Raise the lean to 1.5 or more to insist on a lean bigger than the noise.'
     ),
     display_name: localize('AI Vision: read the market'),
     description: localize(
-        'The engine behind the AI blocks. It measures the market, forecasts the distribution of the last digit at expiry, reads the live payout table, then picks the barrier and direction with the strongest measured lean. Call it once at the top of your purchase conditions; every other AI block then reads the same decision. Minimum edge is the strict expected-value gate: leave it negative to trade the best measured lean, raise it to 0 or more to insist on a trade that beats the payout margin.'
+        'The engine behind the AI blocks. It measures the market, forecasts the distribution of the last digit at expiry, reads the live payout table, then picks the barrier and direction with the strongest measured lean. Call it once at the top of your purchase conditions; every other AI block then reads the same decision. Minimum edge is the strict expected-value gate: leave it negative to trade the best measured lean, raise it to 0 or more to insist on a trade that beats the payout margin. Minimum lean is the significance gate, and it ships at 0 so the bot actually opens positions: it then buys the strongest lean it can measure every tick, however thin, and prints the lean in sigma and the true expected value on every entry so you can see what you are getting. Raise it to 1.5 or more and the bot will start refusing most ticks, which is the honest measure of how much of what it does is signal.'
     ),
     call: input =>
         `Bot.visionAnalyse(${input.HORIZON}, ${input.MIN_EDGE}, ${input.MIN_LEAN}, ${input.MIN_CONFIDENCE}, ${input.AGREEMENT}, ${input.RISK})`,

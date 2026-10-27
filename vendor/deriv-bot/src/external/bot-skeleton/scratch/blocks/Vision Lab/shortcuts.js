@@ -134,8 +134,8 @@ defineStatementBlock({
     category,
     tooltip: localize('The complete Over/Under decision in one block: it reads the market, sets the prediction, and stores the barrier and stake for the blocks around it.'),
     display_name: localize('AI Over/Under decision'),
-    description: localize('Pair it with the Over and Under purchase blocks: afterwards, read the AI barrier as the Prediction of your trade options and the AI stake as the stake, then let the AI direction choose which side to buy.'),
-    call: input => `Bot.visionAnalyse(${input.DURATION}, ${input.MIN_EDGE}, 1.5, 55, 0.7, ${input.RISK})`,
+    description: localize('Pair it with the Over and Under purchase blocks: afterwards, read the AI barrier as the Prediction of your trade options and the AI stake as the stake, then let the AI direction choose which side to buy. It ships with the significance bar off, so it takes the strongest lean on every tick; raise the minimum lean inside the AI Vision read block if you would rather it wait for a lean bigger than the noise.'),
+    call: input => `Bot.visionAnalyse(${input.DURATION}, ${input.MIN_EDGE}, 0, 0, 0, ${input.RISK})`,
 });
 
 defineValueBlock({
