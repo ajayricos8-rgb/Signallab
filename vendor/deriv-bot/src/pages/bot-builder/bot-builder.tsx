@@ -7,6 +7,7 @@ import { useStore } from '@/hooks/useStore';
 import { api_base, load } from '@/external/bot-skeleton';
 import { clearDerivApiInstance } from '@/external/bot-skeleton/services/api/appId';
 import { getSpeed, setSpeed } from '@/services/vision-speed';
+import { setSignalLabAnalysisSnapshot } from '@/services/signallab-feed';
 import { getSignalLabGrantId, getSignalLabSessionRevision, hasSignalLabAccount, linkSignalLabAccount, receiveSignalLabSocket, unlinkSignalLabAccount } from '@/services/signallab-session';
 import { localize } from '@deriv-com/translations';
 import { useDevice } from '@deriv-com/ui';
@@ -16,6 +17,47 @@ import SaveModal from '../dashboard/bot-list/save-modal';
 import BotBuilderTourHandler from '../tutorials/dbot-tours/bot-builder-tour';
 import QuickStrategy1 from './quick-strategy';
 import WorkspaceWrapper from './workspace-wrapper';
+
+function getWorkspaceBlockRegistry() {
+    const entries = Object.entries(window.Blockly?.Blocks ?? {});
+    const requiredAiBlocks = ['vision_analyse', 'vision_go', 'signal_lab_analysis_gate'];
+    // Keep every Signal Lab/Vision block in the snapshot even if Deriv adds
+    // enough standard blocks to push those definitions past the cap.
+    const preferred = entries.filter(([type]) =>
+        type.startsWith('vision_') || type.startsWith('x_ai_') || type.startsWith('signal_lab_'),
+    );
+    const preferredTypes = new Set(preferred.map(([type]) => type));
+    const orderedEntries = [...preferred, ...entries.filter(([type]) => !preferredTypes.has(type))].slice(0, 800);
+    const blocks = orderedEntries.map(([type, block]) => {
+        let meta: Record<string, unknown> = {};
+        let definition: Record<string, unknown> = {};
+        try {
+            meta = typeof block?.meta === 'function' ? block.meta() ?? {} : {};
+        } catch {
+            meta = {};
+        }
+        try {
+            definition = typeof block?.definition === 'function' ? block.definition() ?? {} : {};
+        } catch {
+            definition = {};
+        }
+        const name = typeof meta.display_name === 'string' ? meta.display_name : type;
+        const description = typeof meta.description === 'string' ? meta.description.slice(0, 360) : '';
+        const rawCategory = meta.category ?? definition.category;
+        const category = typeof rawCategory === 'string'
+            ? rawCategory
+            : type.startsWith('vision_') || type.startsWith('x_') ? 'Vision Lab'
+                : type.startsWith('signal_lab_') ? 'Signal Lab' : 'DBot';
+        return { type, name, category, description };
+    });
+    const generator = window.Blockly?.JavaScript?.javascriptGenerator?.forBlock ?? {};
+    const hasAiRuntime = (type: string) => Boolean(window.Blockly?.Blocks?.[type] && generator[type]);
+    return {
+        count: entries.length,
+        blocks,
+        aiRuntimeRegistered: requiredAiBlocks.every(hasAiRuntime),
+    };
+}
 
 const BotBuilder = observer(() => {
     const { dashboard, app, client, run_panel, toolbar, quick_strategy, blockly_store } = useStore();
@@ -39,12 +81,18 @@ const BotBuilder = observer(() => {
             if (event.origin !== window.location.origin || event.source !== window.parent) return;
             const data = event.data;
             if (!data || data.source !== 'signal-lab' || typeof data.type !== 'string') return;
-            if (data.type === 'hello') notify('ready');
+            if (data.type === 'hello') {
+                notify('ready');
+                notify('block-registry', getWorkspaceBlockRegistry());
+            }
             // The host mirrors the Fast/Slow control; keep the two in step.
             if (data.type === 'set-speed' && (data.speed === 'slow' || data.speed === 'normal' || data.speed === 'fast')) {
                 setSpeed(data.speed, { silent: true });
             }
             if (data.type === 'request-speed') notify('speed', { speed: getSpeed() });
+            if (data.type === 'clear-analysis') {
+                setSignalLabAnalysisSnapshot(null);
+            }
             if (data.type === 'load-bot') {
                 if (run_panel.is_running) {
                     notify('error', { message: 'Stop your running bot before loading another strategy.' });
@@ -52,6 +100,11 @@ const BotBuilder = observer(() => {
                 }
                 if (typeof data.xml !== 'string' || !data.xml.trim()) {
                     notify('error', { message: 'That strategy could not be read.' });
+                    return;
+                }
+                const runAfterLoad = data.runAfterLoad === true;
+                if (runAfterLoad && (!hasSignalLabAccount() || !client.is_logged_in)) {
+                    notify('error', { message: 'Connect the Signal Lab account in DBot before starting this strategy.' });
                     return;
                 }
                 const workspace = window.Blockly?.derivWorkspace;
@@ -65,6 +118,7 @@ const BotBuilder = observer(() => {
                 if (has_blocks && !window.confirm(`Replace the strategy in the workspace with “${name}”? Unsaved changes will be lost.`)) {
                     return;
                 }
+                setSignalLabAnalysisSnapshot(null);
                 dashboard.setActiveTab(1);
                 window.setTimeout(() => {
                     Promise.resolve(
@@ -76,14 +130,33 @@ const BotBuilder = observer(() => {
                             showIncompatibleStrategyDialog: () => Promise.resolve(true),
                         } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
                     )
-                        .then((result: unknown) => {
+                        .then(async (result: unknown) => {
                             const error = (result as { error?: string } | undefined)?.error;
                             if (error) {
                                 notify('error', { message: error });
                                 return;
                             }
-                            notify('bot-loaded', { name });
+                            if (runAfterLoad && !setSignalLabAnalysisSnapshot(data.analysisSnapshot)) {
+                                notify('error', { message: 'The analysis snapshot is missing or invalid. Run a fresh analysis and load the strategy again.' });
+                                return;
+                            }
+                            notify('bot-loaded', { name, runAfterLoad });
                             window.dispatchEvent(new Event('resize'));
+                            if (runAfterLoad) {
+                                if (!hasSignalLabAccount() || !client.is_logged_in) {
+                                    setSignalLabAnalysisSnapshot(null);
+                                    notify('error', { message: 'The Signal Lab account disconnected before DBot could start.' });
+                                    return;
+                                }
+                                try {
+                                    await run_panel.onRunButtonClick();
+                                    if (!run_panel.is_running) throw new Error('DBot did not enter the running state.');
+                                    notify('bot-run-started', { name });
+                                } catch (cause) {
+                                    setSignalLabAnalysisSnapshot(null);
+                                    notify('error', { message: cause instanceof Error ? cause.message : 'DBot could not start the strategy.' });
+                                }
+                            }
                         })
                         .catch(() => notify('error', { message: `“${name}” could not be loaded into the workspace.` }));
                 }, 60);
@@ -161,6 +234,7 @@ const BotBuilder = observer(() => {
         window.addEventListener('message', onMessage);
         window.addEventListener('signallab-dbot-socket-closed', onSocketClosed);
         notify('ready');
+        notify('block-registry', getWorkspaceBlockRegistry());
         return () => {
             window.removeEventListener('message', onMessage);
             window.removeEventListener('signallab-dbot-socket-closed', onSocketClosed);
@@ -178,6 +252,12 @@ const BotBuilder = observer(() => {
             window.parent.postMessage({ source: 'signal-lab-dbot', type: 'account-connected', accountId: client.loginid, grantId: getSignalLabGrantId() }, window.location.origin);
         }
     }, [client.is_logged_in, client.loginid]);
+
+    React.useEffect(() => {
+        if (window.parent !== window) {
+            window.parent.postMessage({ source: 'signal-lab-dbot', type: 'bot-status', running: is_running }, window.location.origin);
+        }
+    }, [is_running]);
 
     React.useEffect(() => {
         if (window.parent !== window) {

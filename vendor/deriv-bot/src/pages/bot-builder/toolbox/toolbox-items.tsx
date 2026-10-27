@@ -447,6 +447,11 @@ export const ToolboxItems = () =>
                 <Block type='signal_lab_profit' />
                 <Block type='signal_lab_account' />
                 <Block type='signal_lab_connected' />
+                <Block type='signal_lab_analysis_gate'>
+                    <Field name='FAMILY'>rise-fall</Field>
+                    <Field name='SYMBOL'>R_100</Field>
+                    <Field name='ANALYSIS_ID' />
+                </Block>
             </Category>
 
             <Category id='vision_lab' name={localize('Vision Lab')}>

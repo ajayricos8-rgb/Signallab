@@ -44,13 +44,40 @@ export type SignalLabAccount = {
     updatedAt: number;
 };
 
+export type SignalLabAnalysisFamily = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
+export type SignalLabAnalysisEntry = {
+    action: 'enter-now' | 'enter-on-trigger' | 'no-edge';
+    trigger: 'immediate' | 'quote' | 'digit';
+    windowTicks: number;
+    priceLevel: number | null;
+    priceCondition: 'above' | 'below' | null;
+    tolerance: number | null;
+    contextDigits: number[];
+};
+export type SignalLabAnalysisSnapshot = {
+    analysisId: string;
+    family: SignalLabAnalysisFamily;
+    symbol: string;
+    contractType: string;
+    barrier: number | null;
+    targetDigit: number | null;
+    generatedAt: number;
+    asOfEpoch: number;
+    maxAgeMs: number;
+    validForTicks: number;
+    tradeable: boolean;
+    entry: SignalLabAnalysisEntry;
+};
+
 /** Keep the same window DBot's own "Ticks list" block reports. */
 const TICK_LIMIT = 1_000;
+const DATA_STALE_MS = 15_000;
 const REQUEST_RETRY_MS = 4_000;
 const DATA_WAIT_MS = 8_000;
 
 let markets = new Map<string, SignalLabMarket>();
 let account: SignalLabAccount | null = null;
+let analysis: SignalLabAnalysisSnapshot | null = null;
 let connected = false;
 let listening = false;
 let retryTimer: number | undefined;
@@ -126,7 +153,10 @@ function mergeTicks(market: SignalLabMarket, incoming: SignalLabTick[], reset: b
 function applyFeed(data: Record<string, unknown>) {
     const reset = data.reset === true;
     const incoming = Array.isArray(data.markets) ? data.markets : [];
-    if (reset) markets = new Map();
+    if (reset) {
+        markets = new Map();
+        analysis = null;
+    }
     let changed = false;
     for (const raw of incoming) {
         const entry = asRecord(raw);
@@ -227,6 +257,150 @@ function startRequesting() {
 }
 
 /** Wire the parent channel. Safe to call more than once. */
+const analysisFamilies: SignalLabAnalysisFamily[] = ['rise-fall', 'over-under', 'even-odd', 'matches'];
+const contractFamilies: Record<SignalLabAnalysisFamily, string[]> = {
+    'rise-fall': ['CALL', 'PUT'],
+    'over-under': ['DIGITOVER', 'DIGITUNDER'],
+    'even-odd': ['DIGITEVEN', 'DIGITODD'],
+    matches: ['DIGITMATCH'],
+};
+
+function parseAnalysisSnapshot(value: unknown): SignalLabAnalysisSnapshot | null {
+    const record = asRecord(value);
+    const rawEntry = asRecord(record?.entry);
+    if (!record || !rawEntry) return null;
+    const family = record.family;
+    const symbol = typeof record.symbol === 'string' ? record.symbol.trim().toUpperCase() : '';
+    const contractType = typeof record.contractType === 'string' ? record.contractType.trim().toUpperCase() : '';
+    const analysisId = typeof record.analysisId === 'string' ? record.analysisId.trim().slice(0, 180) : '';
+    const action = rawEntry.action;
+    const trigger = rawEntry.trigger;
+    const priceCondition = rawEntry.priceCondition;
+    const generatedAt = record.generatedAt;
+    const asOfEpoch = record.asOfEpoch;
+    const maxAgeMs = record.maxAgeMs;
+    const validForTicks = record.validForTicks;
+    const windowTicks = rawEntry.windowTicks;
+    const barrier = record.barrier === null
+        ? null
+        : isFiniteNumber(record.barrier) && Number.isInteger(record.barrier) && record.barrier >= 1 && record.barrier <= 8
+            ? record.barrier
+            : undefined;
+    const targetDigit = record.targetDigit === null
+        ? null
+        : isFiniteNumber(record.targetDigit) && Number.isInteger(record.targetDigit) && record.targetDigit >= 0 && record.targetDigit <= 9
+            ? record.targetDigit
+            : undefined;
+    if (!analysisFamilies.includes(family as SignalLabAnalysisFamily)
+        || !/^(?:R_\d{1,3}|1HZ\d{1,3}V)$/.test(symbol)
+        || !analysisId
+        || !contractFamilies[family as SignalLabAnalysisFamily].includes(contractType)
+        || barrier === undefined || targetDigit === undefined
+        || (family === 'over-under' ? barrier === null : barrier !== null)
+        || (family === 'matches' ? targetDigit === null : targetDigit !== null)
+        || !isFiniteNumber(generatedAt) || generatedAt <= 0
+        || !isFiniteNumber(asOfEpoch) || asOfEpoch <= 0
+        || !isFiniteNumber(maxAgeMs) || maxAgeMs < 1_000 || maxAgeMs > 900_000
+        || !isFiniteNumber(validForTicks) || validForTicks < 1 || validForTicks > 500
+        || !isFiniteNumber(windowTicks) || windowTicks < 1 || windowTicks > 50
+        || (action !== 'enter-now' && action !== 'enter-on-trigger' && action !== 'no-edge')
+        || (trigger !== 'immediate' && trigger !== 'quote' && trigger !== 'digit')
+        || (priceCondition !== null && priceCondition !== 'above' && priceCondition !== 'below')) return null;
+
+    const priceLevel = rawEntry.priceLevel === null ? null : isFiniteNumber(rawEntry.priceLevel) ? rawEntry.priceLevel : null;
+    const tolerance = rawEntry.tolerance === null ? null : isFiniteNumber(rawEntry.tolerance) && rawEntry.tolerance >= 0 ? rawEntry.tolerance : null;
+    const contextDigits = Array.isArray(rawEntry.contextDigits)
+        ? [...new Set(rawEntry.contextDigits.filter((digit): digit is number => isFiniteNumber(digit) && Number.isInteger(digit) && digit >= 0 && digit <= 9))]
+        : [];
+    if (action === 'enter-on-trigger' && trigger === 'immediate') return null;
+    if (trigger === 'quote' && (priceLevel === null || priceCondition === null)) return null;
+    if (trigger === 'digit' && contextDigits.length === 0) return null;
+    return {
+        analysisId,
+        family: family as SignalLabAnalysisFamily,
+        symbol,
+        contractType,
+        barrier,
+        targetDigit,
+        generatedAt,
+        asOfEpoch,
+        maxAgeMs,
+        validForTicks: Math.floor(validForTicks),
+        tradeable: record.tradeable === true,
+        entry: {
+            action: action as SignalLabAnalysisEntry['action'],
+            trigger: trigger as SignalLabAnalysisEntry['trigger'],
+            windowTicks: Math.floor(windowTicks),
+            priceLevel,
+            priceCondition: priceCondition as SignalLabAnalysisEntry['priceCondition'],
+            tolerance,
+            contextDigits,
+        },
+    };
+}
+
+/** Set or clear the one analysis snapshot a generated DBot strategy may use. */
+export function setSignalLabAnalysisSnapshot(value: unknown): boolean {
+    if (value === null || value === undefined) {
+        analysis = null;
+        notify();
+        return true;
+    }
+    const next = parseAnalysisSnapshot(value);
+    analysis = next;
+    notify();
+    return next !== null;
+}
+
+export function getSignalLabAnalysisSnapshot(): SignalLabAnalysisSnapshot | null {
+    return analysis;
+}
+
+/**
+ * Live entry gate for the generated Blockly strategy. It requires the exact
+ * analysis key and market, a fresh feed, an unexpired measured window and the
+ * analysis engine's current quote/digit trigger. The purchase block remains
+ * the only code that can place an order.
+ */
+export function getSignalLabAnalysisGate(
+    family: string,
+    symbol: string,
+    analysisId: string,
+    contractType: string,
+    barrier: number,
+    targetDigit: number,
+): boolean {
+    const snapshot = analysis;
+    const market = markets.get(String(symbol));
+    if (!connected || !snapshot || !market || !market.ticks.length || snapshot.tradeable !== true) return false;
+    if (snapshot.family !== family || snapshot.symbol !== symbol || snapshot.analysisId !== analysisId) return false;
+    if (snapshot.contractType !== contractType) return false;
+    if (snapshot.family === 'over-under' && snapshot.barrier !== barrier) return false;
+    if (snapshot.family === 'matches' && snapshot.targetDigit !== targetDigit) return false;
+    const now = Date.now();
+    if (now < snapshot.generatedAt - 60_000 || now - snapshot.generatedAt > snapshot.maxAgeMs) return false;
+    if (now - market.updatedAt > DATA_STALE_MS) return false;
+    const elapsedTicks = market.ticks.reduce((count, tick) => count + (tick.epoch > snapshot.asOfEpoch ? 1 : 0), 0);
+    if (elapsedTicks > snapshot.validForTicks || snapshot.entry.action === 'no-edge') return false;
+    if (snapshot.entry.action === 'enter-now') return snapshot.entry.trigger === 'immediate';
+    if (elapsedTicks > snapshot.entry.windowTicks) return false;
+    if (snapshot.entry.trigger === 'digit') {
+        const digit = getSignalLabLastDigit(snapshot.symbol);
+        return digit !== null && snapshot.entry.contextDigits.includes(digit);
+    }
+    if (snapshot.entry.trigger === 'quote') {
+        const quote = getSignalLabLastTick(snapshot.symbol);
+        if (quote === null || snapshot.entry.priceLevel === null || !snapshot.entry.priceCondition) return false;
+        const distance = snapshot.entry.priceCondition === 'below'
+            ? quote - snapshot.entry.priceLevel
+            : snapshot.entry.priceLevel - quote;
+        if (distance > 0) return false;
+        const overshoot = -distance;
+        return snapshot.entry.tolerance === null || overshoot <= snapshot.entry.tolerance;
+    }
+    return false;
+}
+
 export function connectSignalLabBridge() {
     if (listening || typeof window === 'undefined') return;
     listening = true;
@@ -237,11 +411,14 @@ export function connectSignalLabBridge() {
         if (!data || data.source !== 'signal-lab') return;
         if (data.type === 'signal-lab-feed') applyFeed(data);
         else if (data.type === 'signal-lab-account') applyAccount(data);
+        else if (data.type === 'signal-lab-analysis') setSignalLabAnalysisSnapshot(data.analysis);
+        else if (data.type === 'clear-analysis') setSignalLabAnalysisSnapshot(null);
         else if (data.type === 'signal-lab-bridge') {
             // The parent unlinked the account or closed the bridge: drop the
             // cache so no stale balance or position survives in the workspace.
             if (data.live === false) {
                 account = null;
+                analysis = null;
                 markets = new Map();
                 connected = false;
                 notify();
