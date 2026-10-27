@@ -3,3 +3,4 @@
 - [Signal engine](signal-engine.md) — Run Analysis always ends in a cross-market signal with % progress, confidence and engines agreeing; analysis, prediction, confirmation and entry are separate layers.
 - [Forged model (layer 8)](forge-model.md) — engines, AI and calculations become one trained model; knowledge is a syllabus, fusion is fail-closed, a veto reaches the entry.
 - [Research library fusion (layer 4)](engine-lab-fusion.md) — the 300-engine ensemble is folded into the traded probability and confidence; unvalidated research can only lower them.
+- [DBot Space](dbot-space.md) — the embedded workspace links the Signal Lab account automatically and reads the ticks and account data Signal Lab already holds.

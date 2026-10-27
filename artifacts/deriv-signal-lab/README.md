@@ -30,14 +30,40 @@ charts, XML import/export, journal and six configurable Quick Strategy templates
 The store opens a template for review; **Load** replaces the current workspace
 but does not run it. Save an existing bot before loading a replacement.
 
-To trade, connect a Deriv account in Settings and explicitly link that account
-in DBot Space. Signal Lab supplies a separate short-lived WebSocket URL, not a
+DBot uses the account connected in Signal Lab automatically: opening the space
+links the selected account, and switching or reconnecting in Settings moves the
+link with it. There is no second login and no *Link account* step — the only
+manual action is **Unlink**, which pauses automatic linking until you press
+**Link now**. Signal Lab supplies a separate short-lived WebSocket URL, not a
 PAT in the bridge message. The embedded application is **same-origin**, so it
 can access the same browser storage as Signal Lab; this is not a PAT security
-sandbox. A running strategy can place trades and lose money. Start on demo,
-review every block and limit, and keep the tab open. Account changes, iframe
-reloads, and lost connections revoke the link and stop local execution; an
-already-open contract can still settle at Deriv.
+sandbox. A running strategy can place trades and lose money — linking alone
+cannot trade, because the workspace still needs **Run**. Start on demo, review
+every block and limit, and keep the tab open. Account changes, iframe reloads,
+and lost connections revoke the link, stop local execution and re-link
+automatically; an already-open contract can still settle at Deriv.
+
+### Signal Lab data in the workspace
+
+The same-origin channel also carries data, so the workspace does not pay for a
+second set of sockets:
+
+- **Ticks** — Signal Lab's shared feed for every volatility index (2,000 ticks
+  of history plus live updates) is posted into the frame, one message per
+  second carrying only the new ticks. The workspace keeps the last 1,000 per
+  market.
+- **Account** — balance, currency, open positions and realised profit for the
+  linked account, refreshed when it changes.
+- **Blocks** — a **Signal Lab** toolbox group (`signal_lab_*` blocks) reads that
+  data: last tick, tick list, last digit, market change over N ticks, balance,
+  open positions, realised profit, account ID and connection state. Code is
+  generated as `Bot.getSignalLab*`, wired in `SignalLabInterface`. The bridge is
+  read-only; orders still go through DBot's own authenticated socket for the
+  same account, so a bot trades exactly as Signal Lab does.
+
+The wire shapes and the cursor rules live in `src/lib/dbot-bridge.ts` (host)
+and `vendor/deriv-bot/src/services/signallab-feed.ts` (frame); both are covered
+by `tests/dbot-bridge.test.mjs` and `tests/dbot-bridge-frame.test.mjs`.
 
 `pnpm dev` and the app build compile the vendored engine into the ignored
 `artifacts/deriv-signal-lab/public/dbot/` directory. Set `BASE_PATH` consistently

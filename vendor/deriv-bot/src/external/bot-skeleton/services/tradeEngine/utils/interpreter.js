@@ -96,8 +96,16 @@ const Interpreter = () => {
 
     function initFunc(js_interpreter, scope) {
         const bot_interface = bot.getInterface();
-        const { getTicksInterface, alert, prompt, sleep, console: custom_console } = bot_interface;
+        const {
+            getTicksInterface,
+            getSignalLabInterface,
+            alert,
+            prompt,
+            sleep,
+            console: custom_console,
+        } = bot_interface;
         const ticks_interface = getTicksInterface;
+        const signal_lab_interface = getSignalLabInterface;
 
         js_interpreter.setProperty(scope, 'console', js_interpreter.nativeToPseudo(custom_console));
         js_interpreter.setProperty(scope, 'alert', js_interpreter.nativeToPseudo(alert));
@@ -111,6 +119,13 @@ const Interpreter = () => {
         const pseudo_bot_interface = js_interpreter.nativeToPseudo(bot_interface);
 
         Object.entries(ticks_interface).forEach(([name, f]) =>
+            js_interpreter.setProperty(pseudo_bot_interface, name, createAsync(js_interpreter, f))
+        );
+
+        // Signal Lab data blocks: ticks collected by the parent app plus the
+        // account snapshot it shares. Same async wrapping, so a script sees a
+        // plain value and waits while the parent's snapshot is in flight.
+        Object.entries(signal_lab_interface).forEach(([name, f]) =>
             js_interpreter.setProperty(pseudo_bot_interface, name, createAsync(js_interpreter, f))
         );
 
