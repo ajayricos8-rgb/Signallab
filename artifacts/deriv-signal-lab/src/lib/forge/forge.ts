@@ -81,6 +81,14 @@ const FORGE_SPEC: NetworkSpec = {
 /** Rows of the tick stream a fit may consume, so the worker stays responsive. */
 const MAX_FORGE_ROWS = 480;
 
+/** Public, inspectable summary of the model that the Base workspace displays. */
+export const FORGE_TRAINING_PROFILE = {
+  shape: [FORGE_SPEC.inputDim, ...(FORGE_SPEC.hidden ?? []), FORGE_SPEC.outputs],
+  maxReplayRows: MAX_FORGE_ROWS,
+  maxEpochs: FORGE_SPEC.epochs ?? 12,
+  distillationShare: FORGE_DISTILLATION,
+} as const;
+
 export type ForgeCandidateInput = {
   family: ForgeFamily;
   /** Contract or duration label, used on the card and in the notes. */

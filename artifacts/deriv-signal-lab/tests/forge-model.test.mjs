@@ -107,6 +107,9 @@ test('the knowledge base is a complete, deduplicated syllabus for both families'
   assert.equal(summary.byDomain.reduce((total, row) => total + row.count, 0), digit.length);
   assert.equal(summary.byUse.reduce((total, row) => total + row.count, 0), digit.length);
   assert.ok(summary.vetoes.length >= 5);
+  assert.ok(digit.some((entry) => entry.id === 'market.no-generator-state'));
+  assert.ok(digit.some((entry) => entry.id === 'stats.repeated-inspection'));
+  assert.ok(quote.some((entry) => entry.id === 'feed.public-research-socket'));
 });
 
 test('the market atlas answers for listed and unlisted symbols', () => {

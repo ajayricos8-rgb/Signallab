@@ -34,8 +34,8 @@ Every entry states one fact and declares how the model may use it:
 | `veto` | a rule that can only remove conviction (equality loses both sides, a flat expiry loses both directions, an edge inside its own error bar is not a signal, a payout below break-even is not profit) |
 | `gate` | a sample, timing or protocol condition the model must meet before it may speak (purge, minimum holdout, measured validity window, staleness) |
 
-Coverage today (v`2026.10.24`, 58 entries for the digit family, 55 for
-Rise/Fall) spans eight domains:
+Coverage today (v`2026.10.27`, 61 entries for the digit family, 58 for
+Rise/Fall; 72 unique lessons) spans eight domains:
 
 - **contract** — Matches, Even/Odd, Over/Under and Rise/Fall semantics, the
   exit-tick rule, the strict (not allow-equals) contract, the digit simplex.
@@ -182,10 +182,36 @@ thing that can make the term negative.
   model still has to beat the fair rate out of sample before it speaks.
 - It does not consume stake history, loss recovery or account state.
 
-## 6. Tests
+## 6. The Base workspace and randomness audit
+
+The new Base workspace tab (labelled “The Base”) exposes the forge profile, the full searchable
+syllabus and market atlas, the selected market's shared public feed, and a
+separate one-step digit research probe (`src/lib/forge/randomness-audit.ts`).
+The probe is not the trading model and never submits an order.
+
+- It uses the latest 800 verified digits to build a smoothed first-order
+  transition estimate (Dirichlet prior strength 12, anchored to the observed
+  marginal distribution and ultimately uniform odds).
+- A chronological prequential replay warms up on 200 ticks, predicts each later
+  digit before it is revealed, and compares ten-class Brier/log-loss against a
+  uniform 10% baseline. Its paired Brier z uses a Newey–West/HAC standard error
+  through lag 10; the historical screen also requires at least 250 scored rows,
+  positive Brier and log-loss skill, and a z bar adjusted for the number of
+  scanned markets.
+- The digit histogram, entropy, chi-square frequency p-value and repeat rate
+  are descriptive checks. A marginal-frequency p-value is not a test of every
+  possible dependence and a high p-value is not proof of randomness.
+- The current top-digit distribution is labelled exploratory unless the
+  historical screen passes. Even then, it is not a guarantee about the next
+  output or a claim of profitable trading. The public feed provides no RNG seed
+  or internal generator state, and repeated manual inspection remains a source
+  of selection bias.
+
+## 7. Tests
 
 ```sh
 pnpm --filter @workspace/deriv-signal-lab test:forge
+pnpm --filter @workspace/deriv-signal-lab test:forge-randomness
 ```
 
 `tests/forge-model.test.mjs` pins the properties the layer is allowed to claim:

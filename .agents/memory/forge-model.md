@@ -8,9 +8,13 @@ description: How the engines, AI layers and calculations become ONE trained mode
 its probability into the number the tool publishes and decides `inert | confirm | trim | veto`.
 
 - **Knowledge is data.** `knowledge.ts` holds a versioned syllabus (`FORGE_KNOWLEDGE_VERSION`) of
-  69 digit / 55 Rise/Fall entries in eight domains, each tagged `feature | prior | teacher | veto |
-  gate`, plus `FORGE_MARKET_ATLAS` (volatility classes, 1HZ variants, Crash/Boom, Step, Jump) with a
-  parsed fallback for unlisted symbols. Adding knowledge = adding a row; nothing else needs to change.
+  72 unique lessons (61 digit / 58 Rise/Fall) in eight domains, each tagged `feature | prior | teacher |
+  veto | gate`, plus `FORGE_MARKET_ATLAS` (volatility classes, 1HZ variants, Crash/Boom, Step, Jump)
+  with a parsed fallback for unlisted symbols. The Base tab exposes the complete searchable catalog.
+- **Randomness research is not seed recovery.** `src/lib/forge/randomness-audit.ts` implements a
+  smoothed first-order digit probe with a causal prequential replay, fair 10% benchmark, HAC paired
+  z and market-selection correction. It is descriptive/research-only: the public stream does not
+  expose the generator state, and repeated inspection is not fully corrected.
 - **Inputs are the other layers.** The vector carries the family-weighted ensemble edge (teacher), the
   rolling baseline, the analysis prior (rebuilt at each origin for digits; the causal drift view for
   quotes), spread/agreement/balance/abstention, sample maturity, horizon, cadence, volatility class,
