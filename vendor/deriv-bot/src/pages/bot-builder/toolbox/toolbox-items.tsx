@@ -454,17 +454,25 @@ export const ToolboxItems = () =>
                     <Block type='vision_analyse'>
                         <Value name='HORIZON'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>5</Field>
+                                <Field name='NUM'>1</Field>
                             </Shadow>
                         </Value>
+                        {/* The bars ship off: a fresh block must trade, not wait
+                            for an edge a fair market never offers. Raise them by
+                            hand to make the AI picky. */}
                         <Value name='MIN_EDGE'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>1.5</Field>
+                                <Field name='NUM'>-100</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_LEAN'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
                             </Shadow>
                         </Value>
                         <Value name='MIN_CONFIDENCE'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>55</Field>
+                                <Field name='NUM'>0</Field>
                             </Shadow>
                         </Value>
                         <Value name='RISK'>
@@ -474,11 +482,28 @@ export const ToolboxItems = () =>
                         </Value>
                         <Value name='AGREEMENT'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>0.6</Field>
+                                <Field name='NUM'>0</Field>
                             </Shadow>
                         </Value>
                     </Block>
                     <Block type='vision_go' />
+                    <Block type='vision_entry_ready'>
+                        <Value name='GAP'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>2</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='vision_mark_entry' />
+                    <Block type='vision_wait_entry'>
+                        <Value name='GAP'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>2</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='vision_ticks' />
+                    <Block type='vision_ready' />
                     <Block type='vision_barrier' />
                     <Block type='vision_direction' />
                     <Block type='vision_contract' />
@@ -915,7 +940,7 @@ export const ToolboxItems = () =>
                     <Block type='x_ai_should_buy'>
                         <Value name='MIN_EDGE'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>1.5</Field>
+                                <Field name='NUM'>-100</Field>
                             </Shadow>
                         </Value>
                     </Block>
@@ -935,17 +960,17 @@ export const ToolboxItems = () =>
                     <Block type='x_ai_trade'>
                         <Value name='STAKE'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>1</Field>
+                                <Field name='NUM'>0.35</Field>
                             </Shadow>
                         </Value>
                         <Value name='DURATION'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>5</Field>
+                                <Field name='NUM'>1</Field>
                             </Shadow>
                         </Value>
                         <Value name='MIN_EDGE'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>1.5</Field>
+                                <Field name='NUM'>-100</Field>
                             </Shadow>
                         </Value>
                         <Value name='RISK'>

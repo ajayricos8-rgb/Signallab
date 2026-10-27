@@ -20,10 +20,20 @@ import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
 import * as memory from '../utils/vision-memory.mjs';
+import {
+    createEntryPacer,
+    DEFAULT_ENTRY_GAP_MS,
+    entryDecision,
+    MIN_TICKS_TO_READ,
+    readBarrier,
+    readDirection,
+    readStake,
+    waitingReason,
+} from '../utils/vision-entry.mjs';
 import { createMarketPicker, scoreMarket, VOLATILITY_MARKETS } from '../utils/vision-markets.mjs';
-import { ensurePayouts, payoutSnapshot, refreshPayouts } from '../utils/vision-payouts.js';
+import { ensurePayouts, peekPayouts, payoutSnapshot, refreshPayouts } from '../utils/vision-payouts.js';
 
-const PLAN_TTL_MS = 4_000;
+const PLAN_REUSE_MS = 15_000;
 const DEFAULT_HORIZON = 5;
 const DEFAULT_MIN_EDGE = -100; // the block default: significance decides, the value gate is off
 const DEFAULT_MIN_CONFIDENCE = 0;
@@ -32,8 +42,16 @@ const DEFAULT_RISK = 0.6;
 const DEFAULT_TARGET_EDGE = 0.04;
 
 const planCache = new Map();
+/** The last decision each market produced, so a thin tick can still be priced. */
+const lastPlan = new Map();
 /** Last measured ticks-per-minute, per market. */
 const measuredTickRate = new Map();
+/**
+ * One pacer for the whole session: however many strategies and blocks read it,
+ * the bot never opens contracts faster than this. Two seconds is the shipped
+ * default — "as often as possible" still has to mean "one position at a time".
+ */
+const pacer = createEntryPacer({ gapMs: DEFAULT_ENTRY_GAP_MS });
 
 const num = (value, fallback = 0) => {
     const parsed = typeof value === 'number' ? value : parseFloat(value);
@@ -93,19 +111,42 @@ const getVisionInterface = tradeEngine => {
      * One AI decision per tick per market. Later calls inside the same tick get
      * the cached plan so the barrier, direction, stake and probability a
      * strategy reads always belong to the same decision.
+     *
+     * This used to give up below eighty ticks and return nothing at all, which
+     * is a trap on a market the bot just switched to: no plan means no entry,
+     * and the tick analysis that switches markets every couple of seconds can
+     * keep a session below that floor forever. The engine is perfectly able to
+     * read twelve ticks, so twelve is the floor — and below it the last decision
+     * this market produced is handed back rather than nothing, so trade options
+     * are never built from a missing barrier.
      */
-    const getPlan = async (overrides = {}) => {
+    const getPlan = async (overrides = {}, options = {}) => {
         const symbol = symbolOf();
-        const ticks = await readTicks();
-        if (ticks.length < 80) return null;
-
-        const signature = signatureOf(ticks);
         const cached = planCache.get(symbol);
-        if (cached && cached.signature === signature && Date.now() - cached.at < PLAN_TTL_MS) {
+
+        /**
+         * One decision per tick, made by the tick command.
+         *
+         * Only the AI read block rebuilds the plan (`fresh: true`); every other
+         * block — the barrier and stake in the trade options, the entry switch
+         * in the purchase conditions, the summary in the journal — reads the
+         * plan the tick command just made. Rebuilding per block used to let the
+         * trade options price a barrier that the purchase conditions had already
+         * moved past, and it made every getter pay for the ensemble again.
+         */
+        if (options.fresh !== true && cached && Date.now() - cached.at < PLAN_REUSE_MS) {
             return applyOverrides(cached.plan, overrides);
         }
 
-        const payouts = await ensurePayouts(payoutOptions());
+        const ticks = await readTicks();
+        if (ticks.length < MIN_TICKS_TO_READ) return lastPlan.get(symbol) || null;
+
+        const signature = signatureOf(ticks);
+
+        // Price on whatever table we already have and let the live one land in
+        // the background: waiting for twenty proposals is what makes a bot on a
+        // two-second market miss the tick it was analysing.
+        const payouts = peekPayouts(payoutOptions());
         const previous = cached?.plan || null;
         const brain = memory.loadBrain(symbol);
         const plan = ai.planTrade(ticks, {
@@ -129,7 +170,8 @@ const getVisionInterface = tradeEngine => {
             ticks,
             symbol,
         });
-        return plan;
+        if (plan?.best) lastPlan.set(symbol, plan);
+        return applyOverrides(plan, overrides);
     };
 
     /**
@@ -147,7 +189,7 @@ const getVisionInterface = tradeEngine => {
         const minAgreement = clamp((overrides.minAgreement ?? 0.7) + scrutinyAdjustment(), 0, 1);
         const strictValue = minEdge > -50;
         const relaxed = minLean <= 0;
-        const go =
+        const passes =
             plan.best.bias > 0 &&
             (relaxed ||
                 (plan.best.rawBias > 0 &&
@@ -155,7 +197,17 @@ const getVisionInterface = tradeEngine => {
                     plan.confidence >= minConfidence &&
                     plan.agreementRatio >= minAgreement)) &&
             (!strictValue || plan.best.adjusted >= minEdge / 100);
-        return { ...plan, go, reason: go ? 'entry confirmed' : plan.reason };
+        // Same rule as the engine: with every bar off the plan is always
+        // tradeable, because "trade the strongest thing you can see" cannot mean
+        // "sit out whenever that thing is not above the fair odds".
+        const forced = Boolean(relaxed && !strictValue && !passes);
+        const go = Boolean(passes || forced);
+        return {
+            ...plan,
+            go,
+            forced,
+            reason: passes ? 'entry confirmed' : forced ? 'no measured lean — trading the safest contract anyway' : plan.reason,
+        };
     };
 
     const lastDigitFromContract = () => {
@@ -234,13 +286,16 @@ const getVisionInterface = tradeEngine => {
                 minConfidence: minConfidence ?? undefined,
                 risk: risk ?? undefined,
                 minAgreement: minAgreement ?? undefined,
-            });
-            if (!plan) return localize('Not enough ticks yet for the AI to read the market.');
+            }, { fresh: true });
+            if (!plan) {
+                const ticks = await readTicks();
+                return waitingReason({ ticks: ticks.length, min: MIN_TICKS_TO_READ });
+            }
             return plan.summary;
         },
 
-        visionBarrier: async () => (await getPlan())?.barrier ?? -1,
-        visionDirection: async () => (await getPlan())?.direction ?? 'wait',
+        visionBarrier: async () => readBarrier(await getPlan(), lastPlan.get(symbolOf())),
+        visionDirection: async () => readDirection(await getPlan(), lastPlan.get(symbolOf())),
         visionProbability: async () => round(((await getPlan())?.probability ?? 0) * 100, 3),
         visionFair: async () => round(((await getPlan())?.fair ?? 0) * 100, 3),
         visionEdge: async () => round(((await getPlan())?.edge ?? 0) * 100, 3),
@@ -248,17 +303,93 @@ const getVisionInterface = tradeEngine => {
         visionConfidence: async () => round((await getPlan())?.confidence ?? 0, 1),
         visionAgreement: async () => round(((await getPlan())?.agreementRatio ?? 0) * 100, 1),
         visionPayout: async () => round((await getPlan())?.payout ?? 0, 4),
-        visionGo: async () => Boolean((await getPlan())?.go),
-        visionReason: async () => (await getPlan())?.reason ?? localize('no plan'),
-        visionSummary: async () => (await getPlan())?.summary ?? localize('no plan'),
+        /**
+         * The entry switch. `true` whenever the AI has a contract it is willing
+         * to buy; with the bars off that is every tick, because a plan that
+         * picks a barrier and then refuses to buy it is the bug this fixes.
+         */
+        visionGo: async () => {
+            const plan = await getPlan();
+            return entryDecision({ plan, last: lastPlan.get(symbolOf()), forceEntry: true }).go;
+        },
+        visionReason: async () => {
+            const plan = await getPlan();
+            if (!plan) {
+                const ticks = await readTicks();
+                return waitingReason({ ticks: ticks.length, min: MIN_TICKS_TO_READ });
+            }
+            return plan.reason;
+        },
+        visionSummary: async () => {
+            const plan = await getPlan();
+            if (plan) return plan.summary;
+            const ticks = await readTicks();
+            return `${waitingReason({ ticks: ticks.length, min: MIN_TICKS_TO_READ })} · buying the neutral Over ${readBarrier(null, null)} until the AI can read this market`;
+        },
         visionHorizon: async () => horizonTicks(),
 
         visionStake: async baseStake => {
             const plan = await getPlan();
             const base = num(baseStake, 1);
-            if (!plan?.best || !plan.go) return round(base * 0.25, 2);
-            return round(base * clamp(plan.stakeFactor, 0, 1), 2);
+            const decision = entryDecision({ plan, last: lastPlan.get(symbolOf()) });
+            if (!plan?.best || !decision.go) return readStake(base * 0.25);
+            return readStake(base * clamp(plan.stakeFactor, 0.2, 1));
         },
+
+        /* ---------------- entry pacing ---------------- */
+
+        /**
+         * May the strategy open a position right now? Defaults to one entry per
+         * two seconds, so a bot reading a one-second market still cannot buy a
+         * contract per second.
+         */
+        visionEntryReady: async gapSeconds => {
+            if (gapSeconds !== undefined && gapSeconds !== null && String(gapSeconds) !== '') {
+                pacer.setGapSeconds(gapSeconds);
+            }
+            return pacer.ready();
+        },
+
+        /** Record that a position was just opened. */
+        visionMarkEntry: async () => {
+            pacer.mark();
+            return true;
+        },
+
+        /**
+         * Hold the strategy until the pace allows another entry.
+         *
+         * Call it between settling a contract and asking for the next one: the
+         * tick block keeps reading the market while this waits, so the trade
+         * options that follow are built from a decision made a moment ago
+         * rather than from the one that bought the last contract.
+         */
+        visionWaitForEntry: async gapSeconds => {
+            if (gapSeconds !== undefined && gapSeconds !== null && String(gapSeconds) !== '') {
+                pacer.setGapSeconds(gapSeconds);
+            }
+            const cap = Date.now() + Math.max(1_000, pacer.gapMs + 1_000);
+            while (!pacer.ready() && Date.now() < cap) {
+                // eslint-disable-next-line no-await-in-loop
+                await new Promise(resolve => setTimeout(resolve, 120));
+            }
+            return true;
+        },
+
+        /** Set (and read back) the minimum seconds between entries. */
+        visionEntryGap: async gapSeconds => {
+            if (gapSeconds !== undefined && gapSeconds !== null && String(gapSeconds) !== '') {
+                pacer.setGapSeconds(gapSeconds);
+            }
+            return round(pacer.gapMs / 1000, 2);
+        },
+
+        visionSecondsSinceEntry: async () => round(pacer.waitMs() / 1000, 2),
+
+        /** How many ticks this market has, and whether that is enough to read. */
+        visionTicks: async () => (await readTicks()).length,
+
+        visionReady: async () => (await readTicks()).length >= MIN_TICKS_TO_READ,
 
         visionDigitProbability: async digit => {
             const plan = await getPlan();
@@ -590,20 +721,25 @@ const getVisionInterface = tradeEngine => {
 
         xAiShouldBuy: async minEdge => {
             const plan = await getPlan({ minEdge: minEdge ?? undefined });
-            return Boolean(plan?.go);
+            return entryDecision({ plan, last: lastPlan.get(symbolOf()), forceEntry: true }).go;
         },
 
         xAiStake: async (baseStake, risk) => {
             const plan = await getPlan({ risk: risk ?? undefined });
             const base = num(baseStake, 1);
-            if (!plan?.best || !plan.go) return round(base * 0.25, 2);
-            return round(base * clamp(plan.stakeFactor, 0, 1), 2);
+            const decision = entryDecision({ plan, last: lastPlan.get(symbolOf()) });
+            if (!plan?.best || !decision.go) return readStake(base * 0.25);
+            return readStake(base * clamp(plan.stakeFactor, 0.2, 1));
         },
 
         xAiSignal: async () => {
             const plan = await getPlan();
-            if (!plan) return localize('warming up');
-            return `${plan.go ? 'TRADE' : 'WAIT'} · ${plan.summary} · ${plan.reason}`;
+            if (!plan) {
+                const ticks = await readTicks();
+                return `TRADE (neutral) · ${waitingReason({ ticks: ticks.length, min: MIN_TICKS_TO_READ })}`;
+            }
+            const decision = entryDecision({ plan, last: lastPlan.get(symbolOf()) });
+            return `${decision.go ? 'TRADE' : 'WAIT'}${decision.forced ? ' (forced)' : ''} · ${plan.summary} · ${plan.reason}`;
         },
 
         /* ---------------- all markets ---------------- */
@@ -617,7 +753,7 @@ const getVisionInterface = tradeEngine => {
         visionMarketCount: async () => MARKETS.length,
 
         /** True once this market has enough history behind it to be read. */
-        visionMarketReady: async () => (await readTicks()).length >= 80,
+        visionMarketReady: async () => (await readTicks()).length >= MIN_TICKS_TO_READ,
 
         /** 0-100: how worth trading the current market looks right now. */
         visionMarketScore: async () => {
@@ -662,11 +798,26 @@ const getVisionInterface = tradeEngine => {
             const score = cached?.plan ? scoreMarket(cached.plan) : 0;
             picker.recordScore(symbol, score);
 
+            /**
+             * A market we have not managed to read yet is not a market to
+             * compare: leaving it before the first decision means the bot
+             * spends a session hopping between streams and never trading on
+             * any of them — every switch trades a warm history for a cold one.
+             * So the bot stays until this market has produced a readable tick
+             * history, or until it is clear the market is never going to (a
+             * dead stream should not pin a session either).
+             */
+            const tickCount = (await readTicks()).length;
+            const secondsHere = picker.secondsOnMarket();
+            const stuck = secondsHere > Math.max(20, num(dwell, 2) * 4);
+            if (tickCount < MIN_TICKS_TO_READ && !stuck) return symbol;
+
             const target = picker.choose({ mode, minScore, dwell, current: symbol, score });
             if (target === symbol) return symbol;
 
             const moved = await switchToMarket(target);
             if (moved === target) picker.markSwitched();
+            // Never buy on the new market's prices using the old market's plan.
             return moved;
         },
 

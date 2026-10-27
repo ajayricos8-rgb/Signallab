@@ -241,10 +241,28 @@ export async function ensurePayouts(options) {
     return table;
 }
 
+/**
+ * The table as it stands right now, without waiting for the network.
+ *
+ * The running bot must never spend four seconds of a two-second market waiting
+ * for twenty proposals: the modelled ladder is already a conservative price, and
+ * the live table replaces it as soon as it lands. So an entry-priced plan asks
+ * for a peek and refreshes in the background, and only the explicit "refresh
+ * the payout table" block waits for the API.
+ */
+export function peekPayouts(options) {
+    const key = keyOf(options);
+    const table = cache.get(key) || (stored[key] ? PayoutTable.fromJSON(stored[key]) : null);
+    if (table) cache.set(key, table);
+    // Warm the next decision without holding this one up.
+    refreshPayouts(options);
+    return table;
+}
+
 export function payoutSnapshot(options) {
     const table = cache.get(keyOf(options));
     if (!table) return null;
     return { live: table.live, complete: table.complete, ageSeconds: (Date.now() - table.at) / 1000, table };
 }
 
-export default { ensurePayouts, refreshPayouts, payoutSnapshot, PayoutTable };
+export default { ensurePayouts, refreshPayouts, peekPayouts, payoutSnapshot, PayoutTable };

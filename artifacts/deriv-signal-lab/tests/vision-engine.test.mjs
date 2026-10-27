@@ -462,3 +462,78 @@ test('a market score reflects the strength of the read', () => {
     assert.ok(scoreMarket(loud) <= 100 && scoreMarket(quiet) >= 0);
     assert.equal(scoreMarket(null), 0);
 });
+
+test('a plan with the bars off always names a buyable contract', () => {
+    // Ten flat digit streams: every digit appears exactly as often as every
+    // other, which is the worst case for a significance gate — and the case the
+    // shipped bot spends most of its life in.
+    const even = Array.from({ length: 600 }, (_, i) => Number(`500.${(i % 10)}0`));
+    const relaxed = { horizon: 1, minLean: 0, minConfidence: 0, minAgreement: 0, minEdge: -100, risk: 0.6 };
+
+    const plan = ai.planTrade(even, relaxed);
+    assert.equal(plan.go, true, 'the bot buys even when nothing leans past the fair odds');
+    assert.ok(plan.best, 'and it names the contract it is buying');
+    assert.ok(plan.barrier >= 0 && plan.barrier <= 9);
+    assert.ok(['over', 'under'].includes(plan.direction));
+    assert.ok(plan.payout > 0);
+    // A forced entry still has to be a real contract with a real stake.
+    assert.ok(ai.winningDigitCount(plan.direction, plan.barrier) > 0);
+    assert.ok(plan.stakeFactor >= 0.2, 'a forced entry is never sized to zero');
+});
+
+test('with the bars off every tick of every market is tradeable', () => {
+    const relaxed = { horizon: 1, minLean: 0, minConfidence: 0, minAgreement: 0, minEdge: -100, risk: 0.6 };
+    let fired = 0;
+    const trials = 40;
+    for (let trial = 0; trial < trials; trial++) {
+        // Short histories too: twelve ticks is the floor the interface now uses.
+        const size = trial % 2 ? 12 : 400;
+        const plan = ai.planTrade(walk(size, { seed: 101 + trial * 17 }), relaxed);
+        if (plan.go) fired += 1;
+        assert.ok(plan.best, `trial ${trial} produced no contract`);
+    }
+    assert.equal(fired, trials, 'the entry switch must never be the reason nothing opens');
+});
+
+test('a plan is never passed off as a measured edge when it was not one', () => {
+    const even = Array.from({ length: 600 }, (_, i) => Number(`500.${(i % 10)}0`));
+    const relaxed = { horizon: 1, minLean: 0, minConfidence: 0, minAgreement: 0, minEdge: -100, risk: 0.6 };
+    const plan = ai.planTrade(even, relaxed);
+
+    // A flat digit stream is the one case where no barrier can lean past the
+    // fair odds for every candidate at once; if the engine had to force the
+    // entry it must say so rather than dress it up as a signal. Otherwise it
+    // found a real (if tiny) lean and reports that instead.
+    if (plan.forced) {
+        assert.match(plan.reason, /safest contract/);
+        assert.match(plan.summary, /forced/);
+    } else {
+        assert.ok(plan.best.bias > 0, 'a non-forced plan always carries a positive lean');
+        assert.doesNotMatch(plan.summary, /forced/);
+    }
+    assert.equal(plan.go, true, 'either way the bot has a position to open');
+});
+
+test('the bars switch the forcing off: an explicit floor is never overridden', () => {
+    const strict = { horizon: 1, minLean: 2.5, minConfidence: 60, minAgreement: 0.8, minEdge: 0.5, risk: 0.6 };
+    let fired = 0;
+    for (let trial = 0; trial < 20; trial++) {
+        const plan = ai.planTrade(walk(800, { seed: 5 + trial * 31 }), strict);
+        if (plan.go) fired += 1;
+        assert.equal(plan.forced, false);
+    }
+    assert.ok(fired <= 2, `strict bars must stay quiet, fired on ${fired} of 20`);
+});
+
+test('forceEntry can be turned off programmatically', () => {
+    const even = Array.from({ length: 600 }, (_, i) => Number(`500.${(i % 10)}0`));
+    const plan = ai.planTrade(even, {
+        horizon: 1,
+        minLean: 0,
+        minEdge: -100,
+        risk: 0.6,
+        forceEntry: false,
+    });
+    assert.equal(plan.forced, false);
+    assert.equal(plan.go, Boolean(plan.best?.passes));
+});
