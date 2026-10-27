@@ -21,6 +21,38 @@ The development script starts the workspace services and binds Vite to `0.0.0.0`
 
 Deriv REST calls are made from the browser first. If a browser blocks that cross-origin read, the same request is retried through this workspace's API service (`/api/deriv/*`), which relays only Deriv Options API paths and forwards the caller's `Authorization` and `Deriv-App-ID` headers without logging them.
 
+## DBot Space
+
+The **DBot Space** tab embeds a modified, MIT-licensed copy of Deriv's
+[trading-bot-template](https://github.com/deriv-com/trading-bot-template)
+(`vendor/deriv-bot`, including its license). It provides the Blockly builder,
+charts, XML import/export, journal and six configurable Quick Strategy templates.
+The store opens a template for review; **Load** replaces the current workspace
+but does not run it. Save an existing bot before loading a replacement.
+
+To trade, connect a Deriv account in Settings and explicitly link that account
+in DBot Space. Signal Lab supplies a separate short-lived WebSocket URL, not a
+PAT in the bridge message. The embedded application is **same-origin**, so it
+can access the same browser storage as Signal Lab; this is not a PAT security
+sandbox. A running strategy can place trades and lose money. Start on demo,
+review every block and limit, and keep the tab open. Account changes, iframe
+reloads, and lost connections revoke the link and stop local execution; an
+already-open contract can still settle at Deriv.
+
+`pnpm dev` and the app build compile the vendored engine into the ignored
+`artifacts/deriv-signal-lab/public/dbot/` directory. Set `BASE_PATH` consistently
+for both builds when deploying below a URL prefix. `DBOT_APP_ID` (or
+`VITE_DERIV_APP_ID`) sets the public Deriv app ID, defaulting to `1089`.
+Optional standalone OAuth/Google Drive configuration is documented by the
+vendored template. DBot Space itself uses the Signal Lab account controls.
+
+The browser smoke test uses mocked Deriv REST/WebSocket responses and blocks
+orders; start the dev server first and supply a Chromium executable if needed:
+
+```sh
+BROWSER_EXECUTABLE_PATH=/path/to/chromium pnpm --filter @workspace/deriv-signal-lab test:dbot:browser
+```
+
 ## Validate
 
 ```sh
@@ -31,7 +63,7 @@ pnpm --filter @workspace/deriv-signal-lab test:forge
 PORT=18781 BASE_PATH=/ pnpm --filter @workspace/deriv-signal-lab build
 ```
 
-The build config requires both `PORT` and `BASE_PATH`, including for production builds.
+The default Vite port is `18781` and the default `BASE_PATH` is `/`.
 
 ## Digit-panel behavior and limits
 
