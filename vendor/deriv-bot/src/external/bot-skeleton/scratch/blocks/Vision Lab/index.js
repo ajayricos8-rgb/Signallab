@@ -4,6 +4,7 @@
 import './colour';
 import './factory';
 import './ai';
+import './markets';
 import './quant';
 import './analysis';
 import './risk';

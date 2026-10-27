@@ -20,9 +20,13 @@ const REFRESH_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 12_000;
 const BATCH_SIZE = 4;
 const BATCH_GAP_MS = 260;
+/** How long a failed or partial table fetch keeps us from blocking a tick again. */
+const RETRY_MS = 30 * 1000;
 
 const cache = new Map(); // key -> { table, at }
 const inflight = new Map();
+/** Last time we let a tick wait on the network for this table. */
+const attempts = new Map();
 let stored = readStored();
 
 function readStored() {
@@ -208,13 +212,28 @@ export async function ensurePayouts(options) {
         cache.set(key, table);
     }
     const isStale = !table || Date.now() - table.at > REFRESH_MS || !table.complete;
-    if (isStale) {
+
+    /**
+     * A table the API never finished is the one case that used to stall the
+     * bot: every tick found it incomplete and sat out another four-second
+     * request. One blocking attempt per key per retry window is enough; after
+     * that the modelled table carries the tick while the real one is fetched
+     * in the background. This is what lets the bot walk through ten markets
+     * without pausing at each one.
+     */
+    const blockingBudgetSpent = Date.now() - (attempts.get(key) || 0) < RETRY_MS;
+
+    if (isStale && !blockingBudgetSpent) {
+        attempts.set(key, Date.now());
         const result = await Promise.race([
             refreshPayouts(options),
             new Promise(resolve => setTimeout(() => resolve(table || null), 4000)),
         ]);
         table = result || table;
+    } else if (isStale) {
+        refreshPayouts(options);
     }
+
     if (!table) {
         table = new PayoutTable(key);
         cache.set(key, table);

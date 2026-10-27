@@ -20,13 +20,14 @@ import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
 import * as memory from '../utils/vision-memory.mjs';
+import { createMarketPicker, scoreMarket, VOLATILITY_MARKETS } from '../utils/vision-markets.mjs';
 import { ensurePayouts, payoutSnapshot, refreshPayouts } from '../utils/vision-payouts.js';
 
 const PLAN_TTL_MS = 4_000;
 const DEFAULT_HORIZON = 5;
 const DEFAULT_MIN_EDGE = -100; // the block default: significance decides, the value gate is off
-const DEFAULT_MIN_CONFIDENCE = 55;
-const DEFAULT_MIN_LEAN = 1.5;
+const DEFAULT_MIN_CONFIDENCE = 0;
+const DEFAULT_MIN_LEAN = 0; // the block default: trade the strongest measured lean
 const DEFAULT_RISK = 0.6;
 const DEFAULT_TARGET_EDGE = 0.04;
 
@@ -145,12 +146,14 @@ const getVisionInterface = tradeEngine => {
         const minConfidence = num(overrides.minConfidence ?? DEFAULT_MIN_CONFIDENCE);
         const minAgreement = clamp((overrides.minAgreement ?? 0.7) + scrutinyAdjustment(), 0, 1);
         const strictValue = minEdge > -50;
+        const relaxed = minLean <= 0;
         const go =
             plan.best.bias > 0 &&
-            plan.best.rawBias > 0 &&
-            plan.best.tStat >= minLean &&
-            plan.confidence >= minConfidence &&
-            plan.agreementRatio >= minAgreement &&
+            (relaxed ||
+                (plan.best.rawBias > 0 &&
+                    plan.best.tStat >= minLean &&
+                    plan.confidence >= minConfidence &&
+                    plan.agreementRatio >= minAgreement)) &&
             (!strictValue || plan.best.adjusted >= minEdge / 100);
         return { ...plan, go, reason: go ? 'entry confirmed' : plan.reason };
     };
@@ -178,6 +181,46 @@ const getVisionInterface = tradeEngine => {
         if (!plan?.best) return 'warn';
         if (!plan.go) return 'info';
         return plan.best.edge >= 0.03 ? 'success' : 'info';
+    };
+
+    /* ------------------------------------------------------------------ *
+     * All markets
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Every volatility index the bot is allowed to walk through, and the picker
+     * that decides which one to stand on. The picker is pure (see
+     * vision-markets.mjs) so the choice can be tested without a live engine.
+     */
+    const MARKETS = VOLATILITY_MARKETS;
+    const picker = createMarketPicker({ markets: MARKETS });
+
+    /**
+     * Move the running bot to another market: swap the symbol the engine trades
+     * and proposes on, resubscribe the tick stream, wait for that market's
+     * history, and warm its payout table without holding up the tick.
+     */
+    const switchToMarket = async symbol => {
+        const previous = symbolOf();
+        if (!symbol || symbol === previous) return previous;
+
+        planCache.delete(previous);
+        if (tradeEngine?.options) tradeEngine.options.symbol = symbol;
+        if (tradeEngine?.tradeOptions) tradeEngine.tradeOptions.symbol = symbol;
+
+        try {
+            await tradeEngine.switchSymbol(symbol);
+        } catch {
+            // A market we could not stream is not worth crashing a session for.
+            if (tradeEngine?.options) tradeEngine.options.symbol = previous;
+            if (tradeEngine?.tradeOptions) tradeEngine.tradeOptions.symbol = previous;
+            return previous;
+        }
+
+        planCache.delete(symbol);
+        picker.markSwitched();
+        ensurePayouts(payoutOptions()); // price the new market in the background
+        return symbol;
     };
 
     return {
@@ -489,8 +532,15 @@ const getVisionInterface = tradeEngine => {
             return round(Math.min(next, Math.max(num(maxStake, base), base)), 2);
         },
         rSafeStake: async (stake, maxPercent) => {
-            const balance = num(await tradeEngine.getBalance('NUM'), 0);
+            let balance = 0;
+            try {
+                balance = num(await tradeEngine.getBalance('NUM'), 0);
+            } catch {
+                balance = 0; // An unreadable balance must not stop the bot.
+            }
             const cap = balance * (clamp(pct(maxPercent) / 100, 0, 1) || 0.05);
+            // The 0.35 floor is Deriv's minimum stake: an amount below it is
+            // rejected outright, which would silently swallow every entry.
             return round(Math.max(0.35, Math.min(num(stake, 0.35), cap || num(stake, 0.35))), 2);
         },
         rDrawdownOk: async limit => {
@@ -555,6 +605,73 @@ const getVisionInterface = tradeEngine => {
             if (!plan) return localize('warming up');
             return `${plan.go ? 'TRADE' : 'WAIT'} · ${plan.summary} · ${plan.reason}`;
         },
+
+        /* ---------------- all markets ---------------- */
+
+        /** The market the bot is trading right now. */
+        visionMarket: async () => symbolOf(),
+
+        /** Every market the bot may walk through, as a comma separated list. */
+        visionMarketList: async () => MARKETS.join(','),
+
+        visionMarketCount: async () => MARKETS.length,
+
+        /** True once this market has enough history behind it to be read. */
+        visionMarketReady: async () => (await readTicks()).length >= 80,
+
+        /** 0-100: how worth trading the current market looks right now. */
+        visionMarketScore: async () => {
+            const plan = await getPlan();
+            return scoreMarket(plan);
+        },
+
+        /**
+         * Move the bot onto a market right now. Accepts a symbol (R_100) or one
+         * of the choices: 'random', 'next', 'best'.
+         */
+        visionSwitchMarket: async symbol => {
+            const current = symbolOf();
+            const wanted = String(symbol || '').trim();
+            if (!wanted) return current;
+            return switchToMarket(picker.resolve(wanted, current));
+        },
+
+        /** The market the bot would move to for this choice, without moving. */
+        visionPickMarket: async mode => picker.resolve(String(mode || '').trim(), symbolOf()),
+
+        /**
+         * Let the bot choose its own market.
+         *
+         * Every market it visits is scored and remembered, so "best" is a real
+         * comparison rather than a guess. Modes:
+         *   'suitable' — stay while this market scores at or above the floor,
+         *                otherwise move to the best market seen so far;
+         *   'random'   — jump to any other market once the dwell time is up;
+         *   'next'     — walk the list in order;
+         *   'best'     — always the best-scoring market seen so far.
+         *
+         * The dwell time keeps the bot from thrashing the API: it will not
+         * change market more often than that, however bad the market looks.
+         */
+        visionAutoMarket: async (mode, minScore, dwell) => {
+            const symbol = symbolOf();
+
+            // Score where we are standing, using the decision we already have
+            // for this market rather than paying for another one.
+            const cached = planCache.get(symbol);
+            const score = cached?.plan ? scoreMarket(cached.plan) : 0;
+            picker.recordScore(symbol, score);
+
+            const target = picker.choose({ mode, minScore, dwell, current: symbol, score });
+            if (target === symbol) return symbol;
+
+            const moved = await switchToMarket(target);
+            if (moved === target) picker.markSwitched();
+            return moved;
+        },
+
+        /** Seconds since the bot last changed market. */
+        visionMarketSeconds: async () => round(picker.secondsOnMarket(), 1),
     };
 };
 

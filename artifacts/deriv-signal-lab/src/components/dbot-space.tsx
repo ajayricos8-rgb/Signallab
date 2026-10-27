@@ -43,11 +43,11 @@ const STRATEGIES: Strategy[] = [
     id: 'AI_VISION_OVER_UNDER',
     name: 'AI Vision — Over/Under',
     category: 'AI',
-    short: 'Reads the digit market with seven models, prices every barrier against the live payout table, and picks its own barrier and side.',
+    short: 'Walks all ten volatility markets, reads each one with seven models, prices every barrier against the live payout table and picks its own barrier and side.',
     detail:
-      'Not a staking template: the logic is the edge. A tick block runs the full AI read every tick — seven models forecast the last digit at expiry, the payout table prices all twenty Over/Under contracts straight from Deriv, and the barrier with the strongest measured lean wins. It declines to trade when the lean is inside the noise, sizes the stake from the strength of the lean and the agreement between models, and learns from every settled digit. Every tunable sits in variables in the "Run once at start" block.',
+      'Not a staking template: the logic is the edge. Every tick it decides where to stand first, moving the running bot between the one-second and two-second volatility indices and taking that market\u2019s tick history and payout table with it. Then seven models forecast the last digit at expiry, the payout table prices all twenty Over/Under contracts straight from Deriv, and the barrier with the strongest measured lean wins. The entry bars ship OFF \u2014 minimum lean 0 \u2014 so it opens positions on the strongest lean it can measure every tick instead of waiting for a signal no fair market will ever give it. Raise "ai min lean" to 1.5 or more to put the bars back and watch the trade rate fall. It sizes the stake from the strength of the lean, learns from every settled digit, and every tunable sits in variables in the "Run once at start" block.',
     risk:
-      'Digit payouts carry an exchange margin, so the honest expected value printed on each entry is usually negative. This bot trades the strongest measured leans rather than promising to beat the margin. Start on a demo account and keep the loss limit small.',
+      'It trades constantly, and digit payouts carry an exchange margin, so the expected value printed on each entry is usually negative: this bot will reach its loss limit on a market that is not paying. Set "ai loss limit" to what you are willing to lose in a session, keep "ai base stake" small, and start on a demo account.',
     accent: 'emerald',
     icon: BrainCircuit,
     xml: aiVisionOverUnderXml,
