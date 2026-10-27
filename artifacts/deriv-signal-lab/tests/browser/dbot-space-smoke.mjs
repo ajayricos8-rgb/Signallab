@@ -176,10 +176,28 @@ try {
   await page.getByTestId('button-deriv-connect').click();
   await page.getByTestId('deriv-connection-status').getByText('Connected').first().waitFor({ timeout: 20_000 });
   await page.getByTestId('button-dbot-space-nav').click();
-  await page.getByTestId('dbot-connect-account').click();
-  await page.getByTestId('dbot-account-status').getByText(/Connected · VRTC123456/).waitFor({ timeout: 30_000 });
+  // No click: opening the space after connecting must link the account itself.
+  await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC123456/).waitFor({ timeout: 30_000 });
   assert.ok(mock.authSockets.length >= 2, 'the parent and DBot must use separate authenticated sockets');
   assert.equal(await bot.evaluate(() => sessionStorage.getItem('signal-lab-dbot-auth_info')), null, 'the bridge must not copy the PAT into vendor auth storage');
+
+  // Signal Lab's ticks and account are shared with the workspace, and the
+  // Signal Lab block group is registered and generates the runtime calls.
+  await page.getByTestId('dbot-shared-data').getByText(/markets · [0-9,]+ ticks shared/).waitFor({ timeout: 20_000 });
+  const bridge = await bot.evaluate(() => {
+    const types = ['signal_lab_last_tick', 'signal_lab_ticks', 'signal_lab_last_digit', 'signal_lab_tick_change', 'signal_lab_balance', 'signal_lab_open_positions', 'signal_lab_profit', 'signal_lab_account', 'signal_lab_connected'];
+    const missing = types.filter(type => !window.Blockly.Blocks[type]);
+    const block = window.Blockly.derivWorkspace.newBlock('signal_lab_last_tick');
+    const markets = block.getField('MARKET_LIST').getOptions(true).map(option => option[1]);
+    const code = window.Blockly.JavaScript.javascriptGenerator.blockToCode(block)[0];
+    block.dispose();
+    return { missing, markets, code };
+  });
+  assert.deepEqual(bridge.missing, [], 'every Signal Lab block must be registered');
+  // The mock advertises one symbol, so the dropdown proves the parent snapshot
+  // replaced the static fallback list.
+  assert.deepEqual(bridge.markets, ['R_100'], 'the market list must come from the Signal Lab snapshot');
+  assert.equal(bridge.code, 'Bot.getSignalLabLastTick("R_100")', 'the block must call the Signal Lab runtime');
 
   // Hold mock quotes so the strategy can enter the running state without
   // issuing a buy, then verify socket loss immediately stops the interpreter.
@@ -188,35 +206,37 @@ try {
   await bot.locator('#db-animation__run-button:visible').last().click();
   await bot.locator('#db-animation__stop-button:visible').first().waitFor({ timeout: 10_000 });
 
-  // A dropped child socket must revoke the link and require consent to reconnect.
+  // A dropped child socket must stop the bot and the link must come back by
+  // itself, without the user pressing anything.
   await mock.authSockets.at(-1).close({ code: 1000, reason: 'test-disconnect' });
-  await page.getByTestId('dbot-account-status').getByText('Account not linked').waitFor({ timeout: 10_000 });
-  assert.match(await page.getByTestId('dbot-notice').innerText(), /connection closed/i);
   await bot.locator('#db-animation__stop-button:visible').first().waitFor({ state: 'hidden', timeout: 10_000 });
-  await page.getByTestId('dbot-connect-account').click();
-  await page.getByTestId('dbot-account-status').getByText(/Connected · VRTC123456/).waitFor({ timeout: 30_000 });
+  await page.getByTestId('dbot-notice').getByText(/connection closed/i).waitFor({ timeout: 10_000 });
+  await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC123456/).waitFor({ timeout: 30_000 });
 
-  // A reload must not retain a stale authenticated state in the parent.
+  // A reload must not retain a stale authenticated state in the parent, and the
+  // link is re-established automatically once the workspace is ready again.
   await bot.evaluate(() => window.location.reload());
-  await page.getByTestId('dbot-account-status').getByText('Account not linked').waitFor({ timeout: 20_000 });
+  await page.getByTestId('dbot-notice').getByText(/reloaded/i).waitFor({ timeout: 20_000 });
   await page.getByTestId('dbot-workspace-status').getByText('Workspace ready').waitFor({ timeout: 60_000 });
-  assert.match(await page.getByTestId('dbot-notice').innerText(), /reloaded/i);
+  await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC123456/).waitFor({ timeout: 30_000 });
   assert.equal(await page.evaluate(() => localStorage.getItem('signal-lab-test-preserve')), 'local');
   assert.equal(await page.evaluate(() => sessionStorage.getItem('signal-lab-test-preserve')), 'session');
   assert.equal(await page.evaluate(() => sessionStorage.getItem('signal-lab-deriv-pat')), 'test-only-token');
 
-  await page.getByTestId('dbot-connect-account').click();
-  await page.getByTestId('dbot-account-status').getByText(/Connected · VRTC123456/).waitFor({ timeout: 30_000 });
+  // Switching the Signal Lab account moves the link with it, again by itself.
   await page.getByTestId('button-settings-nav').click();
   await page.getByTestId('deriv-account-select').selectOption('VRTC222222');
   await page.getByTestId('deriv-connection-status').getByText('Connected').first().waitFor({ timeout: 20_000 });
   await page.getByTestId('button-dbot-space-nav').click();
-  await page.getByTestId('dbot-account-status').getByText('Account not linked').waitFor({ timeout: 10_000 });
-  assert.match(await page.getByTestId('dbot-notice').innerText(), /changed or disconnected/i);
-  await page.getByTestId('dbot-connect-account').click();
-  await page.getByTestId('dbot-account-status').getByText(/Connected · VRTC222222/).waitFor({ timeout: 30_000 });
+  await page.getByTestId('dbot-notice').getByText(/changed or disconnected/i).waitFor({ timeout: 10_000 });
+  await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC222222/).waitFor({ timeout: 30_000 });
+  // Unlinking is the one manual action; it pauses automatic linking.
   await page.getByTestId('dbot-disconnect-account').click();
-  await page.getByTestId('dbot-account-status').getByText('Account not linked').waitFor();
+  await page.getByTestId('dbot-account-status').getByText('Linking paused').waitFor();
+  await page.waitForTimeout(2_000);
+  assert.match(await page.getByTestId('dbot-account-status').innerText(), /Linking paused/, 'a paused link must not reconnect itself');
+  await page.getByTestId('dbot-connect-account').click();
+  await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC222222/).waitFor({ timeout: 30_000 });
   await page.close();
 
   // Mobile: the real toolbox and its accessible add control, followed by Load.
@@ -241,7 +261,7 @@ try {
 
   assert.equal(requests.some(request => request.buy || request.sell), false, 'no buy or sell may be sent by these tests');
   assert.deepEqual(errors, [], 'browser pages should not throw uncaught errors');
-  console.log('DBot smoke passed: desktop drag, chart, store, safe preset loading, mobile blocks, iframe persistence, and account revocation.');
+  console.log('DBot smoke passed: desktop drag, chart, store, safe preset loading, mobile blocks, iframe persistence, automatic account linking, and the Signal Lab data bridge.');
 } finally {
   for (const timer of timers) clearInterval(timer);
   await browser.close();

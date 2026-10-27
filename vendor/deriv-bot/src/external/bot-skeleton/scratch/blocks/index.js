@@ -12,5 +12,6 @@ import './Binary/Tools/Misc';
 import './Binary/Tools/Time';
 import './Binary/Trade Definition';
 import './Logic';
+import './Signal Lab';
 import './Math';
 import './Text';

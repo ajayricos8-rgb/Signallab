@@ -4,6 +4,7 @@ import { AuthWrapper } from './app/AuthWrapper';
 // Removed AnalyticsInitializer import - analytics dependency removed
 // See migrate-docs/ANALYTICS_IMPLEMENTATION_GUIDE.md for re-implementation
 import { performVersionCheck } from './utils/version-check';
+import { connectSignalLabBridge } from './services/signallab-feed';
 import './styles/index.scss';
 
 // Configure MobX to handle multiple instances in production builds
@@ -17,6 +18,11 @@ if (window.parent !== window) {
         sessionStorage.removeItem(`signal-lab-dbot-${key}`);
     }
 }
+
+// The parent (Signal Lab) shares the ticks it already collected and the
+// account it is connected to. Register the channel before the workspace loads
+// so the first snapshot is not missed.
+connectSignalLabBridge();
 
 // Removed AnalyticsInitializer() call - analytics dependency removed
 

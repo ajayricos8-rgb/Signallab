@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import {
-  ArrowRight, BookOpen, Boxes, ChartNoAxesCombined, CheckCircle2, CircleHelp, Maximize2,
-  Library, Link2, LoaderCircle, LockKeyhole, Search, ShieldAlert, Sparkles, Unlink, X,
-  type LucideProps,
+  ArrowRight, BookOpen, Boxes, ChartNoAxesCombined, CheckCircle2, CircleHelp, Link2, LoaderCircle,
+  Library, LockKeyhole, Maximize2, Search, ShieldAlert, Signal, Sparkles, Unlink, X, type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
+import { formatAmount } from '@/lib/deriv-trading';
+import { useMarketFeed } from '@/components/market-feed-provider';
+import {
+  bridgeStats, buildAccountMessage, buildBridgeSnapshot, buildBridgeUpdate, sameAccountState,
+  type BridgeAccountMessage, type BridgeCursor, type BridgeSourceMarket,
+} from '@/lib/dbot-bridge';
 
 type SpaceView = 'builder' | 'chart' | 'store';
 type LinkState = 'idle' | 'connecting' | 'connected';
@@ -36,8 +41,14 @@ const views: { id: SpaceView; label: string; icon: ComponentType<LucideProps> }[
   { id: 'store', label: 'Bot store', icon: Library },
 ];
 
+/** Consecutive automatic link attempts before we stop and ask for a click. */
+const MAX_AUTO_ATTEMPTS = 3;
+const CONNECT_TIMEOUT_MS = 25_000;
+const FEED_INTERVAL_MS = 1_000;
+
 export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   const trading = useDerivTrading();
+  const feed = useMarketFeed();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const tradingRef = useRef(trading);
   tradingRef.current = trading;
@@ -48,6 +59,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   const readyRef = useRef(false);
   const [linkState, setLinkState] = useState<LinkState>('idle');
   const [linkAccount, setLinkAccount] = useState('');
+  const [linkType, setLinkType] = useState<'demo' | 'real' | 'unknown'>('unknown');
   const grantRef = useRef<string | null>(null);
   const grantRevisionRef = useRef(0);
   const pendingStrategy = useRef<string | null>(null);
@@ -55,10 +67,109 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [details, setDetails] = useState<Strategy | null>(null);
+  // Automatic linking is the default: the workspace uses whichever account is
+  // connected in Signal Lab. Pausing is the only manual step, and it lasts
+  // until the user links again.
+  const [autoLink, setAutoLink] = useState(true);
+  const autoFailuresRef = useRef(0);
+  const [autoPaused, setAutoPaused] = useState(false);
+  const [shared, setShared] = useState({ markets: 0, ticks: 0 });
+
+  // Data already collected by Signal Lab is streamed into the workspace, so
+  // the Signal Lab blocks read the same ticks the analysis used.
+  const feedRef = useRef(feed);
+  feedRef.current = feed;
+  const cursorRef = useRef<BridgeCursor>({});
+  const accountSentRef = useRef<BridgeAccountMessage | null>(null);
+  const subscribedRef = useRef(false);
+  const buildSource = useCallback((): BridgeSourceMarket[] => (
+    feedRef.current.getSnapshot().map((market) => ({
+      symbol: market.symbol,
+      name: market.name,
+      pipSize: market.pipSize,
+      ticks: market.ticks,
+    }))
+  ), []);
 
   const send = useCallback((message: Record<string, unknown>) => {
     frameRef.current?.contentWindow?.postMessage({ source: 'signal-lab', ...message }, window.location.origin);
   }, []);
+
+  /** The account snapshot the workspace is allowed to see, or null. */
+  const currentAccountMessage = useCallback((): BridgeAccountMessage | null => {
+    const session = tradingRef.current;
+    const account = session.activeAccount;
+    if (!account || session.status !== 'connected' || grantRef.current !== account.accountId) return null;
+    return buildAccountMessage({
+      accountId: account.accountId,
+      accountType: account.accountType === 'real' ? 'real' : account.accountType === 'demo' ? 'demo' : 'unknown',
+      balance: session.balance ?? account.balance,
+      currency: session.currency || account.currency,
+      openPositions: session.openPositions,
+      closedPositions: session.closedPositions,
+    });
+  }, []);
+
+  const sendAccount = useCallback(() => {
+    const account = currentAccountMessage();
+    if (!account || sameAccountState(accountSentRef.current, account)) return;
+    accountSentRef.current = account;
+    send({ ...account } as unknown as Record<string, unknown>);
+  }, [currentAccountMessage, send]);
+
+  /** Tell the workspace to forget the account when the link ends. */
+  const clearSharedAccount = useCallback(() => {
+    if (!accountSentRef.current) return;
+    accountSentRef.current = null;
+    send({ type: 'signal-lab-account', accountId: '' });
+  }, [send]);
+
+  /** Count one automatic failure; after MAX_AUTO_ATTEMPTS stop retrying. */
+  const failAutoLink = useCallback(() => {
+    autoFailuresRef.current += 1;
+    if (autoFailuresRef.current >= MAX_AUTO_ATTEMPTS) setAutoPaused(true);
+  }, []);
+
+  const sendSnapshot = useCallback(() => {
+    const source = buildSource();
+    const snapshot = buildBridgeSnapshot(source);
+    cursorRef.current = snapshot.cursor;
+    if (snapshot.message) send({ ...snapshot.message } as unknown as Record<string, unknown>);
+    sendAccount();
+    const stats = bridgeStats(source);
+    setShared({ markets: stats.markets, ticks: stats.ticks });
+  }, [buildSource, send, sendAccount]);
+
+  const link = useCallback(async (automatic: boolean) => {
+    if (!readyRef.current) return;
+    const session = tradingRef.current;
+    const account = session.activeAccount;
+    if (session.status !== 'connected' || !account || grantRef.current) return;
+    grantRef.current = account.accountId;
+    const revision = ++grantRevisionRef.current;
+    setLinkState('connecting');
+    setLinkAccount(account.accountId);
+    setLinkType(account.accountType === 'real' ? 'real' : 'demo');
+    setNotice(automatic
+      ? `Linking ${account.accountId} from Signal Lab automatically…`
+      : `Connecting DBot to ${account.accountId}…`);
+    try {
+      const socket = await session.createBotSocket();
+      if (grantRevisionRef.current !== revision
+        || grantRef.current !== socket.accountId
+        || tradingRef.current.activeAccount?.accountId !== socket.accountId
+        || tradingRef.current.status !== 'connected') return;
+      send({ type: 'connect-account', grantId: revision, ...socket });
+    } catch (error) {
+      if (grantRevisionRef.current !== revision) return;
+      grantRef.current = null;
+      grantRevisionRef.current += 1;
+      failAutoLink();
+      setLinkState('idle');
+      setLinkAccount('');
+      setNotice(error instanceof Error ? error.message : 'Could not connect DBot to this account.');
+    }
+  }, [send, failAutoLink]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -73,6 +184,12 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
           send({ type: 'quick-strategy', strategy: pendingStrategy.current });
           pendingStrategy.current = null;
         }
+        // The workspace asks for its own copy of Signal Lab's data as soon as
+        // it is ready; answer here in case the request raced the load event.
+        if (subscribedRef.current) sendSnapshot();
+      } else if (data.type === 'feed-subscribe') {
+        subscribedRef.current = true;
+        sendSnapshot();
       } else if (data.type === 'quick-strategy-open') {
         // The embedded wizard's footer is fixed to the iframe, not to the host
         // viewport. Bring it above the host's fixed navigation on small screens.
@@ -84,20 +201,32 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         if (data.tab === 1) setView('builder');
         else if (data.tab === 2) setView('chart');
       } else if (data.type === 'account-connected' && data.accountId === grantRef.current && data.grantId === grantRevisionRef.current) {
+        autoFailuresRef.current = 0;
+        setAutoPaused(false);
         setLinkState('connected');
         setLinkAccount(String(data.accountId));
-        setNotice('DBot is connected. Review your blocks and limits before running.');
+        setLinkType(tradingRef.current.activeAccount?.accountType === 'real' ? 'real' : 'demo');
+        setNotice('DBot is using the Signal Lab account. Its ticks, balance and open positions are shared with the workspace.');
+        sendSnapshot();
       } else if (data.type === 'account-disconnected' && data.grantId === grantRevisionRef.current) {
         grantRef.current = null;
         grantRevisionRef.current += 1;
+        clearSharedAccount();
         setLinkState('idle');
         setLinkAccount('');
-        if (data.reason === 'connection-lost') setNotice('The DBot connection closed, so the strategy was stopped. Open contracts may still settle. Link the account again to continue.');
+        setLinkType('unknown');
+        if (data.reason === 'connection-lost') {
+          failAutoLink();
+          setNotice('The DBot connection closed, so the strategy was stopped. Open contracts may still settle. Reconnecting to the Signal Lab account…');
+        }
       } else if (data.type === 'account-error' && data.grantId === grantRevisionRef.current) {
         grantRef.current = null;
         grantRevisionRef.current += 1;
+        clearSharedAccount();
+        failAutoLink();
         setLinkState('idle');
         setLinkAccount('');
+        setLinkType('unknown');
         setNotice(typeof data.message === 'string' ? data.message : 'DBot could not connect the account.');
       } else if (data.type === 'error') {
         setNotice(typeof data.message === 'string' ? data.message : 'DBot could not complete that action.');
@@ -121,7 +250,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [send]);
+  }, [send, sendSnapshot, clearSharedAccount, failAutoLink]);
 
   // A grant belongs to one exact account. Switching or disconnecting in Settings
   // revokes it and stops the bot rather than quietly trading a different account.
@@ -129,25 +258,71 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (!grantRef.current) return;
     if (trading.activeAccount?.accountId !== grantRef.current || trading.status !== 'connected') {
       send({ type: 'disconnect-account', grantId: grantRevisionRef.current });
+      clearSharedAccount();
       grantRef.current = null;
       grantRevisionRef.current += 1;
+      autoFailuresRef.current = 0;
+      setAutoPaused(false);
       setLinkState('idle');
       setLinkAccount('');
+      setLinkType('unknown');
       setNotice('DBot was disconnected because the Signal Lab account changed or disconnected. Open contracts may still settle.');
     }
-  }, [trading.activeAccount?.accountId, trading.status, send]);
+  }, [trading.activeAccount?.accountId, trading.status, send, clearSharedAccount]);
+
+  // Automatic linking: as soon as the workspace is ready and Signal Lab has an
+  // account, DBot links that exact account without a button or a dialog.
+  useEffect(() => {
+    if (!autoLink || !ready || linkState !== 'idle') return;
+    if (trading.status !== 'connected' || !trading.activeAccount) return;
+    if (grantRef.current || autoFailuresRef.current >= MAX_AUTO_ATTEMPTS) return;
+    const delay = autoFailuresRef.current === 0 ? 0 : Math.min(6_000 * autoFailuresRef.current, 18_000);
+    const timer = window.setTimeout(() => { void link(true); }, delay);
+    return () => window.clearTimeout(timer);
+  }, [autoLink, ready, linkState, trading.status, trading.activeAccount, link]);
+
+  // Stop retrying automatically once the account that failed is gone: a new
+  // account (or a manual reconnect) gets a fresh set of attempts.
+  useEffect(() => {
+    autoFailuresRef.current = 0;
+    setAutoPaused(false);
+  }, [trading.activeAccount?.accountId]);
 
   useEffect(() => {
     if (linkState !== 'connecting') return;
     const timer = window.setTimeout(() => {
       send({ type: 'disconnect-account', grantId: grantRevisionRef.current });
+      clearSharedAccount();
       grantRef.current = null;
       grantRevisionRef.current += 1;
+      failAutoLink();
       setLinkState('idle');
+      setLinkAccount('');
+      setLinkType('unknown');
       setNotice('DBot did not confirm the account connection. Check the connection and try again.');
-    }, 25_000);
+    }, CONNECT_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [linkState, send]);
+  }, [linkState, send, clearSharedAccount, failAutoLink]);
+
+  // Stream the ticks Signal Lab already holds into the workspace, one frame a
+  // second with only the new ticks, plus the account snapshot when it changes.
+  useEffect(() => {
+    if (!ready) return;
+    const timer = window.setInterval(() => {
+      const source = buildSource();
+      const update = buildBridgeUpdate(source, cursorRef.current);
+      cursorRef.current = update.cursor;
+      if (update.message) send({ ...update.message } as unknown as Record<string, unknown>);
+      sendAccount();
+      const stats = bridgeStats(source);
+      setShared((previous) => (
+        previous.markets === stats.markets && previous.ticks === stats.ticks
+          ? previous
+          : { markets: stats.markets, ticks: stats.ticks }
+      ));
+    }, FEED_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [ready, buildSource, send, sendAccount]);
 
   function selectView(next: SpaceView) {
     setView(next);
@@ -155,38 +330,28 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (next !== 'store' && readyRef.current) send({ type: 'navigate', tab: next });
   }
 
+  /** Manual link: resumes automatic linking after a pause. */
   async function connectAccount() {
     if (linkState !== 'idle') return;
     if (!ready) { setNotice('Wait for the bot workspace to finish connecting before linking an account.'); return; }
     if (trading.status !== 'connected' || !trading.activeAccount) { onOpenSettings(); return; }
-    const account = trading.activeAccount;
-    const accountLabel = account.accountType === 'real' ? 'REAL' : account.accountType === 'demo' ? 'demo' : 'selected';
-    if (!window.confirm(`Allow DBot to use your ${accountLabel} account ${account.accountId}?\n\nA running strategy can place trades and lose money. Nothing will run until you press Run in the builder. Use a demo account first.\n\nThe embedded workspace shares this site's browser storage. Signal Lab sends it a short-lived socket URL instead of your PAT.`)) return;
-    grantRef.current = account.accountId;
-    const revision = ++grantRevisionRef.current;
-    setLinkState('connecting');
-    setNotice('Connecting DBot to the selected account…');
-    try {
-      const socket = await trading.createBotSocket();
-      if (grantRevisionRef.current !== revision || grantRef.current !== socket.accountId || tradingRef.current.activeAccount?.accountId !== socket.accountId || tradingRef.current.status !== 'connected') return;
-      send({ type: 'connect-account', grantId: revision, ...socket });
-    } catch (error) {
-      if (grantRevisionRef.current !== revision) return;
-      grantRef.current = null;
-      grantRevisionRef.current += 1;
-      setLinkState('idle');
-      setNotice(error instanceof Error ? error.message : 'Could not connect DBot to this account.');
-    }
+    autoFailuresRef.current = 0;
+    setAutoPaused(false);
+    setAutoLink(true);
+    await link(false);
   }
 
   function disconnectAccount() {
-    if (!window.confirm('Disconnect DBot and stop its strategy? Open contracts may continue to settle on Deriv.')) return;
+    if (!window.confirm('Stop the DBot link and pause automatic linking? Open contracts may continue to settle on Deriv.')) return;
     send({ type: 'disconnect-account', grantId: grantRevisionRef.current });
+    clearSharedAccount();
     grantRef.current = null;
     grantRevisionRef.current += 1;
+    setAutoLink(false);
     setLinkState('idle');
     setLinkAccount('');
-    setNotice('DBot disconnected. Open contracts may still settle.');
+    setLinkType('unknown');
+    setNotice('DBot unlinked and automatic linking paused. Press Link account to resume.');
   }
 
   function useStrategy(strategy: Strategy) {
@@ -202,6 +367,15 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
     && `${item.name} ${item.short} ${item.category}`.toLowerCase().includes(search.toLowerCase().trim()),
   );
 
+  const linkLabel = useMemo(() => {
+    if (linkState === 'connected') return `Auto-linked · ${linkAccount}${linkType === 'real' ? ' (real)' : ''}`;
+    if (linkState === 'connecting') return `Linking ${linkAccount || 'account'}…`;
+    if (trading.status !== 'connected' || !trading.activeAccount) return 'Connect an account in Settings';
+    if (autoPaused) return 'Automatic link failed';
+    if (!autoLink) return 'Linking paused';
+    return 'Waiting to link';
+  }, [autoLink, autoPaused, linkAccount, linkState, linkType, trading.activeAccount, trading.status]);
+
   return (
     <section className="dbot-space mx-auto w-full max-w-[1700px]" data-testid="dbot-space">
       <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
@@ -210,19 +384,21 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
             <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Build, test, automate
           </div>
           <h2 className="text-2xl font-extrabold tracking-[-.045em] sm:text-3xl">DBot Space</h2>
-          <p className="mt-1.5 max-w-2xl text-xs leading-5 text-muted-foreground sm:text-sm">Build a strategy with visual blocks, explore live charts, or start with a bot from the store.</p>
+          <p className="mt-1.5 max-w-2xl text-xs leading-5 text-muted-foreground sm:text-sm">
+            Build a strategy with visual blocks, explore live charts, or start with a bot from the store. DBot uses the Signal Lab account automatically and shares the ticks, balance and positions collected there.
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-[10px] font-semibold text-muted-foreground" data-testid="dbot-account-status">
-            <span className={`h-1.5 w-1.5 rounded-full ${linkState === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-            {linkState === 'connected' ? `Connected · ${linkAccount}` : linkState === 'connecting' ? 'Connecting account' : 'Account not linked'}
+            <span className={`h-1.5 w-1.5 rounded-full ${linkState === 'connected' ? 'bg-emerald-400' : linkState === 'connecting' ? 'bg-sky-400' : 'bg-amber-400'}`} />
+            {linkLabel}
           </span>
           {linkState === 'connected' ? (
-            <button type="button" onClick={disconnectAccount} className="dbot-outline-button" data-testid="dbot-disconnect-account"><Unlink size={14} /> Disconnect</button>
+            <button type="button" onClick={disconnectAccount} className="dbot-outline-button" data-testid="dbot-disconnect-account"><Unlink size={14} /> Unlink</button>
           ) : (
             <button type="button" onClick={() => void connectAccount()} disabled={linkState === 'connecting'} className="dbot-outline-button" data-testid="dbot-connect-account">
               {linkState === 'connecting' ? <LoaderCircle className="animate-spin" size={14} /> : <Link2 size={14} />}
-              {trading.status === 'connected' ? 'Link account' : 'Connect account'}
+              {linkState === 'connecting' ? 'Linking…' : trading.status === 'connected' ? (autoLink ? 'Link now' : 'Link account') : 'Connect account'}
             </button>
           )}
         </div>
@@ -247,7 +423,13 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-3 py-2 sm:px-4">
             <div className="flex items-center gap-2 text-[11px] font-bold"><span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary"><Boxes size={13} /></span> Deriv Bot workspace <span className="hidden font-normal text-muted-foreground sm:inline">/ {view === 'chart' ? 'Charts' : 'Builder'}</span></div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="dbot-shared-data" title="Ticks Signal Lab has collected and shares with the workspace">
+                <Signal size={12} className={shared.ticks ? 'text-primary' : ''} />
+                {shared.ticks
+                  ? `${shared.markets} markets · ${shared.ticks.toLocaleString()} ticks shared`
+                  : 'Waiting for Signal Lab ticks'}
+              </span>
               <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="dbot-workspace-status"><span className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-400' : 'bg-amber-400'}`} />{ready ? 'Workspace ready' : 'Connecting workspace'}</span>
               <button type="button" onClick={() => {
                 const frame = frameRef.current;
@@ -259,17 +441,41 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
           <iframe ref={frameRef} src={`${import.meta.env.BASE_URL}dbot/index.html#bot_builder`} title="Deriv Bot workspace" allow="fullscreen" allowFullScreen className="block w-full bg-white" style={{ height: 'min(850px, calc(100dvh - 160px))', minHeight: 480 }} data-testid="dbot-frame" onLoad={() => {
             readyRef.current = false;
             setReady(false);
+            subscribedRef.current = false;
+            cursorRef.current = {};
+            accountSentRef.current = null;
             if (grantRef.current) {
               grantRef.current = null;
               grantRevisionRef.current += 1;
               setLinkState('idle');
               setLinkAccount('');
-              setNotice('The workspace reloaded and the account link ended. A running strategy has stopped; open contracts may still settle.');
+              setLinkType('unknown');
+              setNotice('The workspace reloaded and the account link ended. A running strategy has stopped; open contracts may still settle. Reconnecting…');
             }
             send({ type: 'hello' });
           }} />
         </div>
-        <p className="mt-3 flex items-start gap-2 text-[11px] leading-5 text-muted-foreground"><CircleHelp className="mt-0.5 shrink-0" size={13} /> Drag blocks from the menu, connect them to your strategy, and use the builder’s import and save controls for XML files. A running bot needs this browser tab to remain open.</p>
+        <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+          <p className="flex max-w-3xl items-start gap-2 text-[11px] leading-5 text-muted-foreground"><CircleHelp className="mt-0.5 shrink-0" size={13} /> Drag blocks from the menu, connect them to your strategy, and use the builder’s import and save controls for XML files. The <strong className="font-semibold text-foreground">Signal Lab</strong> block group reads the ticks, balance and positions this app already collected. A running bot needs this browser tab to remain open.</p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-card px-3 py-2 text-[10px] text-muted-foreground" data-testid="dbot-access-summary">
+            <span className={`h-1.5 w-1.5 rounded-full ${linkState === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+            {linkState === 'connected' ? (
+              <>
+                <span className="font-semibold text-foreground">{linkAccount}</span>
+                <span aria-hidden>·</span>
+                <span>{formatAmount(trading.balance, trading.currency || trading.activeAccount?.currency)} balance</span>
+                <span aria-hidden>·</span>
+                <span>{trading.openPositions.length} open {trading.openPositions.length === 1 ? 'position' : 'positions'}</span>
+                <span aria-hidden>·</span>
+                <span>{shared.markets} markets shared</span>
+                <span aria-hidden>·</span>
+                <span>trading enabled</span>
+              </>
+            ) : (
+              <span>Account, ticks and trading link automatically once Signal Lab is connected</span>
+            )}
+          </div>
+        </div>
       </div>
 
       {view === 'store' && (

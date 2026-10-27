@@ -424,6 +424,31 @@ export const ToolboxItems = () =>
                 </Category>
             </Category>
 
+            <Category id='signal_lab' name={localize('Signal Lab')}>
+                <Block type='signal_lab_last_tick'>
+                    <Field name='MARKET_LIST'>R_100</Field>
+                </Block>
+                <Block type='signal_lab_ticks'>
+                    <Field name='MARKET_LIST'>R_100</Field>
+                </Block>
+                <Block type='signal_lab_last_digit'>
+                    <Field name='MARKET_LIST'>R_100</Field>
+                </Block>
+                <Block type='signal_lab_tick_change'>
+                    <Field name='MARKET_LIST'>R_100</Field>
+                    <Value name='TICKS'>
+                        <Shadow type='math_number'>
+                            <Field name='NUM'>10</Field>
+                        </Shadow>
+                    </Value>
+                </Block>
+                <Block type='signal_lab_balance' />
+                <Block type='signal_lab_open_positions' />
+                <Block type='signal_lab_profit' />
+                <Block type='signal_lab_account' />
+                <Block type='signal_lab_connected' />
+            </Category>
+
             <Category id='utility' name={localize('Utility')}>
                 <Category name={localize('Custom functions')} id='custom_functions' dynamic='PROCEDURE' />
 
