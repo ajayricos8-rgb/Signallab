@@ -20,6 +20,7 @@ import { scopeSettlements } from '@/lib/engine-lab/execution';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { MasterDecisionCard } from '@/components/signal/master-decision-card';
 import { NeuralModelCard } from '@/components/signal/neural-model-card';
+import { ForgeModelCard } from '@/components/signal/forge-model-card';
 import { DigitDeepPanel } from '@/components/quant/digit-deep-panel';
 import { OverUnderEnginePanel } from '@/components/over-under-engine-panel';
 import {
@@ -447,6 +448,13 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                   hint: signal.research.note,
                 },
                 {
+                  label: 'Forged model',
+                  value: selectedResult.forge
+                    ? `${formatPercent(signal.forge.probability)}${signal.forge.weight > 0 ? ` · ${signal.forge.contributionPts >= 0 ? '+' : ''}${signal.forge.contributionPts.toFixed(1)} pts` : ` · ${signal.forge.decision === 'inert' ? 'no vote' : signal.forge.decision}`}`
+                    : '—',
+                  hint: `${signal.forge.note} Drive ${signal.forge.drive}/100.`,
+                },
+                {
                   label: 'Neural model',
                   value: selectedResult.neural
                     ? `${formatPercent(signal.neural.probability)}${signal.neural.weight > 0 ? ` · ${signal.neural.contributionPts >= 0 ? '+' : ''}${signal.neural.contributionPts.toFixed(1)} pts` : ' · no vote'}`
@@ -472,6 +480,7 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={signal.fairProbability} /> : null}
             {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
             {selectedResult.neural ? <NeuralModelCard forecast={selectedResult.neural} fusion={signal.neural} /> : null}
+            {selectedResult.forge ? <ForgeModelCard model={selectedResult.forge} fusion={signal.forge} /> : null}
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}

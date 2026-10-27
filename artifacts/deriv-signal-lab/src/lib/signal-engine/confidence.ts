@@ -104,6 +104,27 @@ export type NeuralEvidence = {
 };
 
 /**
+ * What the forged model (Layer 8 — engines, AI and calculations learnt into one
+ * network) contributed to a signal. Only a model that cleared its own out-of-
+ * sample gate can contribute; a veto is a measured contradiction and is the
+ * only way this term can be negative.
+ */
+export type ForgeEvidence = {
+  /** The forged model's probability for the traded outcome. */
+  probability: number;
+  /** No-edge probability of that outcome. */
+  fair: number;
+  /** Out-of-sample Brier skill of the forged model; null when unmeasured. */
+  skill: number | null;
+  /** Independent holdout rows behind that skill. */
+  sample: number;
+  /** True only when the model validated out of sample and carried weight. */
+  validated: boolean;
+  /** True when the validated model measured the call against itself. */
+  contradicted: boolean;
+};
+
+/**
  * How well the published probability is pinned down. An edge smaller than its
  * own measurement error is not evidence of anything, however many engines
  * agreed on it, so this term is negative until the edge clears one standard
@@ -133,6 +154,8 @@ export type ConfidenceBreakdown = {
   research: number;
   /** Contribution of the embedded neural model (0 when none was supplied). */
   neural: number;
+  /** Contribution of the forged model (0 when none was supplied). */
+  forge: number;
 };
 
 export type ConfidenceInput = {
@@ -168,6 +191,11 @@ export type ConfidenceInput = {
    * do not run it, which keeps their score bit-identical.
    */
   neural?: NeuralEvidence | null;
+  /**
+   * Evidence from the forged model. Optional: callers that do not forge keep a
+   * bit-identical score.
+   */
+  forge?: ForgeEvidence | null;
   /**
    * How precisely the probability is known. Optional: callers that do not
    * measure a standard error keep the original score to the last bit.
@@ -274,6 +302,27 @@ export function neuralTerm(evidence: NeuralEvidence): number {
 }
 
 /**
+ * How much the forged model's forecast is worth to the evidence score.
+ *
+ * The forge is the last layer and the one that saw the most, so it gets the
+ * largest single-model allowance — still small (0.07 of the raw score, about
+ * 3.5 points at full strength) because it is fitted on the same market as the
+ * layers it distils. It only contributes once validated; a validated veto
+ * contributes negatively, which is the one thing no other layer can do.
+ */
+export function forgeTerm(evidence: ForgeEvidence): number {
+  if (!evidence.validated) return 0;
+  const skill = Math.max(0, Math.min(1, Number.isFinite(evidence.skill) ? (evidence.skill as number) : 0));
+  const sample = Number.isFinite(evidence.sample) ? Math.max(0, evidence.sample) : 0;
+  const edge = Number.isFinite(evidence.probability) && Number.isFinite(evidence.fair)
+    ? (evidence.probability - evidence.fair) / 0.05
+    : 0;
+  const magnitude = Math.tanh(18 * skill) * (sample / (sample + 100));
+  const signed = magnitude * clamp(edge, -1, 1);
+  return evidence.contradicted ? -Math.abs(signed) - 0.05 : signed;
+}
+
+/**
  * −1 when the edge is buried in its own measurement error, +1 when it stands
  * several standard errors clear of it. Zero is "one standard error", which is
  * exactly the point at which an edge stops being indistinguishable from noise.
@@ -327,11 +376,14 @@ export function confidenceScore(input: ConfidenceInput): { confidence: number; b
   // gated: it only reaches this term after beating chance out of sample, and
   // even then it can move the score by at most a few points.
   const neural = input.neural ? 0.05 * neuralTerm(input.neural) : 0;
+  // The forged model is the largest single-model term and the most gated: it
+  // only reaches the score after clearing its own out-of-sample gate.
+  const forge = input.forge ? 0.07 * forgeTerm(input.forge) : 0;
   // Precision is the newest layer and deliberately the smallest: it decides
   // between two otherwise identical signals by how well their edge was
   // measured, it does not redefine what the evidence is worth.
   const precision = input.precision ? 0.08 * precisionTerm(input.precision) : 0;
-  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation + research + neural + precision;
+  const raw = 0.25 * agreement + 0.25 * edge + 0.3 * backtest + 0.2 * validation + confirmation + research + neural + precision + forge;
   let confidence = 50 + 50 * raw * quality;
   // Passing every strict held-out research gate is rare and meaningful.
   if (input.verified) confidence += 8;
@@ -339,7 +391,7 @@ export function confidenceScore(input: ConfidenceInput): { confidence: number; b
     confidence: Math.round(clamp(confidence, 1, 99)),
     breakdown: {
       agreement, edge, backtest, validation, quality, precision,
-      verified: Boolean(input.verified), confirmation, research, neural,
+      verified: Boolean(input.verified), confirmation, research, neural, forge,
     },
   };
 }

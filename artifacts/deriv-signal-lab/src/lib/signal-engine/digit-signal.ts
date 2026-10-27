@@ -45,6 +45,9 @@ import {
   type NeuralDigitForecast, type NeuralFusion,
 } from '../neural/models.ts';
 import { normalizeTicks } from '../engine-lab/math.ts';
+import { applyForge, forgeCandidate, forgeEvidence, forgeVetoed } from '../forge/forge.ts';
+import { describeDigitContext, digitContextAt, digitForgeVector } from '../forge/features.ts';
+import type { ForgeFusion, ForgedModel } from '../forge/types.ts';
 import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
 
 export type DigitSignalFamily = 'over-under' | 'even-odd' | 'matches';
@@ -90,6 +93,12 @@ export type DigitContractSignal = {
   research: ResearchFusion;
   /** Layer 7: the embedded neural model's view of this contract and what it did. */
   neural: NeuralFusion;
+  /**
+   * Layer 8: the forged model — engines, AI and calculations learnt into one
+   * network trained on this contract's replayed rows — and what it did to this
+   * call: confirmed it, trimmed it or vetoed the entry.
+   */
+  forge: ForgeFusion;
   /** Historical outcomes after the current digit (or parity) context. */
   history: { sample: number; hits: number; rate: number | null; context: string } | null;
   /**
@@ -157,6 +166,12 @@ export type DigitMarketAnalysis = {
    * into every contract's probability only when it beat chance out of sample.
    */
   neural: NeuralDigitForecast | null;
+  /**
+   * Layer 8: the forged model behind the winning contract. One network, trained
+   * in this run from the engines, the AI layers, the calculations and the
+   * Deriv knowledge base, used for the analysis, the prediction and the entry.
+   */
+  forge: ForgedModel | null;
   /** Number of analysis engines that ran (separate from the 17 prediction engines). */
   analysisEngineCount: number;
   /** Full audit stored once for the winning contract, not duplicated across candidates. */
@@ -360,6 +375,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // because the precision layer needs the whole pool: you cannot know whether
   // one contract's edge is real without the spread of the others.
   // ---------------------------------------------------------------------------
+  onProgress?.(0.958, 'Forging one model from the engines, the AI and the calculations');
   const drafts = contracts.map((contract) => {
     const fair = fairProbability(contract);
     const deviation = Math.sqrt(fair * (1 - fair));
@@ -448,6 +464,18 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     // with the tick its contract expired on. Layer 6 reuses exactly these rows
     // to measure how the edge decays when an entry is delayed.
     const firedRows: { origin: number; exit: number }[] = [];
+    // Layer 8 keeps the same replay rows: for every origin it stores what the
+    // engines, the baseline and the analysis prior believed, so the forged
+    // model can be fitted on exactly the chronology the rest of the layer uses.
+    const forgeSamples: Array<{
+      origin: number;
+      values: Array<number | null>;
+      weights: number[];
+      teacher: number;
+      baseline: number;
+      prior: number | null;
+      won: 0 | 1;
+    }> = [];
     for (const row of fit.checked) {
       const replay = weighted(row.forecasts);
       const estimate = replay.estimate;
@@ -459,6 +487,15 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         digitContractProbability(row.baseline, contract), fair,
         rowPrior ? digitContractProbability(rowPrior, contract) - digitContractProbability(row.baseline, contract) : 0,
       ));
+      forgeSamples.push({
+        origin: row.origin,
+        values: replay.values,
+        weights: replay.weights,
+        teacher: estimate,
+        baseline: digitContractProbability(row.baseline, contract),
+        prior: rowPrior ? digitContractProbability(rowPrior, contract) : null,
+        won: won as 0 | 1,
+      });
       modelLoss += (estimate - won) ** 2;
       fairLoss += (fair - won) ** 2;
       modelErrors.push((estimate - won) ** 2);
@@ -589,6 +626,110 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     // The neural model's own probability for THIS contract: the share of its
     // next-digit distribution that the contract wins on.
     const neuralProbability = neural ? digitContractProbability(neural.distribution, contract) : null;
+    // -------------------------------------------------------------------------
+    // Layer 8 — forge ONE model out of everything measured above.
+    //
+    // Every audited layer contributes its state at each replayed origin: the
+    // family-weighted engine ensemble as the teacher, the rolling baseline, the
+    // analysis prior rebuilt at that origin, the engine votes, the sample
+    // maturity, the contract horizon, the market's cadence and volatility class
+    // from the Deriv knowledge base, and the market's own causal digit
+    // structure. The network is trained against the realised outcomes AND the
+    // teacher probabilities (distillation), scored once on a purged holdout and
+    // only then allowed to speak.
+    // -------------------------------------------------------------------------
+    const forgeVoteTally = (values: readonly (number | null)[]) => {
+      let agree = 0;
+      let against = 0;
+      let voting = 0;
+      for (const value of values) {
+        if (value === null) continue;
+        voting += 1;
+        if (value - fair > margin) agree += 1;
+        else if (value - fair < -margin) against += 1;
+      }
+      return { agree, against, voting };
+    };
+    const forgeRows = forgeSamples.map((sample) => {
+      const votes = forgeVoteTally(sample.values);
+      return {
+        features: digitForgeVector({
+          digits: fit.sequence.digits,
+          origin: sample.origin,
+          teacherProbability: sample.teacher,
+          engineValues: sample.values,
+          engineWeights: sample.weights,
+          baselineProbability: sample.baseline,
+          priorProbability: sample.prior,
+          fair,
+          agreeing: votes.agree,
+          against: votes.against,
+          voting: votes.voting,
+          sample: fit.checked.length,
+          horizonTicks: input.horizon,
+          // The prior's own holdout skill is a whole-stream statistic; feeding
+          // it to a historical row would leak the future into the inputs. The
+          // prior reaches the forge through its EDGE at that origin instead.
+          priorSkill: null,
+          tickSpacingMs,
+          dataQuality: quality,
+          symbol: input.symbol,
+          name: input.name,
+        }),
+        label: sample.won,
+        teacher: sample.teacher,
+        origin: sample.origin,
+      };
+    });
+    const forgeLiveVotes = forgeVoteTally(liveValues);
+    const forgeLive = digitForgeVector({
+      digits: fit.sequence.digits,
+      origin: fit.sequence.digits.length - 1,
+      teacherProbability: rawProbability,
+      engineValues: liveValues,
+      engineWeights: live.weights,
+      baselineProbability: digitContractProbability(fit.baseline, contract),
+      priorProbability: statePriorProbability,
+      fair,
+      agreeing: tally.agreeing,
+      against: tally.against,
+      voting: tally.voting,
+      sample: fit.checked.length,
+      horizonTicks: input.horizon,
+      // Same rule as the training rows: no whole-stream statistic may enter
+      // the vector. The live prior arrives through `priorProbability`.
+      priorSkill: null,
+      tickSpacingMs,
+      dataQuality: quality,
+      symbol: input.symbol,
+      name: input.name,
+    });
+    const forge = forgeRows.length >= 160 && forgeLiveVotes.voting > 0
+      ? forgeCandidate({
+        family: 'digit',
+        label: candidateLabel(contract),
+        fair,
+        rows: forgeRows,
+        liveFeatures: forgeLive,
+        // The residual baseline: the audited ensemble's own probability for
+        // this contract at the live origin.
+        liveTeacherProbability: rawProbability,
+        dataQuality: quality,
+        horizonTicks: input.horizon,
+        contextSummary: describeDigitContext(digitContextAt(fit.sequence.digits, fit.sequence.digits.length - 1)),
+        teachers: [
+          `${fit.engines.length}-engine family-weighted ensemble (distilled)`,
+          'rolling-frequency baseline (anchor)',
+          'analysis prior rebuilt at each origin',
+          'Deriv knowledge base (cadence, volatility class, contract semantics)',
+        ],
+        symbol: input.symbol,
+        name: input.name,
+        // One fit per contract, in a scan of many markets: the holdout bar is
+        // raised for that search, exactly as the syllabus requires.
+        selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
+      })
+      : null;
     // The evidence sources Layer 6 pools. Each one carries its own measured
     // out-of-sample skill and the independent sample behind it, so a source
     // that has never beaten the no-edge rate is reported but carries no weight.
@@ -650,12 +791,24 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
           ? `${neural.model.id} ${neural.model.version}, trained locally on this market: ${neural.note}`
           : 'The embedded neural model could not be fitted on this market.',
       },
+      ...(forge ? [{
+        id: 'forge' as const,
+        label: `Forged model · ${forge.card.parameters} params`,
+        probability: forge.probability,
+        // Only a validated forge votes; the pool prices skill, not bravado.
+        skill: forge.validated ? forge.skill : null,
+        sample: forge.sample,
+        // It is fitted on the ensemble's own outputs, so it shares the
+        // prediction family's budget instead of adding a free extra vote.
+        familyCredit: 0.55,
+        detail: `${forge.card.id} ${forge.card.version} against ${forge.card.knowledgeVersion} knowledge: ${forge.note}`,
+      }] : []),
     ];
     return {
       contract, fair, deviation, margin, bias, corrected, skills, weighted, live, liveValues,
       rawProbability, votes, tally, backtest, validationSkill, validationZ, verified,
       confirmation, research, researchDecision, probability, edge, edgeRatio, quality,
-      context, standardError, reliability, holdout, firedRows, sources, neuralProbability,
+      context, standardError, reliability, holdout, firedRows, sources, neuralProbability, forge,
     };
   });
 
@@ -694,9 +847,17 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       metrics: neural?.metrics ?? null,
     });
     const neuralFusion = neuralFused.fusion;
-    const probability = clamp(neuralFused.probability, 0.0005, 0.9995);
+    let probability = clamp(neuralFused.probability, 0.0005, 0.9995);
     if (neuralFusion.weight > 0 && !confirmation.reasons.some((reason) => reason.startsWith('Neural model:'))) {
       confirmation.reasons.push(`Neural model: ${neuralFusion.note}`);
+    }
+    // Layer 8 speaks last because it is the model that saw everything above.
+    // It can confirm the call, trim it, or veto the entry — never add an order.
+    const forgeFused = applyForge({ published: probability, fair, model: draft.forge, standardError });
+    const forgeFusion = forgeFused.fusion;
+    probability = clamp(forgeFused.probability, 0.0005, 0.9995);
+    if (forgeFusion.decision !== 'inert' || forgeFusion.stance !== 'neutral') {
+      confirmation.reasons.push(`Forged model: ${forgeFusion.note}`);
     }
     const edge = probability - fair;
     const edgeRatio = edge / deviation;
@@ -733,6 +894,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       },
       research: researchEvidence(research),
       neural: neuralEvidence(neuralFusion),
+      forge: forgeEvidence(forgeFusion),
       // A probability the market data cannot actually pin down is weaker
       // evidence than the same number measured off 2,000 ticks.
       precision: { edge, standardError, intervalHalfWidth: interval ? (interval.upper - interval.lower) / 2 : null },
@@ -798,7 +960,10 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       marketRandom: state.regime === 'random',
       structureStable: fit.structure.status === 'stable',
       confirmed: confirmation.decisive,
-      contradicted: confirmation.status === 'contradicted',
+      // A validated forge that measured the call against itself stops the
+      // master from certifying the entry — that is how the model reaches the
+      // ENTRY, not just the probability.
+      contradicted: confirmation.status === 'contradicted' || forgeVetoed(forgeFusion),
     });
     // The bot may not wait for a trigger longer than the edge was measured to
     // last. This is the only place the validity cap is applied to the plan.
@@ -806,7 +971,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     return {
       contract, label: candidateLabel(contract), probability, fairProbability: fair, edge, edgeRatio,
       votes, tally, backtest, validationSkill, validationZ, verified, confidence, breakdown,
-      strength, entry: tradeableEntry, master, researchDecision, research, neural: neuralFusion,
+      strength, entry: tradeableEntry, master, researchDecision, research, neural: neuralFusion, forge: forgeFusion,
       history: historical ? {
         sample: historical.sample, hits: historical.hits, rate: historical.empiricalHitRate,
         context: context?.parity !== undefined ? `after an ${context.parity === 0 ? 'even' : 'odd'} digit` : `after digit ${context?.digit}`,
@@ -894,6 +1059,11 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     ? `Neural model: ${neural.note}`
     : 'Neural model: the tick stream is too short to fit the embedded network; every other layer ran unchanged.');
   if (signals[0]?.neural.weight > 0) notes.push(`Neural fusion: ${signals[0].neural.note}`);
+  const forgedBest = drafts.find((draft) => draft.contract === signals[0]?.contract)?.forge ?? null;
+  notes.push(forgedBest
+    ? `Forged model: ${forgedBest.note}`
+    : 'Forged model: this contract did not have enough replayed rows to forge a model; every other layer ran unchanged.');
+  if (signals[0] && signals[0].forge.decision !== 'inert') notes.push(`Forge fusion: ${signals[0].forge.note}`);
   if (signals[0]?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best contract; treat it as a contradicted call, not a verified edge.');
   onProgress?.(0.99, 'Explaining all 300 registered engines for the selected contract');
   const best = signals[0];
@@ -915,7 +1085,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,
     sample: fit.sequence.digits.length, lastDigit, asOfEpoch: fit.sequence.epochs.at(-1)!, fresh: input.fresh,
     dataQuality: quality, structure: fit.structure.status, engineCount: fit.engines.length,
-    best, contracts: signals, report, state, aiSynthesis, neural, analysisEngineCount: state.engines.length, engineLab,
+    best, contracts: signals, report, state, aiSynthesis, neural, forge: forgedBest, analysisEngineCount: state.engines.length, engineLab,
     precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }

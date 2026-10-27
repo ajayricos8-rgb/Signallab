@@ -1,4 +1,4 @@
-import { BrainCircuit, Cpu, KeyRound, Lock, Radio, ShieldCheck, Sparkles, Timer } from 'lucide-react';
+import { BrainCircuit, Cpu, Flame, KeyRound, Lock, Radio, ShieldCheck, Sparkles, Timer } from 'lucide-react';
 import { DerivConnectionCard } from '@/components/deriv-connection-card';
 import { DERIV_APP_ID, USING_TEST_APP_ID } from '@/lib/deriv-app-id';
 
@@ -146,7 +146,54 @@ export function SettingsPanel() {
             applications normally require their own app ID on the Deriv-App-ID header.
           </p>
         )}
+      
+      <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="eyebrow flex items-center gap-1.5"><Flame size={11} /> Forged model</div>
+            <h3 className="mt-1 text-xs font-bold">signal-lab-forge-v1 · engines + AI + calculations, learnt as one model</h3>
+          </div>
+          <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] text-emerald-500">
+            Installed · free
+          </span>
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+          The forge is the one model the brief asked for: it does not sit next to the engines, it is <strong className="text-foreground">fitted on
+          their replayed state</strong>. Each row is the whole analysis at one origin — the family-weighted engine ensemble, the AI
+          meta-model, the analysis prior, the rolling baseline, the calculation layer, the market’s cadence and volatility class and
+          its own causal structure — trained on this market against the realised outcome <em>and</em> the audited teachers, with the
+          Deriv knowledge base as the syllabus.
+        </p>
+        <div className="mono mt-2 text-xs font-semibold">24 → 24 → 12 → 2 · ≈0.9k params · distillation + residual correction</div>
+        <ul className="mt-3 space-y-1.5 text-[11px] leading-relaxed text-muted-foreground">
+          <li>
+            <strong className="text-foreground">What it is trained on:</strong> the engines’ replay rows (values, weights, spread and
+            votes), the AI layers, the analysis prior and the calculations, plus the Deriv knowledge base — contract semantics,
+            payout economics, feed rules, statistical protocol, structural diagnostics, execution and the market atlas.
+          </li>
+          <li>
+            <strong className="text-foreground">How it is measured:</strong> chronological 50/20/30 split with a purge gap, the
+            residual correction is shrunk on validation (and turned off entirely when it does not generalise), and the holdout is
+            scored once against the same fair rate the contract pays on.
+          </li>
+          <li>
+            <strong className="text-foreground">When it votes:</strong> only after a positive Brier and log-loss skill with a paired
+            z above a bar that rises with the number of candidates compared. A validated forge can confirm or trim the published
+            edge; a vetoed call can no longer be called a decisive entry. It never places an order.
+          </li>
+          <li>
+            <strong className="text-foreground">Where to see it:</strong> the <em>Layer 8 · forged model</em> card on every tool, the
+            <em> Forged model</em> row in the master decision’s source table, and the curriculum, gate, feature list and knowledge
+            summary on the card itself.
+          </li>
+        </ul>
+        <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
+          <Flame size={11} className="mr-1 inline" />
+          A unified model is still a model. On a fair synthetic index it scores at chance, fails its gate and stays inert — the
+          point of the gate is that the tool says so instead of inventing a signal.
+        </p>
       </section>
+</section>
     </div>
   );
 }

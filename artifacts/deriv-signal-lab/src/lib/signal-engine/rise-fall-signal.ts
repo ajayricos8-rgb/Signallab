@@ -31,6 +31,9 @@ import {
   type NeuralFusion, type NeuralQuoteForecast,
 } from '../neural/models.ts';
 import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
+import { applyForge, forgeCandidate, forgeEvidence, forgeVetoed } from '../forge/forge.ts';
+import { describeQuoteContext, quoteContextAt, quoteForgeVector } from '../forge/features.ts';
+import type { ForgeFusion, ForgedModel } from '../forge/types.ts';
 
 export type RiseFallDirection = 'RISE' | 'FALL';
 export type RiseFallHorizon = { unit: 'ticks' | 'minutes'; value: number };
@@ -105,6 +108,12 @@ export type RiseFallHorizonSignal = {
   research: ResearchFusion;
   /** Layer 7: the embedded neural model's view of this duration and what it did. */
   neural: NeuralFusion;
+  /**
+   * Layer 8: the forged model — engines, AI and calculations learnt into one
+   * network trained on this duration's replayed rows — and what it did to this
+   * call: confirmed it, trimmed it or vetoed the entry.
+   */
+  forge: ForgeFusion;
   historical: { sample: number; rise: number; fall: number; unchanged: number };
   /**
    * How precisely this win estimate is known, and how far the precision layer
@@ -163,6 +172,12 @@ export type RiseFallMarketAnalysis = {
    * trained on this market's own prices. Null when the history is too short.
    */
   neural: NeuralQuoteForecast | null;
+  /**
+   * Layer 8: the forged model behind the winning duration. One network, trained
+   * in this run from the engines, the AI layers, the calculations and the Deriv
+   * knowledge base, used for the analysis, the prediction and the entry.
+   */
+  forge: ForgedModel | null;
   /** Cross-duration precision fit for this scan (heterogeneity of the pool). */
   precisionFit: { candidates: number; tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
   /** Number of analysis engines that ran (separate from the 14 prediction engines). */
@@ -801,6 +816,99 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const neuralProbability = neuralModel
       ? directionSign > 0 ? neuralModel.probabilityUp : 1 - neuralModel.probabilityUp
       : null;
+    // -------------------------------------------------------------------------
+    // Layer 8 — forge ONE model out of everything measured for this duration.
+    //
+    // Every replay row carries the engines' scores, the meta-model's view, the
+    // drift baseline and the market's own causal price structure. Each row is
+    // oriented toward the direction that rule actually called, so the model
+    // learns "when this analysis fires, how often is it right?" rather than a
+    // direction-agnostic average. The forged probability is then read for the
+    // live direction.
+    // -------------------------------------------------------------------------
+    const forgeRows = setC
+      .filter((row) => row.label !== 0)
+      .map((row) => {
+        const rowScores = withAi(row.scores);
+        const rowConsensus = consensus(rowScores).score;
+        const orientation = sign(rowConsensus);
+        if (orientation === 0) return null;
+        const drift = driftAt(row.origin);
+        const priorRise = drift === null ? 0.5 : clamp(0.5 + drift / 2, 0.3, 0.7);
+        const teacher = clamp(0.5 + Math.abs(rowConsensus) / 2, 0.01, 0.99);
+        return {
+          features: quoteForgeVector({
+            prices,
+            origin: row.origin,
+            teacherProbability: teacher,
+            engineValues: rowScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => (value === null ? null : clamp(0.5 + (value * orientation) / 2, 0.01, 0.99))),
+            engineWeights: rowScores.map((value) => (value === null ? 0 : 1)),
+            // The no-edge rate is the anchor; the drift view is the analysis
+            // prior, rebuilt causally at each origin from completed outcomes.
+            baselineProbability: fair,
+            priorProbability: orientation > 0 ? priorRise : 1 - priorRise,
+            fair,
+            agreeing: rowScores.filter((value) => value !== null && value * orientation > VOTE_THRESHOLD).length,
+            against: rowScores.filter((value) => value !== null && value * orientation < -VOTE_THRESHOLD).length,
+            voting: rowScores.filter((value) => value !== null).length,
+            sample: setC.length,
+            horizonTicks,
+            priorSkill: null,
+            tickSpacingMs: state.tickSpacingMs,
+            dataQuality: quality,
+            symbol: input.symbol,
+            name: input.name,
+          }),
+          label: (row.label === orientation ? 1 : 0) as 0 | 1,
+          teacher,
+          origin: row.origin,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+    const liveDriftNow = driftAt(n - 1);
+    const livePriorRise = liveDriftNow === null ? 0.5 : clamp(0.5 + liveDriftNow / 2, 0.3, 0.7);
+    const forgeLive = quoteForgeVector({
+      prices,
+      origin: n - 1,
+      teacherProbability: aiForDirection,
+      engineValues: liveScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => (value === null ? null : clamp(0.5 + (value * directionSign) / 2, 0.01, 0.99))),
+      engineWeights: liveConsensus.weights,
+      baselineProbability: fair,
+      priorProbability: directionSign > 0 ? livePriorRise : 1 - livePriorRise,
+      fair,
+      agreeing: tally.agreeing,
+      against: tally.against,
+      voting: tally.voting,
+      sample: setC.length,
+      horizonTicks,
+      priorSkill: null,
+      tickSpacingMs: state.tickSpacingMs,
+      dataQuality: quality,
+      symbol: input.symbol,
+      name: input.name,
+    });
+    const forge = forgeRows.length >= 160
+      ? forgeCandidate({
+        family: 'rise-fall',
+        label: `${direction} · ${formatRiseFallHorizon(horizon)}`,
+        fair,
+        rows: forgeRows,
+        liveFeatures: forgeLive,
+        liveTeacherProbability: aiForDirection ?? 0.5,
+        dataQuality: quality,
+        horizonTicks,
+        contextSummary: describeQuoteContext(quoteContextAt(prices, n - 1)),
+        teachers: [
+          `${RISE_FALL_ENGINES.length}-engine consensus (distilled)`,
+          'AI meta-model direction score',
+          'drift baseline rebuilt at each origin (anchor)',
+          'Deriv knowledge base (cadence, volatility class, flat rate, contract semantics)',
+        ],
+        symbol: input.symbol,
+        name: input.name,
+        selectionPool: horizons.length * Math.max(1, input.marketsInScan ?? 1),
+      })
+      : null;
     // Evidence sources for Layer 6, each expressed as P(this direction) with
     // its own measured out-of-sample skill and independent sample.
     const engineRiseLive = clamp(0.5 + consensusScore / 2, 0.01, 0.99);
@@ -853,13 +961,22 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
           ? `${neuralModel.model.id} ${neuralModel.model.version}, trained locally for this horizon: ${neuralModel.note}`
           : 'The embedded neural model could not be fitted for this horizon.',
       },
+      ...(forge ? [{
+        id: 'forge' as const,
+        label: `Forged model · ${forge.card.parameters} params`,
+        probability: forge.probability,
+        skill: forge.validated ? forge.skill : null,
+        sample: forge.sample,
+        familyCredit: 0.55,
+        detail: `${forge.card.id} ${forge.card.version} against ${forge.card.knowledgeVersion} knowledge: ${forge.note}`,
+      }] : []),
     ];
     return {
       horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, consensusDirection,
       votes, tally, backtest, validationSkill, validationZ, flatRate, fair, research, researchDecision,
       confirmation, sources,
       entryInputs: { prices, epochs, rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })), exits, liveAverageMove: liveAnalysis.averageTickMove14 },
-      neuralModel, neuralProbability, neuralWeight: neuralModel?.weight ?? 0, neuralMetrics: neuralModel?.metrics ?? null,
+      neuralModel, neuralProbability, neuralWeight: neuralModel?.weight ?? 0, neuralMetrics: neuralModel?.metrics ?? null, forge,
       horizonQuality: quality * clamp(0.6 + 0.4 * reliability, 0.6, 1),
       winEstimate, standardError, reliabilityReportValue: reliabilityReport(holdoutPoints), holdoutPoints,
       recent, exits,
@@ -892,6 +1009,15 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     });
     const neuralFusion = neuralFused.fusion;
     if (neuralFusion.weight > 0) winEstimate = clamp(neuralFused.probability, 0.001, 0.999);
+    // Layer 8 speaks last: the forged model saw the engines, the AI layers, the
+    // calculations and the market knowledge at once. It can confirm the call,
+    // trim it, or veto the entry — it never places an order.
+    const forgeFused = applyForge({ published: winEstimate, fair, model: draft.forge, standardError });
+    const forgeFusion = forgeFused.fusion;
+    winEstimate = clamp(forgeFused.probability, 0.001, 0.999);
+    if (forgeFusion.decision !== 'inert' || forgeFusion.stance !== 'neutral') {
+      confirmation.reasons.push(`Forged model: ${forgeFusion.note}`);
+    }
     if (Math.abs(winEstimate - draft.winEstimate) > 1e-9) {
       confirmation.probability = winEstimate;
       confirmation.winProbability = winEstimate;
@@ -916,6 +1042,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       },
       research: researchEvidence(research),
       neural: neuralEvidence(neuralFusion),
+      forge: forgeEvidence(forgeFusion),
       precision: { edge: winEstimate - fair, standardError, intervalHalfWidth: interval ? (interval.upper - interval.lower) / 2 : null },
     });
     const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
@@ -989,13 +1116,15 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       marketRandom: state.regime === 'random',
       structureStable: state.regime !== 'insufficient',
       confirmed: confirmation.decisive,
-      contradicted: confirmation.status === 'contradicted',
+      // A validated forge that measured this call against itself is what stops
+      // the master certifying the entry.
+      contradicted: confirmation.status === 'contradicted' || forgeVetoed(forgeFusion),
     });
     // The bot may not wait longer than the edge was measured to last.
     const tradeableEntry: EntryPlan = { ...entry, validForTicks: master.validity.ticks };
     return {
       horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
-      confidence, breakdown, strength, historical: recent, entry: tradeableEntry, master, researchDecision, research, neural: neuralFusion,
+      confidence, breakdown, strength, historical: recent, entry: tradeableEntry, master, researchDecision, research, neural: neuralFusion, forge: forgeFusion,
       precision: {
         standardError,
         interval,
@@ -1049,6 +1178,11 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     ? `Neural model: ${neuralForBest.note}`
     : 'Neural model: the price history is too short to fit the embedded network; every other layer ran unchanged.');
   if ((signals[0]?.neural.weight ?? 0) > 0) notes.push(`Neural fusion: ${signals[0].neural.note}`);
+  const forgeForBest = drafts.find((draft) => draft.horizon.unit === signals[0]?.horizon.unit && draft.horizon.value === signals[0]?.horizon.value)?.forge ?? null;
+  notes.push(forgeForBest
+    ? `Forged model: ${forgeForBest.note}`
+    : 'Forged model: this duration did not have enough replayed rows to forge a model; every other layer ran unchanged.');
+  if (signals[0] && signals[0].forge.decision !== 'inert') notes.push(`Forge fusion: ${signals[0].forge.note}`);
   const best = signals[0];
   if (best?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best duration; treat it as a contradicted call, not a verified edge.');
   else if (best?.deep.confirmation.status === 'confirmed') notes.push(`Confirmation layer: ${best.deep.confirmation.reasons.at(-1)}`);
@@ -1071,7 +1205,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
     lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
     engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
-    state, aiSynthesis, neural: neuralForBest, analysisEngineCount: state.engines.length, engineLab,
+    state, aiSynthesis, neural: neuralForBest, forge: forgeForBest, analysisEngineCount: state.engines.length, engineLab,
     precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }
