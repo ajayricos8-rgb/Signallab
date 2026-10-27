@@ -171,7 +171,7 @@ export type RiseFallMarketAnalysis = {
    * Layer 7: the embedded, free neural model for the best duration's horizon,
    * trained on this market's own prices. Null when the history is too short.
    */
-  neural: NeuralQuoteForecast | null;
+  neural: Omit<NeuralQuoteForecast, 'replay'> | null;
   /**
    * Layer 8: the forged model behind the winning duration. One network, trained
    * in this run from the engines, the AI layers, the calculations and the Deriv
@@ -539,13 +539,36 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     }
     let lastCompleted = -1;
     const driftAt = (origin: number) => {
-      // Starts whose exit tick is already known at this origin.
+      // Starts whose exit tick is already known at this origin. Call this only
+      // in chronological order; random-access Forge replay uses the pure helper
+      // below so later rows cannot move the rolling cursor backwards.
       while (lastCompleted + 1 < n && exits[lastCompleted + 1] >= 0 && exits[lastCompleted + 1] <= origin) lastCompleted += 1;
       if (lastCompleted < 0) return null;
       const from = Math.max(0, lastCompleted - DRIFT_WINDOW + 1);
       const rise = risePrefix[lastCompleted + 1] - risePrefix[from];
       const fall = fallPrefix[lastCompleted + 1] - fallPrefix[from];
       return rise + fall >= 30 ? (rise - fall) / (rise + fall) : null;
+    };
+    const settledOutcomesAt = (origin: number): number[] => {
+      const settled: number[] = [];
+      // Search by start index, but admit a label only once its exit is visible
+      // at this origin. This is deliberately independent of `lastCompleted`.
+      for (let start = Math.min(origin, n - 1); start >= 0 && settled.length < DRIFT_WINDOW; start -= 1) {
+        if (exits[start] < 0 || exits[start] > origin) continue;
+        const label = outcome(start);
+        if (label !== null) settled.push(label);
+      }
+      return settled;
+    };
+    const causalDriftAt = (origin: number): number | null => {
+      const settled = settledOutcomesAt(origin);
+      const rise = settled.filter((label) => label === 1).length;
+      const fall = settled.filter((label) => label === -1).length;
+      return rise + fall >= 30 ? (rise - fall) / (rise + fall) : null;
+    };
+    const causalFlatRateAt = (origin: number): number => {
+      const settled = settledOutcomesAt(origin);
+      return settled.length ? settled.filter((label) => label === 0).length / settled.length : 0;
     };
     const rows = origins.map((origin, index) => ({
       origin,
@@ -739,7 +762,11 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     const direction: RiseFallDirection = directionSign > 0 ? 'RISE' : 'FALL';
     const votes = directionSign === consensusDirection ? provisionalVotes : buildVotes(directionSign);
     const tally = directionSign === consensusDirection ? provisionalTally : tallyVotes(votes);
-    const aiForDirection = aiProbability === null ? null : directionSign > 0 ? aiProbability : 1 - aiProbability;
+    const aiForDirectionConditional = aiProbability === null ? null : directionSign > 0 ? aiProbability : 1 - aiProbability;
+    // The meta-model estimates direction conditional on a move; a binary
+    // Rise/Fall contract loses on a flat settle, so express its evidence on the
+    // same unconditional payout scale as `fair` and the published probability.
+    const aiForDirection = aiForDirectionConditional === null ? null : (1 - flatRate) * aiForDirectionConditional;
     let winEstimate = confirmation.winProbability;
     const side = direction === 'RISE' ? 'rise' : 'fall';
     const independentCalls = countNonOverlappingOutcomes(firedRows[side]);
@@ -750,7 +777,14 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
       confirmation.engines = { agreeing: tally.agreeing, total: tally.total, weightedAgreement: tally.weightedAgreement };
       confirmation.decisive = confirmation.decisive && backtest.sample >= 10;
     }
-    const audit = auditForecastBank(researchFactory(horizon), { family: 'rise-fall', direction }, fair, horizons.length * Math.max(1, input.marketsInScan ?? 1));
+    const researchBank = researchFactory(horizon, setC.map((row) => row.origin));
+    const riseResearchAudit = auditForecastBank(researchBank, { family: 'rise-fall', direction: 'RISE' }, fair, horizons.length * Math.max(1, input.marketsInScan ?? 1));
+    const fallResearchAudit = auditForecastBank(researchBank, { family: 'rise-fall', direction: 'FALL' }, fair, horizons.length * Math.max(1, input.marketsInScan ?? 1));
+    const audit = directionSign > 0 ? riseResearchAudit : fallResearchAudit;
+    const researchReplayByDirection = {
+      rise: new Map((riseResearchAudit.replay ?? []).map((row) => [row.origin, row.probability] as [number, number])),
+      fall: new Map((fallResearchAudit.replay ?? []).map((row) => [row.origin, row.probability] as [number, number])),
+    };
     researchAudits.set(`${horizon.unit}:${horizon.value}`, audit);
     const researchDecision = decideResearch({ audit, fresh: input.fresh, probability: winEstimate, fair,
       confirmed: confirmation.decisive, independentSample: backtest.effectiveSample });
@@ -814,8 +848,12 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // engines, so its forecast is directly comparable to the win estimate.
     const neuralModel = trainQuoteNeuralModel(prices, exits, { horizonTicks });
     const neuralProbability = neuralModel
-      ? directionSign > 0 ? neuralModel.probabilityUp : 1 - neuralModel.probabilityUp
+      ? (1 - flatRate) * (directionSign > 0 ? neuralModel.probabilityUp : 1 - neuralModel.probabilityUp)
       : null;
+    const neuralReplayByOrigin = new Map<number, number>(neuralModel?.replay.map((row) => [
+      row.origin,
+      row.probabilityUp,
+    ]) ?? []);
     // -------------------------------------------------------------------------
     // Layer 8 — forge ONE model out of everything measured for this duration.
     //
@@ -827,31 +865,49 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     // live direction.
     // -------------------------------------------------------------------------
     const forgeRows = setC
-      .filter((row) => row.label !== 0)
+      // Keep flat settlements: a binary contract loses those, so omitting them
+      // would teach Forge a friendlier payout distribution than Deriv settles.
       .map((row) => {
         const rowScores = withAi(row.scores);
-        const rowConsensus = consensus(rowScores).score;
-        const orientation = sign(rowConsensus);
-        if (orientation === 0) return null;
-        const drift = driftAt(row.origin);
+        const consensusRow = consensus(rowScores);
+        const orientation = sign(consensusRow.score);
+        if (orientation === 0 || row.label === null) return null;
+        const rowFlatRate = causalFlatRateAt(row.origin);
+        const rowContractScale = 1 - rowFlatRate;
+        const rowFair = 0.5 * rowContractScale;
+        const drift = causalDriftAt(row.origin);
         const priorRise = drift === null ? 0.5 : clamp(0.5 + drift / 2, 0.3, 0.7);
-        const teacher = clamp(0.5 + Math.abs(rowConsensus) / 2, 0.01, 0.99);
+        const aiScore = rowScores[AI_INDEX];
+        const aiProbability = aiScore === null
+          ? null
+          : clamp(rowContractScale * (0.5 + (aiScore * orientation) / 2), 0.001, 0.999);
+        const researchProbability = (orientation > 0 ? researchReplayByDirection.rise : researchReplayByDirection.fall).get(row.origin) ?? null;
+        const neuralConditional = neuralReplayByOrigin.get(row.origin);
+        const neuralProbabilityAtOrigin = neuralConditional === undefined
+          ? null
+          : clamp(rowContractScale * (orientation > 0 ? neuralConditional : 1 - neuralConditional), 0.001, 0.999);
+        const teacher = clamp(rowContractScale * (0.5 + (consensusRow.score * orientation) / 2), 0.001, 0.999);
+        const settledEarlierHoldout = setC.filter((candidate) => candidate.exit <= row.origin).length;
+        const rowValues = rowScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => value === null
+          ? null
+          : clamp(rowContractScale * (0.5 + (value * orientation) / 2), 0.001, 0.999));
         return {
           features: quoteForgeVector({
             prices,
             origin: row.origin,
             teacherProbability: teacher,
-            engineValues: rowScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => (value === null ? null : clamp(0.5 + (value * orientation) / 2, 0.01, 0.99))),
-            engineWeights: rowScores.map((value) => (value === null ? 0 : 1)),
-            // The no-edge rate is the anchor; the drift view is the analysis
-            // prior, rebuilt causally at each origin from completed outcomes.
-            baselineProbability: fair,
-            priorProbability: orientation > 0 ? priorRise : 1 - priorRise,
-            fair,
+            engineValues: rowValues,
+            engineWeights: consensusRow.weights.slice(0, STATE_ENGINE_COUNT + 1),
+            baselineProbability: rowFair,
+            priorProbability: rowContractScale * (orientation > 0 ? priorRise : 1 - priorRise),
+            aiProbability,
+            researchProbability,
+            neuralProbability: neuralProbabilityAtOrigin,
+            fair: rowFair,
             agreeing: rowScores.filter((value) => value !== null && value * orientation > VOTE_THRESHOLD).length,
             against: rowScores.filter((value) => value !== null && value * orientation < -VOTE_THRESHOLD).length,
             voting: rowScores.filter((value) => value !== null).length,
-            sample: setC.length,
+            sample: setA.length + setB.length + settledEarlierHoldout,
             horizonTicks,
             priorSkill: null,
             tickSpacingMs: state.tickSpacingMs,
@@ -865,21 +921,26 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         };
       })
       .filter((row): row is NonNullable<typeof row> => row !== null);
-    const liveDriftNow = driftAt(n - 1);
+    const liveDriftNow = causalDriftAt(n - 1);
     const livePriorRise = liveDriftNow === null ? 0.5 : clamp(0.5 + liveDriftNow / 2, 0.3, 0.7);
+    const liveContractScale = 1 - flatRate;
+    const liveForgeTeacher = clamp(liveContractScale * (0.5 + (consensusScore * directionSign) / 2), 0.001, 0.999);
     const forgeLive = quoteForgeVector({
       prices,
       origin: n - 1,
-      teacherProbability: aiForDirection,
-      engineValues: liveScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => (value === null ? null : clamp(0.5 + (value * directionSign) / 2, 0.01, 0.99))),
-      engineWeights: liveConsensus.weights,
+      teacherProbability: liveForgeTeacher,
+      engineValues: liveScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => (value === null ? null : clamp(liveContractScale * (0.5 + (value * directionSign) / 2), 0.001, 0.999))),
+      engineWeights: liveConsensus.weights.slice(0, STATE_ENGINE_COUNT + 1),
       baselineProbability: fair,
-      priorProbability: directionSign > 0 ? livePriorRise : 1 - livePriorRise,
+      priorProbability: liveContractScale * (directionSign > 0 ? livePriorRise : 1 - livePriorRise),
+      aiProbability: aiForDirection,
+      researchProbability: audit.probability,
+      neuralProbability,
       fair,
       agreeing: tally.agreeing,
       against: tally.against,
       voting: tally.voting,
-      sample: setC.length,
+      sample: setA.length + setB.length + setC.length,
       horizonTicks,
       priorSkill: null,
       tickSpacingMs: state.tickSpacingMs,
@@ -894,15 +955,20 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         fair,
         rows: forgeRows,
         liveFeatures: forgeLive,
-        liveTeacherProbability: aiForDirection ?? 0.5,
+        liveTeacherProbability: liveForgeTeacher,
         dataQuality: quality,
         horizonTicks,
         contextSummary: describeQuoteContext(quoteContextAt(prices, n - 1)),
+        inputs: [
+          `${RISE_FALL_ENGINES.length}-engine directional votes and measured weights`,
+          'chronologically trained AI meta-model probability on the selected direction',
+          'independent research forecast replayed at the same untouched holdout origins',
+          'horizon-matched neural holdout probabilities, scaled for binary flat-loss outcomes',
+          'causal drift, fair-rate, sample-maturity and edge-to-noise calculations',
+          'Deriv binary-contract payout and entry rules from the knowledge syllabus; actual live payout is checked separately',
+        ],
         teachers: [
-          `${RISE_FALL_ENGINES.length}-engine consensus (distilled)`,
-          'AI meta-model direction score',
-          'drift baseline rebuilt at each origin (anchor)',
-          'Deriv knowledge base (cadence, volatility class, flat rate, contract semantics)',
+          'Engine-plus-AI directional consensus converted to the no-flat contract probability',
         ],
         symbol: input.symbol,
         name: input.name,
@@ -1069,6 +1135,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
         total: tally.total,
         probability: winEstimate,
         aiProbability: aiForDirection,
+        forge: forgeFusion,
         confirmation: { status: confirmation.status, edgePts: confirmation.edgePts, decisive: confirmation.decisive },
       },
     });
@@ -1174,6 +1241,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
   notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
   notes.push(`AI synthesis: ${aiSynthesis.verdict}. ${aiSynthesis.consensus.detail}`);
   const neuralForBest = drafts.find((draft) => draft.horizon.unit === signals[0]?.horizon.unit && draft.horizon.value === signals[0]?.horizon.value)?.neuralModel ?? null;
+  const neuralSummary = neuralForBest ? (({ replay: _replay, ...summary }) => summary)(neuralForBest) : null;
   notes.push(neuralForBest
     ? `Neural model: ${neuralForBest.note}`
     : 'Neural model: the price history is too short to fit the embedded network; every other layer ran unchanged.');
@@ -1205,7 +1273,7 @@ export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: P
     kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
     lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
     engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
-    state, aiSynthesis, neural: neuralForBest, forge: forgeForBest, analysisEngineCount: state.engines.length, engineLab,
+    state, aiSynthesis, neural: neuralSummary, forge: forgeForBest, analysisEngineCount: state.engines.length, engineLab,
     precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }

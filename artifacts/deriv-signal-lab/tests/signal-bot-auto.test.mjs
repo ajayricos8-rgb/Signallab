@@ -80,6 +80,16 @@ test('a bot that is already running is never replaced by a new signal', () => {
   assert.match(decision.note, /still running/i);
 });
 
+test('Auto never starts or queues a signal vetoed by the master decision', () => {
+  const decision = decideAutoRun({ ...ready, masterVetoed: true });
+  assert.equal(decision.start, false);
+  assert.equal(decision.handoff, true);
+  assert.equal(decision.state, 'master-veto');
+  assert.match(decision.note, /master decision vetoed entry \(NO_EDGE\)/i);
+  // A vetoed signal remains handled once; it is not retried by a re-render.
+  assert.equal(decideAutoRun({ ...ready, masterVetoed: true, handoffRunId: ready.runId }).start, false);
+});
+
 test('a signal with no engine entry or no tradeable ticket is skipped with a reason', () => {
   const noEntry = decideAutoRun({ ...ready, entryReady: false });
   assert.equal(noEntry.start, false);

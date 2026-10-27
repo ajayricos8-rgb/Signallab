@@ -109,17 +109,25 @@ function forecast(data: Prepared, exits: readonly number[], origin: number): num
   return totals.map((row) => { const total = sum(row); return row.map((value) => total ? value / total : 1 / data.size); });
 }
 
-export function buildForecastBank(input: readonly LabTick[], kind: 'digit' | 'quote', horizon: LabHorizon): ForecastBank {
-  return bankForPrepared(prepare(input, kind), horizon);
+export function buildForecastBank(
+  input: readonly LabTick[],
+  kind: 'digit' | 'quote',
+  horizon: LabHorizon,
+  forgeReplayOrigins: readonly number[] = [],
+): ForecastBank {
+  return bankForPrepared(prepare(input, kind), horizon, forgeReplayOrigins);
 }
 
 /** Reuse causal feature extraction across the 25 Rise/Fall durations. */
-export function createForecastFactory(input: readonly LabTick[], kind: 'digit' | 'quote'): (horizon: LabHorizon) => ForecastBank {
+export function createForecastFactory(
+  input: readonly LabTick[],
+  kind: 'digit' | 'quote',
+): (horizon: LabHorizon, forgeReplayOrigins?: readonly number[]) => ForecastBank {
   const data = prepare(input, kind);
-  return (horizon) => bankForPrepared(data, horizon);
+  return (horizon, forgeReplayOrigins = []) => bankForPrepared(data, horizon, forgeReplayOrigins);
 }
 
-function bankForPrepared(data: Prepared, horizon: LabHorizon): ForecastBank {
+function bankForPrepared(data: Prepared, horizon: LabHorizon, forgeReplayOrigins: readonly number[] = []): ForecastBank {
   const kind = data.kind;
   const n = data.values.length;
   const exits = horizonExits(data.epochs, horizon);
@@ -143,13 +151,24 @@ function bankForPrepared(data: Prepared, horizon: LabHorizon): ForecastBank {
     (origin < calibrationStart ? tuning : origin < holdoutStart ? calibration : holdout).push(row);
     previousExit = exit;
   }
+  // Requested Forge inputs are explicit, causal forecasts from the untouched
+  // research holdout. The fit never sees their targets: model weights come
+  // from tuning and the optional calibrator from the earlier calibration slice.
+  const forgeReplay = [...new Set(forgeReplayOrigins)]
+    .filter((origin) => Number.isInteger(origin) && origin >= holdoutStart && origin < n - 1)
+    .flatMap((origin) => {
+      const exit = exits[origin];
+      return exit < 0 || exit >= n
+        ? []
+        : [{ origin, exit, target: targetAt(data, origin, exit), probabilities: forecast(data, exits, origin), regime: data.features[origin].regime }];
+    });
   const initial: number[] = [];
   for (let origin = 0; origin < tuningStart && origin < exits.length; origin += 1) if (exits[origin] >= 0 && exits[origin] < tuningStart) initial.push(targetAt(data, origin, exits[origin]));
   const flatRate = initial.length ? initial.filter((state) => state === 2).length / initial.length : 0;
   const baseline = kind === 'digit' ? Array<number>(10).fill(0.1) : [(1 - flatRate) / 2, (1 - flatRate) / 2, flatRate];
   const neutral = data.models.map(() => data.kind === 'digit' ? Array<number>(10).fill(0.1) : [0.5, 0.5, 0]);
   return {
-    kind, horizon, models: data.models, tuning, calibration, holdout,
+    kind, horizon, models: data.models, tuning, calibration, holdout, forgeReplay,
     live: n ? forecast(data, exits, n - 1) : neutral,
     nextTick: n ? forecast(data, horizonExits(data.epochs, { unit: 'ticks', value: 1 }), n - 1) : neutral,
     boundaries: { tuningStart, calibrationStart, holdoutStart, lastOrigin: n - 1 }, liveRegime: data.features.at(-1)?.regime ?? 0, baseline,
@@ -179,6 +198,10 @@ export function auditForecastBank(bank: ForecastBank, contract: LabContract, fai
   const rows = test.map((row) => {
     const estimate = raw(row.predictions); const probability = calibrated(estimate);
     return { origin: row.origin, exit: row.exit, won: row.won, raw: estimate, probability, called: probability > fair + edgeThreshold };
+  });
+  const replay = (bank.forgeReplay ?? []).map((row) => {
+    const estimate = raw(row.probabilities.map((probability) => project(probability, contract)));
+    return { origin: row.origin, exit: row.exit, raw: estimate, probability: calibrated(estimate) };
   });
   const modelErrors = rows.map((row) => (row.probability - row.won) ** 2);
   const fairErrors = rows.map((row) => (baseline - row.won) ** 2);
@@ -221,7 +244,7 @@ export function auditForecastBank(bank: ForecastBank, contract: LabContract, fai
     sample: test.length, tuningSample: tuning.length, calibrationSample: calibration.length, brier, baselineBrier, skill, improvementZ, correctedP, validated,
     calibrationMethod: calibrator ? 'isotonic-shrinkage' : 'identity',
     calibrationError: rows.length ? sum(bins.map((bin) => bin.sample ? bin.sample * Math.abs(bin.predicted! - bin.observed!) : 0)) / rows.length : null,
-    bins, weights, correlations, redundantPairs, models, rows, boundaries: bank.boundaries,
+    bins, weights, correlations, redundantPairs, models, rows, replay, boundaries: bank.boundaries,
     selectedModel: bank.models[chosen].id, regimeModel: regimeBest, regimeSample: sameRegime.length, selectionPool: pool,
   };
 }

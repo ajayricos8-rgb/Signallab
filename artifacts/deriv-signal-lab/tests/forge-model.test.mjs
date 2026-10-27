@@ -19,7 +19,7 @@ import {
   FORGE_KNOWLEDGE, FORGE_KNOWLEDGE_VERSION, FORGE_MARKET_ATLAS, knowledgeFor, marketProfile, summarizeKnowledge,
 } from '../src/lib/forge/knowledge.ts';
 import {
-  FORGE_FEATURE_COUNT, digitContextAt, digitForgeVector, quoteContextAt, quoteForgeVector,
+  FORGE_FEATURE_COUNT, FORGE_FEATURES, digitContextAt, digitForgeVector, quoteContextAt, quoteForgeVector,
 } from '../src/lib/forge/features.ts';
 import { splitForgeRows, trainForge } from '../src/lib/forge/train.ts';
 import { applyForge, forgeCandidate, forgeEvidence, forgeKnowledgeReport, forgeVetoed } from '../src/lib/forge/forge.ts';
@@ -176,6 +176,26 @@ test('forge vectors have the declared width and never look at the future', () =>
   // Too little history is refused rather than padded with zeros.
   assert.equal(digitContextAt(digits, 5).hotZ, 0);
   assert.equal(quoteContextAt(prices, 3).trendZ, 0);
+});
+
+test('AI, research and neural inputs occupy distinct Forge slots with explicit availability masks', () => {
+  assert.equal(FORGE_FEATURES.length, 31);
+  assert.deepEqual(FORGE_FEATURES.slice(24).map((feature) => feature.key), [
+    'ai.edgePts', 'ai.available', 'research.edgePts', 'research.available',
+    'neural.edgePts', 'neural.available', 'calculation.edgeToNoise',
+  ]);
+  const digits = stickyDigits(88, 900);
+  const present = digitForgeVector({
+    ...baseVectorInput,
+    digits,
+    origin: 700,
+    aiProbability: 0.65,
+    researchProbability: 0.6,
+    neuralProbability: 0.4,
+  });
+  [1, 1, 1, 1, -1, 1].forEach((expected, index) => assert.ok(Math.abs(present[index + 24] - expected) < 1e-12));
+  const absent = digitForgeVector({ ...baseVectorInput, digits, origin: 700 });
+  assert.deepEqual(Array.from(absent.slice(24, 30)), [0, 0, 0, 0, 0, 0]);
 });
 
 test('the market context reports what it measured, not a direction', () => {
@@ -364,8 +384,9 @@ test('forgeCandidate refuses a call it cannot fit and reports one it can', () =>
   assert.ok(model);
   assert.equal(model.card.knowledgeVersion, FORGE_KNOWLEDGE_VERSION);
   assert.equal(model.card.features.length, FORGE_FEATURE_COUNT);
+  assert.deepEqual(model.card.shape, [31, 24, 12, 2]);
+  assert.equal(model.card.parameters, 1_094);
   assert.ok(model.card.stages.length >= 5, 'the curriculum is reported');
-  assert.ok(model.card.parameters > 0);
   assert.ok(model.probability > 0 && model.probability < 1);
   assert.ok(model.drive >= 0 && model.drive <= 100);
   assert.ok(model.note.includes('Unseen rows') || model.note.includes('unseen rows'));
@@ -383,7 +404,12 @@ test('the digit tools publish the forged model without breaking "always a signal
   assert.ok(result.forge, 'the winning contract carries a forged model');
   assert.equal(result.forge.card.family, 'digit');
   assert.equal(result.forge.card.features.length, FORGE_FEATURE_COUNT);
+  assert.deepEqual(result.forge.card.shape, [31, 24, 12, 2]);
   assert.ok(result.forge.card.stages.length >= 5);
+  const forgeInputs = result.forge.card.inputs.join(' ').toLowerCase();
+  for (const source of ['ai meta-model', 'research-ensemble', 'neural digit forecasts']) assert.ok(forgeInputs.includes(source), `missing Forge input ${source}`);
+  assert.ok(typeof result.best.forge.modelProbability === 'number', 'Forge keeps its own view separate from the fused probability');
+  assert.equal(result.best.forge.probability, result.best.probability, 'the second displayed probability is the published post-Forge value');
   assert.ok(typeof result.best.forge.weight === 'number');
   assert.ok(['inert', 'confirm', 'trim', 'veto'].includes(result.best.forge.decision));
   assert.ok(result.notes.some((note) => note.startsWith('Forged model:')), 'the note explains the fit');
@@ -395,6 +421,9 @@ test('the digit tools publish the forged model without breaking "always a signal
     assert.ok(signal.entry.validForTicks !== undefined);
     assert.ok(Number.isFinite(signal.confidence));
     assert.ok(typeof signal.forge.note === 'string' && signal.forge.note.length > 0);
+    assert.equal(signal.forge.probability, signal.probability);
+    assert.equal(signal.entry.evidence.forge.decision, signal.forge.decision, 'entry provenance persists the Forge decision');
+    assert.equal(signal.entry.evidence.forge.modelProbability, signal.forge.modelProbability);
   }
 });
 
@@ -415,6 +444,10 @@ test('the Rise/Fall tools publish the forged model for the winning duration', ()
   const result = analyzeRiseFallMarket({ symbol: 'R_100', name: 'Volatility 100 Index', ticks, fresh: true, horizons: [{ unit: 'ticks', value: 1 }, { unit: 'ticks', value: 5 }], marketsInScan: 3 });
   assert.ok(result.forge, 'the winning duration carries a forged model');
   assert.equal(result.forge.card.family, 'rise-fall');
+  assert.equal(result.forge.card.features.length, FORGE_FEATURE_COUNT);
+  assert.deepEqual(result.forge.card.shape, [31, 24, 12, 2]);
+  const forgeInputs = result.forge.card.inputs.join(' ').toLowerCase();
+  for (const source of ['ai meta-model', 'research forecast', 'neural holdout probabilities']) assert.ok(forgeInputs.includes(source), `missing Forge input ${source}`);
   assert.ok(result.horizons.every((signal) => ['inert', 'confirm', 'trim', 'veto'].includes(signal.forge.decision)));
   assert.ok(result.notes.some((note) => note.startsWith('Forged model:')));
   const source = result.best.master.sources.find((entry) => entry.id === 'forge');

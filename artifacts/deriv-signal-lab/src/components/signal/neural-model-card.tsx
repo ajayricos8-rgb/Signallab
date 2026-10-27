@@ -22,7 +22,9 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
   );
 }
 
-function DigitDistribution({ forecast }: { forecast: NeuralDigitForecast }) {
+type NeuralDisplayForecast = Omit<NeuralDigitForecast, 'replay'> | Omit<NeuralQuoteForecast, 'replay'>;
+
+function DigitDistribution({ forecast }: { forecast: Omit<NeuralDigitForecast, 'replay'> }) {
   const peak = Math.max(...forecast.distribution, 0.0001);
   return (
     <div className="mt-3" data-testid="neural-digit-distribution">
@@ -52,7 +54,7 @@ function DigitDistribution({ forecast }: { forecast: NeuralDigitForecast }) {
   );
 }
 
-function QuoteDistribution({ forecast }: { forecast: NeuralQuoteForecast }) {
+function QuoteDistribution({ forecast }: { forecast: Omit<NeuralQuoteForecast, 'replay'> }) {
   const rows = [
     { label: 'Rise', value: forecast.probabilityUp, className: 'bg-emerald-500' },
     { label: 'Fall', value: forecast.probabilityDown, className: 'bg-rose-500' },
@@ -115,7 +117,7 @@ function MetricGrid({ metrics }: { metrics: NeuralMetrics }) {
   );
 }
 
-export function NeuralModelCard({ forecast, fusion }: { forecast: NeuralDigitForecast | NeuralQuoteForecast; fusion?: NeuralFusion | null }) {
+export function NeuralModelCard({ forecast, fusion }: { forecast: NeuralDisplayForecast; fusion?: NeuralFusion | null }) {
   const { model, metrics } = forecast;
   const validated = metrics.validated && forecast.weight > 0;
   const state = validated ? 'validated' : metrics.brierSkill !== null && metrics.brierSkill > 0 ? 'close' : 'no-edge';

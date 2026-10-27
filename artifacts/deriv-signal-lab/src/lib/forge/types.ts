@@ -68,6 +68,8 @@ export type ForgeModelCard = {
   knowledgeVersion: string;
   /** Frozen inputs the model was forged from, for auditability. */
   features: ForgeFeature[];
+  /** Causal analysis-layer outputs and market calculations consumed as inputs. */
+  inputs: string[];
   /** The teacher layers distillation drew on. */
   teachers: string[];
   /** Ordered curriculum actually executed for this fit. */

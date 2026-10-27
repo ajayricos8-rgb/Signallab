@@ -59,8 +59,12 @@ export type NeuralModelCard = {
 
 export type NeuralDigitForecast = {
   kind: 'digit';
-  /** Calibrated probabilities for the next digit, index 0–9. */
+  /** Calibrated probabilities for the digit at the requested tick horizon, index 0–9. */
   distribution: number[];
+  /** Number of ticks between the current origin and the target digit. */
+  horizonTicks: number;
+  /** Sampled out-of-sample holdout forecasts, used as causal Forge inputs. */
+  replay: Array<{ origin: number; distribution: number[] }>;
   topDigit: number;
   /** Highest single-digit probability. */
   confidence: number;
@@ -79,6 +83,8 @@ export type NeuralQuoteForecast = {
   kind: 'quote';
   /** Calibrated probability that the horizon's exit price is above the entry. */
   probabilityUp: number;
+  /** Sampled out-of-sample holdout forecasts at their causal tick origins. */
+  replay: Array<{ origin: number; probabilityUp: number }>;
   probabilityDown: number;
   /** 'RISE' when the network leans up, 'FALL' otherwise. */
   direction: 'RISE' | 'FALL';
@@ -192,26 +198,31 @@ function metricNote(metrics: NeuralMetrics): string {
 }
 
 /**
- * Train the digit network on a tick stream and forecast the next digit.
+ * Train the digit network on a tick stream and forecast the digit at the
+ * requested horizon. This keeps the network's target aligned with the contract
+ * expiry instead of reusing a one-tick forecast for multi-tick contracts.
  * Returns null when the stream cannot support a fit (callers simply carry on
  * without the model — this layer is additive, never a dependency).
  */
-export function trainDigitNeuralModel(digits: readonly number[], options: { seed?: number } = {}): NeuralDigitForecast | null {
-  if (!Array.isArray(digits) || digits.length < DIGIT_FEATURE_WINDOW + 200) return null;
+export function trainDigitNeuralModel(digits: readonly number[], options: { seed?: number; horizonTicks?: number } = {}): NeuralDigitForecast | null {
+  const horizonTicks = options.horizonTicks ?? 1;
+  if (!Number.isInteger(horizonTicks) || horizonTicks < 1 || horizonTicks > 10) throw new Error('Digit neural horizons must be 1–10 ticks.');
+  if (!Array.isArray(digits) || digits.length < DIGIT_FEATURE_WINDOW + 200 + horizonTicks - 1) return null;
   // Bound the work on long streams: the ensemble already trains on all of it,
   // and a 2,000-row window is plenty for a 3k-parameter network.
-  const source = digits.length > 2_600 ? digits.slice(-2_600) : digits;
+  const sourceOffset = Math.max(0, digits.length - 2_600);
+  const source = sourceOffset ? digits.slice(sourceOffset) : digits;
   const rows: SupervisedRow[] = [];
-  for (let index = DIGIT_FEATURE_WINDOW - 1; index < source.length - 1; index += 1) {
+  for (let index = DIGIT_FEATURE_WINDOW - 1; index + horizonTicks < source.length; index += 1) {
     const features = digitFeatures(source, index);
-    const label = source[index + 1];
+    const label = source[index + horizonTicks];
     if (!features || !Number.isInteger(label) || label < 0 || label > 9) continue;
-    rows.push({ features, label });
+    rows.push({ features, label, origin: index, exit: index + horizonTicks });
   }
   const spec = { ...DIGIT_SPEC, seed: options.seed ?? DIGIT_SPEC.seed };
   const trained = trainClassifier(rows, {
     spec,
-    purge: 12,
+    purge: Math.max(12, horizonTicks),
     maxTrainRows: 640,
     maxValidationRows: 224,
     maxHoldoutRows: 448,
@@ -230,6 +241,10 @@ export function trainDigitNeuralModel(digits: readonly number[], options: { seed
   return {
     kind: 'digit',
     distribution,
+    horizonTicks,
+    replay: trained.holdoutPredictions.flatMap((row) => Number.isInteger(row.origin)
+      ? [{ origin: row.origin! + sourceOffset, distribution: [...row.probabilities] }]
+      : []),
     topDigit,
     confidence: distribution[topDigit],
     entropy: uniformEntropy(distribution),
@@ -237,7 +252,7 @@ export function trainDigitNeuralModel(digits: readonly number[], options: { seed
     model: cardFrom(
       DIGIT_MODEL_ID,
       'SignalLab Nano · digit net',
-      'Next-digit probability (10 classes)',
+      `Target-digit probability at ${horizonTicks}-tick horizon (10 classes)`,
       [...trained.network.shape],
       parameters,
       spec,
@@ -273,7 +288,7 @@ export function trainQuoteNeuralModel(
     if (!features) continue;
     const change = prices[exit] - prices[index];
     if (change === 0) continue;
-    rows.push({ features, label: change > 0 ? 1 : 0 });
+    rows.push({ features, label: change > 0 ? 1 : 0, origin: index, exit });
   }
   if (rows.length < 200) return null;
   // Purge at least the horizon: a row's label reaches into the next slice.
@@ -298,6 +313,9 @@ export function trainQuoteNeuralModel(
     kind: 'quote',
     probabilityUp: up,
     probabilityDown: 1 - up,
+    replay: trained.holdoutPredictions.flatMap((row) => Number.isInteger(row.origin) && Number.isFinite(row.probabilities[1])
+      ? [{ origin: row.origin!, probabilityUp: clamp(row.probabilities[1], 0.001, 0.999) }]
+      : []),
     direction: up >= 0.5 ? 'RISE' : 'FALL',
     leanPts: 100 * (up - 0.5),
     metrics,

@@ -53,6 +53,8 @@ export type ForecastBank = {
   tuning: ForecastRow[];
   calibration: ForecastRow[];
   holdout: ForecastRow[];
+  /** Optional dense causal forecasts for an explicitly requested holdout-origin set. */
+  forgeReplay?: ForecastRow[];
   live: number[][];
   nextTick: number[][];
   /** Boundaries are indices, and every label settles BEFORE the next phase. */
@@ -68,6 +70,12 @@ export type ProbabilityAuditRow = {
   raw: number;
   won: 0 | 1;
   called: boolean;
+};
+export type ResearchReplayRow = {
+  origin: number;
+  exit: number;
+  raw: number;
+  probability: number;
 };
 export type ModelAudit = ModelSpec & {
   probability: number;
@@ -102,6 +110,8 @@ export type ResearchAudit = {
   redundantPairs: Array<[string, string]>;
   models: ModelAudit[];
   rows: ProbabilityAuditRow[];
+  /** Causal probability forecasts for a caller-selected holdout-origin set (not used to score this audit). */
+  replay?: ResearchReplayRow[];
   boundaries: ForecastBank['boundaries'];
   /** Tuning-only selection; no selecting a model from its final test result. */
   selectedModel: string;

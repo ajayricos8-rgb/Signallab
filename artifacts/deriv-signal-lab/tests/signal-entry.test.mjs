@@ -529,6 +529,13 @@ test('every plan names the analysis it came from', () => {
   assert.match(text, /the analysis rates the trade 53\.0% against a 50\.0% no-edge rate/);
   assert.match(text, /90 replayed signals/);
   assert.match(text, /consensus rule replayed/);
+  const forgeText = describeEntryEvidence(pullbackPlan({
+    evidence: {
+      ...EVIDENCE,
+      forge: { modelProbability: 0.61, validated: true, skill: 0.08, sample: 120, decision: 'confirm', edgePts: 11, contributionPts: 1.4 },
+    },
+  }));
+  assert.match(forgeText, /Forge 61\.0% \(validated, confirm, \+11\.0 pts\)/);
   const digit = describeEntryEvidence({
     ...pullbackPlan({ mode: 'context', trigger: 'digit', priceLevel: null, priceCondition: null, sample: 240, evidence: DIGIT_EVIDENCE }),
   });
@@ -578,7 +585,10 @@ test('every Rise/Fall duration carries an entry plan with a usable window', () =
     assert.equal(entry.evidence.total, signal.tally.total);
     assert.ok(Math.abs(entry.evidence.signalProbability - signal.winEstimate) < 1e-9);
     assert.ok(Math.abs(entry.evidence.fairRate - signal.fairProbability) < 1e-9);
+    assert.equal(entry.evidence.forge.decision, signal.forge.decision);
+    assert.equal(entry.evidence.forge.modelProbability, signal.forge.modelProbability);
     assert.match(describeEntryEvidence(entry), /engines agree/);
+    assert.match(describeEntryEvidence(entry), /Forge/);
     // A wait is only ever planned for something the replay measured.
     assert.equal(entry.measured, entry.trigger !== 'immediate');
     assert.ok(entry.windowTicks >= ENTRY_LIMITS.windowTicks.min);
@@ -618,6 +628,9 @@ test('every digit contract carries an entry plan', () => {
       assert.equal(signal.entry.evidence.total, signal.tally.total);
       assert.ok(Math.abs(signal.entry.evidence.signalProbability - signal.probability) < 1e-9);
       assert.ok(Math.abs(signal.entry.evidence.fairRate - signal.fairProbability) < 1e-9);
+      assert.equal(signal.entry.evidence.forge.decision, signal.forge.decision);
+      assert.equal(signal.entry.evidence.forge.modelProbability, signal.forge.modelProbability);
+      assert.match(describeEntryEvidence(signal.entry), /Forge/);
       assert.equal(signal.entry.measured, signal.entry.trigger !== 'immediate');
       if (signal.entry.trigger === 'digit') {
         assert.ok(signal.entry.windowTicks >= ENTRY_LIMITS.contextWindowTicks.min);

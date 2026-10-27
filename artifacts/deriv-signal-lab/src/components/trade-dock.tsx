@@ -35,7 +35,7 @@ import type { SignalBotConfig } from '@/lib/signal-bot/types.ts';
 import { decideAutoRun, type AutoRunState } from '@/lib/signal-bot/auto.ts';
 import { researchAdvisory } from '@/lib/engine-lab/execution';
 import type { ResearchFusion } from '@/lib/engine-lab/fusion';
-import type { MasterDecision } from '@/lib/signal-engine/master-decision.ts';
+import { masterBlocksEntry, type MasterDecision } from '@/lib/signal-engine/master-decision.ts';
 import type { ResearchDecision } from '@/lib/engine-lab/types';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
 import { describeEntryEvidence, entryModeLabel, isEntryPlan, type EntryPlan } from '@/lib/signal-engine/entry.ts';
@@ -370,7 +370,11 @@ export function TradeDock({
       probability: chosen?.probability ?? analysis?.probability ?? null,
     };
   }, [analysis, analysisEntryReady, botConfig.objective, expiryOptions, family, loadedEntry, marketName, recommendation]);
+  const masterVetoed = masterBlocksEntry(botPlan?.master);
 
+  // Research advisories do not veto orders; the explicit master NO_EDGE action
+  // does, because it carries the validated Forge/confirmation hard veto.
+  //
   // Advice only: the research library never blocks Load and Run any more. The
   // bot trades the signal the analysis produced; warnings travel with the run.
   const botResearchNote = botPlan ? researchAdvisory(botPlan.researchDecision) : null;
@@ -441,6 +445,7 @@ export function TradeDock({
       runId,
       handoffRunId: autoHandoffRunId.current,
       planReady: Boolean(botPlan),
+      masterVetoed,
       entryReady: analysisEntryReady,
       botRunning: bot.running,
       connected,
@@ -465,7 +470,7 @@ export function TradeDock({
     signalBot.loadAndRun(botPlan, { ...botConfig, baseStake: stakeValue }, botSpeed);
     // Keyed on the facts the rule reads. `botPlan` is rebuilt on every render,
     // but the runId handoff above makes the start idempotent.
-  }, [analysis, analysisEntryReady, autoRun, bot.plan, bot.running, botSpeed, botConfig, botPlan, connected, signalBot, stakeValid, stakeValue]);
+  }, [analysis, analysisEntryReady, autoRun, bot.plan, bot.running, botSpeed, botConfig, botPlan, connected, masterVetoed, signalBot, stakeValid, stakeValue]);
 
   /**
    * Auto is armed for the NEXT signal. Switching it on records the signal
@@ -487,6 +492,10 @@ export function TradeDock({
           ? 'This signal has no entry from the engine analysis. Run Analysis again so the bot can load a planned entry.'
           : 'Run Analysis to generate a signal before loading the bot.',
       );
+      return;
+    }
+    if (masterVetoed) {
+      setTicketIssue('The master decision is NO_EDGE and explicitly vetoes entry. Run Analysis again before loading the bot.');
       return;
     }
     if (!connected) {
@@ -670,17 +679,19 @@ export function TradeDock({
                 <button
                   type="button"
                   onClick={handleLoadAndRun}
-                  disabled={bot.running || !stakeValid}
+                  disabled={bot.running || !stakeValid || masterVetoed}
                   title={
-                    bot.running
-                      ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
-                      : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.${botConfig.objective === 'hit-rate' && recommendation && botPlan.contractType !== recommendation.contractType ? ` Aim: highest win rate — the analysis published ${recommendation.label ?? recommendation.contractType}, and this contract carries the better hit rate at a non-negative measured edge.` : ''}`
+                    masterVetoed
+                      ? 'The master decision is NO_EDGE; its validated veto blocks Load and Run.'
+                      : bot.running
+                        ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
+                        : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.${botConfig.objective === 'hit-rate' && recommendation && botPlan.contractType !== recommendation.contractType ? ` Aim: highest win rate — the analysis published ${recommendation.label ?? recommendation.contractType}, and this contract carries the better hit rate at a non-negative measured edge.` : ''}`
                   }
                   className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 text-[11px] font-extrabold text-[#052e1e] transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-55"
                   data-testid={`button-load-and-run-${family}`}
                 >
                   {bot.running ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
-                  {bot.running ? 'Running…' : 'Load and Run'}
+                  {bot.running ? 'Running…' : masterVetoed ? 'Master veto' : 'Load and Run'}
                 </button>
                 </>
               )}

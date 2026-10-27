@@ -11,10 +11,12 @@
 // own replayed rows, and its inputs are the outputs of every audited layer at
 // the same origin:
 //
-//   engines → family-weighted ensemble probability, spread, agreement, votes
+//   engines → family-weighted probability, spread, agreement and votes
+//   AI + neural → horizon-matched, causal model forecasts
+//   research → an independent ensemble forecast on the same holdout origin
 //   analysis → the causal prior and its measured skill
-//   calculations → the rolling-frequency baseline, the fair rate, the horizon
-//   market knowledge → cadence, volatility class, market family
+//   calculations → rolling-frequency baseline, fair rate, horizon and edge/noise
+//   market knowledge → cadence, volatility class, market family and contract rules
 //   structure → digit entropy/runs/hot/parity/streak, or variance ratio/trend/
 //               volatility/RSI-like balance/range position
 //
@@ -65,7 +67,7 @@ const safeProbability = (value: number) => clamp(value, 0.0005, 0.9995);
 /** Share of the teacher probability mixed into each training label. */
 export const FORGE_DISTILLATION = 0.35;
 
-/** Architecture: 24 → 24 → 12 → 2, about 1.0k parameters. */
+/** Architecture: 31 → 24 → 12 → 2, 1,094 parameters. */
 const FORGE_SPEC: NetworkSpec = {
   inputDim: FORGE_FEATURE_COUNT,
   hidden: [24, 12],
@@ -111,6 +113,8 @@ export type ForgeCandidateInput = {
   horizonTicks: number;
   /** Plain-language reading of the market context the vector carries. */
   contextSummary: string;
+  /** Causal layer outputs/calculations used as model inputs. */
+  inputs?: readonly string[];
   /** Which audited layers supplied the distillation targets. */
   teachers: readonly string[];
   symbol?: string | null;
@@ -136,6 +140,7 @@ function buildStages(input: {
   trainRows: number;
   validationRows: number;
   holdoutRows: number;
+  inputCount: number;
   distillation: number;
   knowledgeCount: number;
   marketClass: string;
@@ -147,6 +152,12 @@ function buildStages(input: {
       label: 'Knowledge anchor',
       size: input.knowledgeCount,
       detail: `${input.knowledgeCount} syllabus entries for the ${input.family === 'digit' ? 'digit' : 'Rise/Fall'} family pin the anchor at fair odds, the teachers, the inputs and the rules that can only remove conviction.`,
+    },
+    {
+      id: 'inputs',
+      label: 'Causal expert inputs',
+      size: input.inputCount,
+      detail: 'Engine consensus, AI and horizon-matched neural views, independent research forecasts, and fair-rate/edge-to-noise calculations enter as inputs only when they were available at that replay origin.',
     },
     {
       id: 'market',
@@ -226,7 +237,7 @@ export function forgeCandidate(input: ForgeCandidateInput): ForgedModel | null {
   const card: ForgeModelCard = {
     id: FORGE_MODEL_ID,
     name: 'SignalLab Forge · unified model',
-    version: '1.0.0',
+    version: '1.1.0',
     task: input.family === 'digit'
       ? `Terminal-digit contract win probability · ${input.label}`
       : `Rise/Fall win probability · ${input.label}`,
@@ -247,17 +258,19 @@ export function forgeCandidate(input: ForgeCandidateInput): ForgedModel | null {
     holdoutRows: metrics.holdoutRows,
     seed: spec.seed,
     license: FORGE_LICENSE,
-    origin: `Forged now, in this run, from ${input.label} replayed rows on ${profile.name} — no pretrained weights and no download.`,
+    origin: `Forged now, in this run, from ${input.label} replayed rows and causal layer outputs on ${profile.name} — no pretrained weights and no download.`,
     runtime: 'Trained and executed locally in a Web Worker · no network, no account, no cost',
     cost: 'free',
     knowledgeVersion: FORGE_KNOWLEDGE_VERSION,
     features: featureLabels(input.family),
+    inputs: [...(input.inputs ?? [])],
     teachers: [...input.teachers],
     stages: buildStages({
       family: input.family,
       trainRows: metrics.trainRows,
       validationRows: metrics.validationRows,
       holdoutRows: metrics.holdoutRows,
+      inputCount: (input.inputs ?? []).length,
       distillation: FORGE_DISTILLATION,
       knowledgeCount,
       marketClass: profile.kind,
@@ -265,7 +278,7 @@ export function forgeCandidate(input: ForgeCandidateInput): ForgedModel | null {
     }),
   };
   const teacherError = metrics.teacherErrorRate === null ? '—' : `${(100 * metrics.teacherErrorRate).toFixed(0)}%`;
-  const analysis = `${input.contextSummary} The forged model reads ${input.label} at ${(100 * probability).toFixed(1)}% against a ${(100 * fair).toFixed(1)}% fair rate, with ${metrics.validated ? 'a validated' : 'no validated'} out-of-sample edge; its teachers were wrong on ${teacherError} of the holdout rows.`;
+  const analysis = `${input.contextSummary} The Forge reads ${input.label} at ${(100 * probability).toFixed(1)}% against a ${(100 * fair).toFixed(1)}% fair rate, using ${card.inputs.length} causal layer inputs; it has ${metrics.validated ? 'a validated' : 'no validated'} out-of-sample edge, and its teachers were wrong on ${teacherError} of the holdout rows.`;
   const note = `${describeGate(metrics)} ${metrics.validated ? `Forged view ${(100 * probability).toFixed(1)}%, drive ${drive}/100.` : 'The estimate is unchanged.'}`;
   return {
     card,
@@ -309,8 +322,8 @@ export type ForgeFusionInput = {
  *      fair by more than the material threshold): `veto` — the published edge
  *      is cut to 35% of its size and the analyzers are told to stop calling the
  *      entry decisive.
- *   5. Unvalidated: it may only pull the number DOWN, and only when it is
- *      materially lower than the chain. Never up.
+ *   5. Unvalidated: inert — it cannot move the published number in either
+ *      direction until its own independent gate passes.
  */
 export function applyForge(input: ForgeFusionInput): { probability: number; fusion: ForgeFusion } {
   const publishedRaw = finite(input.published) ? input.published : 0.5;

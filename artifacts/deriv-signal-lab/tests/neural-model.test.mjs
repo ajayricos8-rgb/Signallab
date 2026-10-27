@@ -13,7 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DIGIT_FEATURE_COUNT, DIGIT_FEATURE_WINDOW, QUOTE_FEATURE_COUNT, digitFeatures } from '../src/lib/neural/features.ts';
-import { NEURAL_MAX_WEIGHT, trainClassifier } from '../src/lib/neural/train.ts';
+import { NEURAL_MAX_WEIGHT, splitChronological, trainClassifier } from '../src/lib/neural/train.ts';
 import { fuseNeural, neuralEvidence, trainDigitNeuralModel, trainQuoteNeuralModel } from '../src/lib/neural/models.ts';
 import { confidenceScore, neuralTerm } from '../src/lib/signal-engine/confidence.ts';
 import { analyzeDigitMarket } from '../src/lib/signal-engine/digit-signal.ts';
@@ -50,6 +50,23 @@ test('digit features are the declared width and never look at the tick they pred
   assert.equal(digitFeatures(digits, DIGIT_FEATURE_WINDOW - 2), null);
 });
 
+test('variable-duration labels are purged by their actual exit tick at train and calibration boundaries', () => {
+  const rows = Array.from({ length: 300 }, (_, origin) => ({
+    origin,
+    exit: origin + (origin % 53 === 0 ? 90 : 1),
+    features: new Float64Array(DIGIT_FEATURE_COUNT),
+    label: origin % 2,
+  }));
+  const split = splitChronological(rows, 0, 0.6, 0.2);
+  const firstValidationOrigin = split.validation[0].origin;
+  const firstHoldoutOrigin = split.holdout[0].origin;
+  assert.ok(split.train.length > 0 && split.validation.length > 0 && split.holdout.length > 0);
+  assert.ok(split.train.every((row) => row.exit < firstValidationOrigin), 'training labels settle before the first validation origin');
+  assert.ok(split.validation.every((row) => row.exit < firstHoldoutOrigin), 'calibration labels settle before the untouched holdout');
+  assert.ok(rows.some((row) => row.origin < firstValidationOrigin && row.exit >= firstValidationOrigin));
+  assert.ok(rows.some((row) => row.origin >= firstValidationOrigin && row.origin < firstHoldoutOrigin && row.exit >= firstHoldoutOrigin));
+});
+
 test('the digit net is deterministic for a given feed', () => {
   const digits = biasedDigits(11, 1_200);
   const first = trainDigitNeuralModel(digits);
@@ -61,6 +78,21 @@ test('the digit net is deterministic for a given feed', () => {
   assert.equal(first.model.parameters, second.model.parameters);
   assert.equal(first.model.license, 'MIT');
   assert.equal(first.model.cost, 'free');
+});
+
+test('digit neural replay retains original source indices for horizon-matched Forge alignment', () => {
+  const digits = biasedDigits(29, 3_000);
+  const horizonTicks = 3;
+  const forecast = trainDigitNeuralModel(digits, { horizonTicks });
+  assert.ok(forecast);
+  assert.ok(forecast.replay.length > 0);
+  const sourceOffset = digits.length - 2_600;
+  const origins = forecast.replay.map((row) => row.origin);
+  assert.ok(origins.every(Number.isInteger));
+  assert.ok(origins.every((origin) => origin >= sourceOffset + DIGIT_FEATURE_WINDOW - 1));
+  assert.ok(origins.every((origin) => origin + horizonTicks < digits.length));
+  assert.deepEqual(origins, [...origins].sort((a, b) => a - b));
+  assert.equal(new Set(origins).size, origins.length);
 });
 
 test('on a fair stream the model measures at chance and carries no weight', () => {
@@ -133,6 +165,9 @@ test('the quote net learns a genuinely cyclical market and stays silent on a ran
   assert.ok(cyclicForecast);
   assert.equal(cyclicForecast.metrics.validated, true, JSON.stringify(cyclicForecast.metrics));
   assert.ok(cyclicForecast.weight > 0);
+  assert.ok(cyclicForecast.replay.length > 0);
+  assert.ok(cyclicForecast.replay.every((row) => row.origin >= 20 && row.origin + 1 < cyclical.length));
+  assert.deepEqual(cyclicForecast.replay.map((row) => row.origin), cyclicForecast.replay.map((row) => row.origin).slice().sort((a, b) => a - b));
 
   const random = sfc32(17);
   let price = 1_000;

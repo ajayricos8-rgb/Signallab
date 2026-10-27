@@ -24,6 +24,7 @@
 // Pure module: no I/O, no DOM, no React. It runs inside the Web Workers that
 // analyse markets, so every value must be structured-clone friendly.
 import type { SignalStrength } from './confidence.ts';
+import type { ForgeFusion } from '../forge/types.ts';
 import { fitLevelReversion, type LevelReversionModel } from './market-state.ts';
 
 export type EntryTrigger = 'immediate' | 'quote' | 'digit';
@@ -35,6 +36,16 @@ export type EntryMode = 'immediate' | 'pullback' | 'breakout' | 'context';
  * ever be produced by a real analysis — there is no way to build one from
  * nothing, and `EntryPlan.evidence` carries these numbers to the UI and the bot.
  */
+export type EntryForgeEvidence = {
+  modelProbability: number | null;
+  validated: boolean;
+  skill: number | null;
+  sample: number;
+  decision: ForgeFusion['decision'];
+  edgePts: number;
+  contributionPts: number;
+};
+
 export type EntrySignalContext = {
   source: 'rise-fall' | 'digit';
   /** Engines that agreed with the traded outcome, out of those that voted. */
@@ -44,6 +55,8 @@ export type EntrySignalContext = {
   probability: number | null;
   /** Raw AI meta-model probability for the same outcome (0–1), when there is one. */
   aiProbability?: number | null;
+  /** Forge's own audited view and what it did to the published estimate. */
+  forge?: ForgeFusion | null;
   /** Layer-3 verdict for the same trade, when the analysis produced one. */
   confirmation?: {
     status: 'confirmed' | 'adjusted' | 'cautious' | 'contradicted';
@@ -61,6 +74,8 @@ export type EntryEvidence = {
   signalProbability: number | null;
   /** Raw AI meta-model probability for the same outcome (0–1). */
   aiProbability: number | null;
+  /** Forge's own audited view; null when no model could be fitted. Optional for pre-Forge saved analyses. */
+  forge?: EntryForgeEvidence | null;
   /** Win probability with no edge for this contract (0–1). */
   fairRate: number;
   /** The replay the entry numbers were measured on. */
@@ -343,6 +358,15 @@ function buildEvidence(signal: EntrySignalContext, fairRate: number): EntryEvide
       typeof signal.aiProbability === 'number' && Number.isFinite(signal.aiProbability)
         ? clamp(signal.aiProbability, 0, 1)
         : null,
+    forge: signal.forge ? {
+      modelProbability: Number.isFinite(signal.forge.modelProbability) ? clamp(signal.forge.modelProbability, 0, 1) : null,
+      validated: signal.forge.validated,
+      skill: typeof signal.forge.skill === 'number' && Number.isFinite(signal.forge.skill) ? signal.forge.skill : null,
+      sample: Math.max(0, Math.round(signal.forge.sample)),
+      decision: signal.forge.decision,
+      edgePts: Number.isFinite(signal.forge.edgePts) ? signal.forge.edgePts : 0,
+      contributionPts: Number.isFinite(signal.forge.contributionPts) ? signal.forge.contributionPts : 0,
+    } : null,
     fairRate,
     rule: ENTRY_RULES[signal.source],
     confirmation: signal.confirmation ? { ...signal.confirmation } : null,
@@ -1569,6 +1593,11 @@ export function describeEntryEvidence(plan: EntryPlan): string {
   const { evidence } = plan;
   const parts = [`${evidence.agreeing}/${evidence.total} engines agree`];
   if (evidence.aiProbability !== null) parts.push(`AI ${(evidence.aiProbability * 100).toFixed(1)}%`);
+  if (evidence.forge) {
+    const probability = evidence.forge.modelProbability === null ? '—' : `${(evidence.forge.modelProbability * 100).toFixed(1)}%`;
+    const edge = `${evidence.forge.edgePts >= 0 ? '+' : ''}${evidence.forge.edgePts.toFixed(1)} pts`;
+    parts.push(`Forge ${probability} (${evidence.forge.validated ? 'validated' : 'unvalidated'}, ${evidence.forge.decision}, ${edge})`);
+  }
   if (evidence.confirmation)
     parts.push(
       `confirmation ${evidence.confirmation.status} (${evidence.confirmation.edgePts >= 0 ? '+' : ''}${evidence.confirmation.edgePts.toFixed(1)} pts edge${evidence.confirmation.decisive ? ', decisive' : ''})`,

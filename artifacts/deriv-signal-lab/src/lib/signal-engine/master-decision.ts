@@ -592,8 +592,11 @@ export function buildMasterDecision(input: MasterDecisionInput): MasterDecision 
 
   const waitEarned = triggerEarnedWait(input.entry);
   let stage: 'trade' | 'speculative' | 'none';
-  if (!decisiveEdge || !speculative) stage = 'none';
-  else if (significant && stable && confirmedEnough && !input.contradicted && measuredValidity.ticks >= 1) stage = 'trade';
+  // A validated contradiction is a hard master veto, not merely a downgrade
+  // from decisive to speculative. Forge vetoes and confirmed contrary analysis
+  // must resolve to NO_EDGE with an explicit no-edge entry action.
+  if (!decisiveEdge || !speculative || input.contradicted) stage = 'none';
+  else if (significant && stable && confirmedEnough && measuredValidity.ticks >= 1) stage = 'trade';
   else stage = 'speculative';
 
   // Without a material, significant edge there is nothing to time: the window
@@ -697,7 +700,7 @@ export function buildMasterDecision(input: MasterDecisionInput): MasterDecision 
   } else {
     reasons.push(`The ${entryLabel} did not beat buying at the signal on newer rows, so the master enters at the next tick instead of waiting.`);
   }
-  if (input.contradicted) reasons.push('The analysis layer validated a contrary estimate; the verdict cannot be decisive.');
+  if (input.contradicted) reasons.push('The Forge or confirmation layer validated a contrary estimate; the master veto is hard: NO_EDGE and entry.action = no-edge.');
   if (input.marketRandom) reasons.push('The analysis engines measured no exploitable market structure; only measured out-of-sample skill can carry this call.');
   if (!input.marketMeasured) reasons.push('The market could not be measured reliably yet; treat the decision as provisional.');
   if (input.dataQuality < 0.9) reasons.push(`Data quality is ${(input.dataQuality * 100).toFixed(0)}% of a full sample, which lowers the evidence score.`);
@@ -771,6 +774,11 @@ export function describeMasterDecision(decision: MasterDecision): string {
 /** True when this decision should be preferred when ranking candidates. */
 export function masterPriority(decision: MasterDecision | null | undefined): number {
   return decision ? decision.priority : -100;
+}
+
+/** Final execution guard shared by the dock, Auto and the bot's start hook. */
+export function masterBlocksEntry(decision: Pick<MasterDecision, 'verdict' | 'entry'> | null | undefined): boolean {
+  return Boolean(decision && (decision.verdict === 'NO_EDGE' || decision.entry.action === 'no-edge'));
 }
 
 /** Upper-tail p-value helper kept next to the model for the UI/exports. */
