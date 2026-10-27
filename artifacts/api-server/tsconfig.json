@@ -5,9 +5,7 @@
     "tsBuildInfoFile": ".tsbuildinfo",
     "outDir": "dist",
     "rootDir": "src",
-    "types": ["node"],
-    "allowImportingTsExtensions": true,
-    "rewriteImportExtensions": false
+    "types": ["node"]
   },
   "include": ["src"],
   "references": [

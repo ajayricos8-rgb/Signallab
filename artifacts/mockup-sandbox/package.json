@@ -1,6 +1,9 @@
 {
   "name": "@workspace/mockup-sandbox",
   "version": "2.0.0",
+  "engines": {
+    "node": "22.x"
+  },
   "type": "module",
   "private": true,
   "scripts": {

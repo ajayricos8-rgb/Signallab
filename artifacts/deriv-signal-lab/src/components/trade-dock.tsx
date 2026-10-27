@@ -162,7 +162,7 @@ function readBotConfig(): SignalBotConfig {
 }
 
 const percent1 = (value: number | null | undefined): string =>
-  value === null || !Number.isFinite(value) ? '—' : `${(100 * value).toFixed(1)}%`;
+  value == null || !Number.isFinite(value) ? '—' : `${(100 * value).toFixed(1)}%`;
 
 function forgeChipClass(decision: EntryForgeEvidence['decision']): string {
   switch (decision) {
@@ -956,7 +956,7 @@ export function TradeDock({
                       title={forgeChipTitle(botPlan.entry.evidence.forge, botPlan.entry.evidence.fairRate)}
                       data-testid="dock-forge-verdict"
                     >
-                      Forge {botPlan.entry.evidence.forge.decision} · {percent1(botPlan.entry.evidence.modelProbability)} vs {percent1(botPlan.entry.evidence.fairRate)} fair · {botPlan.entry.evidence.validated ? 'validated' : 'unvalidated'}
+                      Forge {botPlan.entry.evidence.forge.decision} · {percent1(botPlan.entry.evidence.forge.modelProbability)} vs {percent1(botPlan.entry.evidence.fairRate)} fair · {botPlan.entry.evidence.forge.validated ? 'validated' : 'unvalidated'}
                     </span>
                   ) : null}
                 </div>
