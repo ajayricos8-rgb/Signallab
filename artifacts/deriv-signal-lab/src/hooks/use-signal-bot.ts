@@ -37,8 +37,10 @@ import {
   medianTickSpacingMs,
   ticksSince,
   type EntryEvaluation,
+  type EntryForgeEvidence,
   type EntryPlan,
 } from '@/lib/signal-engine/entry.ts';
+import { forgeExecutionGate } from '@/lib/signal-bot/forge-gate.ts';
 import {
   describeEntryOutcome,
   nextRunDecision,
@@ -414,6 +416,24 @@ export function useSignalBot(): SignalBotController {
         );
         return;
       }
+      // Layer 8 execution guard: the forged model is embedded in Load and Run.
+      // A validated forge veto refuses to start the bot at all, so the bot
+      // never enters a market the forged model has measured against the call.
+      const forgeGate = forgeExecutionGate({
+        forge: nextPlan.entry.evidence.forge ?? null,
+        masterVetoed: masterBlocksEntry(nextPlan.master),
+        entryTimingMeasured: Boolean(nextPlan.entry.measured && nextPlan.entry.trigger !== 'immediate'),
+        entryReadyNow: false,
+        analysisAgeMs: Number.isFinite(nextPlan.ranAt) && nextPlan.ranAt > 0 ? Date.now() - nextPlan.ranAt : null,
+        validityMs,
+        fair: nextPlan.entry.evidence.fairRate,
+      });
+      if (forgeGate.decision === 'block') {
+        setStatus('error');
+        setStopReason('error');
+        setError(forgeGate.reason);
+        return;
+      }
       const config = sanitizeSignalBotConfig(rawConfig);
       // Fast mode reduces local scheduling delay only; feed, proposal and buy latency remain network/Deriv-bound.
       const pollMs = speed === 'fast' ? FAST_ENTRY_POLL_MS : NORMAL_ENTRY_POLL_MS;
@@ -577,6 +597,45 @@ export function useSignalBot(): SignalBotController {
             await sleep(pauseBetweenRunsMs);
             if (generation !== generationRef.current) return;
             continue;
+          }
+
+          // Layer 8 execution guard: the forged model has the last word on this
+          // run's entry. When it reads the market against the call, skip the
+          // run instead of buying at a bad moment.
+          const runForgeGate = forgeExecutionGate({
+            forge: nextPlan.entry.evidence.forge ?? null,
+            masterVetoed: false,
+            entryTimingMeasured: Boolean(nextPlan.entry.measured && nextPlan.entry.trigger !== 'immediate'),
+            entryReadyNow: true,
+            analysisAgeMs: Number.isFinite(nextPlan.ranAt) && nextPlan.ranAt > 0 ? Date.now() - nextPlan.ranAt : null,
+            validityMs,
+            fair: nextPlan.entry.evidence.fairRate,
+          });
+          if (runForgeGate.decision === 'skip') {
+            setRuns((current) =>
+              current.map((run) =>
+                run.index === index
+                  ? {
+                      ...run,
+                      status: 'skipped',
+                      settledAt: Date.now(),
+                      entryTicks: entryOutcome.waitedTicks,
+                      note: runForgeGate.reason,
+                    }
+                  : run,
+              ),
+            );
+            setEntryWatch(null);
+            await sleep(pauseBetweenRunsMs);
+            if (generation !== generationRef.current) return;
+            continue;
+          }
+          if (runForgeGate.decision === 'block') {
+            setStatus('error');
+            setStopReason('error');
+            setError(runForgeGate.reason);
+            finish(generation, 'stopped');
+            return;
           }
 
           // 3. Buy the signal at the entry the analysis planned.
