@@ -88,7 +88,7 @@ defineStatementBlock({
 defineValueBlock({
     type: 'x_ai_should_buy',
     message: localize('AI entry signal (min edge %1 %)'),
-    args: [num('MIN_EDGE', '1.5')],
+    args: [num('MIN_EDGE', '-100')],
     output: 'Boolean',
     colour,
     category,
@@ -128,7 +128,7 @@ defineStatementBlock({
     type: 'x_ai_trade',
     command: true,
     message: localize('AI Over/Under: stake %1 duration %2 ticks min edge %3 % risk %4'),
-    args: [num('STAKE', '1'), num('DURATION', '5'), num('MIN_EDGE', '1.5'), num('RISK', '0.6')],
+    args: [num('STAKE', '0.35'), num('DURATION', '1'), num('MIN_EDGE', '-100'), num('RISK', '0.6')],
     inputsInline: false,
     colour,
     category,

@@ -555,28 +555,58 @@ export function planTrade(values, options = {}) {
     // the long shots the broker taxes hardest.
     candidates.sort((a, b) => b.tStat - a.tStat);
     const eligible = candidates.filter(candidate => candidate.passes);
-    // When nothing clears the bars, fall back to the strongest positive lean
-    // rather than the largest deviation, which is just as often the largest
-    // shortfall. A relaxed strategy needs a barrier it can actually buy.
+    // When nothing clears the bars, fall back to the strongest lean rather than
+    // the largest deviation, which is just as often the largest shortfall. A
+    // relaxed strategy needs a barrier it can actually buy.
     const fallback = candidates.length ? candidates.reduce((a, b) => (b.bias > a.bias ? b : a)) : null;
+
+    /**
+     * A relaxed strategy must always have a contract to buy.
+     *
+     * With the significance and value bars both off the user asked for one
+     * thing: open a position on the best thing the AI can see, every time it
+     * looks. On a fair synthetic index most ticks have no candidate above the
+     * fair odds — the digit distribution shrinks toward uniform and the payout
+     * margin wins — so a plan that only fires on a positive lean spends most of
+     * its life returning `go: false` with a perfectly good contract sitting in
+     * `best`. That is what made the bot look dead: the analysis ran, chose a
+     * barrier, and then refused to buy it.
+     *
+     * So when the bars are off and nothing passes, we still trade: the
+     * candidate with the best expected value (in practice the widest, lowest
+     * margin contract) becomes the entry, and the plan says plainly that it was
+     * forced rather than measured. Turning either bar on turns the forcing off,
+     * so an explicit floor is never overridden.
+     */
+    const forceEntry = options.forceEntry !== false;
+    const forced = Boolean(forceEntry && relaxed && !strictValue && !eligible.length && candidates.length);
     const best = eligible.length
         ? eligible.reduce((a, b) => (b.adjusted > a.adjusted ? b : a))
-        : fallback;
+        : forced
+          ? candidates.reduce((a, b) => (b.adjusted > a.adjusted ? b : a))
+          : fallback;
 
     const agreementRatio = best?.agreementRatio ?? 0;
     const decisionConfidence = best?.confidence ?? 0;
     const stable = !options.previous || options.previous.direction !== best?.direction || options.previous.barrier === best?.barrier;
-    const go = Boolean(best?.passes);
+    const go = Boolean(best) && (Boolean(best.passes) || forced);
 
     // Stake sizing: how far past the significance bar this lean is, times the
     // confidence, times how much risk the strategy is willing to take. (Kelly is
     // published as information but is unusably small on a long-shot payout.)
     // The 1.0 floor keeps sizing meaningful with the bar off: a 1σ lean is a
     // full stake, a 0.3σ lean is a third of one.
-    const conviction = best ? clamp(best.tStat / Math.max(minLean * 2.2, 1.0), 0, 1) : 0;
+    //
+    // A forced entry has no lean to scale by — its t-statistic is negative by
+    // definition — so scaling it by conviction would hand back a zero stake,
+    // and a zero stake is not a trade. It gets a floor instead: the smallest
+    // sensible fraction of the base stake, which the strategy's own safe-stake
+    // block then lifts to the broker minimum.
+    const convRaw = best ? clamp(clamp(best.tStat, 0, 8) / Math.max(minLean * 2.2, 1.0), 0, 1) : 0;
+    const conviction = forced ? Math.max(convRaw, 0.35) : convRaw;
     const valueScale = strictValue ? clamp(best ? best.edge / Math.max(0.005, safe(options.targetEdge, 0.04)) : 0, 0, 1) : 1;
     const stakeFactor = best
-        ? clamp(conviction * valueScale * (0.55 + 0.45 * (decisionConfidence / 100)) * (0.4 + 0.6 * riskFactor), 0, 1)
+        ? clamp(conviction * valueScale * (0.55 + 0.45 * (decisionConfidence / 100)) * (0.4 + 0.6 * riskFactor), go ? 0.2 : 0, 1)
         : 0;
 
     return {
@@ -586,6 +616,7 @@ export function planTrade(values, options = {}) {
         best,
         plan: best,
         go,
+        forced,
         barrier: best?.barrier ?? -1,
         direction: best?.direction ?? 'wait',
         contract: best?.contract ?? '',
@@ -601,25 +632,28 @@ export function planTrade(values, options = {}) {
         stable,
         minLean,
         strictValue,
+        forceEntry,
         effectiveSample,
         tStat: best?.tStat ?? 0,
         conviction,
         rawBiasPoints: best?.rawBiasPoints ?? 0,
         reason: !best
             ? 'no tradeable barrier'
-            : best.bias <= 0 || best.rawBias <= 0
-                ? 'no measured lean against the fair odds'
-                : best.tStat < minLean
-                    ? `lean of ${best.rawBiasPoints.toFixed(2)} points is only ${best.tStat.toFixed(2)}σ, below the ${minLean}σ bar`
-                    : decisionConfidence < minConfidence
-                        ? `confidence ${decisionConfidence.toFixed(0)} below ${minConfidence}`
-                        : agreementRatio < (options.minAgreement ?? 0.7)
-                            ? `only ${(agreementRatio * 100).toFixed(0)}% of models agree`
-                            : strictValue && best.adjusted < rawMinEdge / 100
-                                ? `edge ${(best.adjusted * 100).toFixed(2)}% below the ${rawMinEdge.toFixed(1)}% floor`
-                                : 'entry confirmed',
+            : forced
+                ? 'no measured lean above the fair odds — trading the safest contract anyway (bars are off)'
+                : best.bias <= 0 || best.rawBias <= 0
+                    ? 'no measured lean against the fair odds'
+                    : best.tStat < minLean
+                        ? `lean of ${best.rawBiasPoints.toFixed(2)} points is only ${best.tStat.toFixed(2)}σ, below the ${minLean}σ bar`
+                        : decisionConfidence < minConfidence
+                            ? `confidence ${decisionConfidence.toFixed(0)} below ${minConfidence}`
+                            : agreementRatio < (options.minAgreement ?? 0.7)
+                                ? `only ${(agreementRatio * 100).toFixed(0)}% of models agree`
+                                : strictValue && best.adjusted < rawMinEdge / 100
+                                    ? `edge ${(best.adjusted * 100).toFixed(2)}% below the ${rawMinEdge.toFixed(1)}% floor`
+                                    : 'entry confirmed',
         summary: best
-            ? `${best.direction.toUpperCase()} ${best.barrier} · p ${(best.probability * 100).toFixed(2)}% · fair ${(best.fair * 100).toFixed(0)}% · lean ${best.rawBiasPoints.toFixed(2)}pt (${best.tStat.toFixed(2)}σ) · payout ${best.payout.toFixed(2)}x · EV ${(best.edge * 100).toFixed(2)}% · conf ${decisionConfidence.toFixed(0)}`
+            ? `${best.direction.toUpperCase()} ${best.barrier} · p ${(best.probability * 100).toFixed(2)}% · fair ${(best.fair * 100).toFixed(0)}% · lean ${best.rawBiasPoints.toFixed(2)}pt (${best.tStat.toFixed(2)}σ) · payout ${best.payout.toFixed(2)}x · EV ${(best.edge * 100).toFixed(2)}% · conf ${decisionConfidence.toFixed(0)}${forced ? ' · forced' : ''}`
             : 'no candidate',
     };
 }

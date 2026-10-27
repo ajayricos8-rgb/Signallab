@@ -3,51 +3,63 @@
   AI Vision — Over/Under
   ======================
 
-  An Over/Under bot that prices the market itself and walks through all ten
+  An Over/Under bot that prices the market itself and walks through the ten
   volatility indices while it does it. The tick block reads the market once per
   tick, and the trade options and the purchase conditions all read that same
   decision, so the barrier, the stake and the entry can never come from
   different moments. Every tick it:
 
-    0. decides where to stand. The market block moves the running bot between
-       the one-second and two-second volatility indices on a timer, taking the
-       new market's tick history and payout table with it, so the bot is never
-       trading one market's prices on another's stream;
+    0. decides where to stand. The market block keeps the bot on the market it
+       scores best and moves it on when the score drops, taking the new market's
+       tick history and payout table with it. It will not leave a market whose
+       history has not even arrived yet, because a switch trades a warm history
+       for a cold one;
     1. forecasts the ten last digits at the moment the contract expires, with
        seven models (long-run and recent digit frequency, the digit transition
        table, a kernel replay of similar states, an analytical price forecast, a
        fair-odds anchor and an online-trained neural net);
-    2. reads what Deriv actually pays for every barrier on this symbol and
-       duration, straight from the proposal API;
-    3. picks the barrier and the side with the strongest measured lean, and
-       sizes the stake by how strong that lean is and how much the models agree;
-    4. buys it. The entry bars are OFF by default (see the note below), so it
-       takes the strongest lean it can measure on every tick rather than
-       waiting for one that clears the noise;
-    5. learns from the settled digit: every contract scores each model and
-       takes one gradient step, per market, and the brain survives restarts.
+    2. prices every barrier against the payout table it read from Deriv, or the
+       conservative modelled table while the live one is in flight — the bot
+       never waits on twenty proposals to make a two-second decision;
+    3. picks the barrier and the side with the best expected value, and sizes the
+       stake by how strong that lean is and how much the models agree;
+    4. buys it. The entry bars ship OFF, so it buys the best contract it can
+       price on every tick. When no barrier leans past the fair odds it still
+       trades — it takes the safest contract (the widest Over or Under, where
+       nine or eight digits win) and says "forced" in the journal rather than
+       sitting the tick out. A bot that analyses every tick and then refuses to
+       buy is the one thing this strategy must not be;
+    5. paces itself: one position at most every "ai entry gap" seconds (2 by
+       default). Each contract settles on the next tick, so on a two-second
+       market that is one position per tick and never more;
+    6. learns from the settled digit: every contract scores each model and takes
+       one gradient step, per market, and the brain survives restarts.
 
   Set the knobs in the "Run once at start" block. Open the journal to watch the
-  reasoning: every entry says which market, which contract, the measured lean
-  in points and standard deviations, the payout, the expected value and the
-  confidence.
+  reasoning: every entry prints the market, the contract, the measured lean in
+  points and standard deviations, the payout, the expected value and the
+  confidence, plus "forced" when the AI had no lean to work with.
+
+  If it ever looks idle, the journal says why: "warming up — 3/12 ticks on this
+  market" means the tick stream has not filled yet; a plan line without an entry
+  means the guard above it (loss limit, profit target or entry gap) is holding.
 
   Read this before running it for real
-  The entry bars are OFF. "ai min lean" is 0, which means the bot buys the
-  strongest lean it can measure on every tick, whether or not that lean is
-  bigger than the noise that produced it. That is what makes it trade instead
-  of waiting; it does not make it right. Digit contracts carry an exchange
-  margin, so the expected value printed in the journal on each entry is
-  usually negative, and a bot that fires this often will reach the loss limit
-  quickly on a market that is not paying.
+  The entry bars are OFF. "ai min lean" is 0, which means the bot buys the best
+  contract it can price on every tick, whether or not that contract leans past
+  the fair odds. That is what makes it trade instead of waiting; it does not
+  make it right. Digit contracts carry an exchange margin, so the expected value
+  printed in the journal on each entry is usually negative, and a bot that fires
+  this often will reach the loss limit quickly on a market that is not paying.
 
-  Raise "ai min lean" back to 1.5 or more to put the significance bar on and
-  watch the trade rate collapse. That collapse is the honest measure of how
-  much of what this bot does is signal and how much is noise.
+  Raise "ai min lean" back to 1.5 or more to put the significance bar on — the
+  forced entries stop with it — and watch the trade rate collapse. That collapse
+  is the honest measure of how much of what this bot does is signal and how much
+  is noise.
 
   Start on a demo account, keep "ai base stake" small, set "ai loss limit" to
-  what you are willing to lose in a session, and never raise the stake to
-  chase a loss.
+  what you are willing to lose in a session, and never raise the stake to chase
+  a loss.
 
   Tuning, all of it in the "Run once at start" block:
 
@@ -56,15 +68,15 @@
     ai min lean         0      sigma the lean must clear. 0 = no bar, always trade
     ai min confidence   0      0-100 quality floor. 0 = no floor
     ai agreement        0      share of models that must agree. 0 = no floor
-    ai market dwell     2      seconds to stay on a market before moving on
-    ai market floor     30     with the "most suitable" mode, the score below
+    ai entry gap        2      seconds between positions. 0 = no limit
+    ai market dwell     15     seconds to stay on a market before moving on
+    ai market floor     20     with the "most suitable" mode, the score below
                                which the bot leaves a market
     ai loss limit       30     stop the bot after this much loss
     ai profit target    50     stop the bot after this much profit
 
-  The market block is set to walk the ten markets in turn. Change its dropdown
-  to "the most suitable market" to make the bot stay where it scores well and
-  move on when it does not, or "any market at random" for a random walk.
+  The market block is set to "the most suitable market". Change its dropdown to
+  "the next market in turn" to walk the ten markets, or "any market at random".
 -->
 <xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">
   <variables>
@@ -77,11 +89,11 @@
     <variable type="" id="aiVar07">ai risk</variable>
     <variable type="" id="aiVar08">ai loss limit</variable>
     <variable type="" id="aiVar09">ai profit target</variable>
-    <variable type="" id="aiVar10">ai cooldown</variable>
     <variable type="" id="aiVar11">ai stake percent</variable>
     <variable type="" id="aiVar12">ai contracts</variable>
     <variable type="" id="aiVar13">ai market dwell</variable>
     <variable type="" id="aiVar14">ai market floor</variable>
+    <variable type="" id="aiVar15">ai entry gap</variable>
   </variables>
   <block type="trade_definition" id="aiTrade01" x="0" y="0">
     <statement name="TRADE_OPTIONS">
@@ -118,7 +130,7 @@
       </block>
     </statement>
     <statement name="INITIALIZATION">
-      <block type="variables_set" id="is01"><field name="VAR" id="aiVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="in01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="is02"><field name="VAR" id="aiVar02">ai duration</field><value name="VALUE"><shadow type="math_number" id="in02"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is03"><field name="VAR" id="aiVar03">ai min edge</field><value name="VALUE"><shadow type="math_number" id="in03"><field name="NUM">-100</field></shadow></value><next><block type="variables_set" id="is04"><field name="VAR" id="aiVar04">ai min lean</field><value name="VALUE"><shadow type="math_number" id="in04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is05"><field name="VAR" id="aiVar05">ai min confidence</field><value name="VALUE"><shadow type="math_number" id="in05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is06"><field name="VAR" id="aiVar06">ai agreement</field><value name="VALUE"><shadow type="math_number" id="in06"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is07"><field name="VAR" id="aiVar07">ai risk</field><value name="VALUE"><shadow type="math_number" id="in07"><field name="NUM">0.6</field></shadow></value><next><block type="variables_set" id="is08"><field name="VAR" id="aiVar08">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="in08"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="is09"><field name="VAR" id="aiVar09">ai profit target</field><value name="VALUE"><shadow type="math_number" id="in09"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="is10"><field name="VAR" id="aiVar10">ai cooldown</field><value name="VALUE"><shadow type="math_number" id="in10"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is11"><field name="VAR" id="aiVar11">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="in11"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is12"><field name="VAR" id="aiVar12">ai contracts</field><value name="VALUE"><shadow type="math_number" id="in12"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is13"><field name="VAR" id="aiVar13">ai market dwell</field><value name="VALUE"><shadow type="math_number" id="in13"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="is14"><field name="VAR" id="aiVar14">ai market floor</field><value name="VALUE"><shadow type="math_number" id="in14"><field name="NUM">30</field></shadow></value><next><block type="notify" id="in900"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="it900"><field name="TEXT">AI Vision Over/Under armed — walking all ten volatility markets. Tuning is in the Run once at start block.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
+      <block type="variables_set" id="is01"><field name="VAR" id="aiVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="in01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="is02"><field name="VAR" id="aiVar02">ai duration</field><value name="VALUE"><shadow type="math_number" id="in02"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is03"><field name="VAR" id="aiVar03">ai min edge</field><value name="VALUE"><shadow type="math_number" id="in03"><field name="NUM">-100</field></shadow></value><next><block type="variables_set" id="is04"><field name="VAR" id="aiVar04">ai min lean</field><value name="VALUE"><shadow type="math_number" id="in04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is05"><field name="VAR" id="aiVar05">ai min confidence</field><value name="VALUE"><shadow type="math_number" id="in05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is06"><field name="VAR" id="aiVar06">ai agreement</field><value name="VALUE"><shadow type="math_number" id="in06"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is07"><field name="VAR" id="aiVar07">ai risk</field><value name="VALUE"><shadow type="math_number" id="in07"><field name="NUM">0.6</field></shadow></value><next><block type="variables_set" id="is08"><field name="VAR" id="aiVar08">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="in08"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="is09"><field name="VAR" id="aiVar09">ai profit target</field><value name="VALUE"><shadow type="math_number" id="in09"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="is11"><field name="VAR" id="aiVar11">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="in11"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is12"><field name="VAR" id="aiVar12">ai contracts</field><value name="VALUE"><shadow type="math_number" id="in12"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is13"><field name="VAR" id="aiVar13">ai market dwell</field><value name="VALUE"><shadow type="math_number" id="in13"><field name="NUM">15</field></shadow></value><next><block type="variables_set" id="is14"><field name="VAR" id="aiVar14">ai market floor</field><value name="VALUE"><shadow type="math_number" id="in14"><field name="NUM">20</field></shadow></value><next><block type="variables_set" id="is15"><field name="VAR" id="aiVar15">ai entry gap</field><value name="VALUE"><shadow type="math_number" id="in15"><field name="NUM">2</field></shadow></value><next><block type="notify" id="in900"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="it900"><field name="TEXT">AI Vision Over/Under armed — reading every volatility market and opening a position at most every 2 s. Tuning is in the Run once at start block.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
     </statement>
     <statement name="SUBMARKET">
       <block type="trade_definition_tradeoptions" id="aiOptions01">
@@ -146,50 +158,101 @@
   <block type="tick_analysis" id="aiTick01" x="0" y="1500">
     <statement name="TICKANALYSIS_STACK">
       <block type="vision_auto_market" id="aiMarketPick01">
-  <field name="MODE">next</field>
-  <value name="FLOOR"><block type="variables_get" id="amg01"><field name="VAR" id="aiVar14">ai market floor</field></block></value>
-  <value name="DWELL"><block type="variables_get" id="amg02"><field name="VAR" id="aiVar13">ai market dwell</field></block></value>
-  <next><block type="vision_analyse" id="aiAnalyse01">
-  <value name="HORIZON"><block type="variables_get" id="g050"><field name="VAR" id="aiVar02">ai duration</field></block></value>
-  <value name="MIN_EDGE"><block type="variables_get" id="g051"><field name="VAR" id="aiVar03">ai min edge</field></block></value>
-  <value name="MIN_LEAN"><block type="variables_get" id="g052"><field name="VAR" id="aiVar04">ai min lean</field></block></value>
-  <value name="MIN_CONFIDENCE"><block type="variables_get" id="g053"><field name="VAR" id="aiVar05">ai min confidence</field></block></value>
-  <value name="AGREEMENT"><block type="variables_get" id="g054"><field name="VAR" id="aiVar06">ai agreement</field></block></value>
-  <value name="RISK"><block type="variables_get" id="g055"><field name="VAR" id="aiVar07">ai risk</field></block></value>
-</block></next></block>
+        <field name="MODE">suitable</field>
+        <value name="FLOOR"><block type="variables_get" id="amg01"><field name="VAR" id="aiVar14">ai market floor</field></block></value>
+        <value name="DWELL"><block type="variables_get" id="amg02"><field name="VAR" id="aiVar13">ai market dwell</field></block></value>
+        <next>
+          <block type="vision_analyse" id="aiAnalyse01">
+            <value name="HORIZON"><block type="variables_get" id="g050"><field name="VAR" id="aiVar02">ai duration</field></block></value>
+            <value name="MIN_EDGE"><block type="variables_get" id="g051"><field name="VAR" id="aiVar03">ai min edge</field></block></value>
+            <value name="MIN_LEAN"><block type="variables_get" id="g052"><field name="VAR" id="aiVar04">ai min lean</field></block></value>
+            <value name="MIN_CONFIDENCE"><block type="variables_get" id="g053"><field name="VAR" id="aiVar05">ai min confidence</field></block></value>
+            <value name="AGREEMENT"><block type="variables_get" id="g054"><field name="VAR" id="aiVar06">ai agreement</field></block></value>
+            <value name="RISK"><block type="variables_get" id="g055"><field name="VAR" id="aiVar07">ai risk</field></block></value>
+          </block>
+        </next>
+      </block>
     </statement>
   </block>
   <block type="before_purchase" id="aiBefore01" x="0" y="760">
     <statement name="BEFOREPURCHASE_STACK">
       <block type="controls_if" id="aiEntryIf01">
-  <value name="IF0"><block type="logic_operation" id="l038"><field name="OP">AND</field><value name="A"><block type="vision_go" id="aiGo01"></block></value><value name="B"><block type="logic_operation" id="l037"><field name="OP">AND</field><value name="A"><block type="r_loss_guard" id="r030"><value name="LIMIT"><block type="variables_get" id="g031"><field name="VAR" id="aiVar08">ai loss limit</field></block></value></block></value><value name="B"><block type="logic_operation" id="l036"><field name="OP">AND</field><value name="A"><block type="r_profit_guard" id="r032"><value name="TARGET"><block type="variables_get" id="g033"><field name="VAR" id="aiVar09">ai profit target</field></block></value></block></value><value name="B"><block type="r_cooldown" id="r034"><value name="SECONDS"><block type="variables_get" id="g035"><field name="VAR" id="aiVar10">ai cooldown</field></block></value></block></value></block></value></block></value></block></value>
-  <statement name="DO0"><block type="variables_set" id="s049"><field name="VAR" id="aiVar12">ai contracts</field><value name="VALUE"><block type="math_arithmetic" id="m046"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="g047"><field name="VAR" id="aiVar12">ai contracts</field></block></value><value name="B"><shadow type="math_number" id="n048"><field name="NUM">1</field></shadow></value></block></value><next><block type="controls_if" id="aiDirIf01">
-  <mutation else="1"></mutation>
-  <value name="IF0">
-    <block type="logic_compare" id="aiCmp01">
-      <field name="OP">EQ</field>
-      <value name="A"><block type="vision_direction" id="aiDir01"></block></value>
-      <value name="B"><block type="text" id="t045"><field name="TEXT">over</field></block></value>
-    </block>
-  </value>
-  <statement name="DO0"><block type="notify" id="no039"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="vision_summary" id="vs040"></block></value><next><block type="purchase" id="pu041"><field name="PURCHASE_LIST">DIGITOVER</field></block></next></block></statement>
-  <statement name="ELSE"><block type="notify" id="no042"><field name="NOTIFICATION_TYPE">info</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="vision_summary" id="vs043"></block></value><next><block type="purchase" id="pu044"><field name="PURCHASE_LIST">DIGITUNDER</field></block></next></block></statement>
-</block></next></block></statement>
-</block>
+        <value name="IF0"><block type="logic_operation" id="l038"><field name="OP">AND</field>
+          <value name="A"><block type="logic_operation" id="l039"><field name="OP">AND</field>
+            <value name="A"><block type="vision_go" id="aiGo01"></block></value>
+            <value name="B"><block type="vision_entry_ready" id="aiPace01"><value name="GAP"><block type="variables_get" id="g036"><field name="VAR" id="aiVar15">ai entry gap</field></block></value></block></value>
+          </block></value>
+          <value name="B"><block type="logic_operation" id="l037"><field name="OP">AND</field>
+            <value name="A"><block type="r_loss_guard" id="r030"><value name="LIMIT"><block type="variables_get" id="g031"><field name="VAR" id="aiVar08">ai loss limit</field></block></value></block></value>
+            <value name="B"><block type="r_profit_guard" id="r032"><value name="TARGET"><block type="variables_get" id="g033"><field name="VAR" id="aiVar09">ai profit target</field></block></value></block></value>
+          </block></value>
+        </block></value>
+        <statement name="DO0">
+          <block type="variables_set" id="s049"><field name="VAR" id="aiVar12">ai contracts</field>
+            <value name="VALUE"><block type="math_arithmetic" id="m046"><field name="OP">ADD</field>
+              <value name="A"><block type="variables_get" id="g047"><field name="VAR" id="aiVar12">ai contracts</field></block></value>
+              <value name="B"><shadow type="math_number" id="n048"><field name="NUM">1</field></shadow></value>
+            </block></value>
+            <next>
+              <block type="vision_mark_entry" id="aiMark01">
+                <next>
+                  <block type="controls_if" id="aiDirIf01">
+                    <mutation else="1"></mutation>
+                    <value name="IF0">
+                      <block type="logic_compare" id="aiCmp01">
+                        <field name="OP">EQ</field>
+                        <value name="A"><block type="vision_direction" id="aiDir01"></block></value>
+                        <value name="B"><block type="text" id="t045"><field name="TEXT">over</field></block></value>
+                      </block>
+                    </value>
+                    <statement name="DO0">
+                      <block type="notify" id="no039"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field>
+                        <value name="MESSAGE"><block type="vision_summary" id="vs040"></block></value>
+                        <next><block type="purchase" id="pu041"><field name="PURCHASE_LIST">DIGITOVER</field></block></next>
+                      </block>
+                    </statement>
+                    <statement name="ELSE">
+                      <block type="notify" id="no042"><field name="NOTIFICATION_TYPE">info</field><field name="NOTIFICATION_SOUND">silent</field>
+                        <value name="MESSAGE"><block type="vision_summary" id="vs043"></block></value>
+                        <next><block type="purchase" id="pu044"><field name="PURCHASE_LIST">DIGITUNDER</field></block></next>
+                      </block>
+                    </statement>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </statement>
+      </block>
     </statement>
   </block>
   <block type="after_purchase" id="aiAfter01" x="760" y="760">
     <statement name="AFTERPURCHASE_STACK">
-      <block type="vision_learn" id="aiLearn01"><value name="DIGIT"><shadow type="math_number" id="n056"><field name="NUM">-1</field></shadow></value><next><block type="controls_if" id="aiAgainIf01">
-  <mutation else="1"></mutation>
-  <value name="IF0"><block type="logic_operation" id="l063"><field name="OP">AND</field><value name="A"><block type="r_loss_guard" id="r059"><value name="LIMIT"><block type="variables_get" id="g060"><field name="VAR" id="aiVar08">ai loss limit</field></block></value></block></value><value name="B"><block type="r_profit_guard" id="r061"><value name="TARGET"><block type="variables_get" id="g062"><field name="VAR" id="aiVar09">ai profit target</field></block></value></block></value></block></value>
-  <statement name="DO0"><block type="trade_again" id="ta064"></block></statement>
-  <statement name="ELSE"><block type="notify" id="no057">
-  <field name="NOTIFICATION_TYPE">warn</field>
-  <field name="NOTIFICATION_SOUND">silent</field>
-  <value name="MESSAGE"><block type="text" id="t058"><field name="TEXT">AI Vision stopped — profit target or loss limit reached. Open contracts still settle.</field></block></value>
-</block></statement>
-</block></next></block>
+      <block type="vision_learn" id="aiLearn01">
+        <value name="DIGIT"><shadow type="math_number" id="n056"><field name="NUM">-1</field></shadow></value>
+        <next>
+          <block type="controls_if" id="aiAgainIf01">
+            <mutation else="1"></mutation>
+            <value name="IF0"><block type="logic_operation" id="l063"><field name="OP">AND</field>
+              <value name="A"><block type="r_loss_guard" id="r059"><value name="LIMIT"><block type="variables_get" id="g060"><field name="VAR" id="aiVar08">ai loss limit</field></block></value></block></value>
+              <value name="B"><block type="r_profit_guard" id="r061"><value name="TARGET"><block type="variables_get" id="g062"><field name="VAR" id="aiVar09">ai profit target</field></block></value></block></value>
+            </block></value>
+            <statement name="DO0">
+              <block type="vision_wait_entry" id="aiPace02">
+                <value name="GAP"><block type="variables_get" id="g037"><field name="VAR" id="aiVar15">ai entry gap</field></block></value>
+                <next><block type="trade_again" id="ta064"></block></next>
+              </block>
+            </statement>
+            <statement name="ELSE">
+              <block type="notify" id="no057">
+                <field name="NOTIFICATION_TYPE">warn</field>
+                <field name="NOTIFICATION_SOUND">silent</field>
+                <value name="MESSAGE"><block type="text" id="t058"><field name="TEXT">AI Vision stopped — profit target or loss limit reached. Open contracts still settle.</field></block></value>
+              </block>
+            </statement>
+          </block>
+        </next>
+      </block>
     </statement>
   </block>
   <block type="during_purchase" id="aiDuring01" x="1520" y="0">

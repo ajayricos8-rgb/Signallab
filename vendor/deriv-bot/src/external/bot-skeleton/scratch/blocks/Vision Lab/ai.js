@@ -82,10 +82,81 @@ defineValueBlock({
     output: 'Boolean',
     colour,
     category,
-    tooltip: localize('True only when the AI found a barrier whose expected value clears your minimum edge, with enough confidence and enough models agreeing.'),
+    tooltip: localize('True when the AI has a contract it will buy. With the entry bars off — the shipped default — that is every tick.'),
     display_name: localize('AI says trade'),
-    description: localize('The entry switch. It is deliberately hard to please: a measured edge over the payout margin, a bias against the fair odds, the confidence floor and the model-agreement floor must all pass.'),
+    description: localize('The entry switch. With every bar off it is true on every tick: the AI always names the best contract it can price, and a plan that refuses to buy it is a bot that looks dead. Raise the minimum lean (or the minimum edge) and it starts refusing the ticks that do not clear your bars.'),
     call: () => 'Bot.visionGo()',
+});
+
+defineValueBlock({
+    type: 'vision_entry_ready',
+    message: localize('the bot may open a position · at most 1 every %1 s'),
+    args: [numberInput('GAP', '2')],
+    output: 'Boolean',
+    colour,
+    category,
+    tooltip: localize('True when the last marked entry is at least this many seconds old. The default of 2 s keeps the bot to roughly one position every two seconds, however fast the market ticks.'),
+    display_name: localize('Entry is allowed now'),
+    description: localize(
+        'The pace control. Put it in your purchase conditions next to the AI switch: the bot reads the market on every tick but only opens a position when this says yes. A gap of 0 removes the limit entirely.'
+    ),
+    call: input => `Bot.visionEntryReady(${input.GAP})`,
+});
+
+defineStatementBlock({
+    type: 'vision_mark_entry',
+    command: true,
+    message: localize('mark a position as opened'),
+    args: [],
+    colour,
+    category,
+    tooltip: localize('Tells the pace control that a position was just opened. Place it immediately before the purchase block.'),
+    display_name: localize('Mark position opened'),
+    description: localize(
+        'Without it the pace control never advances and every tick would be refused after the first entry. It records the moment of the purchase, nothing else — it does not buy.'
+    ),
+    call: () => 'Bot.visionMarkEntry()',
+});
+
+defineStatementBlock({
+    type: 'vision_wait_entry',
+    command: true,
+    message: localize('wait for the entry pace · 1 position every %1 s'),
+    args: [numberInput('GAP', '2')],
+    colour,
+    category,
+    tooltip: localize('Holds the strategy until the entry pace allows another position, while the tick block keeps reading the market.'),
+    display_name: localize('Wait for the entry pace'),
+    description: localize(
+        'Place it in the after-purchase block, just before Trade again. Waiting here rather than in the purchase conditions means the next cycle starts from a fresh decision: the barrier, stake and direction are priced after the pause, not two seconds before it.'
+    ),
+    call: input => `Bot.visionWaitForEntry(${input.GAP})`,
+});
+
+defineValueBlock({
+    type: 'vision_ticks',
+    message: localize('ticks on this market'),
+    args: [],
+    output: 'Number',
+    colour,
+    category,
+    tooltip: localize('How many ticks of history the AI can see on the market the bot is standing on right now.'),
+    display_name: localize('Ticks on this market'),
+    description: localize('The AI needs a dozen to start reading. Watch it climb after a market switch to see that the stream is alive.'),
+    call: () => 'Bot.visionTicks()',
+});
+
+defineValueBlock({
+    type: 'vision_ready',
+    message: localize('the AI can read this market'),
+    args: [],
+    output: 'Boolean',
+    colour,
+    category,
+    tooltip: localize('True once this market has the minimum number of ticks the AI needs.'),
+    display_name: localize('Market is readable'),
+    description: localize('Gate on it if you would rather wait for a real read after a switch than let the bot buy the neutral contract.'),
+    call: () => 'Bot.visionReady()',
 });
 
 defineValueBlock({
@@ -95,9 +166,9 @@ defineValueBlock({
     output: 'Number',
     colour,
     category,
-    tooltip: localize('The barrier digit the AI chose (0-9). -1 while it has no trade to suggest.'),
+    tooltip: localize('The barrier digit the AI chose (0-9). Falls back to the last barrier it priced, then to the widest Over (0), so trade options are never built from an invalid digit.'),
     display_name: localize('AI barrier'),
-    description: localize('Use it as the Prediction of the trade options block so every contract is bought on the barrier the AI just priced.'),
+    description: localize('Use it as the Prediction of the trade options block so every contract is bought on the barrier the AI just priced. It never returns -1: the API rejects that, which silently swallows the entry.'),
     call: () => 'Bot.visionBarrier()',
 });
 
@@ -108,9 +179,9 @@ defineValueBlock({
     output: 'String',
     colour,
     category,
-    tooltip: localize("'over', 'under' or 'wait' — the side of the barrier the AI wants to buy."),
+    tooltip: localize("'over' or 'under' — the side of the barrier the AI wants to buy."),
     display_name: localize('AI direction'),
-    description: localize('Compare it with the Text blocks to choose between the Over and the Under purchase blocks.'),
+    description: localize("Compare it with the Text blocks to choose between the Over and the Under purchase blocks. It answers 'over' rather than 'wait' when the AI has nothing fresh, so a purchase block always has a side to buy."),
     call: () => 'Bot.visionDirection()',
 });
 
