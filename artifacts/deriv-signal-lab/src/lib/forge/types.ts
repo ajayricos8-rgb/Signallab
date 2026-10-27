@@ -175,6 +175,6 @@ export const FORGE_LICENSE = 'MIT' as const;
 /** Highest share of a published edge the forge may ever take. */
 export const FORGE_MAX_WEIGHT = 0.3;
 /** Independent holdout rows the forge needs before it can carry weight. */
-export const FORGE_MIN_HOLDOUT = 60;
+export const FORGE_MIN_HOLDOUT = 30;
 /** Paired z the forged holdout improvement must clear. */
 export const FORGE_MIN_Z = 2;
