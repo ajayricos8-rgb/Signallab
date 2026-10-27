@@ -42,6 +42,8 @@ export type AutoRunState =
   | 'no-entry'
   /** The signal cannot be expressed as a ticket on this market/duration. */
   | 'not-tradeable'
+  /** A validated Forge/confirmation veto forbids this entry. */
+  | 'master-veto'
   /** The analysis is older than the bot is willing to trade. */
   | 'stale'
   /** Auto is on but there is no authenticated Deriv session. */
@@ -71,6 +73,8 @@ export type AutoRunInput = {
   handoffRunId: number;
   /** A finished analysis produced a tradeable plan for the dock. */
   planReady: boolean;
+  /** The master verdict or action is NO_EDGE; hard veto, never auto-run. */
+  masterVetoed?: boolean;
   /** The plan carries an entry the engine analysis produced. */
   entryReady: boolean;
   /** The bot is currently trading (or waiting for its entry). */
@@ -144,6 +148,9 @@ export function decideAutoRun(input: AutoRunInput): AutoRunDecision {
   }
   if (!input.planReady) {
     return skip('not-tradeable', 'Auto skipped this signal: it cannot be expressed as a ticket on this market and duration.');
+  }
+  if (input.masterVetoed) {
+    return skip('master-veto', 'Auto skipped this signal: the master decision vetoed entry (NO_EDGE). Run Analysis again for a fresh, non-vetoed result.');
   }
   // Never replace a run in progress: the contract already open belongs to the
   // signal the bot was loaded with.

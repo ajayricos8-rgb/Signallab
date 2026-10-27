@@ -29,7 +29,7 @@ import { barrierFor, type DerivTradeRequest } from '@/lib/deriv-trading';
 import type { TradeContractType, TradeFamily } from '@/lib/trade-draft';
 import type { TradeDurationUnit } from '@/lib/trade-duration';
 import type { SignalStrength } from '@/lib/signal-engine/confidence';
-import type { MasterDecision } from '@/lib/signal-engine/master-decision.ts';
+import { masterBlocksEntry, type MasterDecision } from '@/lib/signal-engine/master-decision.ts';
 import {
   effectiveWindowTicks,
   evaluateEntry,
@@ -368,6 +368,14 @@ export function useSignalBot(): SignalBotController {
     (nextPlan: SignalBotPlan, rawConfig: SignalBotConfig, speed: 'fast' | 'normal' = 'normal') => {
       const session = tradingRef.current;
       if (runningRef.current) return;
+      // Defense in depth: the dock disables manual/Auto starts on NO_EDGE, but
+      // the final execution hook must enforce the master's hard veto too.
+      if (masterBlocksEntry(nextPlan.master)) {
+        setStatus('error');
+        setStopReason('error');
+        setError('The master decision vetoed this entry (NO_EDGE). Run Analysis again before Load and Run.');
+        return;
+      }
       if (session.status !== 'connected') {
         setStatus('error');
         setStopReason('error');

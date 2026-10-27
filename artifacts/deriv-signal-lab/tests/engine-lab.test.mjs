@@ -41,8 +41,8 @@ function assertFiniteTree(value, path = '') {
   else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) assertFiniteTree(item, `${path}.${key}`);
 }
 const fair = (family) => family === 'matches' ? 0.1 : 0.5;
-function report(data, family = 'matches', settlements, settlementCurrency) {
-  const audit = auditForecastBank(buildForecastBank(data, family === 'rise-fall' ? 'quote' : 'digit', horizon), contract[family], fair(family), 13);
+function report(data, family = 'matches', settlements, settlementCurrency, forgeReplayOrigins = []) {
+  const audit = auditForecastBank(buildForecastBank(data, family === 'rise-fall' ? 'quote' : 'digit', horizon, forgeReplayOrigins), contract[family], fair(family), 13);
   const decision = decideResearch({ audit, probability: fair(family), fair: fair(family), fresh: true, confirmed: false, independentSample: 100 });
   const entry = analyzeDigitEntry({ digits: data.map((tick) => tick.digit).filter((digit) => digit != null), epochs: data.map((tick) => tick.epoch), horizon: 1, wins: (digit) => digit === 7, context: 'digit', fairRate: 0.1, signal: { source: 'digit', agreeing: 0, total: 1, probability: 0.1, aiProbability: null } });
   return buildEngineLabReport({ family, symbol: 'R_100', ticks: data, contract: contract[family], horizon, fresh: true, audit, decision,
@@ -267,6 +267,52 @@ test('every replay target uses the actual terminal outcome and all split boundar
       assert.equal(row.target, expected);
     });
   }
+});
+
+test('Forge research teachers are origin/horizon aligned, holdout-only and redacted from public reports', () => {
+  const data = ticks(47, 2_000);
+  const initialBank = buildForecastBank(data, 'digit', horizon);
+  const origins = [initialBank.boundaries.holdoutStart + 10, initialBank.boundaries.holdoutStart + 120, data.length - 5];
+  const bank = buildForecastBank(data, 'digit', horizon, origins);
+  const audit = auditForecastBank(bank, contract.matches, fair('matches'), 13);
+  assert.deepEqual(audit.replay.map((row) => [row.origin, row.exit]), origins.map((origin) => [origin, origin + 1]));
+  assert.ok(audit.replay.every((row) => Number.isFinite(row.raw) && Number.isFinite(row.probability)));
+  assert.ok(audit.replay.every((row) => row.origin >= audit.boundaries.holdoutStart));
+
+  const ordinary = auditForecastBank(buildForecastBank(data, 'digit', horizon), contract.matches, fair('matches'), 13);
+  assert.deepEqual(audit.weights, ordinary.weights, 'requested Forge rows cannot alter fitted research weights');
+  assert.equal(audit.calibrationMethod, ordinary.calibrationMethod);
+  assert.equal(audit.validated, ordinary.validated);
+
+  const quoteHorizon = { unit: 'ticks', value: 5 };
+  const initialQuoteBank = buildForecastBank(data, 'quote', quoteHorizon);
+  const quoteOrigins = [initialQuoteBank.boundaries.holdoutStart + 10, initialQuoteBank.boundaries.holdoutStart + 120, data.length - 10];
+  const quoteAudit = auditForecastBank(
+    buildForecastBank(data, 'quote', quoteHorizon, quoteOrigins),
+    contract['rise-fall'],
+    fair('rise-fall'),
+    13,
+  );
+  assert.deepEqual(quoteAudit.replay.map((row) => [row.origin, row.exit]), quoteOrigins.map((origin) => [origin, origin + quoteHorizon.value]));
+  const quoteOrigin = quoteOrigins[0];
+  const changedQuoteFuture = data.map((tick, index) => index <= quoteOrigin ? tick : { ...tick, digit: (tick.digit + 1) % 10, quote: tick.quote + 1_000 });
+  const changedQuoteAudit = auditForecastBank(
+    buildForecastBank(changedQuoteFuture, 'quote', quoteHorizon, [quoteOrigin]),
+    contract['rise-fall'],
+    fair('rise-fall'),
+    13,
+  );
+  assert.equal(changedQuoteAudit.replay[0].probability, quoteAudit.replay[0].probability, 'the Rise/Fall teacher uses the exact replay origin and five-tick horizon');
+
+  const origin = origins[0];
+  const changedFuture = data.map((tick, index) => index <= origin ? tick : { ...tick, digit: (tick.digit + 1) % 10, quote: tick.quote + 1_000 });
+  const changed = auditForecastBank(buildForecastBank(changedFuture, 'digit', horizon, [origin]), contract.matches, fair('matches'), 13);
+  const originalRow = audit.replay.find((row) => row.origin === origin);
+  assert.equal(changed.replay[0].raw, originalRow.raw, 'future prices and targets cannot change the forecast at the origin');
+  assert.equal(changed.replay[0].probability, originalRow.probability);
+
+  const publicReport = report(data, 'matches', undefined, undefined, origins);
+  assert.equal(Object.hasOwn(publicReport.research, 'replay'), false, 'Forge-only replay rows are not serialized into the public research report');
 });
 
 test('stratified replay does not phase-lock to a ten-digit periodic cycle', () => {

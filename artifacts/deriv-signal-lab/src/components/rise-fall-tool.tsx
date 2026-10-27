@@ -8,7 +8,7 @@ import { digitTicksOf } from '@/lib/market-feed';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { MasterDecisionCard } from '@/components/signal/master-decision-card';
 import { NeuralModelCard } from '@/components/signal/neural-model-card';
-import { ForgeModelCard } from '@/components/signal/forge-model-card';
+import { ForgeModelCard, ForgeUnavailableCard } from '@/components/signal/forge-model-card';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
@@ -297,6 +297,16 @@ export function RiseFallTool() {
       {run && selectedResult && signal ? (
         <section className={`grid grid-cols-1 gap-4 transition-opacity xl:grid-cols-[1.15fr_0.85fr] ${scan.scanning ? 'pointer-events-none opacity-40' : ''}`} aria-busy={scan.scanning} title={scan.scanning ? 'Previous signal — a new analysis is running' : undefined} data-testid="analysis-summary">
           <div className="space-y-4">
+            {selectedResult.forge
+              ? <ForgeModelCard model={selectedResult.forge} fusion={signal.forge} />
+              : <ForgeUnavailableCard family="rise-fall" label={`${signal.direction} · ${formatRiseFallHorizon(signal.horizon)}`} />}
+            <MasterDecisionCard
+              master={signal.master}
+              marketName={shortMarketName(selectedResult.name)}
+              duration={formatRiseFallHorizon(signal.horizon)}
+              generatedAt={run.ranAt}
+              now={feed.now}
+            />
             <SignalCard
               eyebrow={isBest ? `Best signal · ${run.marketsScanned} markets × 25 durations` : `Signal · ${selectedResult.name}`}
               label={signal.direction}
@@ -355,18 +365,10 @@ export function RiseFallTool() {
               ]}
               onUse={() => { setDraftMarketCode(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
             />
-            <MasterDecisionCard
-              master={signal.master}
-              marketName={shortMarketName(selectedResult.name)}
-              duration={formatRiseFallHorizon(signal.horizon)}
-              generatedAt={run.ranAt}
-              now={feed.now}
-            />
             <ConfirmationPanel report={signal.deep.confirmation} />
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={0.5} /> : null}
             {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
             {selectedResult.neural ? <NeuralModelCard forecast={selectedResult.neural} fusion={signal.neural} /> : null}
-            {selectedResult.forge ? <ForgeModelCard model={selectedResult.forge} fusion={signal.forge} /> : null}
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}

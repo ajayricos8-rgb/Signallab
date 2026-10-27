@@ -32,7 +32,7 @@ import {
 } from './market-state.ts';
 import { synthesizeDigitAi, type AiSynthesis } from './ai-synthesis.ts';
 import { confirmDigitContract, type ConfirmationReport } from './confirmation.ts';
-import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
+import { fitOutOfSampleStack, pairedImprovementZ, type CalibrationPoint } from './stats.ts';
 import { forecastStandardError, probabilityInterval, reliabilityReport, type ProbabilityInterval, type ReliabilityReport } from './recalibration.ts';
 import { shrinkEdges, type Heterogeneity } from './precision.ts';
 import { blendWeight, fitStackWeights, mixWeights, type StackingRow } from './stacking.ts';
@@ -165,7 +165,7 @@ export type DigitMarketAnalysis = {
    * stream. Null when the stream is too short to fit it. Its forecast is folded
    * into every contract's probability only when it beat chance out of sample.
    */
-  neural: NeuralDigitForecast | null;
+  neural: Omit<NeuralDigitForecast, 'replay'> | null;
   /**
    * Layer 8: the forged model behind the winning contract. One network, trained
    * in this run from the engines, the AI layers, the calculations and the
@@ -334,7 +334,8 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // Layer 7: a real network fitted inside the app on this market's own digits.
   // It is additive — if it cannot be fitted, every layer below behaves exactly
   // as before.
-  const neural = trainDigitNeuralModel(fit.sequence.digits);
+  const neural = trainDigitNeuralModel(fit.sequence.digits, { horizonTicks: input.horizon });
+  const neuralSummary = neural ? (({ replay: _replay, ...summary }) => summary)(neural) : null;
   // The analysis prior is rebuilt at a past origin with exactly the weights it
   // ships with, so the meta-model can be told what the analysis engines knew at
   // that moment without any look-ahead in the evidence itself. One rebuild per
@@ -366,7 +367,13 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
   // into wall-clock seconds for the bot and the UI.
   const tickSpacingMs = medianTickSpacingMs(fit.sequence.epochs.map((epoch) => ({ epoch })));
   onProgress?.(0.965, 'Replaying research engines with purged chronological validation');
-  const researchBank = buildForecastBank(ticks, 'digit', { unit: 'ticks', value: input.horizon });
+  const researchIndexByEpoch = new Map(ticks.map((tick, index) => [tick.epoch, index]));
+  const researchForgeOrigins = fit.checked.flatMap((row) => {
+    const epoch = fit.sequence.epochs[row.origin];
+    const index = researchIndexByEpoch.get(epoch);
+    return index === undefined ? [] : [index];
+  });
+  const researchBank = buildForecastBank(ticks, 'digit', { unit: 'ticks', value: input.horizon }, researchForgeOrigins);
   const researchAudits = new Map<string, ResearchAudit>();
   // ---------------------------------------------------------------------------
   // PHASE 1 — measure every contract.
@@ -432,9 +439,52 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       return { values, weights, estimate: weights.some((weight) => weight > 0) ? estimate : fair };
     };
 
+    // A separate causal AI teacher is fitted on the older tuning phase, then
+    // replayed onto checked rows the stack never saw. This lets Forge consume
+    // an AI view without training on the same labels it is later audited on.
+    const stackRow = (estimate: number, extra: readonly number[]) => {
+      const probability = clamp(estimate, 0.001, 0.999);
+      return [probability, Math.log(probability / (1 - probability)), ...extra];
+    };
+    const aiTuning = fit.tuning.map((row) => {
+      const replay = weighted(row.forecasts);
+      const rowPrior = priorAt(row.origin);
+      const extra = metaFeatures(
+        replay.values, replay.weights, replay.estimate,
+        digitContractProbability(row.baseline, contract), fair,
+        rowPrior ? digitContractProbability(rowPrior, contract) - digitContractProbability(row.baseline, contract) : 0,
+      );
+      return { features: stackRow(replay.estimate, extra), won: (contractWins(contract, row.target) ? 1 : 0) as 0 | 1 };
+    });
+    const aiStack = fitOutOfSampleStack(aiTuning.map((row) => row.features), aiTuning.map((row) => row.won), {
+      minimum: 120,
+      minimumEvaluation: 40,
+      ridge: 3,
+      minimumZ: 3,
+    });
+    const aiTeacherWeight = aiStack.model && aiStack.improved ? 0.2 : 0;
+    const aiAt = (estimate: number, extra: readonly number[]): number | null => {
+      if (!aiStack.model || !aiStack.improved) return null;
+      return clamp(aiStack.model.predict(stackRow(estimate, extra)), 0.001, 0.999);
+    };
+    const teacherBlend = (estimate: number, ai: number | null): number =>
+      ai === null || aiTeacherWeight <= 0
+        ? clamp(estimate, 0.0005, 0.9995)
+        : clamp((1 - aiTeacherWeight) * estimate + aiTeacherWeight * ai, 0.0005, 0.9995);
+
     const live = weighted(fit.liveForecasts);
     const liveValues = live.values;
     const rawProbability = live.estimate;
+    const liveMetaFeatures = metaFeatures(
+      live.values,
+      live.weights,
+      live.estimate,
+      digitContractProbability(fit.baseline, contract),
+      fair,
+      state.prior ? digitContractProbability(state.prior, contract) - digitContractProbability(fit.baseline, contract) : 0,
+    );
+    const liveForgeAiProbability = aiAt(live.estimate, liveMetaFeatures);
+    const liveForgeTeacher = teacherBlend(rawProbability, liveForgeAiProbability);
     const votes: EngineVote[] = fit.engines.map((engine, index) => {
       const value = liveValues[index];
       const vote = value === null ? 'abstain' : value - fair > margin ? 'agree' : value - fair < -margin ? 'against' : 'neutral';
@@ -469,9 +519,12 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     // model can be fitted on exactly the chronology the rest of the layer uses.
     const forgeSamples: Array<{
       origin: number;
+      epoch: number;
+      targetIndex: number;
       values: Array<number | null>;
       weights: number[];
       teacher: number;
+      aiProbability: number | null;
       baseline: number;
       prior: number | null;
       won: 0 | 1;
@@ -482,16 +535,21 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       const won = contractWins(contract, row.target) ? 1 : 0;
       holdout.push({ probability: estimate, won: won as 0 | 1 });
       const rowPrior = priorAt(row.origin);
-      metaHoldout.push(metaFeatures(
+      const rowMetaFeatures = metaFeatures(
         replay.values, replay.weights, estimate,
         digitContractProbability(row.baseline, contract), fair,
         rowPrior ? digitContractProbability(rowPrior, contract) - digitContractProbability(row.baseline, contract) : 0,
-      ));
+      );
+      metaHoldout.push(rowMetaFeatures);
+      const aiProbability = aiAt(estimate, rowMetaFeatures);
       forgeSamples.push({
         origin: row.origin,
+        epoch: fit.sequence.epochs[row.origin],
+        targetIndex: row.targetIndex,
         values: replay.values,
         weights: replay.weights,
-        teacher: estimate,
+        teacher: teacherBlend(estimate, aiProbability),
+        aiProbability,
         baseline: digitContractProbability(row.baseline, contract),
         prior: rowPrior ? digitContractProbability(rowPrior, contract) : null,
         won: won as 0 | 1,
@@ -542,16 +600,13 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       statePriorProbability,
       selectionPool: contracts.length * Math.max(1, input.marketsInScan ?? 1),
       engineFeatures: metaHoldout,
-      liveFeatures: metaFeatures(
-        live.values,
-        live.weights,
-        live.estimate,
-        digitContractProbability(fit.baseline, contract),
-        fair,
-        state.prior ? digitContractProbability(state.prior, contract) - digitContractProbability(fit.baseline, contract) : 0,
-      ),
+      liveFeatures: liveMetaFeatures,
     });
     const audit = auditForecastBank(researchBank, contract, fair, contracts.length * Math.max(1, input.marketsInScan ?? 1));
+    const researchReplayByEpoch = new Map<number, number>((audit.replay ?? []).flatMap((row) => {
+      const epoch = ticks[row.origin]?.epoch;
+      return epoch === undefined ? [] : [[epoch, row.probability] as [number, number]];
+    }));
     researchAudits.set(digitContractKey(contract), audit);
     const researchDecision = decideResearch({ audit, fresh: input.fresh, probability: confirmation.probability, fair,
       confirmed: confirmation.decisive, independentSample: backtest.effectiveSample });
@@ -623,9 +678,12 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
       ? Math.hypot((1 - priorShare) * (ensembleError ?? 0.05), priorShare * priorError)
       : ensembleError;
     const reliability = reliabilityReport(holdout);
-    // The neural model's own probability for THIS contract: the share of its
-    // next-digit distribution that the contract wins on.
+    // The neural model's own horizon-matched probability for THIS contract.
     const neuralProbability = neural ? digitContractProbability(neural.distribution, contract) : null;
+    const neuralReplayByOrigin = new Map<number, number>(neural?.replay.map((row) => [
+      row.origin,
+      digitContractProbability(row.distribution, contract),
+    ]) ?? []);
     // -------------------------------------------------------------------------
     // Layer 8 — forge ONE model out of everything measured above.
     //
@@ -652,6 +710,9 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     };
     const forgeRows = forgeSamples.map((sample) => {
       const votes = forgeVoteTally(sample.values);
+      const researchProbability = researchReplayByEpoch.get(sample.epoch) ?? null;
+      const neuralProbabilityAtOrigin = neuralReplayByOrigin.get(sample.origin) ?? null;
+      const settledReplayRows = fit.checked.filter((row) => row.targetIndex <= sample.origin).length;
       return {
         features: digitForgeVector({
           digits: fit.sequence.digits,
@@ -661,11 +722,14 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
           engineWeights: sample.weights,
           baselineProbability: sample.baseline,
           priorProbability: sample.prior,
+          aiProbability: sample.aiProbability,
+          researchProbability,
+          neuralProbability: neuralProbabilityAtOrigin,
           fair,
           agreeing: votes.agree,
           against: votes.against,
           voting: votes.voting,
-          sample: fit.checked.length,
+          sample: fit.tuning.length + settledReplayRows,
           horizonTicks: input.horizon,
           // The prior's own holdout skill is a whole-stream statistic; feeding
           // it to a historical row would leak the future into the inputs. The
@@ -685,16 +749,19 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     const forgeLive = digitForgeVector({
       digits: fit.sequence.digits,
       origin: fit.sequence.digits.length - 1,
-      teacherProbability: rawProbability,
+      teacherProbability: liveForgeTeacher,
       engineValues: liveValues,
       engineWeights: live.weights,
       baselineProbability: digitContractProbability(fit.baseline, contract),
       priorProbability: statePriorProbability,
+      aiProbability: liveForgeAiProbability,
+      researchProbability: audit.probability,
+      neuralProbability,
       fair,
       agreeing: tally.agreeing,
       against: tally.against,
       voting: tally.voting,
-      sample: fit.checked.length,
+      sample: fit.tuning.length + fit.checked.length,
       horizonTicks: input.horizon,
       // Same rule as the training rows: no whole-stream statistic may enter
       // the vector. The live prior arrives through `priorProbability`.
@@ -711,17 +778,23 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         fair,
         rows: forgeRows,
         liveFeatures: forgeLive,
-        // The residual baseline: the audited ensemble's own probability for
-        // this contract at the live origin.
-        liveTeacherProbability: rawProbability,
+        // The residual baseline is the ensemble with a capped AI distillation
+        // share only when that AI stack passed its older, separate holdout.
+        liveTeacherProbability: liveForgeTeacher,
         dataQuality: quality,
         horizonTicks: input.horizon,
         contextSummary: describeDigitContext(digitContextAt(fit.sequence.digits, fit.sequence.digits.length - 1)),
+        inputs: [
+          `${fit.engines.length}-engine family-weighted probabilities, disagreement and votes`,
+          'causal digit AI meta-model, fitted on tuning rows and replayed forward',
+          'independent research-ensemble forecast replayed at the same holdout origins',
+          'horizon-matched neural digit forecasts from untouched holdout rows',
+          'rolling-frequency, fair-rate, sample-maturity and edge-to-noise calculations',
+          'Deriv binary-contract and entry/payout rules from the versioned knowledge syllabus; live payout is checked separately',
+        ],
         teachers: [
-          `${fit.engines.length}-engine family-weighted ensemble (distilled)`,
-          'rolling-frequency baseline (anchor)',
-          'analysis prior rebuilt at each origin',
-          'Deriv knowledge base (cadence, volatility class, contract semantics)',
+          `${fit.engines.length}-engine family-weighted ensemble (base distillation teacher)`,
+          ...(aiTeacherWeight > 0 ? ['Earlier-phase AI meta-model (20% distillation share after its own out-of-sample stack gate)'] : []),
         ],
         symbol: input.symbol,
         name: input.name,
@@ -917,6 +990,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
         total: tally.total,
         probability,
         aiProbability: rawProbability,
+        forge: forgeFusion,
         confirmation: { status: confirmation.status, edgePts: confirmation.edgePts, decisive: confirmation.decisive },
       },
     });
@@ -1085,7 +1159,7 @@ export function analyzeDigitMarket(input: DigitMarketInput, onProgress?: Ensembl
     kind: 'digit', family: input.family, symbol: input.symbol, name: input.name, horizon: input.horizon,
     sample: fit.sequence.digits.length, lastDigit, asOfEpoch: fit.sequence.epochs.at(-1)!, fresh: input.fresh,
     dataQuality: quality, structure: fit.structure.status, engineCount: fit.engines.length,
-    best, contracts: signals, report, state, aiSynthesis, neural, forge: forgedBest, analysisEngineCount: state.engines.length, engineLab,
+    best, contracts: signals, report, state, aiSynthesis, neural: neuralSummary, forge: forgedBest, analysisEngineCount: state.engines.length, engineLab,
     precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
   };
 }

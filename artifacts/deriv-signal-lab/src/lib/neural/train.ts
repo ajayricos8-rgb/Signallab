@@ -25,7 +25,14 @@ export const NEURAL_MIN_HOLDOUT = 60;
 /** Paired z the model's holdout Brier improvement must clear. */
 export const NEURAL_MIN_Z = 2;
 
-export type SupervisedRow = { features: Float64Array; label: number };
+export type SupervisedRow = {
+  features: Float64Array;
+  label: number;
+  /** Tick origin for causal replay consumers. */
+  origin?: number;
+  /** Tick at which this label settles; used to purge variable-duration horizons. */
+  exit?: number;
+};
 
 export type NeuralMetrics = {
   /** Class indices the network predicts. */
@@ -77,6 +84,8 @@ export type TrainedNeural = {
   validationLoss: number | null;
   /** Calibrated distribution for a raw feature vector. */
   predict: (features: ArrayLike<number>) => Float64Array;
+  /** Predictions on the sampled, untouched chronological holdout rows. */
+  holdoutPredictions: Array<{ origin?: number; probabilities: number[] }>;
 };
 
 export type TrainConfig = {
@@ -130,9 +139,15 @@ export function splitChronological(rows: readonly SupervisedRow[], purge = 12, t
   const n = rows.length;
   const trainEnd = Math.max(1, Math.min(n - 1, Math.floor(n * clamp(trainFraction, 0.2, 0.9))));
   const validationEnd = Math.max(trainEnd + 1, Math.min(n, Math.floor(n * clamp(trainFraction + validationFraction, trainFraction + 0.05, 0.98))));
+  const trainBoundaryOrigin = rows[trainEnd]?.origin;
+  const holdoutBoundaryOrigin = rows[validationEnd]?.origin;
+  const settlesBefore = (row: SupervisedRow, boundary: number | undefined) =>
+    boundary === undefined || !Number.isFinite(row.origin) || !Number.isFinite(row.exit) || (row.exit as number) < boundary;
+  const train = rows.slice(0, Math.max(1, trainEnd - gap)).filter((row) => settlesBefore(row, trainBoundaryOrigin));
+  const validation = rows.slice(trainEnd, Math.max(trainEnd + 1, validationEnd - gap)).filter((row) => settlesBefore(row, holdoutBoundaryOrigin));
   return {
-    train: rows.slice(0, Math.max(1, trainEnd - gap)),
-    validation: rows.slice(trainEnd, Math.max(trainEnd + 1, validationEnd - gap)),
+    train,
+    validation,
     holdout: rows.slice(validationEnd),
     boundaries: { train: trainEnd, validation: validationEnd, purge: gap },
   };
@@ -175,6 +190,8 @@ function standardise(rows: readonly SupervisedRow[], width: number): { rows: Sup
   return {
     rows: rows.map((row) => ({
       label: row.label,
+      ...(row.origin === undefined ? {} : { origin: row.origin }),
+      ...(row.exit === undefined ? {} : { exit: row.exit }),
       features: Float64Array.from(row.features, (value, index) => clamp((value - averages[index]) / deviations[index], -6, 6)),
     })),
     mean: averages,
@@ -207,6 +224,8 @@ export function trainClassifier(rows: readonly SupervisedRow[], config: TrainCon
   // information from validation or holdout leaks into the inputs.
   const applyScaler = (source: readonly SupervisedRow[]) => source.map((row) => ({
     label: row.label,
+    ...(row.origin === undefined ? {} : { origin: row.origin }),
+    ...(row.exit === undefined ? {} : { exit: row.exit }),
     features: Float64Array.from(row.features, (value, index) => clamp((value - scaled.mean[index]) / scaled.deviation[index], -6, 6)),
   }));
   const validationRows = applyScaler(split.validation);
@@ -231,8 +250,13 @@ export function trainClassifier(rows: readonly SupervisedRow[], config: TrainCon
   let modelBrier = 0;
   let baseBrier = 0;
   const differences: number[] = [];
+  const holdoutPredictions: Array<{ origin?: number; probabilities: number[] }> = [];
   for (const row of holdoutSample) {
     const probabilities = softmax(forward(network, row.features), temperature);
+    holdoutPredictions.push({
+      ...(row.origin === undefined ? {} : { origin: row.origin }),
+      probabilities: Array.from(probabilities),
+    });
     const predicted = probabilities.indexOf(Math.max(...probabilities));
     if (predicted === row.label) hits += 1;
     modelLoss += -Math.log(Math.max(1e-12, probabilities[row.label]));
@@ -291,6 +315,7 @@ export function trainClassifier(rows: readonly SupervisedRow[], config: TrainCon
     bestEpoch: result.bestEpoch,
     trainingLoss: result.trainingLoss,
     validationLoss: result.bestValidationLoss,
+    holdoutPredictions,
     predict: (features: ArrayLike<number>) => softmax(
       forward(network, Float64Array.from({ length: features.length }, (_, index) => clamp((features[index] - scaled.mean[index]) / scaled.deviation[index], -6, 6))),
       temperature,

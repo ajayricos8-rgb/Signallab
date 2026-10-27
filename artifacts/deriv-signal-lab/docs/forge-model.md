@@ -5,10 +5,14 @@ learns how those parts fit together *on this market*, and then uses that one
 model for the analysis, the prediction and the entry.
 
 It is not a download, an API key or a hosted service. It is a small network
-(`signal-lab-forge-v1`, 24 → 24 → 12 → 2, ≈0.9k parameters) forged from scratch
-inside the app every time **Run Analysis** runs, on the market's own replayed
-calls, with the Deriv knowledge base as its syllabus and the audited layers as
-its teachers.
+(`signal-lab-forge-v1`, 31 → 24 → 12 → 2, 1,094 parameters) forged from scratch
+inside the app every time **Run Analysis** runs. In each Tools view Forge is the
+primary signal model: it consumes the engine, AI, research and neural views plus
+their causal calculations, trained separately for the selected contract and
+horizon on the market's replayed calls. Its own probability (“Forge view”) and
+the final probability after fusion (“published after Forge”) are shown
+separately. The Deriv knowledge base is its syllabus, and only forecasts that
+were out of sample for their source model are admitted to its row inputs.
 
 ```
 src/lib/forge/
@@ -56,8 +60,9 @@ Rise/Fall; 72 unique lessons) spans eight domains:
   autocorrelation, volatility regime, level reversion, structural breaks, the
   flat rate.
 - **risk** — an edge inside its error bar is not a signal, correlated sources
-  share a vote, unvalidated models are inert, unvalidated evidence may only
-  subtract, conviction is capped by the verdict, "always one signal", no
+  share a vote, unvalidated Forge/neural models are inert, the research layer's
+  independent unvalidated forecast may only subtract, conviction is capped by
+  the verdict, "always one signal", no
   autonomous orders.
 - **execution** — measured validity windows, digit entries as a tick context,
   quote entries as replayed excursions, no chasing a missed entry, the window
@@ -79,7 +84,7 @@ anchored on the contract's **fair rate**, and the teacher's probability is
 shrunk toward that anchor by `0.05 × 60 / (60 + rows)` points before it is used
 as a distillation target.
 
-## 2. The inputs (24, frozen and labelled)
+## 2. The inputs (31, frozen and labelled)
 
 Both families share one width, so the network, the trainer, the gate and the
 card are family-agnostic. Position `i` of the vector is always the same feature:
@@ -87,23 +92,36 @@ card are family-agnostic. Position `i` of the vector is always the same feature:
 | # | Feature | Where it comes from |
 | --- | --- | --- |
 | 0 | bias | — |
-| 1–2 | teacher edge in log-odds and in points | the family-weighted engine ensemble (digit) / the AI meta-model (quote) |
-| 3 | rolling-baseline edge | rolling frequency (digit) / the no-edge rate (quote) |
-| 4 | analysis-prior edge | the analysis prior rebuilt at that origin (digit) / the causal drift view (quote) |
+| 1–2 | teacher edge in log-odds and in points | family-weighted engine/AI teacher |
+| 3 | rolling-baseline edge | rolling frequency (digit) / causal no-edge baseline (quote) |
+| 4 | analysis-prior edge | prior rebuilt at this origin (digit) / causal drift view (quote) |
 | 5 | fair rate, centred | the contract |
 | 6–9 | engine disagreement, weighted agreement, vote balance, abstention | the ensemble |
-| 10 | sample maturity | rows behind the reading |
-| 11 | contract horizon | the duration |
-| 12 | analysis-prior skill | the analysis layer's own holdout |
+| 10 | sample maturity | rows known by the replay origin |
+| 11 | contract horizon | the selected duration |
+| 12 | analysis-prior skill | neutral zero in current causal rows; whole-stream skill is never copied into historical rows |
 | 13–15 | tick cadence, volatility class, market family | the Deriv atlas |
-| 16–20 | entropy, runs z, hot/cold z, parity/momentum, streak/position | the market's own causal structure |
-| 21 | edge × dispersion | interaction |
-| 22 | edge × agreement | interaction |
-| 23 | knowledge uncertainty | teacher sampling error × immaturity |
+| 16–20 | entropy, runs z, hot/cold z, parity/momentum, streak/position | the market's causal structure |
+| 21–23 | edge × dispersion, edge × agreement, knowledge uncertainty | interactions and teacher sampling error × immaturity |
+| 24–25 | AI edge and AI-available mask | an earlier-phase AI model replayed forward; absent values remain masked |
+| 26–27 | independent research edge and replay-available mask | calibrated forecast at the exact holdout origin and selected horizon |
+| 28–29 | neural edge and holdout-available mask | prediction from that model's untouched, horizon-matched holdout; source offsets are restored before matching |
+| 30 | edge relative to sampling noise | measured teacher edge and sample maturity |
+
+The three external probabilities are not filled forward or matched by array
+position. Digit replay uses the exact tick origin/epoch and contract horizon;
+Rise/Fall uses the exact tick origin and duration. Research replay rows are
+requested from the untouched later holdout, using weights fitted on tuning and
+calibration performed only on its earlier calibration slice. Neural rows retain
+their original tick origins through scaling and sampling; quote labels carry
+their actual settlement tick so variable-duration rows that cross a split
+boundary are purged. If a source has no eligible forecast at an origin, its
+edge is zero with an availability mask of zero.
 
 `digitContextAt` / `quoteContextAt` compute the structural block from ticks at or
-before the origin only, which is asserted directly in
-`tests/forge-model.test.mjs` (rewriting the future does not change a row).
+before the origin only. Tests rewrite the future and verify that an origin's
+forecast is unchanged, that the research and neural replay origins stay
+aligned, and that internal research replay rows are omitted from public reports.
 
 ## 3. Training (`train.ts`)
 
@@ -147,24 +165,32 @@ what the model did:
 | Situation | Decision | Effect on the published number |
 | --- | --- | --- |
 | no model / no weight | `inert` | bit-identical |
-| validated, agreeing | `confirm` | blends the forged edge in at its earned weight, ≤0.30 |
+| validated, agreeing | `confirm` | blends the forged edge in at its earned weight, ≤0.30; this can move the published probability upward |
 | validated, materially lower | `trim` | blends toward the forged edge |
-| validated, against the call | `veto` | cuts the edge to 35 % of its size |
-| unvalidated | `inert` | nothing at all — the forge never subtracts without clearing its own gate |
+| validated, against the call | `veto` | the fused edge is cut to 35 % of its size and the master decision hard-blocks entry |
+| unvalidated | `inert` | no probability movement in either direction; the Forge gate is unchanged |
 
-A veto is what reaches the **entry**: both analyzers pass `contradicted:
-… || forgeVetoed(fusion)` into `buildMasterDecision`, so a call the forged model
-measured against itself cannot be certified decisive, and its entry action falls
-back to `no-edge` or `speculative`.
+The UI labels the model's probability as **Forge view** and the post-fusion
+probability as **published after Forge**. A validated veto is passed through
+`forgeVetoed(fusion)` to `buildMasterDecision`; this is a hard `NO_EDGE` with
+`entry.action = no-edge`, not a speculative fallback. The Auto runner, manual
+Load and Run action, and bot start hook all reject that master-vetoed plan.
+No Forge decision bypasses the existing proposal, live-payout or execution
+checks.
 
-- **Analysis** — the card prints the model's reading, its drive (0–100, the
-  forged edge in units of its own sampling error, capped at 40 when
-  unvalidated), the curriculum it ran, its frozen inputs and the knowledge
-  summary.
-- **Prediction** — one probability for the traded call, fused as above.
-- **Entry** — the veto path plus its own row (`forge`) in the master decision's
-  source pool, weighted by skill like every other source, with a correlation
-  credit of 0.55 because it is fitted on the same rows it distils.
+- **Analysis** — the first card in each Tools summary stack prints the model's
+  reading, its drive (0–100, the forged edge in units of its own sampling error,
+  capped at 40 when unvalidated), the curriculum, frozen inputs and knowledge
+  summary. If the training/holdout gates are not met, a fail-closed Forge card
+  remains visible and explains that the upstream estimate was not changed.
+- **Prediction** — the card separately reports Forge's own view and the
+  probability published after Forge fusion; the latter is the value carried by
+  the signal and entry plan.
+- **Entry** — the Forge evidence travels into persisted entry provenance and the
+  master decision's source pool, with correlation credit of 0.55 because Forge
+  is fitted on rows that include its teachers. A veto produces the hard master
+  block described above. Actual execution still requires the existing live
+  proposal and payout checks; syllabus knowledge is not invented as a live quote.
 
 The confidence score gains `forgeTerm` (0.07 of the raw score, about 3 points at
 full strength) and only when validated; a validated contradiction is the one

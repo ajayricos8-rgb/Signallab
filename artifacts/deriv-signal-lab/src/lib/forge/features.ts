@@ -25,7 +25,7 @@ const finite = (value: unknown): value is number => typeof value === 'number' &&
 const safeProbability = (value: number) => clamp(value, 0.0005, 0.9995);
 
 /** Width of a forge row. Both families use the same width by design. */
-export const FORGE_FEATURE_COUNT = 24;
+export const FORGE_FEATURE_COUNT = 31;
 /** Ticks of history the digit context reads at an origin. */
 export const FORGE_DIGIT_WINDOW = 100;
 /** Ticks of history the quote context reads at an origin. */
@@ -70,6 +70,13 @@ export const FORGE_FEATURES: readonly ForgeFeature[] = [
   { index: 21, key: 'interaction.edgeDispersion', label: 'Edge × dispersion', knowledge: 'stats.distillation' },
   { index: 22, key: 'interaction.edgeAgreement', label: 'Edge × agreement', knowledge: 'risk.correlated-sources' },
   { index: 23, key: 'knowledge.uncertainty', label: 'Knowledge uncertainty', knowledge: 'stats.wilson-interval' },
+  { index: 24, key: 'ai.edgePts', label: 'AI meta-model edge', knowledge: 'stats.distillation' },
+  { index: 25, key: 'ai.available', label: 'AI forecast available', knowledge: 'stats.chronological-split' },
+  { index: 26, key: 'research.edgePts', label: 'Independent research edge', knowledge: 'stats.no-leakage' },
+  { index: 27, key: 'research.available', label: 'Research replay available', knowledge: 'stats.chronological-split' },
+  { index: 28, key: 'neural.edgePts', label: 'Neural forecast edge', knowledge: 'stats.distillation' },
+  { index: 29, key: 'neural.available', label: 'Neural holdout forecast available', knowledge: 'stats.chronological-split' },
+  { index: 30, key: 'calculation.edgeToNoise', label: 'Edge relative to sampling noise', knowledge: 'stats.brier-skill' },
 ];
 
 export function featureLabels(family: ForgeFamily): ForgeFeature[] {
@@ -250,6 +257,12 @@ type CommonInput = {
   baselineProbability: number | null;
   /** The analysis layer's own prior for the traded outcome. */
   priorProbability: number | null;
+  /** Causal AI meta-model forecast for this row, when available. */
+  aiProbability?: number | null;
+  /** Independent research-engine forecast for this row, when available. */
+  researchProbability?: number | null;
+  /** Horizon-matched neural forecast for this row, when available. */
+  neuralProbability?: number | null;
   /** No-edge probability of the traded outcome. */
   fair: number;
   /** Engine votes for / against / abstaining. */
@@ -293,6 +306,9 @@ function commonVector(input: CommonInput, context: readonly number[]): Float64Ar
   const teacher = finite(input.teacherProbability) ? safeProbability(input.teacherProbability as number) : null;
   const baseline = finite(input.baselineProbability) ? safeProbability(input.baselineProbability as number) : null;
   const prior = finite(input.priorProbability) ? safeProbability(input.priorProbability as number) : null;
+  const ai = finite(input.aiProbability) ? safeProbability(input.aiProbability as number) : null;
+  const research = finite(input.researchProbability) ? safeProbability(input.researchProbability as number) : null;
+  const neural = finite(input.neuralProbability) ? safeProbability(input.neuralProbability as number) : null;
   const profile = marketProfile(input.symbol, input.name);
   const market = marketFeatures(profile, input.tickSpacingMs);
   const teacherEdge = teacher === null ? 0 : teacher - fair;
@@ -346,6 +362,16 @@ function commonVector(input: CommonInput, context: readonly number[]): Float64Ar
   features[21] = clamp(teacherEdge / 0.1, -1, 1) * clamp(1 - Math.abs(dispersion), 0, 1);
   features[22] = clamp(teacherEdge / 0.1, -1, 1) * clamp(agreement, -1, 1);
   features[23] = clamp(uncertainty * (1 - maturity), 0, 1);
+  features[24] = clamp((ai === null ? 0 : ai - fair) / 0.1, -1, 1);
+  features[25] = ai === null ? 0 : 1;
+  features[26] = clamp((research === null ? 0 : research - fair) / 0.1, -1, 1);
+  features[27] = research === null ? 0 : 1;
+  features[28] = clamp((neural === null ? 0 : neural - fair) / 0.1, -1, 1);
+  features[29] = neural === null ? 0 : 1;
+  const edgeNoise = teacher === null
+    ? 0
+    : Math.sqrt(Math.max(1e-6, teacher * (1 - teacher)) / Math.max(20, sample));
+  features[30] = edgeNoise > 1e-9 ? clamp(Math.tanh((teacherEdge / edgeNoise)), -1, 1) : 0;
   for (let index = 0; index < features.length; index += 1) {
     if (!Number.isFinite(features[index])) features[index] = 0;
   }

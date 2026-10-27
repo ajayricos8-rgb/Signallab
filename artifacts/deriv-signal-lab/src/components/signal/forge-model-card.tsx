@@ -38,7 +38,7 @@ export function ForgeModelCard({ model, fusion }: { model: ForgedModel; fusion?:
     <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="forge-model-card">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <div className="eyebrow flex items-center gap-1.5"><Flame size={12} /> Layer 8 · the forged model (engines + AI + calculations)</div>
+          <div className="eyebrow flex items-center gap-1.5"><Flame size={12} /> Primary signal model · Forge · engines + AI + research + calculations</div>
           <h3 className="mt-1 text-sm font-bold">{card.name}</h3>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
             <span className="mono">{card.id} · v{card.version}</span>
@@ -101,7 +101,8 @@ export function ForgeModelCard({ model, fusion }: { model: ForgedModel; fusion?:
         </div>
         <p className="mt-1 text-foreground/80">{fusion?.note ?? model.note}</p>
         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
-          <span>forged view <strong className="mono text-foreground">{pct(fusion?.modelProbability ?? model.probability)}</strong></span>
+          <span>Forge view <strong className="mono text-foreground">{pct(fusion?.modelProbability ?? model.probability)}</strong></span>
+          <span>published after Forge <strong className="mono text-foreground">{pct(fusion?.probability ?? model.probability)}</strong></span>
           <span>fair <strong className="mono text-foreground">{pct(model.fair)}</strong></span>
           <span>edge <strong className="mono text-foreground">{model.edgePts >= 0 ? '+' : ''}{model.edgePts.toFixed(2)} pts</strong></span>
           <span>weight <strong className="mono text-foreground">{pct(fusion?.weight ?? 0, 0)}</strong></span>
@@ -177,10 +178,26 @@ export function ForgeModelCard({ model, fusion }: { model: ForgedModel; fusion?:
       </details>
 
       <p className="mt-2 text-[9px] leading-relaxed text-muted-foreground">
-        The forge is fitted from scratch on this market’s own replayed calls whenever Run Analysis runs: it distils the engines, the
-        AI layers and the calculations into one network, trained against the Deriv knowledge base. Nothing is downloaded and no
-        account, key or per-token cost is involved. It can only move the published number once it beats the fair rate on a purged,
-        chronological holdout it never saw — and it can always only trim or veto a call, never place one.
+        Forge is fitted from scratch on this market’s own replayed calls whenever Run Analysis runs: it uses the engines, the AI,
+        origin-aligned research and neural forecasts, the calculations and the Deriv knowledge syllabus. Nothing is downloaded and no
+        account, key or per-token cost is involved. It may move the published probability only after passing its purged,
+        chronological holdout gate; then it can confirm, trim or hard-veto entry. It never places an order.
+      </p>
+    </section>
+  );
+}
+
+/** Fail-closed state: keep Forge visible even when the replay is too thin to fit. */
+export function ForgeUnavailableCard({ family, label }: { family: 'digit' | 'rise-fall'; label: string }) {
+  return (
+    <section className="rounded-xl border border-dashed border-border bg-card/70 p-4 sm:p-5" data-testid="forge-model-card" data-forge-state="unavailable">
+      <div className="eyebrow flex items-center gap-1.5"><Flame size={12} /> Primary signal model · Forge</div>
+      <h3 className="mt-1 text-sm font-bold">Forge was not fitted for this call</h3>
+      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+        The {family === 'digit' ? 'digit contract' : 'Rise/Fall'} replay for {label} did not provide enough settled, causal rows and usable votes to meet Forge’s existing training and holdout gates. The tool keeps the validated upstream estimate unchanged rather than weakening those gates.
+      </p>
+      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+        When the required replay is available, Forge combines engines, AI, independent research, horizon-matched neural forecasts, calculations and the Deriv knowledge syllabus. Live payout and proposal checks remain separate.
       </p>
     </section>
   );

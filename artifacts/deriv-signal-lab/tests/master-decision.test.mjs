@@ -14,7 +14,9 @@ import {
   measureValidity,
   oneSidedPValue,
   sourceWeight,
+  masterBlocksEntry,
 } from '../src/lib/signal-engine/master-decision.ts';
+import { forgeVetoed } from '../src/lib/forge/forge.ts';
 import {
   effectiveWindowTicks,
   entryWindowMs,
@@ -250,11 +252,18 @@ test('no edge is reported as no edge, with a one-tick window and a capped convic
   assert.match(decision.entry.instruction, /No measured edge/);
 });
 
-test('a validated contradiction can never be certified as decisive', () => {
-  const decision = buildMasterDecision(baseInput({ contradicted: true, confirmed: false }));
-  assert.notEqual(decision.verdict, 'TRADE_NOW');
-  assert.notEqual(decision.verdict, 'TRADE_ON_ENTRY');
+test('a validated contradiction, including a Forge veto, is a hard NO_EDGE entry block', () => {
+  const forgeVeto = forgeVetoed({ decision: 'veto' });
+  assert.equal(forgeVeto, true);
+  const decision = buildMasterDecision(baseInput({ contradicted: forgeVeto, confirmed: false }));
+  assert.equal(decision.verdict, 'NO_EDGE');
+  assert.equal(decision.entry.action, 'no-edge');
   assert.equal(decision.decisive, false);
+  assert.equal(masterBlocksEntry(decision), true);
+  assert.match(decision.reasons.join(' '), /hard: NO_EDGE and entry\.action = no-edge/);
+
+  const tradeable = { ...decision, verdict: 'TRADE_NOW', entry: { ...decision.entry, action: 'enter-now' } };
+  assert.equal(masterBlocksEntry(tradeable), false);
 });
 
 test('the committee can only nudge the calibrated chain by a bounded amount', () => {

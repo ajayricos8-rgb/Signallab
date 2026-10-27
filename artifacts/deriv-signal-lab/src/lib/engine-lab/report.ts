@@ -56,6 +56,9 @@ export function settledPerformance(input: readonly SettledReturn[]) {
 
 export function buildEngineLabReport(input: EngineLabInput): EngineLabReport {
   const { audit, decision, legacy } = input;
+  // Causal replay probabilities are internal teacher features for Forge, not
+  // audit telemetry. Keep the public report to its evaluated holdout rows.
+  const { replay: _forgeReplay, ...publicResearch } = audit;
   const { readings, put, missing, ticks, sample } = measureEngines(input);
   const n = audit.sample;
   const rows = audit.rows;
@@ -213,5 +216,5 @@ export function buildEngineLabReport(input: EngineLabInput): EngineLabReport {
   if (!sample.digits) warnings.push('Digit engines abstain because verified digit precision is unavailable.');
   return { version: '1.0.0', family: input.family, symbol: input.symbol, asOfEpoch: ticks.at(-1)?.epoch ?? null,
     horizon: input.horizon, contract: input.contract, registered: ENGINE_CATALOG.length, counts, readings: ordered,
-    research: audit, decision, fusion: input.fusion ?? null, warnings, sample, accounting: { sample: accounting.sample, currency: accounting.sample ? input.settlementCurrency || null : null } };
+    research: publicResearch, decision, fusion: input.fusion ?? null, warnings, sample, accounting: { sample: accounting.sample, currency: accounting.sample ? input.settlementCurrency || null : null } };
 }
