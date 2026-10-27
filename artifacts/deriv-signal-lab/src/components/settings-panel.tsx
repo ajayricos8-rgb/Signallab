@@ -183,8 +183,8 @@ export function SettingsPanel() {
           </li>
           <li>
             <strong className="text-foreground">Where to see it:</strong> the <em>Layer 8 · forged model</em> card on every tool, the
-            <em> Forged model</em> row in the master decision’s source table, and the curriculum, gate, feature list and knowledge
-            summary on the card itself.
+            <em> Forged model</em> row in the master decision’s source table. The <em>Base</em> tab (labelled “The Base”) contains the
+            searchable syllabus, instrument atlas and walk-forward randomness audit.
           </li>
         </ul>
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">

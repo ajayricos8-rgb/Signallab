@@ -12,6 +12,7 @@
     "test:engine-lab": "node --experimental-strip-types --test ./tests/engine-lab.test.mjs",
     "test:neural": "node --experimental-strip-types --test ./tests/neural-model.test.mjs",
     "test:forge": "node --experimental-strip-types --test ./tests/forge-model.test.mjs",
+    "test:forge-randomness": "node --experimental-strip-types --test ./tests/forge-randomness.test.mjs",
     "docs:engines": "node --experimental-strip-types ./scripts/generate-engine-catalog.mjs",
     "test:engine-lab:browser": "node ./tests/browser/engine-lab-smoke.mjs",
     "docs:engines:check": "node --experimental-strip-types ./scripts/generate-engine-catalog.mjs --check"

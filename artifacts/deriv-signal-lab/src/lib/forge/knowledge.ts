@@ -32,7 +32,7 @@
 import type { ForgeFamily } from './types.ts';
 
 /** Version stamp for the syllabus. Bump whenever an entry changes meaning. */
-export const FORGE_KNOWLEDGE_VERSION = '2026.10.24';
+export const FORGE_KNOWLEDGE_VERSION = '2026.10.27';
 
 export type ForgeKnowledgeDomain =
   | 'contract'
@@ -228,6 +228,14 @@ export const FORGE_KNOWLEDGE: readonly ForgeKnowledgeEntry[] = [
     families: BOTH,
   },
   {
+    id: 'feed.public-research-socket',
+    domain: 'feed',
+    title: 'The public research feed is separate from trading',
+    statement: 'The app reads public market ticks on a research connection; account balances, positions and orders use a separate authenticated session and are not model inputs.',
+    use: 'gate',
+    families: BOTH,
+  },
+  {
     id: 'feed.sample-maturity',
     domain: 'feed',
     title: 'Maturity scales with the usable sample',
@@ -346,6 +354,14 @@ export const FORGE_KNOWLEDGE: readonly ForgeKnowledgeEntry[] = [
     domain: 'statistics',
     title: 'The holdout may not choose anything',
     statement: 'Weights, thresholds, temperatures and feature choices are all fixed before the holdout is scored; a search that peeks at the holdout is a fit, not a measurement.',
+    use: 'gate',
+    families: BOTH,
+  },
+  {
+    id: 'stats.repeated-inspection',
+    domain: 'statistics',
+    title: 'Repeatedly checking a stream inflates false positives',
+    statement: 'A rolling score inspected again and again is not a fresh independent validation; a discovered pattern needs a later untouched sample before it can be treated as persistent.',
     use: 'gate',
     families: BOTH,
   },
@@ -634,6 +650,14 @@ export const FORGE_KNOWLEDGE: readonly ForgeKnowledgeEntry[] = [
     domain: 'market',
     title: 'There are no fundamentals to read',
     statement: 'Synthetic indices have no earnings, news or order book available to this app, so no feature may claim a fundamental cause; every input is price, digit or time.',
+    use: 'veto',
+    families: BOTH,
+  },
+  {
+    id: 'market.no-generator-state',
+    domain: 'market',
+    title: 'The Forge sees published ticks, not generator state',
+    statement: 'The public feed supplies prices, digits and timestamps but no generator seed or internal state, so this model cannot reconstruct or guarantee a hidden next output.',
     use: 'veto',
     families: BOTH,
   },

@@ -12,16 +12,17 @@ import { HedgingBot } from '@/components/premium-bot/hedging-bot';
 import { MafiaBot } from '@/components/premium-bot/mafia-bot';
 import { SettingsPanel } from '@/components/settings-panel';
 import { TradeHistoryPanel } from '@/components/trade-history-panel';
+import { ForgeBaseWorkspace } from '@/components/forge-base-workspace';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Activity, Bot, Clock3, Menu, Moon, Settings, Sun, Wrench, X } from 'lucide-react';
+import { Activity, Bot, BrainCircuit, Clock3, Menu, Moon, Settings, Sun, Wrench, X } from 'lucide-react';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 
 const queryClient = new QueryClient();
 
 type Theme = 'light' | 'dark';
-type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots' | 'settings';
+type WorkspaceTab = 'tools' | 'base' | 'trade-history' | 'premium-bots' | 'settings';
 type ToolsMiniTab = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
 type PremiumBotTab = 'digit-ai' | 'rise-fall' | 'hedging-high-low' | 'mafia';
 
@@ -41,6 +42,7 @@ const premiumBotTabs: { id: PremiumBotTab; label: string; blurb: string }[] = [
 
 const workspaceTabs = [
   { id: 'tools', label: 'Tools', icon: Wrench },
+  { id: 'base', label: 'The Base', icon: BrainCircuit },
   { id: 'trade-history', label: 'Trade history', icon: Clock3 },
   { id: 'premium-bots', label: 'Premium bots', icon: Bot },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -115,7 +117,7 @@ function Home() {
             <div className="eyebrow px-3 pb-2">Workspace</div>
             {workspaceTabs.map(({ id, label, icon: Icon }) => {
               const active = activeTab === id;
-              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'trade-history' ? 'button-history-nav' : id === 'settings' ? 'button-settings-nav' : 'button-premium-bots-nav';
+              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'base' ? 'button-base-nav' : id === 'trade-history' ? 'button-history-nav' : id === 'settings' ? 'button-settings-nav' : 'button-premium-bots-nav';
               return (
                 <button
                   key={id}
@@ -144,7 +146,7 @@ function Home() {
               <button onClick={() => setMobileNav(true)} className="rounded-lg border border-border p-2 text-muted-foreground hover:text-foreground md:hidden" aria-label="Open navigation" data-testid="button-open-navigation"><Menu size={18} /></button>
               <div>
                 <div className="eyebrow">Signal Lab <span className="mx-1 text-border">/</span> {tabLabel}</div>
-                <h1 className="mt-1 text-base font-bold tracking-[-0.025em] sm:text-lg">Market analysis workspace</h1>
+                <h1 className="mt-1 text-base font-bold tracking-[-0.025em] sm:text-lg">{activeTab === 'base' ? 'Forge research base' : 'Market analysis workspace'}</h1>
               </div>
             </div>
             <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground" aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-pressed={theme === 'dark'} title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} data-testid="button-theme-toggle">
@@ -153,7 +155,9 @@ function Home() {
           </header>
 
           <div className={`min-h-[calc(100dvh-76px)] px-4 pt-5 sm:px-6 sm:pt-7 lg:px-8 ${activeTab === 'tools' ? 'pb-[340px] lg:pb-[230px]' : 'pb-24'}`}>
-            {activeTab === 'trade-history' ? (
+            {activeTab === 'base' ? (
+              <ForgeBaseWorkspace onOpenTools={() => setActiveTab('tools')} />
+            ) : activeTab === 'trade-history' ? (
               <TradeHistoryPanel />
             ) : activeTab === 'premium-bots' ? (
               <PremiumBotsWorkspace activeTab={activeBotTab} onTabChange={setActiveBotTab} />
@@ -170,7 +174,7 @@ function Home() {
         <div className="mx-auto flex w-full max-w-3xl gap-1 px-2 py-2 sm:px-4">
           {workspaceTabs.map(({ id, label, icon: Icon }) => {
             const active = activeTab === id;
-            const compactLabel = id === 'trade-history' ? 'History' : id === 'premium-bots' ? 'Premium' : label;
+            const compactLabel = id === 'trade-history' ? 'History' : id === 'premium-bots' ? 'Premium' : id === 'base' ? 'Base' : label;
             return (
               <button
                 key={id}
