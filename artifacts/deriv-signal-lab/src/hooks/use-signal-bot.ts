@@ -631,10 +631,15 @@ export function useSignalBot(): SignalBotController {
             continue;
           }
           if (runForgeGate.decision === 'block') {
-            setStatus('error');
-            setStopReason('error');
+            setRuns((current) =>
+              current.map((run) =>
+                run.index === index
+                  ? { ...run, status: 'failed', settledAt: Date.now(), entryTicks: entryOutcome.waitedTicks, note: runForgeGate.reason }
+                  : run,
+              ),
+            );
             setError(runForgeGate.reason);
-            finish(generation, 'stopped');
+            finish(generation, 'error');
             return;
           }
 

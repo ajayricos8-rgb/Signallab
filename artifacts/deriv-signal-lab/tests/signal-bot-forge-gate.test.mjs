@@ -57,6 +57,21 @@ test('an unvalidated forge never blocks', () => {
   assert.match(result.reason, /not yet validated/);
 });
 
+test('missing or non-finite forge probabilities use the existing neutral fallback', () => {
+  for (const modelProbability of [null, NaN, Infinity]) {
+    const result = forgeExecutionGate(
+      baseInput({ forge: forged({ validated: false, decision: 'inert', modelProbability }) }),
+    );
+    assert.equal(result.decision, 'proceed');
+    assert.match(result.reason, /50\.0% vs 50\.0% fair/);
+  }
+});
+
+test('a validated forge veto still blocks when its probability is missing', () => {
+  const result = forgeExecutionGate(baseInput({ forge: forged({ decision: 'veto', modelProbability: null }) }));
+  assert.equal(result.decision, 'block');
+});
+
 test('a validated forge that supports the call proceeds', () => {
   const result = forgeExecutionGate(baseInput({ forge: forged({ decision: 'confirm', modelProbability: 0.66 }) }));
   assert.equal(result.decision, 'proceed');

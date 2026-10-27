@@ -44,9 +44,10 @@ Thumbs.db
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
-# Replit
+# Replit and deployment-local metadata
 .cache/
 .local/
+.vercel/
 
 # Server-only secrets (never expose through VITE_* variables)
 .env

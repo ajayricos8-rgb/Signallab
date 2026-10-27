@@ -81,7 +81,8 @@ export function forgeExecutionGate(input: ForgeExecutionInput): ForgeExecutionRe
     };
   }
 
-  const modelProbability = Number.isFinite(forge.modelProbability) ? forge.modelProbability : 0.5;
+  const modelProbability =
+    typeof forge.modelProbability === 'number' && Number.isFinite(forge.modelProbability) ? forge.modelProbability : 0.5;
   const forgedEdge = modelProbability - fair;
   const isContradicting =
     forge.validated && modelProbability < fair - threshold && forgedEdge < -threshold;

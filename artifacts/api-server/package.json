@@ -2,12 +2,16 @@
   "name": "@workspace/api-server",
   "version": "0.0.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "type": "module",
   "scripts": {
     "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --env-file-if-exists=.env --enable-source-maps ./dist/index.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:deployment": "pnpm run build && node --test tests/deployment.test.mjs"
   },
   "dependencies": {
     "@workspace/api-zod": "workspace:*",
