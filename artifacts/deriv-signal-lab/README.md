@@ -27,6 +27,7 @@ Deriv REST calls are made from the browser first. If a browser blocks that cross
 pnpm --filter @workspace/deriv-signal-lab typecheck
 pnpm --filter @workspace/deriv-signal-lab test:digit-analysis
 pnpm --filter @workspace/deriv-signal-lab test:neural
+pnpm --filter @workspace/deriv-signal-lab test:forge
 PORT=18781 BASE_PATH=/ pnpm --filter @workspace/deriv-signal-lab build
 ```
 
@@ -55,6 +56,17 @@ Every analysis now trains a small neural network inside the app, on the market's
 - The forecast is folded into the published probability as a weighted second opinion over the same fair odds the contract pays (≤25% of the edge) **only** when it beat chance out of sample: positive Brier skill, positive log-loss skill and a paired z ≥ 2 on ≥60 unseen rows. With zero weight the published number is bit-identical, so a fair market leaves the model silent — which is the honest and usual outcome on synthetic indices.
 - The model is also a row in the master decision's source table and, when validated, a small (<5%) term in the confidence score. Its card reports architecture, parameter count, seed, epochs, temperature, row counts, hit rate vs chance and the probability points it moved.
 - Free means: no API key, no account, no per-call cost, no tick leaving the device. See `docs/neural-model.md`.
+
+## Forged model (Layer 8 · engines + AI + calculations in one trained model)
+
+The forge is the layer that turns the whole stack into **one** model instead of another report next to it:
+
+- `src/lib/forge/knowledge.ts` is the Deriv syllabus the model is trained against: 58 digit / 55 Rise/Fall versioned entries across contract semantics, payout economics, feed rules, statistical protocol, structural diagnostics, risk, execution and instrument knowledge, each tagged as a `feature`, `prior`, `teacher`, `veto` or `gate` — plus a market atlas for the volatility classes, their 1HZ variants, Crash/Boom, Step and Jump indices.
+- Each training row is the entire analysis at one replayed origin: the family-weighted engine ensemble (edge, spread, agreement, balance, abstention), the rolling baseline, the analysis prior, the fair rate, the horizon, the market's cadence/volatility class/family and its own causal structure (digit entropy, runs, hot/cold, parity, streak; variance ratio, trend z, volatility ratio, momentum, range position) — 24 frozen, labelled inputs.
+- `signal-lab-forge-v1` (24 → 24 → 12 → 2, ≈0.9k parameters) is trained inside the run on that candidate's own replay rows, chronologically split 50/20/30 with a purge gap. Labels are distilled 35% from the audited teachers, and the network learns a **residual correction** on the teacher's log-odds that is shrunk on validation, capped at 0.6 log-odds and switched off entirely when it does not generalise — so the model degrades to its teachers, never to noise.
+- The gate is the strictest in the app: ≥60 unseen rows, positive Brier and log-loss skill, and a paired z above a bar raised for the number of candidates compared. Below it the layer is **completely inert** and the published number is bit-identical.
+- A validated forge can **confirm**, **trim** or **veto** the call (≤30% of the edge for a confirm, the edge cut to 35% for a veto). A veto reaches the entry: the master decision treats the call as contradicted, so it cannot be certified decisive. It never places an order.
+- See `docs/forge-model.md`, `tests/forge-model.test.mjs` (`pnpm --filter @workspace/deriv-signal-lab test:forge`) and the **Layer 8 · forged model** card on every tool.
 
 ## Premium bots
 

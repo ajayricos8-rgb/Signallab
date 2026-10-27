@@ -8,6 +8,7 @@ import { digitTicksOf } from '@/lib/market-feed';
 import { EntryPlanCard } from '@/components/signal/entry-plan-card';
 import { MasterDecisionCard } from '@/components/signal/master-decision-card';
 import { NeuralModelCard } from '@/components/signal/neural-model-card';
+import { ForgeModelCard } from '@/components/signal/forge-model-card';
 import { RiseFallDeepPanel } from '@/components/quant/rise-fall-deep-panel';
 import { PriceContextPanel } from '@/components/digit-contract-tools';
 import { useMarketFeed, type MarketFeedValue } from '@/components/market-feed-provider';
@@ -328,6 +329,13 @@ export function RiseFallTool() {
                   hint: signal.research.note,
                 },
                 {
+                  label: 'Forged model',
+                  value: selectedResult.forge
+                    ? `${formatPercent(signal.forge.probability)}${signal.forge.weight > 0 ? ` · ${signal.forge.contributionPts >= 0 ? '+' : ''}${signal.forge.contributionPts.toFixed(1)} pts` : ` · ${signal.forge.decision === 'inert' ? 'no vote' : signal.forge.decision}`}`
+                    : '—',
+                  hint: `${signal.forge.note} Drive ${signal.forge.drive}/100.`,
+                },
+                {
                   label: 'Neural model',
                   value: selectedResult.neural
                     ? `${formatPercent(signal.neural.probability)}${signal.neural.weight > 0 ? ` · ${signal.neural.contributionPts >= 0 ? '+' : ''}${signal.neural.contributionPts.toFixed(1)} pts` : ' · no vote'}`
@@ -358,6 +366,7 @@ export function RiseFallTool() {
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={0.5} /> : null}
             {selectedResult.aiSynthesis ? <AiSynthesisCard synthesis={selectedResult.aiSynthesis} /> : null}
             {selectedResult.neural ? <NeuralModelCard forecast={selectedResult.neural} fusion={signal.neural} /> : null}
+            {selectedResult.forge ? <ForgeModelCard model={selectedResult.forge} fusion={signal.forge} /> : null}
             <EntryPlanCard
               entry={signal.entry}
               marketName={shortMarketName(selectedResult.name)}

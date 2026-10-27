@@ -51,7 +51,7 @@ import { entryWindowMs, type EntryPlan, type EntryTrigger } from './entry.ts';
 import { clamp, normalCdf, normalPValue, wilsonInterval } from './stats.ts';
 import type { SignalStrength } from './confidence.ts';
 
-export type MasterSourceId = 'engines' | 'ai' | 'analysis' | 'research' | 'neural';
+export type MasterSourceId = 'engines' | 'ai' | 'analysis' | 'research' | 'neural' | 'forge';
 
 export type MasterSourceInput = {
   id: MasterSourceId;

@@ -378,3 +378,14 @@ These checks verify implementation behaviour, not live trading returns. No live
 trade was placed, and broker connectivity/settlement execution was not tested
 with a funded account. Use demo observation and genuinely unseen data before
 considering live-money deployment.
+
+## Who consumes the library now (Layer 8)
+
+The 300 readings are no longer only audited and shown: their per-origin state is one of the inputs the
+**forged model** (`src/lib/forge/`, `docs/forge-model.md`) is trained on. The forge distils the
+family-weighted ensemble, the analysis prior and the rolling baseline into a single 24-input network,
+trains it on the candidate's own replayed rows with a chronological, purged split, and then uses that
+one model for the analysis, the prediction and the entry. Below its out-of-sample gate it is inert;
+above it, it can confirm, trim or veto the call. Nothing here changes what the library itself claims —
+the forge inherits the same rule the rest of the app follows: an unvalidated measurement may not raise
+a probability.
