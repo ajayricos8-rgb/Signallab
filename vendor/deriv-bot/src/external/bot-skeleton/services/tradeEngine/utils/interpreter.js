@@ -99,6 +99,7 @@ const Interpreter = () => {
         const {
             getTicksInterface,
             getSignalLabInterface,
+            getVisionInterface,
             alert,
             prompt,
             sleep,
@@ -106,6 +107,7 @@ const Interpreter = () => {
         } = bot_interface;
         const ticks_interface = getTicksInterface;
         const signal_lab_interface = getSignalLabInterface;
+        const vision_interface = getVisionInterface;
 
         js_interpreter.setProperty(scope, 'console', js_interpreter.nativeToPseudo(custom_console));
         js_interpreter.setProperty(scope, 'alert', js_interpreter.nativeToPseudo(alert));
@@ -126,6 +128,13 @@ const Interpreter = () => {
         // account snapshot it shares. Same async wrapping, so a script sees a
         // plain value and waits while the parent's snapshot is in flight.
         Object.entries(signal_lab_interface).forEach(([name, f]) =>
+            js_interpreter.setProperty(pseudo_bot_interface, name, createAsync(js_interpreter, f))
+        );
+
+        // Vision Lab blocks: the analysis, AI, risk and shortcut library. Every
+        // call is async-wrapped so a strategy sees a plain value even though the
+        // heavy maths runs outside the interpreter.
+        Object.entries(vision_interface || {}).forEach(([name, f]) =>
             js_interpreter.setProperty(pseudo_bot_interface, name, createAsync(js_interpreter, f))
         );
 

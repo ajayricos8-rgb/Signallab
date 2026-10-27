@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import {
-  ArrowRight, BookOpen, Boxes, ChartNoAxesCombined, CheckCircle2, CircleHelp, Link2, LoaderCircle,
+  ArrowRight, BookOpen, Boxes, BrainCircuit, ChartNoAxesCombined, CheckCircle2, CircleHelp, Link2, LoaderCircle,
   Library, LockKeyhole, Maximize2, Search, ShieldAlert, Signal, Sparkles, Unlink, X, type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
@@ -10,18 +10,24 @@ import {
   bridgeStats, buildAccountMessage, buildBridgeSnapshot, buildBridgeUpdate, sameAccountState,
   type BridgeAccountMessage, type BridgeCursor, type BridgeSourceMarket,
 } from '@/lib/dbot-bridge';
+// The AI bot ships as a real strategy file, the same way Deriv ships its own:
+// blocks in, blocks out. It is dropped into the builder untouched.
+import aiVisionOverUnderXml from '@/lib/bot-store/bots/ai-vision-over-under.xml?raw';
 
 type SpaceView = 'builder' | 'chart' | 'store';
 type LinkState = 'idle' | 'connecting' | 'connected';
+type StrategyCategory = 'Progression' | 'Reverse progression' | 'Sequence' | 'AI';
 type Strategy = {
   id: string;
   name: string;
-  category: 'Progression' | 'Reverse progression' | 'Sequence';
+  category: StrategyCategory;
   short: string;
   detail: string;
   risk: string;
   accent: string;
   icon: ComponentType<LucideProps>;
+  /** Deriv quick-strategy forms open a form; our own bots load their blocks directly. */
+  xml?: string;
 };
 
 // These map directly to Deriv's quick-strategy forms. Selecting one opens the
@@ -33,6 +39,19 @@ const STRATEGIES: Strategy[] = [
   { id: 'REVERSE_MARTINGALE', name: 'Reverse Martingale', category: 'Reverse progression', short: 'Increase the stake after a win rather than a loss.', detail: 'A reverse progression that multiplies the next stake following a win and resets after a loss.', risk: 'A loss can erase gains from a winning sequence.', accent: 'teal', icon: Boxes },
   { id: 'REVERSE_D_ALEMBERT', name: 'Reverse D’Alembert', category: 'Reverse progression', short: 'Step the stake up after a win and down after a loss.', detail: 'The reverse version of D’Alembert, using a configurable unit to adjust the stake after each result.', risk: 'Changing stake does not create a trading edge.', accent: 'rose', icon: ChartNoAxesCombined },
   { id: 'STRATEGY_1_3_2_6', name: '1-3-2-6', category: 'Sequence', short: 'Follow a four-step staking sequence across winning trades.', detail: 'A four-stage progression based on stake multiples of 1, 3, 2, and 6. Review the sequence and exit rules before use.', risk: 'The sequence can end in loss at any stage.', accent: 'indigo', icon: Sparkles },
+  {
+    id: 'AI_VISION_OVER_UNDER',
+    name: 'AI Vision — Over/Under',
+    category: 'AI',
+    short: 'Reads the digit market with seven models, prices every barrier against the live payout table, and picks its own barrier and side.',
+    detail:
+      'Not a staking template: the logic is the edge. A tick block runs the full AI read every tick — seven models forecast the last digit at expiry, the payout table prices all twenty Over/Under contracts straight from Deriv, and the barrier with the strongest measured lean wins. It declines to trade when the lean is inside the noise, sizes the stake from the strength of the lean and the agreement between models, and learns from every settled digit. Every tunable sits in variables in the "Run once at start" block.',
+    risk:
+      'Digit payouts carry an exchange margin, so the honest expected value printed on each entry is usually negative. This bot trades the strongest measured leans rather than promising to beat the margin. Start on a demo account and keep the loss limit small.',
+    accent: 'emerald',
+    icon: BrainCircuit,
+    xml: aiVisionOverUnderXml,
+  },
 ];
 
 const views: { id: SpaceView; label: string; icon: ComponentType<LucideProps> }[] = [
@@ -63,6 +82,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   const grantRef = useRef<string | null>(null);
   const grantRevisionRef = useRef(0);
   const pendingStrategy = useRef<string | null>(null);
+  const pendingLoad = useRef<{ xml: string; fileName: string } | null>(null);
   const [notice, setNotice] = useState('');
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
@@ -180,6 +200,10 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         readyRef.current = true;
         setReady(true);
         if (viewRef.current !== 'store') send({ type: 'navigate', tab: viewRef.current });
+        if (pendingLoad.current) {
+          send({ type: 'load-bot', ...pendingLoad.current });
+          pendingLoad.current = null;
+        }
         if (pendingStrategy.current) {
           send({ type: 'quick-strategy', strategy: pendingStrategy.current });
           pendingStrategy.current = null;
@@ -228,6 +252,9 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         setLinkAccount('');
         setLinkType('unknown');
         setNotice(typeof data.message === 'string' ? data.message : 'DBot could not connect the account.');
+      } else if (data.type === 'bot-loaded') {
+        const name = typeof data.name === 'string' ? data.name : 'The bot';
+        setNotice(`${name} is on the canvas. Check the market, stake and limits, then press Run.`);
       } else if (data.type === 'error') {
         setNotice(typeof data.message === 'string' ? data.message : 'DBot could not complete that action.');
       } else if (data.type === 'request-otp' && typeof data.requestId === 'number') {
@@ -355,9 +382,19 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   }
 
   function useStrategy(strategy: Strategy) {
-    if (!window.confirm(`Open ${strategy.name} in Quick strategy? Review the market, stake, and loss limits before creating or running it.`)) return;
+    const isOwnBot = Boolean(strategy.xml);
+    if (!window.confirm(
+      isOwnBot
+        ? `Load ${strategy.name} into the bot builder? It replaces the blocks currently on the canvas, and its settings live in the "Run once at start" block.`
+        : `Open ${strategy.name} in Quick strategy? Review the market, stake, and loss limits before creating or running it.`,
+    )) return;
     setDetails(null);
     setView('builder');
+    if (isOwnBot) {
+      if (readyRef.current) send({ type: 'load-bot', xml: strategy.xml, fileName: strategy.name });
+      else { pendingLoad.current = { xml: strategy.xml as string, fileName: strategy.name }; setNotice('The bot will load as soon as the workspace connects.'); }
+      return;
+    }
     if (readyRef.current) send({ type: 'quick-strategy', strategy: strategy.id });
     else { pendingStrategy.current = strategy.id; setNotice('The strategy form will open as soon as the workspace connects.'); }
   }
@@ -488,7 +525,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
             <div><h3 className="text-sm font-extrabold">Explore strategies</h3><p className="mt-1 text-[11px] text-muted-foreground">Free templates · customisable before use</p></div>
             <div className="flex flex-wrap gap-2">
               <label className="relative"><Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search strategies" aria-label="Search strategies" data-testid="dbot-store-search" className="h-9 w-48 rounded-lg border border-border bg-card pl-9 pr-3 text-xs outline-none focus:border-primary" /></label>
-              <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Filter strategies" className="h-9 rounded-lg border border-border bg-card px-3 text-xs font-semibold outline-none focus:border-primary" data-testid="dbot-store-filter"><option>All</option><option>Progression</option><option>Reverse progression</option><option>Sequence</option></select>
+              <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Filter strategies" className="h-9 rounded-lg border border-border bg-card px-3 text-xs font-semibold outline-none focus:border-primary" data-testid="dbot-store-filter"><option>All</option><option>AI</option><option>Progression</option><option>Reverse progression</option><option>Sequence</option></select>
             </div>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">

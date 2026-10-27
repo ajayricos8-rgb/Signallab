@@ -70,6 +70,24 @@
         height: 40px;
     }
 
+    // The Run/Stop button and the Fast/Slow control travel together.
+    &__controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 100%;
+
+        .run__button_wrapper {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        @include mobile-or-tablet-screen {
+            gap: 6px;
+        }
+    }
+
     &__overlay {
         border-top-left-radius: 0;
         border-bottom-right-radius: $BORDER_RADIUS;

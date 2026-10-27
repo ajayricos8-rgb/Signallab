@@ -15,3 +15,4 @@ import './Logic';
 import './Signal Lab';
 import './Math';
 import './Text';
+import './Vision Lab';

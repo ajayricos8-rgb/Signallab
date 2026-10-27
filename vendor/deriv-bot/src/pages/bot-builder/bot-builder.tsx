@@ -4,8 +4,9 @@ import { observer } from 'mobx-react-lite';
 import { botNotification } from '@/components/bot-notification/bot-notification';
 import { notification_message } from '@/components/bot-notification/bot-notification-utils';
 import { useStore } from '@/hooks/useStore';
-import { api_base } from '@/external/bot-skeleton';
+import { api_base, load } from '@/external/bot-skeleton';
 import { clearDerivApiInstance } from '@/external/bot-skeleton/services/api/appId';
+import { getSpeed, setSpeed } from '@/services/vision-speed';
 import { getSignalLabGrantId, getSignalLabSessionRevision, hasSignalLabAccount, linkSignalLabAccount, receiveSignalLabSocket, unlinkSignalLabAccount } from '@/services/signallab-session';
 import { localize } from '@deriv-com/translations';
 import { useDevice } from '@deriv-com/ui';
@@ -39,6 +40,54 @@ const BotBuilder = observer(() => {
             const data = event.data;
             if (!data || data.source !== 'signal-lab' || typeof data.type !== 'string') return;
             if (data.type === 'hello') notify('ready');
+            // The host mirrors the Fast/Slow control; keep the two in step.
+            if (data.type === 'set-speed' && (data.speed === 'slow' || data.speed === 'normal' || data.speed === 'fast')) {
+                setSpeed(data.speed, { silent: true });
+            }
+            if (data.type === 'request-speed') notify('speed', { speed: getSpeed() });
+            if (data.type === 'load-bot') {
+                if (run_panel.is_running) {
+                    notify('error', { message: 'Stop your running bot before loading another strategy.' });
+                    return;
+                }
+                if (typeof data.xml !== 'string' || !data.xml.trim()) {
+                    notify('error', { message: 'That strategy could not be read.' });
+                    return;
+                }
+                const workspace = window.Blockly?.derivWorkspace;
+                if (!workspace) {
+                    notify('error', { message: 'The workspace is still loading. Try again in a moment.' });
+                    return;
+                }
+                const raw_name = typeof data.name === 'string' ? data.name : typeof data.fileName === 'string' ? data.fileName : '';
+                const name = raw_name.trim() || 'Vision Lab bot';
+                const has_blocks = workspace.getAllBlocks(false).length > 0;
+                if (has_blocks && !window.confirm(`Replace the strategy in the workspace with “${name}”? Unsaved changes will be lost.`)) {
+                    return;
+                }
+                dashboard.setActiveTab(1);
+                window.setTimeout(() => {
+                    Promise.resolve(
+                        load({
+                            block_string: data.xml as string,
+                            file_name: name,
+                            workspace,
+                            from: 'signal-lab',
+                            showIncompatibleStrategyDialog: () => Promise.resolve(true),
+                        } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
+                    )
+                        .then((result: unknown) => {
+                            const error = (result as { error?: string } | undefined)?.error;
+                            if (error) {
+                                notify('error', { message: error });
+                                return;
+                            }
+                            notify('bot-loaded', { name });
+                            window.dispatchEvent(new Event('resize'));
+                        })
+                        .catch(() => notify('error', { message: `“${name}” could not be loaded into the workspace.` }));
+                }, 60);
+            }
             if (data.type === 'otp-response') {
                 receiveSignalLabSocket(data.requestId, data.accountId, data.url, data.error);
             }

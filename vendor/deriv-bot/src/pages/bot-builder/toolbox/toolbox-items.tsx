@@ -449,6 +449,528 @@ export const ToolboxItems = () =>
                 <Block type='signal_lab_connected' />
             </Category>
 
+            <Category id='vision_lab' name={localize('Vision Lab')}>
+                <Category id='vision_ai' name={localize('AI Core')}>
+                    <Block type='vision_analyse'>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_EDGE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_CONFIDENCE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>55</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='RISK'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.6</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='AGREEMENT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.6</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='vision_go' />
+                    <Block type='vision_barrier' />
+                    <Block type='vision_direction' />
+                    <Block type='vision_contract' />
+                    <Block type='vision_probability' />
+                    <Block type='vision_fair' />
+                    <Block type='vision_edge' />
+                    <Block type='vision_bias' />
+                    <Block type='vision_confidence' />
+                    <Block type='vision_agreement' />
+                    <Block type='vision_payout' />
+                    <Block type='vision_stake'>
+                        <Value name='BASE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='vision_reason' />
+                    <Block type='vision_summary' />
+                    <Block type='vision_horizon' />
+                    <Block type='vision_digit_probability'>
+                        <Value name='DIGIT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='vision_feature' />
+                    <Block type='vision_model_vote' />
+                    <Block type='vision_model_weight' />
+                    <Block type='vision_regime' />
+                    <Block type='vision_learn'>
+                        <Value name='DIGIT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>-1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='vision_brain_size' />
+                    <Block type='vision_brain_stats' />
+                    <Block type='vision_reset_brain' />
+                    <Block type='vision_refresh_payouts' />
+                    <Block type='vision_payout_live' />
+                    <Block type='vision_notify' />
+                    <Block type='vision_log' />
+                </Category>
+
+                <Category id='vision_quant' name={localize('Quant maths')}>
+                    <Block type='q_sma'>
+                        <Value name='PERIOD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>14</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_ema'>
+                        <Value name='PERIOD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>14</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_wma'>
+                        <Value name='PERIOD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>14</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_rsi'>
+                        <Value name='PERIOD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>14</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_macd'>
+                        <Value name='FAST'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>12</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='SLOW'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>26</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='SIGNAL'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>9</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_bollinger'>
+                        <Value name='PERIOD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>20</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='DEVIATIONS'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>2</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_stddev' />
+                    <Block type='q_variance' />
+                    <Block type='q_stat' />
+                    <Block type='q_percentile'>
+                        <Value name='P'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>50</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_zscore'>
+                        <Value name='VALUE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_slope' />
+                    <Block type='q_correlation' />
+                    <Block type='q_autocorr'>
+                        <Value name='LAG'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_hurst' />
+                    <Block type='q_entropy' />
+                    <Block type='q_atr'>
+                        <Value name='PERIOD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>14</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_volatility'>
+                        <Value name='PERIOD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>100</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_drawdown' />
+                    <Block type='q_streak' />
+                    <Block type='q_returns' />
+                    <Block type='q_last_digits' />
+                    <Block type='q_digit_counts' />
+                    <Block type='q_window'>
+                        <Value name='COUNT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>100</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_change'>
+                        <Value name='COUNT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>20</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_change_percent'>
+                        <Value name='COUNT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>20</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_digit_of'>
+                        <Value name='VALUE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_round'>
+                        <Value name='VALUE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='DIGITS'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>2</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_clamp'>
+                        <Value name='VALUE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='LOW'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='HIGH'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_map'>
+                        <Value name='VALUE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='IN_LOW'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='IN_HIGH'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='OUT_LOW'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='OUT_HIGH'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>100</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_lerp'>
+                        <Value name='A'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='B'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='T'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.5</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_seeded'>
+                        <Value name='SEED'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='q_pip_size' />
+                </Category>
+
+                <Category id='vision_analysis' name={localize('Market analysis')}>
+                    <Block type='m_digit_frequency'>
+                        <Value name='DIGIT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='m_digit_bias'>
+                        <Value name='DIGIT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='m_digit_probability'>
+                        <Value name='BARRIER'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='m_transition'>
+                        <Value name='FROM'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='TO'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='m_dominant_digit' />
+                    <Block type='m_digit_spread' />
+                    <Block type='m_digit_chi_square' />
+                    <Block type='m_digit_streak' />
+                    <Block type='m_parity_run' />
+                    <Block type='m_over_under_run'>
+                        <Value name='BARRIER'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='m_even_share' />
+                    <Block type='m_hurst' />
+                    <Block type='m_distance_to_level'>
+                        <Value name='STEP'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='m_measure_speed' />
+                    <Block type='m_tick_rate' />
+                </Category>
+
+                <Category id='vision_risk' name={localize('Risk and money')}>
+                    <Block type='r_kelly'>
+                        <Value name='PROBABILITY'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>55</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PAYOUT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.9</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='r_stake_step'>
+                        <Value name='CURRENT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MULTIPLIER'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>2</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MAX'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>20</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='BASE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='r_safe_stake'>
+                        <Value name='STAKE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PERCENT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>2</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='r_balance' />
+                    <Block type='r_profit_guard'>
+                        <Value name='TARGET'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>50</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='r_loss_guard'>
+                        <Value name='LIMIT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>50</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='r_drawdown_ok'>
+                        <Value name='LIMIT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>30</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='r_loss_streak' />
+                    <Block type='r_win_streak' />
+                    <Block type='r_win_rate' />
+                    <Block type='r_trades' />
+                    <Block type='r_cooldown'>
+                        <Value name='SECONDS'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>2</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='r_session_seconds' />
+                </Category>
+
+                <Category id='vision_shortcut' name={localize('Shortcuts')}>
+                    <Block type='x_speed' />
+                    <Block type='x_speed_index' />
+                    <Block type='x_speed_factor' />
+                    <Block type='x_smart_sleep'>
+                        <Value name='SECONDS'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_wait_ticks'>
+                        <Value name='COUNT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_ai_should_buy'>
+                        <Value name='MIN_EDGE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.5</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_ai_stake'>
+                        <Value name='BASE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='RISK'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.6</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_ai_signal' />
+                    <Block type='x_ai_trade'>
+                        <Value name='STAKE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='DURATION'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_EDGE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='RISK'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.6</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_payout_needed'>
+                        <Value name='PROBABILITY'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>50</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_digits_over'>
+                        <Value name='BARRIER'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                </Category>
+
+            </Category>
             <Category id='utility' name={localize('Utility')}>
                 <Category name={localize('Custom functions')} id='custom_functions' dynamic='PROCEDURE' />
 
