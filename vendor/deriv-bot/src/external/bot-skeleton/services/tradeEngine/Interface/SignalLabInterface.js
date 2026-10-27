@@ -1,4 +1,5 @@
 import {
+    getSignalLabAnalysisGate,
     getSignalLabBalance,
     getSignalLabLastDigit,
     getSignalLabLastTick,
@@ -16,6 +17,10 @@ import {
  * this frame — nothing here opens a socket, holds a token, or places an order.
  */
 const getSignalLabInterface = () => ({
+    getSignalLabAnalysisGate: async (family, symbol, analysisId, contractType, barrier, targetDigit) =>
+        getSignalLabAnalysisGate(
+            String(family), String(symbol), String(analysisId), String(contractType), Number(barrier), Number(targetDigit)
+        ),
     getSignalLabLastTick: async symbol => {
         await waitForSignalLabTicks(String(symbol));
         return getSignalLabLastTick(String(symbol));

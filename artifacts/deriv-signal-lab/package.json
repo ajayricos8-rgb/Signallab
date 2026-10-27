@@ -9,6 +9,8 @@
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:digit-analysis": "node --experimental-strip-types --test ./tests/*.test.mjs",
+    "test:dbot-ai": "node --experimental-strip-types --test ./tests/dbot-ai.test.mjs",
+    "test:dbot-gate": "node --experimental-strip-types --test ../../vendor/deriv-bot/tests/signallab-analysis-gate.test.mjs",
     "test:vision": "node --experimental-strip-types --test ./tests/vision-engine.test.mjs ./tests/vision-entry.test.mjs ./tests/ai-vision-bot.test.mjs",
     "test:engine-lab": "node --experimental-strip-types --test ./tests/engine-lab.test.mjs",
     "test:neural": "node --experimental-strip-types --test ./tests/neural-model.test.mjs",

@@ -5,3 +5,4 @@ import './colour';
 import './tick';
 import './ticks';
 import './account';
+import './analysis-gate';

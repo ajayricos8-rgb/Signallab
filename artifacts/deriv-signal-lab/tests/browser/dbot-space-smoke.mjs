@@ -114,8 +114,62 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   const mock = await mockDeriv(page);
   const bot = await openWorkspace(page);
+
+  // The draggable AI launcher is wired to the live Blockly catalog. Build and
+  // load generated XML into the real workspace, then verify the custom gate
+  // and generated risk procedure survive Blockly's XML importer.
+  await page.getByTestId('dbot-ai-launcher').click();
+  await page.getByTestId('dbot-ai-panel').waitFor();
+  await page.getByTestId('dbot-ai-registry-status').getByText('READY', { exact: true }).waitFor({ timeout: 20_000 });
+  const aiRegistry = await bot.evaluate(() => ({
+    gate: Boolean(window.Blockly.Blocks.signal_lab_analysis_gate),
+    gateGenerator: Boolean(window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_analysis_gate),
+    vision: Boolean(window.Blockly.Blocks.vision_analyse && window.Blockly.JavaScript.javascriptGenerator.forBlock.vision_analyse),
+  }));
+  assert.deepEqual(aiRegistry, { gate: true, gateGenerator: true, vision: true }, 'AI and Signal Lab blocks need both definitions and generators registered');
+  await page.getByTestId('dbot-ai-chat-input').fill('Build a fall bot on R_100 with stake 0.5, currency is USD, 2 ticks, max 3 trades, stop loss 4, profit target 6, and create a block called "Scan Guard".');
+  await page.getByTestId('dbot-ai-chat-send').click();
+  await page.getByTestId('dbot-ai-built-strategy').waitFor();
+  await page.getByTestId('dbot-ai-load-strategy').click();
+  await page.getByTestId('dbot-notice').getByText(/is on the canvas/i).waitFor({ timeout: 20_000 });
+  const generatedWorkspace = await bot.evaluate(() => {
+    const workspace = window.Blockly.derivWorkspace;
+    const blocks = workspace.getAllBlocks(false);
+    const gate = blocks.find(block => block.type === 'signal_lab_analysis_gate');
+    return {
+      types: blocks.map(block => block.type),
+      gateFields: gate ? {
+        family: gate.getFieldValue('FAMILY'),
+        symbol: gate.getFieldValue('SYMBOL'),
+        contractType: gate.getFieldValue('CONTRACT_TYPE'),
+        barrier: String(gate.getFieldValue('BARRIER')),
+        targetDigit: String(gate.getFieldValue('TARGET_DIGIT')),
+      } : null,
+      gateCode: gate ? window.Blockly.JavaScript.javascriptGenerator.blockToCode(gate)[0] : '',
+    };
+  });
+  for (const type of ['signal_lab_analysis_gate', 'procedures_defreturn', 'procedures_callreturn', 'total_profit', 'total_runs', 'purchase']) {
+    assert.ok(generatedWorkspace.types.includes(type), `generated Blockly XML must load registered block ${type}`);
+  }
+  assert.deepEqual(generatedWorkspace.gateFields, {
+    family: 'rise-fall', symbol: 'R_100', contractType: 'PUT', barrier: '0', targetDigit: '0',
+  });
+  assert.match(generatedWorkspace.gateCode, /Bot\.getSignalLabAnalysisGate\("rise-fall", "R_100", "", "PUT", 0, 0\)/);
+  assert.equal(requests.some(request => request.buy || request.sell), false, 'loading AI blocks must never place an order');
+  await page.getByTestId('dbot-ai-tab-analysis').click();
+  const analysisFamilies = await page.getByTestId('dbot-ai-family-select').locator('option').evaluateAll(options => options.map(option => option.value));
+  assert.deepEqual(analysisFamilies, ['rise-fall', 'over-under', 'even-odd', 'matches']);
+  await page.getByTestId('dbot-ai-family-select').selectOption('matches');
+  assert.equal(await page.getByTestId('dbot-ai-duration').isVisible(), true, 'digit families expose contract expiry controls');
+  await page.getByTestId('dbot-ai-family-select').selectOption('rise-fall');
+  await page.getByTestId('dbot-ai-run-analysis').click();
+  await page.getByTestId('dbot-ai-best-market').waitFor({ timeout: 90_000 });
+  assert.match(await page.getByTestId('dbot-ai-best-market').innerText(), /R_100/);
+  assert.equal(await page.getByTestId('dbot-ai-market-ranking').isVisible(), true, 'AI Analysis must rank the markets returned by its family engine');
+  await page.getByTestId('dbot-ai-close').click();
+
   const initial = await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).length);
-  assert.ok(initial >= 4, 'starter blocks must be present');
+  assert.ok(initial >= 4, 'starter or generated blocks must be present');
   assert.equal(await bot.evaluate(() => sessionStorage.getItem('signal-lab-dbot-auth_info')), null);
   assert.equal(mock.authSockets.length, 0, 'stale standalone auth must not reconnect automatically');
 

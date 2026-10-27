@@ -6,6 +6,8 @@ import {
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { formatAmount } from '@/lib/deriv-trading';
 import { useMarketFeed } from '@/components/market-feed-provider';
+import { DbotAiCopilot, type DbotAiBlockInfo } from '@/components/dbot-ai-copilot';
+import type { DbotAiAnalysisSnapshot } from '@/lib/dbot-ai';
 import {
   bridgeStats, buildAccountMessage, buildBridgeSnapshot, buildBridgeUpdate, sameAccountState,
   type BridgeAccountMessage, type BridgeCursor, type BridgeSourceMarket,
@@ -84,6 +86,10 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   const pendingStrategy = useRef<string | null>(null);
   const pendingLoad = useRef<{ xml: string; fileName: string } | null>(null);
   const [notice, setNotice] = useState('');
+  const [aiRunNotice, setAiRunNotice] = useState('');
+  const [blockRegistry, setBlockRegistry] = useState<DbotAiBlockInfo[]>([]);
+  const [aiRuntimeRegistered, setAiRuntimeRegistered] = useState(false);
+  const [botRunning, setBotRunning] = useState(false);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [details, setDetails] = useState<Strategy | null>(null);
@@ -114,6 +120,38 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   const send = useCallback((message: Record<string, unknown>) => {
     frameRef.current?.contentWindow?.postMessage({ source: 'signal-lab', ...message }, window.location.origin);
   }, []);
+
+  const clearAiAnalysis = useCallback(() => {
+    send({ type: 'clear-analysis' });
+  }, [send]);
+
+  const loadAiStrategy = useCallback((xml: string, name: string) => {
+    if (!readyRef.current) {
+      setNotice('The DBot workspace is still loading. Try loading the AI strategy again in a moment.');
+      return;
+    }
+    setView('builder');
+    setAiRunNotice(`${name} is loading into the DBot workspace…`);
+    send({ type: 'load-bot', xml, name });
+  }, [send]);
+
+  const loadAndRunAiStrategy = useCallback((xml: string, name: string, analysis: DbotAiAnalysisSnapshot) => {
+    if (!readyRef.current) {
+      setAiRunNotice('The DBot workspace is still loading. Run Analysis again once it is ready.');
+      return;
+    }
+    if (linkState !== 'connected' || trading.status !== 'connected' || !trading.activeAccount) {
+      setAiRunNotice('Connect the Signal Lab account to DBot before loading and running this strategy.');
+      return;
+    }
+    if (botRunning) {
+      setAiRunNotice('Stop the current DBot strategy before loading another one.');
+      return;
+    }
+    setView('builder');
+    setAiRunNotice(`${name} is loading with its exact analysis snapshot…`);
+    send({ type: 'load-bot', xml, name, runAfterLoad: true, analysisSnapshot: analysis });
+  }, [botRunning, linkState, send, trading.activeAccount, trading.status]);
 
   /** The account snapshot the workspace is allowed to see, or null. */
   const currentAccountMessage = useCallback((): BridgeAccountMessage | null => {
@@ -196,7 +234,26 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       if (event.origin !== window.location.origin || event.source !== frameRef.current?.contentWindow) return;
       const data = event.data as Record<string, unknown> | null;
       if (!data || data.source !== 'signal-lab-dbot') return;
-      if (data.type === 'ready') {
+      if (data.type === 'block-registry') {
+        const blocks = Array.isArray(data.blocks) ? data.blocks.flatMap((entry) => {
+          if (!entry || typeof entry !== 'object') return [];
+          const block = entry as Record<string, unknown>;
+          if (typeof block.type !== 'string' || typeof block.name !== 'string' || typeof block.category !== 'string') return [];
+          return [{
+            type: block.type.slice(0, 120),
+            name: block.name.slice(0, 120),
+            category: block.category.slice(0, 80),
+            description: typeof block.description === 'string' ? block.description.slice(0, 300) : '',
+          }];
+        }).slice(0, 800) : [];
+        setBlockRegistry(blocks);
+        setAiRuntimeRegistered(data.aiRuntimeRegistered === true);
+      } else if (data.type === 'bot-status') {
+        setBotRunning(data.running === true);
+      } else if (data.type === 'bot-run-started') {
+        setBotRunning(true);
+        setAiRunNotice(typeof data.message === 'string' ? data.message : 'DBot started the loaded strategy.');
+      } else if (data.type === 'ready') {
         readyRef.current = true;
         setReady(true);
         if (viewRef.current !== 'store') send({ type: 'navigate', tab: viewRef.current });
@@ -254,9 +311,15 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         setNotice(typeof data.message === 'string' ? data.message : 'DBot could not connect the account.');
       } else if (data.type === 'bot-loaded') {
         const name = typeof data.name === 'string' ? data.name : 'The bot';
-        setNotice(`${name} is on the canvas. Check the market, stake and limits, then press Run.`);
+        const message = data.runAfterLoad === true
+          ? `${name} loaded; DBot is starting the guarded strategy…`
+          : `${name} is on the canvas. Review the market, stake and limits before you run it.`;
+        setNotice(message);
+        setAiRunNotice(message);
       } else if (data.type === 'error') {
-        setNotice(typeof data.message === 'string' ? data.message : 'DBot could not complete that action.');
+        const message = typeof data.message === 'string' ? data.message : 'DBot could not complete that action.';
+        setNotice(message);
+        setAiRunNotice(message);
       } else if (data.type === 'request-otp' && typeof data.requestId === 'number') {
         const accountId = data.accountId;
         const requestId = data.requestId;
@@ -478,6 +541,10 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
           <iframe ref={frameRef} src={`${import.meta.env.BASE_URL}dbot/index.html#bot_builder`} title="Deriv Bot workspace" allow="fullscreen" allowFullScreen className="block w-full bg-white" style={{ height: 'min(850px, calc(100dvh - 160px))', minHeight: 480 }} data-testid="dbot-frame" onLoad={() => {
             readyRef.current = false;
             setReady(false);
+            setBlockRegistry([]);
+            setAiRuntimeRegistered(false);
+            setBotRunning(false);
+            setAiRunNotice('');
             subscribedRef.current = false;
             cursorRef.current = {};
             accountSentRef.current = null;
@@ -545,6 +612,19 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       )}
 
       {details && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4" role="presentation" onMouseDown={() => setDetails(null)}><div role="dialog" aria-modal="true" aria-labelledby="dbot-details-title" className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-3"><div><div className="dbot-kicker"><BookOpen size={12} /> STRATEGY DETAILS</div><h3 id="dbot-details-title" className="mt-2 text-xl font-extrabold">{details.name}</h3></div><button type="button" onClick={() => setDetails(null)} aria-label="Close strategy details" className="rounded-md p-1 text-muted-foreground hover:bg-secondary"><X size={18} /></button></div><p className="mt-4 text-sm leading-6 text-muted-foreground">{details.detail}</p><p className="mt-4 rounded-lg bg-amber-500/10 p-3 text-xs leading-5 text-amber-600 dark:text-amber-300"><strong>Risk note:</strong> {details.risk}</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setDetails(null)} className="dbot-outline-button">Close</button><button type="button" onClick={() => useStrategy(details)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground"><CheckCircle2 size={14} /> Use strategy</button></div></div></div>}
+
+      <DbotAiCopilot
+        ready={ready}
+        accountConnected={linkState === 'connected'}
+        accountType={linkType}
+        botRunning={botRunning}
+        aiRuntimeRegistered={aiRuntimeRegistered}
+        blockRegistry={blockRegistry}
+        runNotice={aiRunNotice}
+        onClearAnalysis={clearAiAnalysis}
+        onLoadStrategy={loadAiStrategy}
+        onLoadAndRun={loadAndRunAiStrategy}
+      />
     </section>
   );
 }
