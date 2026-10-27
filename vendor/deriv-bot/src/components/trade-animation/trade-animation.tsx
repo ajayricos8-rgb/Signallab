@@ -12,6 +12,7 @@ import { useDevice } from '@deriv-com/ui';
 /* [/AI] */
 import Button from '../shared_ui/button';
 import Tooltip from '../shared_ui/tooltip/tooltip';
+import SpeedControl from '../vision/speed-control';
 import CircularWrapper from './circular-wrapper';
 import ContractStageText from './contract-stage-text';
 import './run-panel-tooltip.scss';
@@ -166,6 +167,9 @@ const TradeAnimation = observer(({ className, should_show_overlay }: TTradeAnima
 
     return (
         <div className={classNames('animation__wrapper', className)}>
+            {/* Run and the Fast/Slow control sit together: one is the switch,
+                the other is how hard the bot pushes once you flip it. */}
+            <div className='animation__controls'>
             {should_show_tooltip ? (
                 <div className='run__button_wrapper'>
                     <Tooltip
@@ -216,6 +220,8 @@ const TradeAnimation = observer(({ className, should_show_overlay }: TTradeAnima
                     {button_props.text}
                 </Button>
             )}
+                <SpeedControl compact={isMobile} />
+            </div>
             <div
                 className={classNames('animation__container', className, {
                     'animation--running': contract_stage > 0,

@@ -19,6 +19,11 @@ window.Blockly.Categories = {
     Candle: 'candle',
     Miscellaneous: 'miscellaneous',
     Loop: 'loops',
+    Vision_AI: 'vision_ai',
+    Vision_Quant: 'vision_quant',
+    Vision_Analysis: 'vision_analysis',
+    Vision_Risk: 'vision_risk',
+    Vision_Shortcut: 'vision_shortcut',
 };
 window.Blockly.OUTPUT_SHAPE_HEXAGONAL = 1;
 window.Blockly.OUTPUT_SHAPE_ROUND = 2;

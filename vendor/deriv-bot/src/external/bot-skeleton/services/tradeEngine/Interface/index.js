@@ -1,17 +1,24 @@
+import { scaleSleep } from '@/services/vision-speed';
 import TradeEngine from '../trade';
 import getBotInterface from './BotInterface';
 import getTicksInterface from './TicksInterface';
 import getSignalLabInterface from './SignalLabInterface';
 import getToolsInterface from './ToolsInterface';
+import getVisionInterface from './VisionInterface';
 
+// Pauses are scaled by the workspace's Fast/Slow setting, so one control
+// changes how quickly every strategy that waits actually trades.
 const sleep = (observer, arg = 1) => {
     return new Promise(
         r =>
             // eslint-disable-next-line no-promise-executor-return
-            setTimeout(() => {
-                r();
-                setTimeout(() => observer.emit('CONTINUE'), 0);
-            }, arg * 1000),
+            setTimeout(
+                () => {
+                    r();
+                    setTimeout(() => observer.emit('CONTINUE'), 0);
+                },
+                scaleSleep(arg) * 1000
+            ),
         () => {}
     );
 };
@@ -25,6 +32,7 @@ const Interface = $scope => {
             ...getToolsInterface(tradeEngine),
             getTicksInterface: getTicksInterface(tradeEngine),
             getSignalLabInterface: getSignalLabInterface(),
+            getVisionInterface: getVisionInterface(tradeEngine),
             watch: (...args) => tradeEngine.watch(...args),
             sleep: (...args) => sleep(observer, ...args),
             alert: (...args) => alert(...args), // eslint-disable-line no-alert
