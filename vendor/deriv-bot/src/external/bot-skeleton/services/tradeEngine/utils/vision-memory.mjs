@@ -105,6 +105,10 @@ const emptyStats = () => ({
     streak: 0, // positive = wins in a row, negative = losses in a row
     lastTradeAt: 0,
     lastResult: '',
+    // Must exist from the start: the profit guard compares it before any
+    // trade has settled, and `undefined < target` is false — which would
+    // block the very first entry and, with it, every entry after it.
+    runningProfit: 0,
     peakProfit: 0,
     maxDrawdown: 0,
 });

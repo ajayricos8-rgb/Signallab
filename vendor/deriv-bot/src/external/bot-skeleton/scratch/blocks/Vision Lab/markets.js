@@ -62,7 +62,7 @@ defineStatementBlock({
     description: localize(
         'Put this at the top of your tick block, before the AI read. "Most suitable" stays on a market while it scores at or above the floor and moves to the best market seen so far when it drops below; "best" always goes to the highest scorer; "random" and "next" move on a timer. The dwell time is a rate limit, not a target: the bot will never change market more often than that, however bad the market looks, because every switch costs a tick stream and a payout table.'
     ),
-    call: input => `Bot.visionAutoMarket(${input.MODE}, ${input.FLOOR}, ${input.DWELL})`,
+    call: (input, field) => `Bot.visionAutoMarket(${field.MODE}, ${input.FLOOR}, ${input.DWELL})`,
 });
 
 defineStatementBlock({
