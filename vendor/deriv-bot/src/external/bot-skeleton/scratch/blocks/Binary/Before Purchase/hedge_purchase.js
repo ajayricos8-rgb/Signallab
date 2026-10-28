@@ -9,12 +9,19 @@ import { excludeOptionFromContextMenu, modifyContextMenu, runIrreversibleEvents 
  * time. Both legs stake the Trade options amount — there is no separate
  * second-leg stake on this block.
  *
- * For contract families that take a prediction or barrier offsets (Over/
- * Under, Matches/Differs, Higher/Lower, Touch/No Touch, Ends/Stays
- * Between–Outside), the block automatically grows one set of
- * prediction/barrier inputs PER LEG, mirroring Trade options, so each side
- * of the hedge can carry its own prediction or barriers. An input left
- * unconnected falls back to the Trade options value.
+ * The block is two purchase rows, like Deriv's own Higher/Lower purchase
+ * conditions:
+ *
+ *   Purchase 1: [Higher] Barrier: [Offset +] [0.39]
+ *   Purchase 2: [Lower]  Barrier: [Offset +] [0.39]
+ *
+ * Each row carries its own barrier configuration, grown automatically from
+ * the workspace trade type: a Prediction per row on Over/Under and
+ * Matches/Differs, a Barrier offset per row on Higher/Lower and Touch/No
+ * Touch, High/Low barriers per row on In/Out. The Trade options
+ * barrier/prediction is NOT consulted for hedge buys — Purchase 1 and
+ * Purchase 2 are the only place a hedge leg's barrier is set, so the two
+ * can never conflict.
  */
 
 /** Which per-leg settings each trade type takes (TRADETYPE_LIST values). */
@@ -28,36 +35,32 @@ const LEG_SETTINGS_BY_TRADETYPE = {
 };
 
 const legSettingsFor = tradeType => LEG_SETTINGS_BY_TRADETYPE[tradeType] || { prediction: false, barriers: 0 };
+const shapeSignature = ({ prediction, barriers }) => (prediction ? 'prediction' : `barriers${barriers}`);
 
 window.Blockly.Blocks.hedge_purchase = {
     init() {
         this.jsonInit(this.definition());
+
+        // The two purchase rows (contract dropdown + this leg's barrier
+        // configuration) are built per trade type by updateLegInputs.
+        this.legShape_ = null;
+        this.rowInputNames_ = [];
+        this.updateLegInputs({ prediction: false, barriers: 0 });
 
         // Ensure one of this type per statement-stack (same rule as Purchase)
         this.setNextStatement(false);
     },
     definition() {
         return {
-            message0: localize('Purchase hedge %1 + %2'),
-            args0: [
-                {
-                    type: 'field_dropdown',
-                    name: 'PURCHASE_LIST',
-                    options: [['', '']],
-                },
-                {
-                    type: 'field_dropdown',
-                    name: 'HEDGE_LIST',
-                    options: [['', '']],
-                },
-            ],
+            message0: localize('Purchase hedge'),
+            args0: [],
             inputsInline: false,
             previousStatement: null,
             colour: window.Blockly.Colours.Special1.colour,
             colourSecondary: window.Blockly.Colours.Special1.colourSecondary,
             colourTertiary: window.Blockly.Colours.Special1.colourTertiary,
             tooltip: localize(
-                'Purchases two opposite contracts at the same time — a hedge. Both legs use the Trade options stake. On barrier and digit contracts the block grows prediction/barrier inputs for each leg. After purchase runs when both legs have settled.'
+                'Purchases two opposite contracts at the same time — a hedge. Purchase 1 and Purchase 2 each carry their own prediction/barrier offset on the row; the Trade options barrier is not used for these buys. Both legs stake the Trade options amount. After purchase runs when both legs have settled.'
             ),
             category: window.Blockly.Categories.Before_Purchase,
         };
@@ -66,7 +69,7 @@ window.Blockly.Blocks.hedge_purchase = {
         return {
             display_name: localize('Purchase hedge (both sides)'),
             description: localize(
-                'Use this block to open both sides of a pair at once (Rise + Fall, Over + Under, Higher + Lower, Touch + No Touch, Ends Between + Ends Outside). Pick the main contract first, then its opposite; on prediction/barrier contracts each leg gets its own prediction or barrier offset inputs. This block can only be used within the Purchase conditions block.'
+                'Use this block to open both sides of a pair at once (Rise + Fall, Over + Under, Higher + Lower, Touch + No Touch, Ends Between + Ends Outside). Purchase 1 is the main contract, Purchase 2 its opposite, and each row carries its own prediction or barrier offset — set them here; the Trade options barrier does not apply to hedge buys. This block can only be used within the Purchase conditions block.'
             ),
             key_words: localize('hedge, both sides, buy both, cover'),
         };
@@ -84,9 +87,9 @@ window.Blockly.Blocks.hedge_purchase = {
             }
         } else if (event.type === window.Blockly.Events.BLOCK_DRAG && !event.isStart && event.blockId === this.id) {
             const purchase_type_list = this.getField('PURCHASE_LIST');
-            const purchase_options = purchase_type_list.menuGenerator_; // eslint-disable-line
+            const purchase_options = purchase_type_list && purchase_type_list.menuGenerator_; // eslint-disable-line
 
-            if (purchase_options[0][0] === '') {
+            if (!purchase_options || purchase_options[0][0] === '') {
                 this.populatePurchaseList(event);
             }
         }
@@ -101,8 +104,13 @@ window.Blockly.Blocks.hedge_purchase = {
             const contract_type = contract_type_block.getFieldValue('TYPE_LIST');
             const contract_type_options = getContractTypeOptions(contract_type, trade_type);
 
+            // Rows first: a trade-type change rebuilds them (new dropdown
+            // fields), so options must be applied to the rebuilt fields.
+            this.updateLegInputs(legSettingsFor(trade_type));
+
             ['PURCHASE_LIST', 'HEDGE_LIST'].forEach(field_name => {
                 const field = this.getField(field_name);
+                if (!field) return;
                 field.updateOptions(contract_type_options, {
                     default_value: field.getValue(),
                     event_group: event.group,
@@ -119,57 +127,86 @@ window.Blockly.Blocks.hedge_purchase = {
                 const opposite = contract_type_options.find(([, value]) => value && value !== main_value);
                 if (opposite) this.setFieldValue(opposite[1], 'HEDGE_LIST');
             }
-
-            this.updateLegInputs(legSettingsFor(trade_type));
         }
     },
     /**
-     * Grow/shrink the per-leg prediction and barrier inputs to match the
-     * workspace trade type. Both legs always carry the same set.
+     * Build the two purchase rows for the current trade-type shape. Rows
+     * are only rebuilt when the shape actually changes (a trade-type
+     * switch), so blocks the user attached are never disturbed by routine
+     * dropdown refreshes. Dropdown values survive a rebuild.
      */
-    updateLegInputs({ prediction, barriers }) {
+    updateLegInputs(settings) {
+        const signature = shapeSignature(settings);
+        if (signature === this.legShape_) return;
+
         runIrreversibleEvents(() => {
-            ['', 'HEDGE_'].forEach(prefix => {
-                const is_hedge = prefix === 'HEDGE_';
-
-                const prediction_name = `${prefix}PREDICTION`;
-                if (prediction && !this.getInput(prediction_name)) {
-                    const input = this.appendValueInput(prediction_name)
-                        .setCheck('Number')
-                        .appendField(is_hedge ? localize('Hedge prediction') : localize('Prediction'));
-                    this.addNumberShadow(input, '5');
-                } else if (!prediction && this.getInput(prediction_name)) {
-                    this.removeInput(prediction_name, true);
-                }
-
-                ['BARRIEROFFSET', 'SECONDBARRIEROFFSET'].forEach((base_name, index) => {
-                    const name = `${prefix}${base_name}`;
-                    const needed = barriers > index;
-                    if (needed && !this.getInput(name)) {
-                        const single = barriers === 1;
-                        const label = is_hedge
-                            ? single
-                                ? localize('Hedge barrier')
-                                : index === 0
-                                  ? localize('Hedge high barrier')
-                                  : localize('Hedge low barrier')
-                            : single
-                              ? localize('Barrier')
-                              : config().BARRIER_LABELS[index];
-                        const input = this.appendValueInput(name)
-                            .setCheck('Number')
-                            .appendField(label)
-                            .appendField(new window.Blockly.FieldDropdown(config().BARRIER_TYPES), `${name}TYPE_LIST`);
-                        // Mirror Trade options: the first barrier offsets up
-                        // from spot, the second one down.
-                        if (index === 1) this.setFieldValue('-', `${name}TYPE_LIST`);
-                        this.addNumberShadow(input, '1');
-                    } else if (!needed && this.getInput(name)) {
-                        this.removeInput(name, true);
-                    }
-                });
+            const field_names = [
+                'PURCHASE_LIST',
+                'HEDGE_LIST',
+                'BARRIEROFFSETTYPE_LIST',
+                'SECONDBARRIEROFFSETTYPE_LIST',
+                'HEDGE_BARRIEROFFSETTYPE_LIST',
+                'HEDGE_SECONDBARRIEROFFSETTYPE_LIST',
+            ];
+            const preserved = {};
+            field_names.forEach(name => {
+                if (this.getField(name)) preserved[name] = this.getFieldValue(name);
             });
+
+            (this.rowInputNames_ || []).forEach(name => {
+                if (this.getInput(name)) this.removeInput(name, true);
+            });
+            this.rowInputNames_ = [];
+
+            ['', 'HEDGE_'].forEach(prefix => this.buildLegRow(prefix, settings));
+
+            field_names.forEach(name => {
+                if (preserved[name] && this.getField(name)) this.setFieldValue(preserved[name], name);
+            });
+
+            this.legShape_ = signature;
         });
+    },
+    buildLegRow(prefix, { prediction, barriers }) {
+        const is_hedge = prefix === 'HEDGE_';
+        const list_field = is_hedge ? 'HEDGE_LIST' : 'PURCHASE_LIST';
+        const row_label = is_hedge ? localize('Purchase 2:') : localize('Purchase 1:');
+        const new_contract_dropdown = () => new window.Blockly.FieldDropdown([['', '']]);
+
+        if (prediction) {
+            const name = `${prefix}PREDICTION`;
+            const input = this.appendValueInput(name)
+                .setCheck('Number')
+                .appendField(row_label)
+                .appendField(new_contract_dropdown(), list_field)
+                .appendField(localize('Prediction:'));
+            this.rowInputNames_.push(name);
+            this.addNumberShadow(input, '5');
+        } else if (barriers > 0) {
+            ['BARRIEROFFSET', 'SECONDBARRIEROFFSET'].forEach((base_name, index) => {
+                if (index >= barriers) return;
+                const name = `${prefix}${base_name}`;
+                const input = this.appendValueInput(name).setCheck('Number');
+                if (index === 0) {
+                    input
+                        .appendField(row_label)
+                        .appendField(new_contract_dropdown(), list_field)
+                        .appendField(barriers === 1 ? localize('Barrier:') : localize('High barrier:'));
+                } else {
+                    input.appendField(localize('Low barrier:'));
+                }
+                input.appendField(new window.Blockly.FieldDropdown(config().BARRIER_TYPES), `${name}TYPE_LIST`);
+                // Mirror Trade options: the high barrier offsets up from
+                // spot, the low barrier down.
+                if (index === 1) this.setFieldValue('-', `${name}TYPE_LIST`);
+                this.rowInputNames_.push(name);
+                this.addNumberShadow(input, '1');
+            });
+        } else {
+            const name = `${prefix}CONTRACT_ROW`;
+            this.appendDummyInput(name).appendField(row_label).appendField(new_contract_dropdown(), list_field);
+            this.rowInputNames_.push(name);
+        }
     },
     addNumberShadow(input, value) {
         if (!this.workspace || input.connection.targetBlock()) return;

@@ -116,11 +116,14 @@ export default Engine =>
         }
         /**
          * Buy BOTH sides of a hedge in one before-purchase pass. Both legs
-         * stake the trade-options amount; each leg may carry its own
-         * prediction/barrier offsets (`main_options` / `hedge_options`:
-         * { prediction, barrierOffset, secondBarrierOffset }) which override
-         * the trade options for that leg — e.g. Over 2 hedged with Under 7,
-         * or a Higher at +1.5 hedged with a Lower at -1.5. The two buy
+         * stake the trade-options amount; each leg carries its own
+         * prediction/barrier offsets from the hedge block's Purchase 1 /
+         * Purchase 2 rows (`main_options` / `hedge_options`:
+         * { prediction, barrierOffset, secondBarrierOffset }) — e.g. Over 2
+         * hedged with Under 7, or a Higher at +1.5 hedged with a Lower at
+         * -1.5. Those block values are authoritative: the Trade options
+         * barrier/prediction is not merged into a leg that carries its own.
+         * The two buy
          * requests are sent together, so both positions open in the same
          * second, and the engine then waits for BOTH contracts to settle
          * before After purchase runs (see OpenContract). Contract-detail
@@ -135,16 +138,46 @@ export default Engine =>
                 return this.purchase(contract_type);
             }
 
-            const overrideKeys = ['prediction', 'barrierOffset', 'secondBarrierOffset'];
-            const hasOverrides = options =>
-                !!options && overrideKeys.some(key => options[key] !== undefined);
-            const legTradeOptions = options => {
-                if (!hasOverrides(options)) return this.tradeOptions;
-                const merged = { ...this.tradeOptions };
-                overrideKeys.forEach(key => {
-                    if (options[key] !== undefined) merged[key] = options[key];
+            // The hedge block's Purchase 1 / Purchase 2 rows are the ONLY
+            // place a hedge leg's prediction/barriers are configured, so a
+            // leg never inherits the Trade options barrier fields when the
+            // block carries its own. Inheriting them duplicates the config
+            // and can poison a leg with a value meant for another contract
+            // (a leftover digit prediction read as an absolute price
+            // barrier, an emptied Trade options offset landing on spot) —
+            // Deriv rejects those buys with "Invalid barrier". Values are
+            // sanitized the same way: predictions become a single digit,
+            // and a zero/unparseable offset (barrier exactly on spot) is
+            // omitted rather than sent.
+            const sanitizeBarrierOptions = options => {
+                const cleaned = {};
+                if (!options) return cleaned;
+                if (options.prediction != null) {
+                    const digit = Math.round(Number(options.prediction));
+                    if (Number.isFinite(digit)) cleaned.prediction = Math.min(9, Math.max(0, digit));
+                }
+                ['barrierOffset', 'secondBarrierOffset'].forEach(key => {
+                    const raw = options[key];
+                    if (raw == null) return;
+                    const text = String(raw).trim();
+                    const magnitude = Number(text.replace(/^[+-]/, ''));
+                    if (text && Number.isFinite(magnitude) && magnitude !== 0) cleaned[key] = text;
                 });
-                return merged;
+                return cleaned;
+            };
+            const barrierKeys = ['prediction', 'barrierOffset', 'secondBarrierOffset'];
+            const hasBlockConfig = options => {
+                const cleaned = sanitizeBarrierOptions(options);
+                return barrierKeys.some(key => cleaned[key] !== undefined);
+            };
+            const legTradeOptions = options => {
+                const leg = { ...this.tradeOptions };
+                barrierKeys.forEach(key => delete leg[key]);
+                // Block config wins outright; only a leg the block left
+                // bare falls back to the (sanitized) Trade options values,
+                // trading exactly like a standard Purchase.
+                Object.assign(leg, hasBlockConfig(options) ? sanitizeBarrierOptions(options) : sanitizeBarrierOptions(this.tradeOptions));
+                return leg;
             };
 
             // Select both proposals up front: buying the first leg renews the
@@ -153,9 +186,9 @@ export default Engine =>
             // subscribed proposal (those are priced from the trade options),
             // so that leg buys directly with its merged parameters instead.
             const useProposals = this.is_proposal_subscription_required;
-            const mainProposal = useProposals && !hasOverrides(main_options) ? this.selectProposal(contract_type) : null;
+            const mainProposal = useProposals && !hasBlockConfig(main_options) ? this.selectProposal(contract_type) : null;
             const hedgeProposal =
-                useProposals && !hasOverrides(hedge_options) ? this.selectProposal(hedge_contract_type) : null;
+                useProposals && !hasBlockConfig(hedge_options) ? this.selectProposal(hedge_contract_type) : null;
 
             const buyMain = mainProposal
                 ? () => api_base.api.send({ buy: mainProposal.id, price: mainProposal.askPrice })

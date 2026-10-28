@@ -22,15 +22,15 @@ export const tradeOptionToProposal = (trade_option, purchase_reference) =>
             proposal: 1,
             underlying_symbol: trade_option.symbol,
         };
-        if (trade_option.prediction !== undefined) {
+        if (trade_option.prediction != null) {
             proposal.selected_tick = trade_option.prediction;
         }
-        if (!['TICKLOW', 'TICKHIGH'].includes(type) && trade_option.prediction !== undefined) {
+        if (!['TICKLOW', 'TICKHIGH'].includes(type) && trade_option.prediction != null) {
             proposal.barrier = trade_option.prediction;
-        } else if (trade_option.barrierOffset !== undefined) {
+        } else if (trade_option.barrierOffset != null) {
             proposal.barrier = trade_option.barrierOffset;
         }
-        if (trade_option.secondBarrierOffset !== undefined) {
+        if (trade_option.secondBarrierOffset != null) {
             proposal.barrier2 = trade_option.secondBarrierOffset;
         }
         if (['MULTUP', 'MULTDOWN'].includes(type)) {
@@ -58,15 +58,15 @@ export const tradeOptionToBuy = (contract_type, trade_option) => {
             underlying_symbol: trade_option.symbol,
         },
     };
-    if (trade_option.prediction !== undefined) {
+    if (trade_option.prediction != null) {
         buy.parameters.selected_tick = trade_option.prediction;
     }
-    if (!['TICKLOW', 'TICKHIGH'].includes(contract_type) && trade_option.prediction !== undefined) {
+    if (!['TICKLOW', 'TICKHIGH'].includes(contract_type) && trade_option.prediction != null) {
         buy.parameters.barrier = trade_option.prediction;
-    } else if (trade_option.barrierOffset !== undefined) {
+    } else if (trade_option.barrierOffset != null) {
         buy.parameters.barrier = trade_option.barrierOffset;
     }
-    if (trade_option.secondBarrierOffset !== undefined) {
+    if (trade_option.secondBarrierOffset != null) {
         buy.parameters.barrier2 = trade_option.secondBarrierOffset;
     }
     if (!isEmptyObject(trade_option.app_markup_percentage)) {
