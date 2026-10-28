@@ -2,16 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    clampBarrier,
     createEntryPacer,
     DEFAULT_ENTRY_GAP_MS,
     entryDecision,
+    isAllowedBarrier,
     MIN_TICKS_TO_READ,
     MINIMUM_STAKE,
     NEUTRAL_BARRIER,
     NEUTRAL_DIRECTION,
+    OVER_BARRIERS,
     readBarrier,
     readDirection,
     readStake,
+    UNDER_BARRIERS,
     waitingReason,
 } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/vision-entry.mjs';
 
@@ -69,11 +73,31 @@ test('a pause does not eat the slot: only a marked position counts', () => {
 });
 
 test('the barrier is never -1, so trade options are never invalid', () => {
-    assert.equal(readBarrier(planWith(), null), 3);
-    assert.equal(readBarrier(null, planWith()), 3, 'the last decision stands in while warming up');
-    assert.equal(readBarrier(planWith({ barrier: -1 }), null), NEUTRAL_BARRIER);
-    assert.equal(readBarrier(null, null), NEUTRAL_BARRIER);
-    assert.equal(readBarrier({ best: { barrier: 99 } }, null), NEUTRAL_BARRIER);
+    // planWith() is an Under read: barriers always land in the tradable set
+    // for their direction (Over 1–6, Under 4–8), never -1 and never an
+    // extreme the bot is not allowed to trade.
+    assert.equal(readBarrier(planWith({ barrier: 6 }), null), 6, 'an in-range Under barrier passes through');
+    assert.equal(readBarrier(planWith(), null), 4, 'an Under 3 clamps up to the smallest allowed Under barrier');
+    assert.equal(readBarrier(null, planWith()), 4, 'the last decision stands in while warming up');
+    assert.equal(readBarrier(planWith({ barrier: -1 }), null), 4, 'a -1 barrier can never reach trade options');
+    assert.equal(readBarrier(null, null), 1, 'the neutral contract is the widest allowed Over (1)');
+    assert.equal(readBarrier({ best: { barrier: 99 } }, null), 6, 'an over-the-top barrier clamps to the Over ceiling');
+    assert.equal(readBarrier({ best: { barrier: 0, direction: 'over' } }, null), 1, 'Over 0 is not tradable');
+    assert.equal(readBarrier({ best: { barrier: 9, direction: 'under' } }, null), 8, 'Under 9 is not tradable');
+});
+
+test('only the configured barriers are tradable: Over 1–6, Under 4–8', () => {
+    assert.deepEqual(OVER_BARRIERS, [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(UNDER_BARRIERS, [4, 5, 6, 7, 8]);
+    for (const barrier of [1, 2, 3, 4, 5, 6]) assert.equal(isAllowedBarrier('over', barrier), true);
+    for (const barrier of [0, 7, 8, 9]) assert.equal(isAllowedBarrier('over', barrier), false);
+    for (const barrier of [4, 5, 6, 7, 8]) assert.equal(isAllowedBarrier('under', barrier), true);
+    for (const barrier of [0, 1, 2, 3, 9]) assert.equal(isAllowedBarrier('under', barrier), false);
+    assert.equal(clampBarrier('over', 0), 1);
+    assert.equal(clampBarrier('over', 9), 6);
+    assert.equal(clampBarrier('under', 2), 4);
+    assert.equal(clampBarrier('under', 9), 8);
+    assert.equal(clampBarrier('over', Number.NaN), 1, 'a missing barrier falls back inside the set');
 });
 
 test('the direction is always over or under, never wait', () => {

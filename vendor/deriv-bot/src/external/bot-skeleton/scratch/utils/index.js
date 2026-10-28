@@ -402,20 +402,33 @@ const getAllRequiredBlocks = (workspace, required_block_types) => {
 
 const getMissingBlocks = (workspace, required_block_types) => {
     return required_block_types.filter(blockType => {
+        // The doubled hedge block buys exactly like Purchase — both sides at
+        // once — so it satisfies the mandatory purchase requirement alone.
+        if (blockType === 'purchase') {
+            return !workspace
+                .getAllBlocks()
+                .some(block => block.type === 'purchase' || block.type === 'hedge_purchase');
+        }
         return !workspace.getAllBlocks().some(block => block.type === blockType);
     });
 };
 
 const getDisabledBlocks = required_blocks_check => {
     const workspace = window.Blockly.derivWorkspace;
-    const required_block_types = [getSelectedTradeType(workspace), ...config().mandatoryMainBlocks];
+    const required_block_types = [getSelectedTradeType(workspace), ...config().mandatoryMainBlocks, 'hedge_purchase'];
     const disabled_blocks = Object.fromEntries(
         workspace
             .getAllBlocks()
             .filter(block => required_block_types.includes(block.type))
             .map(block => [block.type, block.disabled])
     );
-    const mandatory_blocks = ['before_purchase', 'purchase', 'trade_definition', 'trade_definition_tradeoptions'];
+    const mandatory_blocks = [
+        'before_purchase',
+        'purchase',
+        'hedge_purchase',
+        'trade_definition',
+        'trade_definition_tradeoptions',
+    ];
     const has_disabled_blocks = mandatory_blocks.some(type => disabled_blocks[type]);
 
     return has_disabled_blocks

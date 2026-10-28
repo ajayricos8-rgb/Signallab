@@ -26,6 +26,29 @@ export const DEFAULT_ENTRY_GAP_MS = 2_000;
 export const NEUTRAL_BARRIER = 0;
 export const NEUTRAL_DIRECTION = 'over';
 
+/**
+ * The barriers the AI is allowed to trade, per direction — the trading rule
+ * for the AI Vision bot. The extreme barriers are excluded on purpose: Over 0
+ * (or Under 9 in mirror) wins ~90% of the time but pays ~1.03x, so the bot
+ * would grind tiny wins against full-stake losses. Keeping Over to 1–6 and
+ * Under to 4–8 leaves every contract with a payout worth taking on both
+ * sides of the mid-range, where a measured digit lean can actually pay.
+ */
+export const OVER_BARRIERS = [1, 2, 3, 4, 5, 6];
+export const UNDER_BARRIERS = [4, 5, 6, 7, 8];
+
+/** True when `barrier` is a barrier the AI may trade in `direction`. */
+export const isAllowedBarrier = (direction, barrier) =>
+    (direction === 'under' ? UNDER_BARRIERS : OVER_BARRIERS).includes(Math.round(Number(barrier)));
+
+/** The nearest tradable barrier for `direction` (sets are ascending). */
+export const clampBarrier = (direction, barrier) => {
+    const set = direction === 'under' ? UNDER_BARRIERS : OVER_BARRIERS;
+    const value = Math.round(Number(barrier));
+    if (!Number.isFinite(value)) return set[0];
+    return Math.min(Math.max(value, set[0]), set[set.length - 1]);
+};
+
 const clamp = (value, low, high) => Math.min(Math.max(Number(value) || 0, low), high);
 
 /**
@@ -75,11 +98,16 @@ export function createEntryPacer({ gapMs = DEFAULT_ENTRY_GAP_MS, now = () => Dat
     };
 }
 
-/** The barrier to hand to trade options, never -1 once anything is known. */
+/**
+ * The barrier to hand to trade options, never -1 once anything is known —
+ * and never outside the tradable set for its direction (Over 1–6, Under
+ * 4–8), so the prediction always matches the side actually being bought.
+ */
 export function readBarrier(plan, last) {
+    const direction = readDirection(plan, last);
     const value = plan?.best?.barrier ?? last?.best?.barrier;
-    if (Number.isFinite(value) && value >= 0 && value <= 9) return Math.round(value);
-    return NEUTRAL_BARRIER;
+    if (Number.isFinite(value)) return clampBarrier(direction, value);
+    return clampBarrier(direction, NEUTRAL_BARRIER);
 }
 
 /** The side of the barrier to buy, never 'wait' once anything is known. */
@@ -136,6 +164,10 @@ export default {
     DEFAULT_ENTRY_GAP_MS,
     NEUTRAL_BARRIER,
     NEUTRAL_DIRECTION,
+    OVER_BARRIERS,
+    UNDER_BARRIERS,
+    isAllowedBarrier,
+    clampBarrier,
     MINIMUM_STAKE,
     createEntryPacer,
     entryDecision,

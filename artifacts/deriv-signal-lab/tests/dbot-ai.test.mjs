@@ -216,8 +216,9 @@ test("scan, hedge, virtual and digit-filter requests build their blocks", () => 
   assert.equal(hedge?.hedge, true);
   assert.equal(hedge?.symbol, "1HZ75V");
   const hedgeXml = buildDbotAiStrategyXml(hedge);
+  assert.match(hedgeXml, /<block type="hedge_purchase"/);
   assert.match(hedgeXml, /<field name="PURCHASE_LIST">CALL<\/field>/);
-  assert.match(hedgeXml, /<field name="PURCHASE_LIST">PUT<\/field>/);
+  assert.match(hedgeXml, /<field name="HEDGE_LIST">PUT<\/field>/);
 
   const virtual = parseDbotAiDescription("Paper trade over 5 on R_25 in virtual mode, only buy when last digit is 7");
   assert.equal(virtual?.virtual, true);
@@ -261,32 +262,25 @@ test("a bare 'hedging bot' request builds a two-legged hedge, not a one-sided bo
   );
 
   assert.ok(
-    parsed?.warnings.some((warning) => /one open contract per bot/i.test(warning)),
-    "the alternating-legs engine limit is stated up front",
+    parsed?.warnings.some((warning) => /Both hedge legs open at the same time/i.test(warning)),
+    "the simultaneous-legs behaviour is stated up front",
   );
 
   const xml = buildDbotAiStrategyXml(parsed);
   assert.match(xml, /<field name="PURCHASE_LIST">CALL<\/field>/);
-  assert.match(xml, /<field name="PURCHASE_LIST">PUT<\/field>/);
-  // The stock Purchase block has no next-statement connector, so a Purchase
-  // carrying a <next> makes Blockly refuse the whole workspace
-  // ("Next statement does not exist"). Each hedge leg must sit alone.
-  const purchaseBlocks = [...xml.matchAll(/<block type="purchase"[^>]*>([\s\S]*?)<\/block>/g)];
-  assert.equal(purchaseBlocks.length, 2);
-  for (const [, inner] of purchaseBlocks) assert.doesNotMatch(inner, /<next>/);
-  // The engine holds ONE open contract per bot (Purchase no-ops outside the
-  // before-purchase scope), so the legs alternate: an if/else on the leg
-  // variable picks this cycle's side, and After purchase flips the leg and
-  // the stake so BOTH sides open, back-to-back, every round. The old
-  // side-by-side pair silently dropped the second leg on every cycle.
-  assert.match(xml, /aiHedgeLegPick/);
-  assert.match(xml, /aiHedgeLegToggle/);
-  assert.match(xml, /ai hedge leg/);
-  // Trade options read the amount before Purchase conditions ever run, so
-  // the stake/leg variables must be set in INITIALIZATION and the amount
-  // must come from the stake variable (re-read every cycle).
-  assert.match(xml, /<statement name="INITIALIZATION">/);
-  assert.match(xml, /<value name="AMOUNT"><block type="variables_get" id="aiStakeAmount">/);
+  assert.match(xml, /<field name="HEDGE_LIST">PUT<\/field>/);
+  // Both legs live in ONE doubled hedge purchase block: it sends the two
+  // buy requests together, so the opposite positions open in the same
+  // second. Side-by-side Purchase blocks could never do that (the second
+  // buy was silently dropped by the engine's single-contract scope), and
+  // a Purchase carrying a <next> makes Blockly refuse the workspace — so
+  // neither the plain purchase block nor the old alternating pattern may
+  // appear in a hedged strategy.
+  const hedgeBlocks = [...xml.matchAll(/<block type="hedge_purchase"[^>]*>([\s\S]*?)<\/block>/g)];
+  assert.equal(hedgeBlocks.length, 1);
+  for (const [, inner] of hedgeBlocks) assert.doesNotMatch(inner, /<next>/);
+  assert.doesNotMatch(xml, /<block type="purchase"/);
+  assert.doesNotMatch(xml, /ai hedge leg/);
 
   const overUnder = parseDbotAiDescription("Hedging bot: buy both over and under barrier 5 on R_50");
   assert.equal(overUnder?.hedge, true);
@@ -305,28 +299,30 @@ test("hedge legs carry their own stakes; paper hedges open both sides together",
   // "buy both rise and fall": the first named side carries the main stake.
   assert.equal(parsed?.direction, "RISE");
   const xml = buildDbotAiStrategyXml(parsed);
-  assert.ok(xml.indexOf('PURCHASE_LIST">CALL') < xml.indexOf('PURCHASE_LIST">PUT'), "main leg (CALL) is the leg-0 branch");
-  // After a main-leg trade the toggle lines up the hedge leg at 50% of 2 = 1,
-  // and after the hedge leg it restores the main stake of 2.
-  assert.match(xml, /id="aiHedgeStakeHedgeValue"><field name="NUM">1<\/field>/);
-  assert.match(xml, /id="aiHedgeStakeMainValue"><field name="NUM">2<\/field>/);
-  assert.match(describeDbotAiStrategy(parsed), /alternating legs, hedge leg 50%/);
+  assert.ok(xml.indexOf('PURCHASE_LIST">CALL') < xml.indexOf('HEDGE_LIST">PUT'), "main leg (CALL) is the first contract of the pair");
+  // The main leg stakes the Trade options amount (2); the hedge leg gets
+  // its own stake input at 50% of 2 = 1, both sent in the same pass.
+  assert.match(xml, /<value name="SECOND_STAKE"><shadow type="math_number" id="aiHedgeSecondStake"><field name="NUM">1<\/field><\/shadow><\/value>/);
+  assert.match(describeDbotAiStrategy(parsed), /both sides open together, hedge leg 50%/);
 
   // Matches hedges against Differs on the same digit.
   const matches = parseDbotAiDescription("Hedge digit matches 7 on R_100 stake 1");
   assert.equal(matches?.hedge, true);
   const matchesXml = buildDbotAiStrategyXml(matches);
   assert.match(matchesXml, /<field name="PURCHASE_LIST">DIGITMATCH<\/field>/);
-  assert.match(matchesXml, /<field name="PURCHASE_LIST">DIGITDIFF<\/field>/);
+  assert.match(matchesXml, /<field name="HEDGE_LIST">DIGITDIFF<\/field>/);
 
-  // A progression would fight the leg toggle for the stake variable, so a
-  // martingale hedge builds the hedge and leaves the progression out.
+  // A staking plan coexists with the hedge: the main leg reads the stake
+  // variable as usual and the second leg stakes the same share of the
+  // progressed stake, so both legs move together.
   const martingaleHedge = buildDbotAiStrategyXml({
     family: "rise-fall", symbol: "R_100", duration: 5, stake: 1,
     hedge: true, stakingPlan: "martingale", stakeMultiplier: 2,
   });
-  assert.doesNotMatch(martingaleHedge, /aiStakeGrow/);
-  assert.match(martingaleHedge, /aiHedgeLegToggle/);
+  assert.match(martingaleHedge, /aiStakeGrow/);
+  assert.match(martingaleHedge, /<block type="hedge_purchase"/);
+  assert.match(martingaleHedge, /id="aiHedgeSecondStake"/);
+  assert.match(martingaleHedge, /aiHedgeSecondStakeFraction/);
 
   // Paper positions are ledger entries, not engine contracts: a virtual
   // hedge opens both directions in the same pass.

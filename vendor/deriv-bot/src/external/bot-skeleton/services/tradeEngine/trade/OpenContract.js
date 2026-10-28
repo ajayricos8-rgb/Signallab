@@ -15,15 +15,29 @@ export default Engine =>
                         return;
                     }
 
-                    this.setContractFlags(contract);
+                    // A sold leg's totals are booked exactly once, even if
+                    // the stream repeats its final update while the other
+                    // hedge leg is still open.
+                    if (contract.is_sold && this.settledContractIds?.has(contract.contract_id)) {
+                        return;
+                    }
 
-                    this.data.contract = contract;
+                    // A hedge opens a second contract alongside the main one.
+                    // The main leg keeps sole ownership of the contract flags
+                    // and `data.contract` (every contract-detail block reads
+                    // those), while the hedge leg only feeds the run panel,
+                    // the totals and the settled-leg bookkeeping below.
+                    const isMainLeg = contract.contract_id === this.contractId;
+
+                    if (isMainLeg) {
+                        this.setContractFlags(contract);
+
+                        this.data.contract = contract;
+                    }
 
                     broadcastContract({ accountID: api_base.account_info.loginid, ...contract });
 
-                    if (this.isSold) {
-                        this.contractId = '';
-                        clearTimeout(this.transaction_recovery_timeout);
+                    if (contract.is_sold) {
                         this.updateTotals(contract);
                         contractStatus({
                             id: 'contract.sold',
@@ -31,12 +45,28 @@ export default Engine =>
                             contract,
                         });
 
-                        if (this.afterPromise) {
-                            this.afterPromise();
-                        }
+                        if (!this.settledContractIds) this.settledContractIds = new Set();
+                        this.settledContractIds.add(contract.contract_id);
 
-                        this.store.dispatch(sell());
-                    } else {
+                        // After purchase waits until EVERY open leg has
+                        // settled — with a single contract that is this one,
+                        // exactly as before.
+                        const openIds = [this.contractId, ...(this.hedgeContractIds || [])].filter(Boolean);
+                        const allSettled = openIds.every(id => this.settledContractIds.has(id));
+
+                        if (allSettled) {
+                            this.contractId = '';
+                            this.hedgeContractIds = [];
+                            this.settledContractIds = new Set();
+                            clearTimeout(this.transaction_recovery_timeout);
+
+                            if (this.afterPromise) {
+                                this.afterPromise();
+                            }
+
+                            this.store.dispatch(sell());
+                        }
+                    } else if (isMainLeg) {
                         this.store.dispatch(openContractReceived());
                     }
                 }
@@ -60,7 +90,11 @@ export default Engine =>
         }
 
         expectedContractId(contractId) {
-            return this.contractId && contractId === this.contractId;
+            if (!contractId) return false;
+            if (contractId === this.contractId) return true;
+            // Hedge legs opened by purchaseHedge settle through the same
+            // stream; everything else keeps being ignored.
+            return (this.hedgeContractIds || []).includes(contractId);
         }
 
         getSellPrice() {

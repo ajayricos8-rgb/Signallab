@@ -51,9 +51,9 @@ export type DbotAiStrategyRequest = {
   /** Minimum scan lean (0–1) the best market must clear. */
   scanMinScore?: number;
   /**
-   * Trade both sides (rise+fall, over+under on one barrier, ...). The DBot
-   * engine tracks ONE open contract per bot, so the generated strategy
-   * alternates the two legs back-to-back instead of opening them together.
+   * Trade both sides at once (rise+fall, over+under on one barrier, ...):
+   * the generated strategy uses the doubled hedge purchase block, which
+   * opens both opposite positions in the same second.
    */
   hedge?: boolean;
   /** Hedge-leg stake as a percentage of the main stake (default 100). */
@@ -148,8 +148,6 @@ const AI_VARIABLES = {
   stake: { id: "aiStakeVariable", name: "ai stake" },
   lossStreak: { id: "aiLossStreakVariable", name: "ai loss streak" },
   winStreak: { id: "aiWinStreakVariable", name: "ai win streak" },
-  // 0 = the next entry is the main leg, 1 = the next entry is the hedge leg.
-  hedgeLeg: { id: "aiHedgeLegVariable", name: "ai hedge leg" },
 } as const;
 type AiVariableKey = keyof typeof AI_VARIABLES;
 
@@ -295,13 +293,11 @@ function tradeRoot(
     durationUnit === "m"
       ? clamp(Math.round(duration), 1, 15)
       : clamp(Math.round(duration), 1, 10);
-  // A stake progression — and a hedge, whose two legs stake different
-  // amounts — reads the amount from the "ai stake" variable. Trade options
-  // re-evaluate on every cycle (BinaryBotPrivateStart runs per loop), so
-  // After purchase can line up the next leg's stake before it is read. A
-  // flat one-sided strategy keeps the plain stake number.
-  const amountFromVariable =
-    (request.stakingPlan && request.stakingPlan !== "flat") || hedgeActive(request);
+  // A stake progression reads the amount from the "ai stake" variable.
+  // Trade options re-evaluate on every cycle (BinaryBotPrivateStart runs
+  // per loop), so After purchase can line up the next stake before it is
+  // read. A flat strategy keeps the plain stake number.
+  const amountFromVariable = Boolean(request.stakingPlan && request.stakingPlan !== "flat");
   const amount = amountFromVariable
     ? variablesGet("aiStakeAmount", "stake")
     : numberBlock("aiStake", stake);
@@ -312,8 +308,6 @@ function tradeRoot(
   const initializations: string[] = [];
   if (amountFromVariable)
     initializations.push(variablesSet("aiInitStakeVar", "stake", numberValue("aiInitStakeValue", stake)));
-  if (hedgeActive(request))
-    initializations.push(variablesSet("aiInitHedgeLegVar", "hedgeLeg", numberValue("aiInitHedgeLegValue", 0)));
   if (request.stopAfterLossStreak)
     initializations.push(variablesSet("aiInitLossStreakVar", "lossStreak", numberValue("aiInitLossStreakValue", 0)));
   if (request.stopAfterWinStreak)
@@ -457,8 +451,22 @@ function beforePurchase(
 
   const purchase = `<block type="purchase" id="aiPurchase"><field name="PURCHASE_LIST">${purchaseType}</field></block>`;
   const hedgeType = request.hedge ? hedgePurchase(request) : null;
-  const hedgeBlock = hedgeType
-    ? `<block type="purchase" id="aiHedgePurchase"><field name="PURCHASE_LIST">${hedgeType}</field></block>`
+  // The hedge purchase block is the stock Purchase block doubled: it sends
+  // both buy requests together, so the two opposite positions open in the
+  // same second. The main leg stakes the Trade options amount; the second
+  // leg stakes its own amount — a fixed share of the base stake, or the
+  // same share of the progressed stake variable so a staking plan moves
+  // both legs together.
+  const hedgeEntry = hedgeType
+    ? (() => {
+        const { hedge } = hedgeLegStakes(request, baseStake);
+        const fraction = Math.round((clamp(numberOr(request.hedgeStakePercent, 100), 10, 200) / 100) * 10_000) / 10_000;
+        const secondStake =
+          request.stakingPlan && request.stakingPlan !== "flat"
+            ? arithmetic("aiHedgeSecondStake", "MULTIPLY", variablesGet("aiHedgeSecondStakeBase", "stake"), numberValue("aiHedgeSecondStakeFraction", fraction))
+            : numberBlock("aiHedgeSecondStake", hedge);
+        return `<block type="hedge_purchase" id="aiHedgePurchase"><field name="PURCHASE_LIST">${purchaseType}</field><field name="HEDGE_LIST">${hedgeType}</field><value name="SECOND_STAKE">${secondStake}</value></block>`;
+      })()
     : null;
   const barrierOrDigit =
     request.family === "over-under"
@@ -476,24 +484,14 @@ function beforePurchase(
     ? virtualHedgeBuy
       ? chainStatements([virtualBuy, virtualHedgeBuy])
       : virtualBuy
-    : hedged && hedgeBlock
-      ? // The trade engine tracks ONE open contract per bot: Purchase is a
-        // silent no-op outside the before-purchase scope, and the first
-        // successful buy leaves that scope — so a second Purchase block in
-        // the same pass NEVER opens (two legs side by side only ever traded
-        // one side). Instead the legs alternate: "ai hedge leg" says which
-        // side this cycle buys, and After purchase flips it (and the stake
-        // variable) so the opposite leg opens on the very next cycle. Each
-        // Purchase still sits alone in its own statement stack, as the
-        // stock block requires (setNextStatement(false)).
-        `<block type="controls_if" id="aiHedgeLegPick"><mutation else="1"></mutation><value name="IF0">${compareValues("aiHedgeLegCheck", "EQ", variablesGet("aiHedgeLegGet", "hedgeLeg"), numberBlock("aiHedgeLegZero", 0))}</value><statement name="DO0">${purchase}</statement><statement name="ELSE">${hedgeBlock}</statement></block>`
+    : hedged && hedgeEntry
+      ? hedgeEntry
       : purchase;
   const entryIf = `<block type="controls_if" id="aiEntryGate"><value name="IF0">${condition}</value><statement name="DO0">${entryAction}</statement></block>`;
 
   const prelude: string[] = [];
-  if ((request.stakingPlan && request.stakingPlan !== "flat") || hedged)
+  if (request.stakingPlan && request.stakingPlan !== "flat")
     prelude.push(initVariableIfNull("aiInitStake", "stake", baseStake));
-  if (hedged) prelude.push(initVariableIfNull("aiInitHedgeLeg", "hedgeLeg", 0));
   if (request.stopAfterLossStreak)
     prelude.push(initVariableIfNull("aiInitLossStreak", "lossStreak", 0));
   if (request.stopAfterWinStreak)
@@ -516,12 +514,7 @@ function beforePurchase(
 function progressionStatements(request: DbotAiStrategyRequest, baseStake: number): string[] {
   const statements: string[] = [];
   const won = `<block type="contract_check_result" id="aiResultWin"><field name="CHECK_RESULT">win</field></block>`;
-  const hedged = hedgeActive(request);
-  // A hedge owns the stake variable — each leg carries its own fixed stake —
-  // so a martingale-style progression would fight the leg toggle below for
-  // the same variable. When both are asked for, the hedge wins and the
-  // progression is left out; streak bookkeeping still applies.
-  const plan = hedged ? "flat" : (request.stakingPlan ?? "flat");
+  const plan = request.stakingPlan ?? "flat";
   if (plan === "martingale" || plan === "reverse-martingale") {
     const multiplier = clamp(numberOr(request.stakeMultiplier, 2), 1.1, 10);
     const grow = variablesSet(
@@ -574,23 +567,6 @@ function progressionStatements(request: DbotAiStrategyRequest, baseStake: number
     }
     statements.push(
       `<block type="controls_if" id="aiStreakUpdate"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${chainStatements(onWin)}</statement><statement name="ELSE">${chainStatements(onLoss)}</statement></block>`,
-    );
-  }
-  if (hedged) {
-    // Flip to the other leg and line up its stake: trade options re-read
-    // the stake variable at the top of the next cycle, so the opposite
-    // contract opens immediately after this one settles.
-    const { main, hedge } = hedgeLegStakes(request, baseStake);
-    const toHedge = chainStatements([
-      variablesSet("aiHedgeToHedge", "hedgeLeg", numberValue("aiHedgeOne", 1)),
-      variablesSet("aiHedgeStakeSetHedge", "stake", numberValue("aiHedgeStakeHedgeValue", hedge)),
-    ]);
-    const toMain = chainStatements([
-      variablesSet("aiHedgeToMain", "hedgeLeg", numberValue("aiHedgeZero", 0)),
-      variablesSet("aiHedgeStakeSetMain", "stake", numberValue("aiHedgeStakeMainValue", main)),
-    ]);
-    statements.push(
-      `<block type="controls_if" id="aiHedgeLegToggle"><mutation else="1"></mutation><value name="IF0">${compareValues("aiHedgeToggleCheck", "EQ", variablesGet("aiHedgeToggleGet", "hedgeLeg"), numberBlock("aiHedgeToggleZero", 0))}</value><statement name="DO0">${toHedge}</statement><statement name="ELSE">${toMain}</statement></block>`,
     );
   }
   return statements;
@@ -653,10 +629,7 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
   if (input.stakingPlan && input.stakingPlan !== "flat") variableKeys.push("stake");
   if (resolved.stopAfterLossStreak) variableKeys.push("lossStreak");
   if (resolved.stopAfterWinStreak) variableKeys.push("winStreak");
-  if (hedgeActive(normalized)) {
-    if (!variableKeys.includes("stake")) variableKeys.push("stake");
-    variableKeys.push("hedgeLeg");
-  }
+
   return `<?xml version="1.0" encoding="UTF-8"?><xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">${variablesSection(variableKeys)}${tradeRoot(normalized, duration, durationUnit, stake, currency)}${riskGateDefinition(resolved)}${beforePurchase(normalized, procedureName, stake)}${afterPurchase(normalized, stake, cooldownSeconds)}</xml>`;
 }
 
@@ -947,7 +920,7 @@ export function parseDbotAiDescription(
         : []),
       ...(hedge && !virtual
         ? [
-            "DBot holds one open contract per bot, so the two hedge legs alternate back-to-back: the opposite side opens as soon as the first leg settles. For both positions open at the same instant, use the Hedging bot in Tools — it buys both legs together.",
+            "Both hedge legs open at the same time with the hedge purchase block, each at its own stake. The two legs count as two runs toward the trade cap, and win/loss checks in After purchase read the main leg.",
           ]
         : []),
     ],
@@ -1143,7 +1116,7 @@ export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
     parts.push(
       request.virtual
         ? "hedged (both paper sides together)"
-        : `hedged (both sides, alternating legs${request.hedgeStakePercent ? `, hedge leg ${request.hedgeStakePercent}%` : ""})`,
+        : `hedged (both sides open together${request.hedgeStakePercent ? `, hedge leg ${request.hedgeStakePercent}%` : ""})`,
     );
   if (request.virtual) parts.push("virtual/paper trades only");
   if (request.cooldownSeconds) parts.push(`${request.cooldownSeconds}s between trades`);
