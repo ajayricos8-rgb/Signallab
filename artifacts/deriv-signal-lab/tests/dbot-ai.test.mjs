@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   applyDbotAiEdit,
   buildDbotAiStrategyXml,
@@ -52,7 +53,7 @@ test("Rise/Fall XML uses the selected market, direction and bounded trade settin
     xml,
     /<block type="signal_lab_analysis_gate" id="aiAnalysisGate"/,
   );
-  assert.match(xml, /<field name="TRADETYPE_LIST">risefall<\/field>/);
+  assert.match(xml, /<field name="TRADETYPE_LIST">callput<\/field>/);
   assert.match(xml, /<field name="PURCHASE_LIST">PUT<\/field>/);
   assert.match(xml, /<field name="NUM">0\.5<\/field>/);
   assert.match(xml, /<field name="NUM">20<\/field>/);
@@ -273,4 +274,74 @@ test("a bare 'hedging bot' request builds a two-legged hedge, not a one-sided bo
 
   const base = parseDbotAiDescription("Build a fall bot on R_75 stake 0.5 for 3 ticks");
   assert.equal(applyDbotAiEdit(base, "make it a hedging bot")?.hedge, true);
+});
+
+test("every family's TRADETYPE_LIST is a real key of the vendor opposites map", () => {
+  // The trade engine's trade_definition generator expands
+  // `opposites[trade_type.toUpperCase()]` when Run is pressed. Any value that
+  // is not one of those keys makes code generation throw before the bot
+  // executes a single block, so the workspace sits on "Bot is starting" with
+  // zero trades (Rise/Fall shipped as "risefall" instead of "callput"). Pin
+  // the builder's emissions to the vendor config itself so they cannot drift.
+  const configSource = readFileSync(
+    new URL(
+      "../../../vendor/deriv-bot/src/external/bot-skeleton/constants/config.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const oppositesSection = configSource.slice(
+    configSource.indexOf("opposites: {"),
+    configSource.indexOf("BARRIER_TYPES"),
+  );
+  const oppositesKeys = new Set(
+    [...oppositesSection.matchAll(/^\s+([A-Z]+): \[/gm)].map((m) => m[1]),
+  );
+  assert.ok(oppositesKeys.has("CALLPUT"), "vendor opposites parsed");
+  const cases = [
+    [{ family: "rise-fall", symbol: "R_100", direction: "CALL" }, "callput"],
+    [
+      { family: "over-under", symbol: "R_100", digitSide: "DIGITOVER", barrier: 3 },
+      "digits",
+    ],
+    [{ family: "even-odd", symbol: "R_100", paritySide: "DIGITEVEN" }, "digits"],
+    [{ family: "matches", symbol: "R_100", targetDigit: 4 }, "digits"],
+    [{ family: "differs", symbol: "R_100", targetDigit: 4 }, "digits"],
+  ];
+  for (const [request, category] of cases) {
+    const xml = buildDbotAiStrategyXml({ duration: 3, stake: 1, ...request });
+    const tradeType = xml.match(/<field name="TRADETYPE_LIST">([^<]+)<\/field>/)?.[1];
+    assert.ok(tradeType, `${request.family} emits TRADETYPE_LIST`);
+    assert.ok(
+      oppositesKeys.has(tradeType.toUpperCase()),
+      `${request.family} TRADETYPE_LIST=${tradeType} must be a vendor opposites key`,
+    );
+    assert.match(
+      xml,
+      new RegExp(`<field name="TRADETYPECAT_LIST">${category}</field>`),
+    );
+  }
+});
+
+test("no post-trade cooldown unless one is requested", () => {
+  const fast = buildDbotAiStrategyXml({
+    family: "rise-fall",
+    symbol: "R_100",
+    direction: "CALL",
+    duration: 2,
+    stake: 1,
+  });
+  assert.ok(!fast.includes('type="timeout"'), "default bot re-arms with no timeout wait");
+  assert.match(fast, /<block type="trade_again" id="aiTradeAgain"><\/block>/);
+
+  const slow = buildDbotAiStrategyXml({
+    family: "rise-fall",
+    symbol: "R_100",
+    direction: "CALL",
+    duration: 2,
+    stake: 1,
+    cooldownSeconds: 7,
+  });
+  assert.match(slow, /<block type="timeout" id="aiCooldown"/);
+  assert.match(slow, /<field name="NUM">7<\/field>/);
 });

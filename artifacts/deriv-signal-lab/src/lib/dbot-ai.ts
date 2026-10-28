@@ -256,10 +256,18 @@ function tradeRoot(
   stake: number,
   currency: string,
 ): string {
+  // TRADETYPE_LIST must be a key of the vendor trade engine's `opposites`
+  // map (vendor .../bot-skeleton/constants/config.ts: CALLPUT, OVERUNDER,
+  // EVENODD, MATCHESDIFFERS): the trade_definition generator expands
+  // `opposites[trade_type.toUpperCase()]` when you press Run, and any other
+  // value makes code generation throw before the bot executes a single
+  // block — the workspace then sits on "Bot is starting" with zero trades.
+  // Rise/Fall is "callput", not "risefall" (see the shipped strategy XMLs,
+  // e.g. vendor src/xml/martingale.xml).
   const contractFamily = request.family === "rise-fall" ? "callput" : "digits";
   const tradeType =
     request.family === "rise-fall"
-      ? "risefall"
+      ? "callput"
       : request.family === "over-under"
         ? "overunder"
         : request.family === "even-odd"
@@ -489,7 +497,12 @@ function progressionStatements(request: DbotAiStrategyRequest, baseStake: number
 }
 
 function afterPurchase(request: DbotAiStrategyRequest, baseStake: number, cooldownSeconds: number): string {
-  const again = `<block type="timeout" id="aiCooldown"><statement name="TIMEOUTSTACK"><block type="trade_again" id="aiTradeAgain"></block></statement><value name="SECONDS">${numberBlock("aiCooldownSeconds", cooldownSeconds)}</value></block>`;
+  // No cooldown: re-arm immediately after settlement. A `timeout` wrapper
+  // would only add a needless sleep between the close and the next entry.
+  const again =
+    cooldownSeconds > 0
+      ? `<block type="timeout" id="aiCooldown"><statement name="TIMEOUTSTACK"><block type="trade_again" id="aiTradeAgain"></block></statement><value name="SECONDS">${numberBlock("aiCooldownSeconds", cooldownSeconds)}</value></block>`
+      : `<block type="trade_again" id="aiTradeAgain"></block>`;
   const stack = request.virtual
     ? again
     : chainStatements([...progressionStatements(request, baseStake), again]);
@@ -515,7 +528,10 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
   const maxTrades = clamp(Math.round(numberOr(input.maxTrades, 25)), 1, 500);
   const lossLimit = clamp(numberOr(input.lossLimit, 3), 0.35, 10_000);
   const profitTarget = clamp(numberOr(input.profitTarget, 5), 0.35, 10_000);
-  const cooldownSeconds = clamp(numberOr(input.cooldownSeconds, 2), 0, 300);
+  // Default to no post-trade pause: entries already wait for the previous
+  // contract to settle, and users expect a position again on the next ticks.
+  // A cooldown is only added when the request asks for one.
+  const cooldownSeconds = clamp(numberOr(input.cooldownSeconds, 0), 0, 300);
   const resolved = {
     procedureName,
     maxTrades,
