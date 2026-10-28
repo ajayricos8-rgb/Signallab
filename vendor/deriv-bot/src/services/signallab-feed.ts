@@ -69,6 +69,43 @@ export type SignalLabAnalysisSnapshot = {
     entry: SignalLabAnalysisEntry;
 };
 
+/** Family the cross-market scan is scored for. */
+export type SignalLabScanFamily = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
+
+/** Result of the last `signalLabScanMarkets` call, read back by the scan blocks. */
+export type SignalLabScanState = {
+    family: SignalLabScanFamily;
+    duration: number;
+    minScore: number;
+    best: string;
+    scores: Map<string, number>;
+    rank: Map<string, number>;
+    count: number;
+    tradeable: boolean;
+    ranAt: number;
+};
+
+/** A single virtual position opened with the virtual blocks. */
+export type SignalLabVirtualPosition = {
+    symbol: string;
+    direction: string;
+    stake: number;
+    payout: number;
+    barrier: number;
+    quote: number;
+    digit: number;
+    epoch: number;
+};
+
+/** Module-level virtual ledger, reset whenever the shared feed is reset. */
+let virtualLedger: {
+    balance: number;
+    profit: number;
+    runs: number;
+    wins: number;
+    positions: SignalLabVirtualPosition[];
+} = { balance: 10_000, profit: 0, runs: 0, wins: 0, positions: [] };
+
 /** Keep the same window DBot's own "Ticks list" block reports. */
 const TICK_LIMIT = 1_000;
 const DATA_STALE_MS = 15_000;
@@ -78,6 +115,8 @@ const DATA_WAIT_MS = 8_000;
 let markets = new Map<string, SignalLabMarket>();
 let account: SignalLabAccount | null = null;
 let analysis: SignalLabAnalysisSnapshot | null = null;
+/** Last cross-market scan result, refreshed by `signalLabScanMarkets`. */
+let scan: SignalLabScanState | null = null;
 let connected = false;
 let listening = false;
 let retryTimer: number | undefined;
@@ -156,6 +195,8 @@ function applyFeed(data: Record<string, unknown>) {
     if (reset) {
         markets = new Map();
         analysis = null;
+        scan = null;
+        virtualLedger = { balance: 10_000, profit: 0, runs: 0, wins: 0, positions: [] };
     }
     let changed = false;
     for (const raw of incoming) {
@@ -501,6 +542,246 @@ export function getSignalLabBalance(): number | null {
 
 export function getSignalLabOpenPositions(): SignalLabPosition[] {
     return account?.openPositions ?? [];
+}
+
+/* ------------------------------------------------------------------ *
+ * Cross-market scan — the "all markets" blocks.
+ *
+ * The scan is deliberately lightweight: it reads the tick cache Signal Lab
+ * already shared with this workspace and scores every market with the same
+ * one-line statistic. It never opens a socket and never places an order. A
+ * strategy runs it once (in tick_analysis or before_purchase) and then reads
+ * the best market, its score, its rank and whether it cleared the floor.
+ * ------------------------------------------------------------------ */
+
+const SCAN_FAMILIES: SignalLabScanFamily[] = ['rise-fall', 'over-under', 'even-odd', 'matches'];
+
+function normalizeScanFamily(family: unknown): SignalLabScanFamily {
+    const value = String(family ?? '').trim().toLowerCase();
+    return (SCAN_FAMILIES as string[]).includes(value) ? (value as SignalLabScanFamily) : 'rise-fall';
+}
+
+/**
+ * One signed lean in [-1, 1]: the share of the last `duration` ticks that
+ * moved the family's way. Rise/Fall uses the quote's direction, the digit
+ * families use the last digit's parity and distance from the middle.
+ */
+function scanLean(
+    family: SignalLabScanFamily,
+    ticks: SignalLabTick[],
+    pipSize: number | null,
+    duration: number,
+): number | null {
+    if (ticks.length < 2) return null;
+    const span = Math.max(2, Math.min(ticks.length, Math.floor(duration)));
+    let total = 0;
+    let count = 0;
+    if (family === 'rise-fall') {
+        for (let index = ticks.length - span + 1; index < ticks.length; index += 1) {
+            const move = ticks[index].quote - ticks[index - 1].quote;
+            if (move > 0) total += 1;
+            else if (move < 0) total -= 1;
+            count += 1;
+        }
+    } else {
+        for (let index = ticks.length - span; index < ticks.length; index += 1) {
+            const digit = lastDigitOf(ticks[index].quote, pipSize);
+            if (family === 'even-odd') total += digit % 2 === 0 ? 1 : -1;
+            else total += digit > 4 ? 1 : digit < 4 ? -1 : 0;
+            count += 1;
+        }
+    }
+    return count ? total / count : 0;
+}
+
+/** Score every shared market and remember the strongest one. Returns the count. */
+export function signalLabScanMarkets(family: unknown, duration: unknown, minScore: unknown): number {
+    const normalized = normalizeScanFamily(family);
+    const span = Math.max(1, Math.min(500, Math.floor(Number(duration) || 1)));
+    const floor = Math.max(0, Math.min(1, Number(minScore) || 0));
+    const scores = new Map<string, number>();
+    for (const market of markets.values()) {
+        if (!market.ticks.length) continue;
+        const lean = scanLean(normalized, market.ticks, market.pipSize, span);
+        if (lean === null) continue;
+        scores.set(market.symbol, lean);
+    }
+    const ranked = [...scores.entries()].sort(
+        (left, right) => Math.abs(right[1]) - Math.abs(left[1]) || left[0].localeCompare(right[0]),
+    );
+    const rank = new Map<string, number>();
+    ranked.forEach((entry, index) => rank.set(entry[0], index + 1));
+    const bestLean = ranked[0]?.[1] ?? 0;
+    scan = {
+        family: normalized,
+        duration: span,
+        minScore: floor,
+        best: ranked[0]?.[0] ?? '',
+        scores,
+        rank,
+        count: ranked.length,
+        tradeable: Math.abs(bestLean) >= floor,
+        ranAt: Date.now(),
+    };
+    notify();
+    return ranked.length;
+}
+
+export function signalLabScanBest(): string {
+    return scan?.best ?? '';
+}
+
+export function signalLabScanScore(symbol: string): number {
+    return scan?.scores.get(String(symbol).trim().toUpperCase()) ?? 0;
+}
+
+export function signalLabScanRank(symbol: string): number {
+    return scan?.rank.get(String(symbol).trim().toUpperCase()) ?? 0;
+}
+
+export function signalLabScanCount(): number {
+    return scan?.count ?? 0;
+}
+
+export function signalLabScanTradeable(): boolean {
+    return scan?.tradeable ?? false;
+}
+
+export function getSignalLabScanState(): SignalLabScanState | null {
+    return scan;
+}
+
+/* ------------------------------------------------------------------ *
+ * Hedging blocks — read the open positions Signal Lab reports and let a
+ * strategy decide whether a hedge is balanced. They never place an order.
+ * ------------------------------------------------------------------ */
+
+export function signalLabHedgeLegs(symbol: string): number {
+    const target = String(symbol ?? '').trim().toUpperCase();
+    return getSignalLabOpenPositions()
+        .filter(position => (position.symbol ?? '').toUpperCase() === target)
+        .length;
+}
+
+export function signalLabHedgePairs(symbol: string): number {
+    return Math.floor(signalLabHedgeLegs(symbol) / 2);
+}
+
+export function signalLabHedgeBalanced(symbol: string): boolean {
+    return signalLabHedgeLegs(symbol) % 2 === 0;
+}
+
+export function signalLabHedgeCount(): number {
+    return getSignalLabOpenPositions().length;
+}
+
+export function signalLabHedgeProfit(): number {
+    return account?.openProfit ?? 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Virtual blocks — a paper ledger a strategy can trade against without ever
+ * sending an order. `signalLabVirtualBuy` opens a position at the live quote;
+ * `signalLabVirtualSettle` resolves every open position against the latest
+ * tick and books the win or loss.
+ * ------------------------------------------------------------------ */
+
+const VIRTUAL_DIRECTIONS = ['rise', 'fall', 'over', 'under', 'even', 'odd', 'match'];
+
+function normalizeVirtualDirection(direction: unknown): string {
+    const value = String(direction ?? '').trim().toLowerCase();
+    return VIRTUAL_DIRECTIONS.includes(value) ? value : 'rise';
+}
+
+function virtualWins(position: SignalLabVirtualPosition, quote: number, digit: number): boolean {
+    switch (position.direction) {
+        case 'rise': return quote > position.quote;
+        case 'fall': return quote < position.quote;
+        case 'over': return digit > position.barrier;
+        case 'under': return digit < position.barrier;
+        case 'even': return digit % 2 === 0;
+        case 'odd': return digit % 2 === 1;
+        case 'match': return digit === position.barrier;
+        default: return false;
+    }
+}
+
+export function signalLabVirtualBuy(
+    symbol: unknown,
+    direction: unknown,
+    stake: unknown,
+    payout: unknown,
+    barrier: unknown,
+): boolean {
+    const target = String(symbol ?? '').trim().toUpperCase();
+    const market = markets.get(target);
+    const last = market?.ticks.at(-1);
+    if (!market || !last) return false;
+    virtualLedger.positions.push({
+        symbol: target,
+        direction: normalizeVirtualDirection(direction),
+        stake: Math.max(0, Number(stake) || 0),
+        payout: Math.max(0, Number(payout) || 0),
+        barrier: Math.max(0, Math.floor(Number(barrier) || 0)),
+        quote: last.quote,
+        digit: lastDigitOf(last.quote, market.pipSize),
+        epoch: last.epoch,
+    });
+    notify();
+    return true;
+}
+
+/** Resolve every open virtual position against the latest tick. Returns the count. */
+export function signalLabVirtualSettle(): number {
+    const remaining: SignalLabVirtualPosition[] = [];
+    let settled = 0;
+    for (const position of virtualLedger.positions) {
+        const market = markets.get(position.symbol);
+        const last = market?.ticks.at(-1);
+        if (!market || !last) {
+            remaining.push(position);
+            continue;
+        }
+        const quote = last.quote;
+        const digit = lastDigitOf(quote, market.pipSize);
+        const won = virtualWins(position, quote, digit);
+        virtualLedger.profit += won ? position.stake * position.payout : -position.stake;
+        virtualLedger.runs += 1;
+        if (won) virtualLedger.wins += 1;
+        settled += 1;
+    }
+    virtualLedger.positions = remaining;
+    notify();
+    return settled;
+}
+
+export function signalLabVirtualReset(): void {
+    virtualLedger = { balance: 10_000, profit: 0, runs: 0, wins: 0, positions: [] };
+    notify();
+}
+
+export function signalLabVirtualProfit(): number {
+    return virtualLedger.profit;
+}
+
+export function signalLabVirtualRuns(): number {
+    return virtualLedger.runs;
+}
+
+export function signalLabVirtualWins(): number {
+    return virtualLedger.wins;
+}
+
+export function signalLabVirtualOpen(): number {
+    return virtualLedger.positions.length;
+}
+
+export function signalLabVirtualBalance(): number {
+    return virtualLedger.balance + virtualLedger.profit;
+}
+
+export function getSignalLabVirtualLedger(): typeof virtualLedger {
+    return virtualLedger;
 }
 
 /**

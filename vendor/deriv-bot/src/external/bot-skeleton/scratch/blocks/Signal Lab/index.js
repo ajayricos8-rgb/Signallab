@@ -5,4 +5,7 @@ import './colour';
 import './tick';
 import './ticks';
 import './account';
+import './scan';
+import './hedging';
+import './virtual';
 import './analysis-gate';

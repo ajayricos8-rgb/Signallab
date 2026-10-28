@@ -31,7 +31,7 @@ const Interface = $scope => {
             ...getBotInterface(tradeEngine),
             ...getToolsInterface(tradeEngine),
             getTicksInterface: getTicksInterface(tradeEngine),
-            getSignalLabInterface: getSignalLabInterface(),
+            getSignalLabInterface: getSignalLabInterface(tradeEngine),
             getVisionInterface: getVisionInterface(tradeEngine),
             watch: (...args) => tradeEngine.watch(...args),
             sleep: (...args) => sleep(observer, ...args),

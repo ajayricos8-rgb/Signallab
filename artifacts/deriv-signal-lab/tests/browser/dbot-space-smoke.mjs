@@ -239,19 +239,43 @@ try {
   // Signal Lab block group is registered and generates the runtime calls.
   await page.getByTestId('dbot-shared-data').getByText(/markets · [0-9,]+ ticks shared/).waitFor({ timeout: 20_000 });
   const bridge = await bot.evaluate(() => {
-    const types = ['signal_lab_last_tick', 'signal_lab_ticks', 'signal_lab_last_digit', 'signal_lab_tick_change', 'signal_lab_balance', 'signal_lab_open_positions', 'signal_lab_profit', 'signal_lab_account', 'signal_lab_connected'];
+    const types = ['signal_lab_last_tick', 'signal_lab_ticks', 'signal_lab_last_digit', 'signal_lab_tick_change', 'signal_lab_balance', 'signal_lab_open_positions', 'signal_lab_profit', 'signal_lab_account', 'signal_lab_connected', 'signal_lab_scan_markets', 'signal_lab_scan_best', 'signal_lab_scan_score', 'signal_lab_scan_rank', 'signal_lab_scan_count', 'signal_lab_scan_tradeable', 'signal_lab_hedge_legs', 'signal_lab_hedge_pairs', 'signal_lab_hedge_balanced', 'signal_lab_hedge_count', 'signal_lab_hedge_profit', 'signal_lab_virtual_buy', 'signal_lab_virtual_settle', 'signal_lab_virtual_reset', 'signal_lab_virtual_profit', 'signal_lab_virtual_runs', 'signal_lab_virtual_wins', 'signal_lab_virtual_open', 'signal_lab_virtual_balance'];
     const missing = types.filter(type => !window.Blockly.Blocks[type]);
     const block = window.Blockly.derivWorkspace.newBlock('signal_lab_last_tick');
     const markets = block.getField('MARKET_LIST').getOptions(true).map(option => option[1]);
     const code = window.Blockly.JavaScript.javascriptGenerator.blockToCode(block)[0];
     block.dispose();
-    return { missing, markets, code };
+    const generator = (type, mutate) => {
+      const instance = window.Blockly.derivWorkspace.newBlock(type);
+      if (mutate) mutate(instance);
+      const generated = window.Blockly.JavaScript.javascriptGenerator.blockToCode(instance)[0];
+      instance.dispose();
+      return generated;
+    };
+    return {
+      missing,
+      markets,
+      code,
+      scanMarkets: generator('signal_lab_scan_markets'),
+      scanBest: generator('signal_lab_scan_best'),
+      scanScore: generator('signal_lab_scan_score'),
+      hedgeLegs: generator('signal_lab_hedge_legs'),
+      virtualBuy: generator('signal_lab_virtual_buy'),
+      virtualProfit: generator('signal_lab_virtual_profit'),
+    };
   });
   assert.deepEqual(bridge.missing, [], 'every Signal Lab block must be registered');
   // The mock advertises one symbol, so the dropdown proves the parent snapshot
   // replaced the static fallback list.
   assert.deepEqual(bridge.markets, ['R_100'], 'the market list must come from the Signal Lab snapshot');
   assert.equal(bridge.code, 'Bot.getSignalLabLastTick("R_100")', 'the block must call the Signal Lab runtime');
+  // The all-markets scan, hedging and virtual blocks emit their own runtime calls.
+  assert.match(bridge.scanMarkets, /Bot\.signalLabScanMarkets\("rise-fall", 20, 0\.05\);/);
+  assert.equal(bridge.scanBest, 'Bot.signalLabScanBest()');
+  assert.equal(bridge.scanScore, 'Bot.signalLabScanScore("R_100")');
+  assert.equal(bridge.hedgeLegs, 'Bot.signalLabHedgeLegs("R_100")');
+  assert.match(bridge.virtualBuy, /Bot\.signalLabVirtualBuy\("R_100", "rise", 1, 1\.9, 5\);/);
+  assert.equal(bridge.virtualProfit, 'Bot.signalLabVirtualProfit()');
 
   // Hold mock quotes so the strategy can enter the running state without
   // issuing a buy, then verify socket loss immediately stops the interpreter.

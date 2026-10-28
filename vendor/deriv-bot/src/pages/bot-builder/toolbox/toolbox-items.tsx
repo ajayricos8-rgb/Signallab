@@ -452,6 +452,74 @@ export const ToolboxItems = () =>
                     <Field name='SYMBOL'>R_100</Field>
                     <Field name='ANALYSIS_ID' />
                 </Block>
+                <Category id='signal_lab_scan' name={localize('All markets scan')}>
+                    <Block type='signal_lab_scan_markets'>
+                        <Field name='FAMILY'>rise-fall</Field>
+                        <Value name='DURATION'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>20</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_SCORE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.05</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='signal_lab_scan_best' />
+                    <Block type='signal_lab_scan_score'>
+                        <Field name='MARKET_LIST'>R_100</Field>
+                    </Block>
+                    <Block type='signal_lab_scan_rank'>
+                        <Field name='MARKET_LIST'>R_100</Field>
+                    </Block>
+                    <Block type='signal_lab_scan_count' />
+                    <Block type='signal_lab_scan_tradeable' />
+                    <Block type='signal_lab_switch_market'>
+                        <Field name='MARKET_LIST'>R_100</Field>
+                    </Block>
+                </Category>
+                <Category id='signal_lab_hedge' name={localize('Hedging')}>
+                    <Block type='signal_lab_hedge_legs'>
+                        <Field name='MARKET_LIST'>R_100</Field>
+                    </Block>
+                    <Block type='signal_lab_hedge_pairs'>
+                        <Field name='MARKET_LIST'>R_100</Field>
+                    </Block>
+                    <Block type='signal_lab_hedge_balanced'>
+                        <Field name='MARKET_LIST'>R_100</Field>
+                    </Block>
+                    <Block type='signal_lab_hedge_count' />
+                    <Block type='signal_lab_hedge_profit' />
+                </Category>
+                <Category id='signal_lab_virtual' name={localize('Virtual trading')}>
+                    <Block type='signal_lab_virtual_buy'>
+                        <Field name='DIRECTION'>rise</Field>
+                        <Field name='MARKET_LIST'>R_100</Field>
+                        <Value name='STAKE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PAYOUT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.9</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='BARRIER'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='signal_lab_virtual_settle' />
+                    <Block type='signal_lab_virtual_reset' />
+                    <Block type='signal_lab_virtual_profit' />
+                    <Block type='signal_lab_virtual_runs' />
+                    <Block type='signal_lab_virtual_wins' />
+                    <Block type='signal_lab_virtual_open' />
+                    <Block type='signal_lab_virtual_balance' />
+                </Category>
             </Category>
 
             <Category id='vision_lab' name={localize('Vision Lab')}>
