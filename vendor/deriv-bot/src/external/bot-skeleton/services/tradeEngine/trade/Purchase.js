@@ -115,15 +115,19 @@ export default Engine =>
             ).then(onSuccess);
         }
         /**
-         * Buy BOTH sides of a hedge in one before-purchase pass: the main leg
-         * at the trade-options stake and the opposite leg at `second_stake`
-         * (the same stake when not given). The two buy requests are sent
-         * together, so both positions open in the same second, and the engine
-         * then waits for BOTH contracts to settle before After purchase runs
-         * (see OpenContract). Contract-detail blocks keep reading the main
-         * leg; totals, runs and the contract log count each leg.
+         * Buy BOTH sides of a hedge in one before-purchase pass. Both legs
+         * stake the trade-options amount; each leg may carry its own
+         * prediction/barrier offsets (`main_options` / `hedge_options`:
+         * { prediction, barrierOffset, secondBarrierOffset }) which override
+         * the trade options for that leg — e.g. Over 2 hedged with Under 7,
+         * or a Higher at +1.5 hedged with a Lower at -1.5. The two buy
+         * requests are sent together, so both positions open in the same
+         * second, and the engine then waits for BOTH contracts to settle
+         * before After purchase runs (see OpenContract). Contract-detail
+         * blocks keep reading the main leg; totals, runs and the contract
+         * log count each leg.
          */
-        purchaseHedge(contract_type, hedge_contract_type, second_stake) {
+        purchaseHedge(contract_type, hedge_contract_type, main_options = {}, hedge_options = {}) {
             if (this.store.getState().scope !== BEFORE_PURCHASE) {
                 return Promise.resolve();
             }
@@ -131,31 +135,38 @@ export default Engine =>
                 return this.purchase(contract_type);
             }
 
-            const mainAmount = Number(this.tradeOptions.amount);
-            const hedgeAmount = Math.max(0.35, Number(second_stake) || mainAmount);
+            const overrideKeys = ['prediction', 'barrierOffset', 'secondBarrierOffset'];
+            const hasOverrides = options =>
+                !!options && overrideKeys.some(key => options[key] !== undefined);
+            const legTradeOptions = options => {
+                if (!hasOverrides(options)) return this.tradeOptions;
+                const merged = { ...this.tradeOptions };
+                overrideKeys.forEach(key => {
+                    if (options[key] !== undefined) merged[key] = options[key];
+                });
+                return merged;
+            };
 
             // Select both proposals up front: buying the first leg renews the
             // proposal list, which would discard the second leg's price. A
-            // different second-leg stake cannot reuse the subscribed proposal
-            // (its amount is fixed), so that leg buys directly instead.
+            // leg with its own prediction/barriers cannot reuse the
+            // subscribed proposal (those are priced from the trade options),
+            // so that leg buys directly with its merged parameters instead.
             const useProposals = this.is_proposal_subscription_required;
-            const mainProposal = useProposals ? this.selectProposal(contract_type) : null;
+            const mainProposal = useProposals && !hasOverrides(main_options) ? this.selectProposal(contract_type) : null;
             const hedgeProposal =
-                useProposals && hedgeAmount === mainAmount ? this.selectProposal(hedge_contract_type) : null;
+                useProposals && !hasOverrides(hedge_options) ? this.selectProposal(hedge_contract_type) : null;
 
             const buyMain = mainProposal
                 ? () => api_base.api.send({ buy: mainProposal.id, price: mainProposal.askPrice })
-                : () => api_base.api.send(tradeOptionToBuy(contract_type, this.tradeOptions));
+                : () => api_base.api.send(tradeOptionToBuy(contract_type, legTradeOptions(main_options)));
             const buyHedge = hedgeProposal
                 ? () => api_base.api.send({ buy: hedgeProposal.id, price: hedgeProposal.askPrice })
-                : () =>
-                      api_base.api.send(
-                          tradeOptionToBuy(hedge_contract_type, { ...this.tradeOptions, amount: hedgeAmount })
-                      );
+                : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, legTradeOptions(hedge_options)));
 
             this.isSold = false;
-            contractStatus({ id: 'contract.purchase_sent', data: mainAmount });
-            contractStatus({ id: 'contract.purchase_sent', data: hedgeAmount });
+            contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
+            contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
 
             const announce = (buy, type) => {
                 contractStatus({ id: 'contract.purchase_received', data: buy.transaction_id, buy });

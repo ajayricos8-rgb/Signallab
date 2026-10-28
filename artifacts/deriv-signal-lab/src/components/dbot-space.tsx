@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import {
   ArrowRight, BookOpen, Boxes, BrainCircuit, ChartNoAxesCombined, CheckCircle2, CircleHelp, Link2, LoaderCircle,
-  Library, LockKeyhole, Maximize2, Search, ShieldAlert, Signal, Sparkles, Unlink, X, type LucideProps,
+  Library, LockKeyhole, Maximize2, Search, ShieldAlert, Signal, Sparkles, Unlink, Wallet, X, type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { formatAmount } from '@/lib/deriv-trading';
@@ -489,6 +489,44 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Deriv-style account cluster: live balance with a Real/Demo switch.
+              It drives the same Signal Lab account selection the connection
+              card uses, so DBot re-links to whichever account is active. */}
+          <div className="inline-flex items-center gap-2.5 rounded-full border border-border bg-card py-1 pl-1 pr-3" data-testid="dbot-balance-toggle">
+            <div className="flex rounded-full bg-muted p-0.5" role="group" aria-label="Account type">
+              {(['demo', 'real'] as const).map((kind) => {
+                const account = trading.accounts.find((entry) => entry.accountType === kind);
+                const active = (trading.activeAccount?.accountType ?? linkType) === kind && Boolean(trading.activeAccount);
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    aria-pressed={active}
+                    data-testid={`dbot-toggle-${kind}`}
+                    title={account ? `Trade on the ${kind} account (${account.accountId})` : `No ${kind} account connected yet — add one in Settings`}
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors ${active ? (kind === 'real' ? 'bg-emerald-500 text-white' : 'bg-sky-500 text-white') : 'text-muted-foreground hover:text-foreground'}`}
+                    onClick={() => {
+                      if (active) return;
+                      if (botRunning) { setNotice('Stop the running bot before switching between demo and real accounts.'); return; }
+                      if (!account) { setNotice(`No ${kind} account is connected. Connect a Deriv account with a ${kind} account in Settings, then use this toggle.`); return; }
+                      void trading.selectAccount(account.accountId);
+                      setNotice(kind === 'real'
+                        ? `Switched to your REAL account ${account.accountId}. Bots will trade real money — double-check stake and limits before running.`
+                        : `Switched to your demo account ${account.accountId}. Bots trade virtual funds here.`);
+                    }}
+                  >
+                    {kind}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-foreground" data-testid="dbot-balance" title="Balance of the active account">
+              <Wallet size={13} className="text-primary" />
+              {trading.activeAccount
+                ? formatAmount(trading.balance, trading.currency || trading.activeAccount?.currency)
+                : '—'}
+            </span>
+          </div>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-[10px] font-semibold text-muted-foreground" data-testid="dbot-account-status">
             <span className={`h-1.5 w-1.5 rounded-full ${linkState === 'connected' ? 'bg-emerald-400' : linkState === 'connecting' ? 'bg-sky-400' : 'bg-amber-400'}`} />
             {linkLabel}

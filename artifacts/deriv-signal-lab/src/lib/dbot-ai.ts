@@ -4,7 +4,13 @@ export type DbotAiDigitSide = "DIGITOVER" | "DIGITUNDER";
 export type DbotAiParitySide = "DIGITEVEN" | "DIGITODD";
 export type DbotAiDurationUnit = "t" | "m";
 /** How the stake moves after each settled contract. */
-export type DbotAiStakingPlan = "flat" | "martingale" | "reverse-martingale" | "dalembert";
+export type DbotAiStakingPlan =
+  | "flat"
+  | "martingale"
+  | "reverse-martingale"
+  | "dalembert"
+  | "reverse-dalembert"
+  | "fibonacci";
 /** An entry filter on the bot market's own last digit (`last_digit` block). */
 export type DbotAiDigitFilter =
   | { kind: "equals"; digit: number }
@@ -56,7 +62,11 @@ export type DbotAiStrategyRequest = {
    * opens both opposite positions in the same second.
    */
   hedge?: boolean;
-  /** Hedge-leg stake as a percentage of the main stake (default 100). */
+  /**
+   * Hedge-leg stake as a percentage of the main stake (default 100).
+   * Applied to virtual/paper hedges; real hedges stake the Trade options
+   * amount on both legs (the hedge purchase block has no second stake).
+   */
   hedgeStakePercent?: number;
   /** Paper-trade with the virtual blocks instead of real purchases. */
   virtual?: boolean;
@@ -146,6 +156,7 @@ function comparisonBlock(
 /** Workspace variables the generated strategy may declare, with stable ids. */
 const AI_VARIABLES = {
   stake: { id: "aiStakeVariable", name: "ai stake" },
+  prevStake: { id: "aiPrevStakeVariable", name: "ai previous stake" },
   lossStreak: { id: "aiLossStreakVariable", name: "ai loss streak" },
   winStreak: { id: "aiWinStreakVariable", name: "ai win streak" },
 } as const;
@@ -453,19 +464,20 @@ function beforePurchase(
   const hedgeType = request.hedge ? hedgePurchase(request) : null;
   // The hedge purchase block is the stock Purchase block doubled: it sends
   // both buy requests together, so the two opposite positions open in the
-  // same second. The main leg stakes the Trade options amount; the second
-  // leg stakes its own amount — a fixed share of the base stake, or the
-  // same share of the progressed stake variable so a staking plan moves
-  // both legs together.
+  // same second. Both legs stake the Trade options amount (the block has
+  // no second-stake setting). Digit families carry a prediction per leg
+  // on the block itself — the same barrier/digit on both sides.
   const hedgeEntry = hedgeType
     ? (() => {
-        const { hedge } = hedgeLegStakes(request, baseStake);
-        const fraction = Math.round((clamp(numberOr(request.hedgeStakePercent, 100), 10, 200) / 100) * 10_000) / 10_000;
-        const secondStake =
-          request.stakingPlan && request.stakingPlan !== "flat"
-            ? arithmetic("aiHedgeSecondStake", "MULTIPLY", variablesGet("aiHedgeSecondStakeBase", "stake"), numberValue("aiHedgeSecondStakeFraction", fraction))
-            : numberBlock("aiHedgeSecondStake", hedge);
-        return `<block type="hedge_purchase" id="aiHedgePurchase"><field name="PURCHASE_LIST">${purchaseType}</field><field name="HEDGE_LIST">${hedgeType}</field><value name="SECOND_STAKE">${secondStake}</value></block>`;
+        const predictionValue =
+          request.family === "over-under"
+            ? clamp(Math.round(numberOr(request.barrier, 5)), 1, 8)
+            : clamp(Math.round(numberOr(request.targetDigit, 5)), 0, 9);
+        const predictionInputs =
+          request.family === "over-under" || request.family === "matches" || request.family === "differs"
+            ? `<mutation has_prediction="true" has_first_barrier="false" has_second_barrier="false"></mutation><value name="PREDICTION">${numberBlock("aiHedgePrediction", predictionValue)}</value><value name="HEDGE_PREDICTION">${numberBlock("aiHedgeSecondPrediction", predictionValue)}</value>`
+            : "";
+        return `<block type="hedge_purchase" id="aiHedgePurchase">${predictionInputs}<field name="PURCHASE_LIST">${purchaseType}</field><field name="HEDGE_LIST">${hedgeType}</field></block>`;
       })()
     : null;
   const barrierOrDigit =
@@ -492,6 +504,8 @@ function beforePurchase(
   const prelude: string[] = [];
   if (request.stakingPlan && request.stakingPlan !== "flat")
     prelude.push(initVariableIfNull("aiInitStake", "stake", baseStake));
+  if (request.stakingPlan === "fibonacci")
+    prelude.push(initVariableIfNull("aiInitPrevStake", "prevStake", 0));
   if (request.stopAfterLossStreak)
     prelude.push(initVariableIfNull("aiInitLossStreak", "lossStreak", 0));
   if (request.stopAfterWinStreak)
@@ -526,7 +540,7 @@ function progressionStatements(request: DbotAiStrategyRequest, baseStake: number
     statements.push(
       `<block type="controls_if" id="aiStakeProgression"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${plan === "martingale" ? reset : grow}</statement><statement name="ELSE">${plan === "martingale" ? grow : reset}</statement></block>`,
     );
-  } else if (plan === "dalembert") {
+  } else if (plan === "dalembert" || plan === "reverse-dalembert") {
     const step = clamp(numberOr(request.stakeStep, baseStake), 0.01, 10_000);
     const up = variablesSet(
       "aiStakeUp",
@@ -538,10 +552,46 @@ function progressionStatements(request: DbotAiStrategyRequest, baseStake: number
       "stake",
       arithmetic("aiStakeDownCalc", "MINUS", variablesGet("aiStakeDownGet", "stake"), numberValue("aiStakeDownStep", step)),
     );
+    // D'Alembert climbs after a loss; the reverse climbs after a win.
+    const onWin = plan === "dalembert" ? down : up;
+    const onLoss = plan === "dalembert" ? up : down;
     statements.push(
-      `<block type="controls_if" id="aiStakeProgression"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${down}</statement><statement name="ELSE">${up}</statement></block>`,
+      `<block type="controls_if" id="aiStakeProgression"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${onWin}</statement><statement name="ELSE">${onLoss}</statement></block>`,
       // Never let a D'Alembert step take the stake below the base stake.
       `<block type="controls_if" id="aiStakeFloor"><value name="IF0">${compareValues("aiStakeFloorCheck", "LT", variablesGet("aiStakeFloorGet", "stake"), numberValue("aiStakeFloorValue", baseStake))}</value><statement name="DO0">${variablesSet("aiStakeFloorSet", "stake", numberValue("aiStakeFloorBase", baseStake))}</statement></block>`,
+    );
+  } else if (plan === "fibonacci") {
+    // The Fibonacci staking ladder (1, 1, 2, 3, 5, 8 … × base stake) as a
+    // two-variable recurrence: after a loss the next stake is the sum of
+    // the last two; a win restarts the ladder. The ladder restarts by
+    // itself once it passes 21× the base stake, so a long losing streak
+    // cannot grow it without bound.
+    const resetLadder = chainStatements([
+      variablesSet("aiFibResetPrev", "prevStake", numberValue("aiFibResetPrevValue", 0)),
+      variablesSet("aiFibReset", "stake", numberValue("aiFibResetValue", baseStake)),
+    ]);
+    // Advance without a temp variable: stake := stake + prev, then
+    // prev := (new stake) − prev = the old stake. Starting from
+    // stake = base, prev = 0 the stakes run 1, 1, 2, 3, 5, 8 … × base.
+    const advance = chainStatements([
+      variablesSet(
+        "aiFibGrow",
+        "stake",
+        arithmetic("aiFibGrowCalc", "ADD", variablesGet("aiFibGrowGet", "stake"), variablesGet("aiFibGrowPrevGet", "prevStake")),
+      ),
+      variablesSet(
+        "aiFibShift",
+        "prevStake",
+        arithmetic("aiFibShiftCalc", "MINUS", variablesGet("aiFibShiftGet", "stake"), variablesGet("aiFibShiftPrevGet", "prevStake")),
+      ),
+    ]);
+    const cap = Math.round(baseStake * 21 * 100) / 100;
+    statements.push(
+      `<block type="controls_if" id="aiStakeProgression"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${resetLadder}</statement><statement name="ELSE">${advance}</statement></block>`,
+      `<block type="controls_if" id="aiFibCap"><value name="IF0">${compareValues("aiFibCapCheck", "GT", variablesGet("aiFibCapGet", "stake"), numberValue("aiFibCapValue", cap))}</value><statement name="DO0">${chainStatements([
+        variablesSet("aiFibCapResetPrev", "prevStake", numberValue("aiFibCapPrevValue", 0)),
+        variablesSet("aiFibCapReset", "stake", numberValue("aiFibCapBase", baseStake)),
+      ])}</statement></block>`,
     );
   }
   if (plan !== "flat" && request.maxStake) {
@@ -627,6 +677,7 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
   };
   const variableKeys: AiVariableKey[] = [];
   if (input.stakingPlan && input.stakingPlan !== "flat") variableKeys.push("stake");
+  if (input.stakingPlan === "fibonacci") variableKeys.push("prevStake");
   if (resolved.stopAfterLossStreak) variableKeys.push("lossStreak");
   if (resolved.stopAfterWinStreak) variableKeys.push("winStreak");
 
@@ -679,22 +730,58 @@ function readStakingPlan(description: string): {
     /\bmax(?:imum)?\s+stake\s*(?:of|is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/,
   );
   const maxStake = maxStakeMatch ? clamp(Number(maxStakeMatch[1]), 0.35, 50_000) : undefined;
-  if (/\b(reverse|anti)[-\s]?martingale\b/.test(prompt) || /\b(double|increase|multiply)[^.]*\bafter\s+(?:a\s+)?win/.test(prompt))
-    return { stakingPlan: "reverse-martingale", stakeMultiplier: stakeMultiplier ?? 2, maxStake };
-  if (/\bd['’]?alembert\b/.test(prompt)) {
-    const stepMatch = prompt.match(/(?:step|unit|by)\s*(?:of\s*)?\$?\s*(\d+(?:\.\d+)?)/);
-    return { stakingPlan: "dalembert", stakeStep: stepMatch ? clamp(Number(stepMatch[1]), 0.01, 10_000) : undefined, maxStake };
-  }
+  const stepFrom = (text: string) => {
+    const stepMatch = text.match(/(?:step|unit|by)\s*(?:of\s*)?\$?\s*(\d+(?:\.\d+)?)/);
+    return stepMatch ? clamp(Number(stepMatch[1]), 0.01, 10_000) : undefined;
+  };
+  // Reverse D'Alembert must be read before D'Alembert (substring) and
+  // Oscar's Grind is approximated by it (readWarnings says so).
+  if (/\b(reverse|anti)[-\s]?d['’]?alembert\b/.test(prompt) || /\boscar/.test(prompt))
+    return { stakingPlan: "reverse-dalembert", stakeStep: stepFrom(prompt), maxStake };
   if (
-    /\bmartingale\b/.test(prompt) ||
-    /\b(double|multiply|increase)\b[^.]*\bafter\s+(?:a\s+)?loss/.test(prompt) ||
+    /\b(reverse|anti)[-\s]?martingale\b/.test(prompt) ||
+    /\bparoli\b/.test(prompt) ||
+    /\b1[-–—\s]?3[-–—\s]?2[-–—\s]?[46]\b/.test(prompt) ||
+    /\b(double|increase|multiply)\b[^.]*\bafter\s+(?:a\s+|each\s+|every\s+)?(?:win|winning)\b/.test(prompt)
+  )
+    return { stakingPlan: "reverse-martingale", stakeMultiplier: stakeMultiplier ?? 2, maxStake };
+  if (/\bfibonacci\b/.test(prompt))
+    return { stakingPlan: "fibonacci", maxStake };
+  if (/\bd['’]?alembert\b/.test(prompt) || /\blabouch/.test(prompt) || /\bcancellation system\b/.test(prompt))
+    return { stakingPlan: "dalembert", stakeStep: stepFrom(prompt), maxStake };
+  // "no martingale" must not read as martingale: the negation only cancels
+  // the bare name match, so "no martingale, use d'alembert" (handled above)
+  // and "double after a loss" still win on their own wording.
+  const martingaleNegated = /\b(no|without|remove|not|never)\s+(?:a\s+|the\s+)?martingale\b/.test(prompt);
+  if (
+    (!martingaleNegated && /\bmartingale\b/.test(prompt)) ||
+    /\b(double|multiply|increase)\b[^.]*\bafter\s+(?:a\s+|each\s+|every\s+)?(?:loss|losing|lose)\b/.test(prompt) ||
     /\brecover(?:y|ing)?\b[^.]*\bloss/.test(prompt)
   )
     return { stakingPlan: "martingale", stakeMultiplier: stakeMultiplier ?? 2, maxStake };
-  const stepMatch = prompt.match(/\bincrease\s+(?:the\s+)?stake\s+by\s+\$?\s*(\d+(?:\.\d+)?)[^.]*\bafter\s+(?:a\s+)?loss/);
+  const stepMatch = prompt.match(/\bincrease\s+(?:the\s+)?stake\s+by\s+\$?\s*(\d+(?:\.\d+)?)[^.]*\bafter\s+(?:a\s+|each\s+|every\s+)?(?:loss|losing)/);
   if (stepMatch)
     return { stakingPlan: "dalembert", stakeStep: clamp(Number(stepMatch[1]), 0.01, 10_000), maxStake };
-  return { stakingPlan: "flat", maxStake };
+  // Kelly and percent-of-balance staking size each trade from a live edge
+  // or the live balance; a static block strategy cannot, so build flat and
+  // say so (readWarnings) instead of silently substituting martingale.
+  if (
+    /\bkelly\b/.test(prompt) ||
+    /\b\d+(?:\.\d+)?\s*(?:%|percent)\s*(?:of\s+)?(?:my\s+|the\s+)?(?:balance|bankroll|account|equity)\b/.test(prompt) ||
+    /\bpercent(?:age)?\s+(?:of\s+)?(?:the\s+)?(?:balance|bankroll)\b/.test(prompt)
+  )
+    return { stakingPlan: "flat", maxStake };
+  // Explicit flat/fixed-stake request is the only way to opt out.
+  if (
+    /\b(flat staking|fixed stake|fixed staking|level staking|constant stake|same stake|no martingale|without martingale|no recovery)\b/.test(
+      prompt,
+    )
+  )
+    return { stakingPlan: "flat", maxStake };
+  // Standard build: every bot ships with martingale ×2 loss recovery (plus
+  // the take profit / stop loss the risk gate always emits). A multiplier
+  // named in the prompt ("x2.2") still wins.
+  return { stakingPlan: "martingale", stakeMultiplier: stakeMultiplier ?? 2, maxStake };
 }
 
 function readStreakStops(description: string): {
@@ -768,6 +855,53 @@ function readWarnings(description: string): string[] {
     warnings.push(
       "Clock-based scheduling was not generated; the bot trades whenever it is running and its conditions pass.",
     );
+  // Staking systems this builder approximates — the approximation is named
+  // so nobody mistakes it for the real sequence.
+  if (/\boscar/.test(prompt))
+    warnings.push(
+      "Oscar's Grind tracks a per-cycle profit target this builder cannot express, so it was built as Reverse D'Alembert (+1 unit after a win, −1 after a loss) — the closest ladder. Add cycle bookkeeping with variables in DBot for true Oscar's Grind.",
+    );
+  if (/\b1[-–—\s]?3[-–—\s]?2[-–—\s]?[46]\b/.test(prompt))
+    warnings.push(
+      "The 1-3-2-6/1-3-2-4 sequence needs win-streak state this builder does not generate, so it was built as a reverse martingale (press after wins, reset after a loss). The sequence itself can be added with a step variable in DBot.",
+    );
+  if (/\blabouch/.test(prompt) || /\bcancellation system\b/.test(prompt))
+    warnings.push(
+      "Labouchère keeps a written number line this builder cannot express, so it was built as D'Alembert (+1 unit after a loss, −1 after a win) — the closest ladder.",
+    );
+  if (
+    /\bkelly\b/.test(prompt) ||
+    /\b\d+(?:\.\d+)?\s*(?:%|percent)\s*(?:of\s+)?(?:my\s+|the\s+)?(?:balance|bankroll|account|equity)\b/.test(prompt) ||
+    /\bpercent(?:age)?\s+(?:of\s+)?(?:the\s+)?(?:balance|bankroll)\b/.test(prompt)
+  )
+    warnings.push(
+      "Kelly and percent-of-balance staking size each trade from a live win-rate edge or the live balance, which a generated block strategy cannot recalculate per trade — the bot was built with a flat stake at the amount named. Recompute the stake from the Balance block inside Purchase conditions for true percentage staking.",
+    );
+  // Contract families Deriv offers that this builder does not generate.
+  if (/\b(higher|lower)\b/.test(prompt) && !/\b(over|under|digit|barrier \d|last digit)\b/.test(prompt))
+    warnings.push(
+      "Higher/Lower is a barrier contract this builder does not generate (it builds Rise/Fall and the digit families). In DBot: set the trade type to Higher/Lower, set the barrier offset in Trade options, and the Purchase hedge block grows per-leg barrier inputs if you hedge it.",
+    );
+  if (/\btouch/.test(prompt))
+    warnings.push(
+      "Touch/No Touch is a barrier contract this builder does not generate. In DBot: set the trade type to Touch/No Touch with minutes/hours duration and a barrier offset; the Purchase hedge block grows per-leg barrier inputs if you hedge it.",
+    );
+  if (/\b(ends? (between|outside)|stays? between|goes outside|in\/?out)\b/.test(prompt))
+    warnings.push(
+      "In/Out contracts (Ends Between/Outside, Stays Between/Goes Outside) use two barriers and are not generated here. In DBot they live under the In/Out trade types, and the Purchase hedge block grows high/low barrier inputs per leg.",
+    );
+  if (/\b(high tick|low tick|reset (call|put)|Asian|only ups|only downs|call spread|put spread)\b/.test(prompt))
+    warnings.push(
+      "That contract family (High/Low Tick, Reset, Asians, Only Ups/Downs, Spreads) is not generated by this builder, which builds Rise/Fall and the digit families. The same market, stake and risk limits were kept.",
+    );
+  if (/\b\d+\s*(?:seconds?|secs?)\b/.test(prompt) && !/\b(wait|pause|cooldown|gap|between)\b/.test(prompt))
+    warnings.push(
+      "Durations here are generated in ticks (and minutes for Rise/Fall), so a seconds duration was read as that many ticks. On 2-second markets (R_10–R_100) one tick is about 2 seconds; adjust the Duration block in Trade options if you need exact seconds.",
+    );
+  if (/\bhedge\b[^.]*\b(after|only if|when|on)\b[^.]*\b(loss|losing|loses)\b/.test(prompt))
+    warnings.push(
+      "Conditional hedging (opening the opposite only after a loss) was built as an always-on hedge; wrap the Purchase hedge block in an If on the last contract result in DBot for the conditional version.",
+    );
   return warnings;
 }
 
@@ -779,19 +913,28 @@ function readStake(description: string): number {
   const amount =
     description.match(
       /(?:stake|amount|base stake|bet)\s*(?:of|is|to|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/i,
-    ) ?? description.match(/\$\s*(\d+(?:\.\d+)?)/);
+    ) ??
+    description.match(/\$\s*(\d+(?:\.\d+)?)\s*(?:per|each|a|every)\s+trade/i) ??
+    description.match(/\b(?:risk|trade with|use|using)\s+(?:a\s+stake\s+of\s+)?\$?\s*(\d+(?:\.\d+)?)\s*(?:usd|dollars?)?\s*(?:per|each|a|every)?\s*trade/i) ??
+    description.match(/\$\s*(\d+(?:\.\d+)?)/);
   return amount ? clamp(Number(amount[1]), 0.35, 10) : 0.35;
 }
 
 function readRiskSetting(description: string, kind: "loss" | "profit"): number {
   const match =
     kind === "loss"
-      ? description.match(
-          /\b(?:loss limit|max(?:imum)? loss|stop[- ]loss)\s*(?:of|at|to|is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/i,
-        )
-      : description.match(
-          /\b(?:profit target|take[- ]profit|target profit)\s*(?:of|at|to|is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/i,
-        );
+      ? (description.match(
+          /\b(?:loss limit|max(?:imum)? loss|stop[- ]loss|daily loss|session loss)\s*(?:of|at|to|is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/i,
+        ) ??
+        description.match(/\bSL\s*(?:of|at|to|is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/) ??
+        description.match(/\bstop[^.]*?\b(?:when|if)\b[^.]*?\bdown\s*\$?\s*(\d+(?:\.\d+)?)/i) ??
+        description.match(/\bstop[^.]*?\bafter losing\s*\$?\s*(\d+(?:\.\d+)?)/i))
+      : (description.match(
+          /\b(?:profit target|take[- ]profit|target profit|daily profit|session profit)\s*(?:of|at|to|is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/i,
+        ) ??
+        description.match(/\bTP\s*(?:of|at|to|is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)/) ??
+        description.match(/\bstop[^.]*?\b(?:when|if)\b[^.]*?\bup\s*\$?\s*(\d+(?:\.\d+)?)/i) ??
+        description.match(/\bstop[^.]*?\bafter winning\s*\$?\s*(\d+(?:\.\d+)?)/i));
   return match
     ? clamp(Number(match[1]), 0.35, 10_000)
     : kind === "loss"
@@ -803,7 +946,11 @@ function readMaxTrades(description: string): number {
   const match =
     description.match(
       /\b(?:max(?:imum)?\s*(?:trades|runs)|(?:trades|runs)\s*(?:limit|max))\s*(?:of|is|=|:)?\s*(\d+)\b/i,
-    ) ?? description.match(/\bmax(?:imum)?\s+(\d+)\s+(?:trades|runs)\b/i);
+    ) ??
+    description.match(/\bmax(?:imum)?\s+(\d+)\s+(?:trades|runs)\b/i) ??
+    description.match(/\bstop\s+after\s+(\d+)\s+(?:trades|runs|contracts)\b/i) ??
+    description.match(/\b(?:run|take|make|do)\s+(?:only\s+)?(\d+)\s+(?:trades|runs|contracts)\b/i) ??
+    description.match(/\b(\d+)\s+(?:trades|runs|contracts)\s+(?:only|in total|max)\b/i);
   return match ? clamp(Number(match[1]), 1, 500) : 25;
 }
 
@@ -817,6 +964,10 @@ function readDuration(
       : null;
   if (minutes)
     return { duration: clamp(Number(minutes[1]), 1, 15), durationUnit: "m" };
+  // "30 seconds": generated durations are ticks/minutes, so read seconds as
+  // ticks and let readWarnings say so (never silently default to 1 tick).
+  const seconds = description.match(/\b(\d+)\s*(?:seconds?|secs?)\b(?![^.]*\b(?:wait|between|cooldown|pause|gap)\b)/i);
+  if (seconds) return { duration: clamp(Number(seconds[1]), 1, 10), durationUnit: "t" };
   const ticks = description.match(/\b(\d+)\s*(?:ticks?|t)\b/i);
   return {
     duration: ticks ? clamp(Number(ticks[1]), 1, 10) : 1,
@@ -920,7 +1071,12 @@ export function parseDbotAiDescription(
         : []),
       ...(hedge && !virtual
         ? [
-            "Both hedge legs open at the same time with the hedge purchase block, each at its own stake. The two legs count as two runs toward the trade cap, and win/loss checks in After purchase read the main leg.",
+            "Both hedge legs open at the same time with the hedge purchase block, each at the Trade options stake. The two legs count as two runs toward the trade cap, and win/loss checks in After purchase read the main leg.",
+            ...(hedgeStakePercent !== undefined
+              ? [
+                  "The hedge purchase block stakes the Trade options amount on both legs, so the requested hedge percentage was not applied to the stake.",
+                ]
+              : []),
           ]
         : []),
     ],
@@ -1004,7 +1160,7 @@ export function applyDbotAiEdit(
     next.stake = readStake(edit);
     touched = true;
   }
-  if (/\b(martingale|alembert|flat staking|fixed stake|double|multiply|increase\s+(?:the\s+)?stake)\b/.test(prompt)) {
+  if (/\b(martingale|alembert|fibonacci|paroli|oscar|labouch|kelly|flat staking|fixed stake|double|multiply|increase\s+(?:the\s+)?stake)\b/.test(prompt) || /\bpercent/.test(prompt)) {
     if (/\b(flat|fixed|no martingale|remove)/.test(prompt) && !/\bmartingale\b/.test(prompt.replace("no martingale", ""))) {
       next.stakingPlan = "flat";
       next.stakeMultiplier = undefined;
@@ -1097,6 +1253,10 @@ export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
     parts.push(`reverse martingale ×${request.stakeMultiplier ?? 2}${request.maxStake ? ` capped at ${request.maxStake}` : ""}`);
   if (request.stakingPlan === "dalembert")
     parts.push(`D'Alembert step ${request.stakeStep ?? request.stake ?? 0.35}`);
+  if (request.stakingPlan === "reverse-dalembert")
+    parts.push(`Reverse D'Alembert step ${request.stakeStep ?? request.stake ?? 0.35}`);
+  if (request.stakingPlan === "fibonacci")
+    parts.push("Fibonacci ladder (1, 1, 2, 3, 5 … × base stake, restarts past ×21)");
   if (request.stopAfterLossStreak) parts.push(`stop after ${request.stopAfterLossStreak} losses in a row`);
   if (request.stopAfterWinStreak) parts.push(`stop after ${request.stopAfterWinStreak} wins in a row`);
   if (request.digitFilter) {
@@ -1116,7 +1276,7 @@ export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
     parts.push(
       request.virtual
         ? "hedged (both paper sides together)"
-        : `hedged (both sides open together${request.hedgeStakePercent ? `, hedge leg ${request.hedgeStakePercent}%` : ""})`,
+        : "hedged (both sides open together, same stake)",
     );
   if (request.virtual) parts.push("virtual/paper trades only");
   if (request.cooldownSeconds) parts.push(`${request.cooldownSeconds}s between trades`);
