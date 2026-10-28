@@ -243,3 +243,34 @@ test("follow-up edits change only what they mention", () => {
   assert.equal(edited?.duration, 3);
   assert.equal(applyDbotAiEdit(base, "what is a martingale?"), null);
 });
+
+test("a bare 'hedging bot' request builds a two-legged hedge, not a one-sided bot", () => {
+  // Regression: \bhedge\b did not match "hedging", and with no contract
+  // family named the parser returned a plain rise/fall bot (or nothing).
+  const parsed = parseDbotAiDescription("Build a hedging bot on R_100 stake 1 for 5 ticks");
+  assert.equal(parsed?.hedge, true);
+  assert.equal(parsed?.family, "rise-fall");
+  assert.ok(
+    parsed?.warnings.some((warning) => /hedges Rise\/Fall/i.test(warning)),
+    "the defaulted family is stated, not silent",
+  );
+
+  const xml = buildDbotAiStrategyXml(parsed);
+  assert.match(xml, /<field name="PURCHASE_LIST">CALL<\/field>/);
+  assert.match(xml, /<field name="PURCHASE_LIST">PUT<\/field>/);
+  // The stock Purchase block has no next-statement connector, so a Purchase
+  // carrying a <next> makes Blockly refuse the whole workspace
+  // ("Next statement does not exist"). Each hedge leg must sit alone.
+  const purchaseBlocks = [...xml.matchAll(/<block type="purchase"[^>]*>([\s\S]*?)<\/block>/g)];
+  assert.equal(purchaseBlocks.length, 2);
+  for (const [, inner] of purchaseBlocks) assert.doesNotMatch(inner, /<next>/);
+  assert.match(xml, /aiHedgeLegMain/);
+  assert.match(xml, /aiHedgeLegOpposite/);
+
+  const overUnder = parseDbotAiDescription("Hedging bot: buy both over and under barrier 5 on R_50");
+  assert.equal(overUnder?.hedge, true);
+  assert.equal(overUnder?.family, "over-under");
+
+  const base = parseDbotAiDescription("Build a fall bot on R_75 stake 0.5 for 3 ticks");
+  assert.equal(applyDbotAiEdit(base, "make it a hedging bot")?.hedge, true);
+});

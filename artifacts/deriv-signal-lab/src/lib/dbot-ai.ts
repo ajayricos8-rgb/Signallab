@@ -391,7 +391,17 @@ function beforePurchase(
   const entryAction = request.virtual
     ? virtualBuy
     : hedgeBlock
-      ? chainStatements([purchase, hedgeBlock])
+      ? // The stock Purchase block forbids a following statement
+        // (setNextStatement(false) — "one of this type per statement-stack"),
+        // so two hedge legs can never be chained purchase-after-purchase:
+        // Blockly refuses to load that XML at all ("Next statement does not
+        // exist"). Give each leg its own always-true IF inside the gated
+        // entry instead — the IFs chain legally and every Purchase sits
+        // alone in its own stack.
+        chainStatements([
+          `<block type="controls_if" id="aiHedgeLegMain"><value name="IF0"><block type="logic_boolean" id="aiHedgeLegMainTrue"><field name="BOOL">TRUE</field></block></value><statement name="DO0">${purchase}</statement></block>`,
+          `<block type="controls_if" id="aiHedgeLegOpposite"><value name="IF0"><block type="logic_boolean" id="aiHedgeLegOppositeTrue"><field name="BOOL">TRUE</field></block></value><statement name="DO0">${hedgeBlock}</statement></block>`,
+        ])
       : purchase;
   const entryIf = `<block type="controls_if" id="aiEntryGate"><value name="IF0">${condition}</value><statement name="DO0">${entryAction}</statement></block>`;
 
@@ -750,15 +760,26 @@ export function parseDbotAiDescription(
   fallbackCurrency = "USD",
 ): ParsedBotDescription | null {
   const description = wordsToNumbers(rawDescription);
-  const family = familyFromSignalName(description);
+  const prompt = description.toLowerCase();
+  // \bhedg (not \bhedge\b) so "hedging" and "hedged" count too: "build a
+  // hedging bot" used to fall through every test and produce a plain
+  // one-sided rise/fall bot.
+  const hedge =
+    /\bhedg/.test(prompt) ||
+    /\bbuy\s+both\b/.test(prompt) ||
+    /\bboth\s+(?:sides|directions)\b/.test(prompt) ||
+    /\bopposite\s+(?:sides?|directions?|contracts?|positions?)\b/.test(prompt) ||
+    /\b(?:both|buy|trade|cover)\s+(?:the\s+)?(?:rise\s+and\s+fall|fall\s+and\s+rise|over\s+and\s+under|under\s+and\s+over|even\s+and\s+odd|odd\s+and\s+even)\b/.test(
+      prompt,
+    );
+  const namedFamily = familyFromSignalName(description);
+  // A hedge request that names no contract family ("build a hedging bot")
+  // still needs one pair of opposite contracts: default to Rise/Fall
+  // (CALL + PUT) and say so in the warnings, instead of building nothing.
+  const family = namedFamily ?? (hedge ? "rise-fall" : null);
   if (!family) return null;
   const duration = readDuration(description, family);
-  const prompt = description.toLowerCase();
   const procedureName = readProcedureName(description);
-  const hedge =
-    /\bhedge\b/.test(prompt) ||
-    /\bbuy\s+both\b/.test(prompt) ||
-    /\bboth\s+(?:sides|directions|rise\s+and\s+fall|over\s+and\s+under)\b/.test(prompt);
   const shared = {
     family,
     symbol: readMarket(description, fallbackMarket),
@@ -784,7 +805,14 @@ export function parseDbotAiDescription(
     hedge: hedge || undefined,
     virtual: /\b(virtual|paper\s+trad\w*)\b/.test(prompt) || undefined,
     usedVisionAi: /\bvision\b/.test(prompt) && family === "over-under",
-    warnings: readWarnings(description),
+    warnings: [
+      ...readWarnings(description),
+      ...(hedge && !namedFamily
+        ? [
+            "No contract family was named, so this hedges Rise/Fall (CALL and PUT bought together). Ask for over/under or even/odd hedging to hedge a different pair.",
+          ]
+        : []),
+    ],
   };
   if (family === "rise-fall") {
     return {
@@ -896,8 +924,8 @@ export function applyDbotAiEdit(
     next.scanMarkets = !/\b(no|stop|remove|without)\b[^.]*\bscan\b/.test(prompt);
     touched = true;
   }
-  if (/\bhedge\b/.test(prompt)) {
-    next.hedge = !/\b(no|remove|without)\b[^.]*\bhedge\b/.test(prompt);
+  if (/\bhedg/.test(prompt)) {
+    next.hedge = !/\b(no|remove|without)\b[^.]*\bhedg/.test(prompt);
     touched = true;
   }
   if (/\b(virtual|paper|real purchases?|live trading)\b/.test(prompt)) {

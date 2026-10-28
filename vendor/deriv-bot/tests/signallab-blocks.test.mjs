@@ -134,9 +134,11 @@ test("the virtual blocks open, settle and book a paper trade", () => {
   assert.equal(feed.signalLabVirtualProfit(), 9, "a losing fall costs the stake");
   assert.equal(feed.signalLabVirtualWins(), 1);
 
-  // A digit direction settles against the last digit. A fresh feed snapshot
-  // resets the virtual ledger, so this case starts from a clean slate.
+  // A digit direction settles against the last digit. A feed snapshot no
+  // longer resets the virtual ledger (routine parent snapshots must not
+  // wipe a running session), so reset it explicitly for a clean slate.
   sendFeed([rising([100.07])]);
+  feed.signalLabVirtualReset();
   feed.signalLabVirtualBuy("R_100", "over", 10, 1.9, 5);
   sendFeed([rising([100.09])], false);
   feed.signalLabVirtualSettle();
@@ -144,15 +146,19 @@ test("the virtual blocks open, settle and book a paper trade", () => {
   assert.equal(feed.signalLabVirtualWins(), 1);
 });
 
-test("a feed reset clears the scan and the virtual ledger", () => {
-  sendFeed([rising(Array.from({ length: 5 }, (_, i) => 100 + i))]);
-  feed.signalLabScanMarkets("rise-fall", 5, 0);
+test("a feed reset replaces tick history but keeps the scan and the virtual ledger", () => {
+  sendFeed([rising(Array.from({ length: 20 }, (_, i) => 100 + i))]);
+  feed.signalLabScanMarkets("rise-fall", 20, 0);
+  assert.equal(feed.signalLabScanCount(), 1, "the scan scored the only market");
   feed.signalLabVirtualBuy("R_100", "rise", 10, 1.9, 5);
-  sendFeed([]);
-  assert.equal(feed.signalLabScanCount(), 0, "a reset clears the scan");
-  assert.equal(feed.signalLabScanBest(), "");
-  assert.equal(feed.signalLabVirtualOpen(), 0, "a reset clears the virtual ledger");
-  assert.equal(feed.signalLabVirtualBalance(), 10_000);
+  // The parent re-sends a full snapshot on routine events — workspace
+  // ready, feed re-subscribe, and the account link that happens inside
+  // Load and Run itself. Session state built on the feed must survive
+  // those snapshots; wiping it here disarmed loaded bots mid-run.
+  sendFeed([rising(Array.from({ length: 20 }, (_, i) => 200 + i))]);
+  assert.equal(feed.signalLabScanCount(), 1, "a reset keeps the scan");
+  assert.equal(feed.signalLabScanBest(), "R_100");
+  assert.equal(feed.signalLabVirtualOpen(), 1, "a reset keeps virtual positions");
 });
 
 test.after(() => {

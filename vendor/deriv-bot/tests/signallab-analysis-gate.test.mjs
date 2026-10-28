@@ -272,6 +272,31 @@ test("quote and digit triggers use the latest shared feed value", () => {
   );
 });
 
+test("a routine feed reset does not unload the analysis (Load and Run regression)", () => {
+  sendFeed([100.11, 100.12, 100.13]);
+  assert.equal(setSnapshot(snapshot()), true);
+  assert.equal(gate(), true, "the gate opens for the loaded analysis");
+
+  // The parent answers workspace-ready, feed-subscribe and account-connected
+  // with a full snapshot (reset: true) — and Load and Run links the account,
+  // so one of those snapshots lands right after a bot is loaded. It used to
+  // null the stored analysis: the gate then read "no analysis loaded"
+  // forever, the bot stayed on "Bot is starting" and never bought.
+  sendFeed([100.11, 100.12, 100.13]);
+  assert.equal(gate(), true, "the loaded analysis survives a feed reset");
+  assert.equal(
+    feed.getSignalLabAnalysisGateReason(
+      "rise-fall",
+      "R_100",
+      "run-1:rise-fall:R_100:CALL::::1",
+      "CALL",
+      0,
+      0,
+    ),
+    "ok",
+  );
+});
+
 test.after(() => {
   Date.now = originalNow;
 });

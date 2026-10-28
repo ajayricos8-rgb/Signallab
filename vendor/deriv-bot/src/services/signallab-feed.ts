@@ -196,10 +196,17 @@ function applyFeed(data: Record<string, unknown>) {
     const reset = data.reset === true;
     const incoming = Array.isArray(data.markets) ? data.markets : [];
     if (reset) {
+        // A reset only replaces the shared tick history. The loaded analysis,
+        // the last scan and the virtual ledger are session state that a user
+        // or a loaded strategy deliberately created, and the parent re-sends
+        // a full snapshot on routine events (workspace ready, feed
+        // re-subscribe, account connected — including the account link that
+        // happens inside Load and Run itself). Wiping them here silently
+        // disarmed every analysis-gated bot seconds into its run: the gate
+        // read "no analysis loaded" forever and the bot sat on "Bot is
+        // starting" without ever buying. Intentional clearing has its own
+        // paths (the clear-analysis message, the virtual reset block).
         markets = new Map();
-        analysis = null;
-        scan = null;
-        virtualLedger = { balance: 10_000, profit: 0, runs: 0, wins: 0, positions: [] };
     }
     let changed = false;
     for (const raw of incoming) {
