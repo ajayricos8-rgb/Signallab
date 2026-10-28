@@ -125,6 +125,31 @@ window.Blockly.Blocks.trade_definition_tradeoptions = {
             this.getFieldValue('SECONDBARRIEROFFSETTYPE_LIST') || config().BARRIER_TYPES[1][1],
         ];
 
+        // When the workspace buys ONLY through the Purchase hedge block, the
+        // barrier/prediction configuration lives on that block's Purchase 1 /
+        // Purchase 2 rows — Trade options must not carry a third one. Keep
+        // this block's shape in sync as hedge/purchase blocks come and go
+        // (workspace loads included: a load fires BLOCK_CREATE for every
+        // block, so a loaded hedge strategy sheds these inputs immediately).
+        if (
+            event.type === window.Blockly.Events.BLOCK_CREATE ||
+            event.type === window.Blockly.Events.BLOCK_DELETE
+        ) {
+            const hedge_only = this.isHedgeOnlyWorkspace();
+            if (hedge_only !== this.hedge_only_shape) {
+                const was_hedge_only = this.hedge_only_shape === true;
+                this.hedge_only_shape = hedge_only;
+                if (hedge_only) {
+                    this.removeHedgeManagedInputs();
+                } else if (was_hedge_only) {
+                    // The hedge block (or the last hedge-only shape) just
+                    // went away: bring the standard inputs back.
+                    this.updateBarrierInputs(false, false);
+                    this.updatePredictionInput(false);
+                }
+            }
+        }
+
         if (
             (event.type === window.Blockly.Events.BLOCK_CREATE && event.ids.includes(this.id)) ||
             (event.type === window.Blockly.Events.BLOCK_DRAG && !event.isStart)
@@ -190,6 +215,31 @@ window.Blockly.Blocks.trade_definition_tradeoptions = {
                 this.updateDurationInput(false, false);
             }
         }
+    },
+    /**
+     * True when every purchase in the workspace goes through the Purchase
+     * hedge block (no plain Purchase/Payout block anywhere). In that shape
+     * the hedge block's own rows carry the only prediction/barrier
+     * configuration, and this block hides its barrier/prediction inputs so
+     * the workspace shows exactly two leg configurations, never three.
+     */
+    isHedgeOnlyWorkspace() {
+        if (!this.workspace) return false;
+        let has_hedge = false;
+        let has_plain_buyer = false;
+        this.workspace.getAllBlocks(false).forEach(block => {
+            if (block.type === 'hedge_purchase') has_hedge = true;
+            if (block.type === 'purchase' || block.type === 'payout') has_plain_buyer = true;
+        });
+        return has_hedge && !has_plain_buyer;
+    },
+    removeHedgeManagedInputs() {
+        runIrreversibleEvents(() => {
+            this.removeInput('BARRIEROFFSET', true);
+            this.removeInput('SECONDBARRIEROFFSET', true);
+            this.removeInput('PREDICTION_LABEL', true);
+            this.removeInput('PREDICTION', true);
+        });
     },
     createPredictionInput(prediction_range) {
         runIrreversibleEvents(() => {
@@ -436,6 +486,11 @@ window.Blockly.Blocks.trade_definition_tradeoptions = {
         }, 10);
     },
     updateBarrierInputs(should_use_default_type, should_use_default_values) {
+        // In a hedge-only workspace the hedge block owns barrier config.
+        if (this.isHedgeOnlyWorkspace()) {
+            this.removeHedgeManagedInputs();
+            return;
+        }
         const { contracts_for } = ApiHelpers?.instance ?? {};
         if (!contracts_for) return;
 
@@ -496,6 +551,11 @@ window.Blockly.Blocks.trade_definition_tradeoptions = {
             });
     },
     updatePredictionInput(should_use_default_value) {
+        // In a hedge-only workspace the hedge block owns prediction config.
+        if (this.isHedgeOnlyWorkspace()) {
+            this.removeHedgeManagedInputs();
+            return;
+        }
         const { contracts_for } = ApiHelpers?.instance ?? {};
         if (!contracts_for) return;
 

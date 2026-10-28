@@ -15,6 +15,7 @@ import {
 // The AI bot ships as a real strategy file, the same way Deriv ships its own:
 // blocks in, blocks out. It is dropped into the builder untouched.
 import aiVisionOverUnderXml from '@/lib/bot-store/bots/ai-vision-over-under.xml?raw';
+import aiEvenSwitcherXml from '@/lib/bot-store/bots/ai-even-switcher.xml?raw';
 
 type SpaceView = 'builder' | 'chart' | 'store';
 type LinkState = 'idle' | 'connecting' | 'connected';
@@ -53,6 +54,19 @@ const STRATEGIES: Strategy[] = [
     accent: 'emerald',
     icon: BrainCircuit,
     xml: aiVisionOverUnderXml,
+  },
+  {
+    id: 'AI_EVEN_SWITCHER',
+    name: 'AI Even Switcher',
+    category: 'AI',
+    short: 'An Even/Odd bot that scans every volatility market each cycle and trades Even on the strongest one — and after a loss switches itself into a Markov + AI recovery mode, reverting to Even once the session is back in profit.',
+    detail:
+      'Two strategies, one switch. In primary mode it scores every shared market for Even/Odd, moves to the strongest and buys Even there, so it always has a market to trade. The first loss flips it into recovery: entries must also clear a Markov gate that measures, from the last 1000 ticks, the chance the current digit transitions to an even digit by expiry — buying Even while that measurement clears the threshold and Odd while it favours Odd by the same margin, still on whichever market the scan picks. The moment a win returns the session profit to zero or better it reverts to the primary strategy, resets the stake and says so in the journal; a win that leaves the session below zero keeps recovering. Staking is a capped martingale ladder (multiplies after losses up to a step cap, then restarts) inside loss-limit, profit-target and balance-percentage guards. The recovery is Markov rather than Rise/Fall because one workspace holds a single trade type — this one trades Even/Odd.',
+    risk:
+      'Even/Odd pays a little under double on a near-fair digit stream, so the scan and the Markov gate choose where and when — they do not create an edge — and the martingale ladder can reach its cap in a bad run. Start on a demo account, keep "ai base stake" small, and set "ai loss limit" to what a session may cost.',
+    accent: 'teal',
+    icon: BrainCircuit,
+    xml: aiEvenSwitcherXml,
   },
 ];
 
