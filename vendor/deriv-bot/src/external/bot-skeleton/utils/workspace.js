@@ -5,9 +5,14 @@ export const hasAllRequiredBlocks = () => {
     const { mandatoryMainBlocks } = config();
     const required_block_types = ['trade_definition_tradeoptions', ...mandatoryMainBlocks];
     const all_block_types = blocks_in_workspace.map(block => block.type);
-    const has_all_required_blocks = required_block_types.every(required_block_type =>
-        all_block_types.includes(required_block_type)
-    );
+    const has_all_required_blocks = required_block_types.every(required_block_type => {
+        // The hedge block is a doubled Purchase: it covers the purchase
+        // requirement without a separate Purchase block.
+        if (required_block_type === 'purchase') {
+            return all_block_types.includes('purchase') || all_block_types.includes('hedge_purchase');
+        }
+        return all_block_types.includes(required_block_type);
+    });
 
     return has_all_required_blocks;
 };

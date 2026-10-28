@@ -156,10 +156,22 @@ test('a plan is coherent: the barrier, direction, stake and probability belong t
     assert.ok(plan.barrier >= 0 && plan.barrier <= 9);
     assert.ok(['over', 'under'].includes(plan.direction));
     assert.ok(plan.candidates.length >= 10);
-    // The winner must be the candidate with the strongest measured lean.
-    const best = plan.candidates.reduce((a, b) => (b.tStat > a.tStat ? b : a));
-    assert.equal(best.barrier, plan.best.barrier);
-    assert.equal(best.direction, plan.best.direction);
+    // Every candidate is a barrier the bot is allowed to trade (Over 1–6,
+    // Under 4–8): the near-certain, near-worthless extremes are never priced.
+    plan.candidates.forEach(candidate => {
+        if (candidate.direction === 'over')
+            assert.ok(candidate.barrier >= 1 && candidate.barrier <= 6, `over barrier ${candidate.barrier} out of range`);
+        else assert.ok(candidate.barrier >= 4 && candidate.barrier <= 8, `under barrier ${candidate.barrier} out of range`);
+    });
+    // Two-stage choice: among the candidates clearing every bar the winner
+    // has the best expected value; with none eligible, the strongest lean
+    // stands in so the plan still names a buyable contract.
+    const eligible = plan.candidates.filter(candidate => candidate.passes);
+    const expected = eligible.length
+        ? eligible.reduce((a, b) => (b.adjusted > a.adjusted ? b : a))
+        : plan.candidates.reduce((a, b) => (b.bias > a.bias ? b : a));
+    assert.equal(plan.best.barrier, expected.barrier);
+    assert.equal(plan.best.direction, expected.direction);
     // Every candidate carries the numbers the UI shows.
     plan.candidates.forEach(candidate => {
         assert.ok(candidate.payout > 0);

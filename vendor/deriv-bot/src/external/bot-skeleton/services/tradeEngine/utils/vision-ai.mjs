@@ -45,6 +45,7 @@ import {
     sum,
     toNumbers,
 } from './vision-math.mjs';
+import { isAllowedBarrier } from './vision-entry.mjs';
 
 export const MODEL_NAMES = ['uniform', 'frequency', 'recent', 'transition', 'analog', 'momentum', 'neural'];
 
@@ -461,6 +462,11 @@ export function planTrade(values, options = {}) {
     const candidates = [];
     for (let barrier = 0; barrier <= 9; barrier++) {
         ['over', 'under'].forEach(direction => {
+            // Only barriers the bot is allowed to trade are ever priced:
+            // Over 1–6, Under 4–8 (see vision-entry). The near-certain
+            // extremes pay almost nothing, so they are not candidates no
+            // matter how strong the lean behind them is.
+            if (!isAllowedBarrier(direction, barrier)) return;
             const count = winningDigitCount(direction, barrier);
             if (count <= 0) return;
             const fair = count / 10;
