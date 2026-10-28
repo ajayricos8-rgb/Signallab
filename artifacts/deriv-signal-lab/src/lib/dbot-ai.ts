@@ -880,11 +880,11 @@ function readWarnings(description: string): string[] {
   // Contract families Deriv offers that this builder does not generate.
   if (/\b(higher|lower)\b/.test(prompt) && !/\b(over|under|digit|barrier \d|last digit)\b/.test(prompt))
     warnings.push(
-      "Higher/Lower is a barrier contract this builder does not generate (it builds Rise/Fall and the digit families). In DBot: set the trade type to Higher/Lower, set the barrier offset in Trade options, and the Purchase hedge block grows per-leg barrier inputs if you hedge it.",
+      "Higher/Lower is a barrier contract this builder does not generate (it builds Rise/Fall and the digit families). In DBot: set the trade type to Higher/Lower and the barrier offset in Trade options for a plain Purchase; to hedge it, use the Purchase hedge block and set each leg's barrier offset on its Purchase 1 / Purchase 2 rows.",
     );
   if (/\btouch/.test(prompt))
     warnings.push(
-      "Touch/No Touch is a barrier contract this builder does not generate. In DBot: set the trade type to Touch/No Touch with minutes/hours duration and a barrier offset; the Purchase hedge block grows per-leg barrier inputs if you hedge it.",
+      "Touch/No Touch is a barrier contract this builder does not generate. In DBot: set the trade type to Touch/No Touch with minutes/hours duration and a barrier offset; the Purchase hedge block carries a barrier offset on each of its Purchase 1 / Purchase 2 rows if you hedge it.",
     );
   if (/\b(ends? (between|outside)|stays? between|goes outside|in\/?out)\b/.test(prompt))
     warnings.push(
