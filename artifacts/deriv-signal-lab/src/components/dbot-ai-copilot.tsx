@@ -956,7 +956,9 @@ export function DbotAiCopilot({
       maxTrades,
       lossLimit,
       profitTarget,
-      cooldownSeconds: 2,
+      // No post-trade pause: the next entry is evaluated as soon as the
+      // previous contract settles, so cadence is set by duration alone.
+      cooldownSeconds: 0,
     };
     return request;
   }, [
