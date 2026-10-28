@@ -280,10 +280,21 @@ class DBot {
             this.is_bot_running = true;
 
             api_base.setIsRunning(true);
-            this.interpreter.run(code).catch(error => {
-                globalObserver.emit('Error', error);
-                this.stopBot();
-            });
+            this.interpreter
+                .run(code)
+                .then(() => {
+                    // The program finished on its own (e.g. no "trade again"
+                    // after the last contract): reset the run state rather
+                    // than leaving the workspace showing a stopped bot as
+                    // still running.
+                    if (this.is_bot_running && !api_base.is_stopping) {
+                        this.stopBot();
+                    }
+                })
+                .catch(error => {
+                    globalObserver.emit('Error', error);
+                    this.stopBot();
+                });
         } catch (error) {
             globalObserver.emit('Error', error);
 

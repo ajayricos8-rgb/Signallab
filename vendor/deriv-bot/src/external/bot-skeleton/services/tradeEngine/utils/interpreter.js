@@ -44,13 +44,6 @@ const Interpreter = () => {
         revert(watchName === 'before' ? $scope.beforeState : $scope.duringState)
     );
 
-    function init() {
-        $scope = createScope();
-        bot = Interface($scope);
-        interpreter = {};
-        onFinish = () => {};
-    }
-
     function revert(state) {
         interpreter.restoreStateSnapshot(state);
         interpreter.paused_ = false;
@@ -63,7 +56,7 @@ const Interpreter = () => {
         }
     }
 
-    function createAsync(js_interpreter, func) {
+    function createAsync(js_interpreter, func, resumeOnError = true) {
         const asyncFunc = (...args) => {
             const callback = args.pop();
 
@@ -91,6 +84,18 @@ const Interpreter = () => {
                 .catch(e => {
                     // e.error for errors get from API, e for code errors
                     $scope.observer.emit('Error', e.error || e);
+                    // A failed read must not wedge the trading loop either:
+                    // without a callback the interpreter stays paused on this
+                    // call forever and the bot silently stops trading. Hand
+                    // the strategy an undefined result and carry on. Order
+                    // placement opts out (resumeOnError = false): its own
+                    // revert/retry machinery decides how execution continues,
+                    // and resuming blindly past a failed buy would corrupt
+                    // the before/during-purchase scope machine.
+                    if (resumeOnError) {
+                        callback(js_interpreter.nativeToPseudo(undefined));
+                        loop();
+                    }
                 });
         };
 
@@ -154,38 +159,56 @@ const Interpreter = () => {
                 if (shouldRestartOnError(bot)) {
                     $scope.startState = js_interpreter.takeStateSnapshot();
                 }
-                start(...args);
+                try {
+                    start(...args);
+                } catch (e) {
+                    // Bot.start runs natively inside an interpreter step: a
+                    // synchronous throw (e.g. a custom limit reached) would
+                    // abort the whole program with no error shown anywhere —
+                    // the bot just silently stops. Route it through the same
+                    // error handling as every other failure instead.
+                    $scope.observer.emit('Error', e?.error || e);
+                }
             })
         );
 
         js_interpreter.setProperty(
             pseudo_bot_interface,
             'purchase',
-            createAsync(js_interpreter, bot_interface.purchase)
+            createAsync(js_interpreter, bot_interface.purchase, false)
+        );
+        js_interpreter.setProperty(
+            pseudo_bot_interface,
+            'purchaseHedge',
+            createAsync(js_interpreter, bot_interface.purchaseHedge, false)
         );
         js_interpreter.setProperty(
             pseudo_bot_interface,
             'sellAtMarket',
-            createAsync(js_interpreter, bot_interface.sellAtMarket)
+            createAsync(js_interpreter, bot_interface.sellAtMarket, false)
         );
         js_interpreter.setProperty(scope, 'Bot', pseudo_bot_interface);
         js_interpreter.setProperty(
             scope,
             'watch',
-            createAsync(js_interpreter, watchName => {
-                const { watch } = bot.getInterface();
+            createAsync(
+                js_interpreter,
+                watchName => {
+                    const { watch } = bot.getInterface();
 
-                if (timeMachineEnabled(bot)) {
-                    const snapshot = interpreter.takeStateSnapshot();
-                    if (watchName === 'before') {
-                        $scope.beforeState = snapshot;
-                    } else {
-                        $scope.duringState = snapshot;
+                    if (timeMachineEnabled(bot)) {
+                        const snapshot = interpreter.takeStateSnapshot();
+                        if (watchName === 'before') {
+                            $scope.beforeState = snapshot;
+                        } else {
+                            $scope.duringState = snapshot;
+                        }
                     }
-                }
 
-                return watch(watchName);
-            })
+                    return watch(watchName);
+                },
+                false
+            )
         );
 
         js_interpreter.setProperty(scope, 'sleep', createAsync(js_interpreter, sleep));
@@ -281,23 +304,26 @@ const Interpreter = () => {
                     return;
                 }
 
-                $scope.is_error_triggered = true;
-                if (!shouldRestartOnError(bot, e.code) || !botStarted(bot)) {
+                // A running bot stops only when the user stops it, when a
+                // configured limit ends it (CustomLimitsReached), or when
+                // the failure is genuinely unrecoverable (insufficient
+                // balance, contract validation, authentication...).
+                // Everything else — a flaky proposal renewal, a timed-out
+                // tick read, a momentary API error — is a journal entry,
+                // not a stop signal: purchases and sells revert/retry
+                // through their own machinery, background proposal
+                // requests renew themselves, and plain reads resume with
+                // an undefined result. The old behaviour tore the session
+                // down and tried to restart into a fresh interpreter that
+                // was never actually created, so one transient error (a
+                // matter of time on any long run) silently killed the bot.
+                if (unrecoverable_errors.includes(e?.code) || !botStarted(bot)) {
+                    $scope.is_error_triggered = true;
                     reject(e);
                     return;
                 }
 
                 globalObserver.emit('Error', e);
-                const { initArgs, tradeOptions } = bot.tradeEngine;
-                terminateSession();
-                init();
-                $scope.observer.register('Error', onError);
-                bot.tradeEngine.init(...initArgs);
-                bot.tradeEngine.start(tradeOptions);
-                const canRestoreState = $scope.startState && interpreter?.restoreStateSnapshot instanceof Function;
-                if (canRestoreState) {
-                    revert($scope.startState);
-                }
             };
 
             $scope.observer.register('Error', onError);

@@ -290,7 +290,7 @@ test("a bare 'hedging bot' request builds a two-legged hedge, not a one-sided bo
   assert.equal(applyDbotAiEdit(base, "make it a hedging bot")?.hedge, true);
 });
 
-test("hedge legs carry their own stakes; paper hedges open both sides together", () => {
+test("hedge legs share the trade-options stake and carry per-leg predictions; paper hedges open both sides together", () => {
   const parsed = parseDbotAiDescription(
     "Hedge bot on R_100 stake 2, hedge leg at 50%, buy both rise and fall for 5 ticks",
   );
@@ -300,29 +300,47 @@ test("hedge legs carry their own stakes; paper hedges open both sides together",
   assert.equal(parsed?.direction, "RISE");
   const xml = buildDbotAiStrategyXml(parsed);
   assert.ok(xml.indexOf('PURCHASE_LIST">CALL') < xml.indexOf('HEDGE_LIST">PUT'), "main leg (CALL) is the first contract of the pair");
-  // The main leg stakes the Trade options amount (2); the hedge leg gets
-  // its own stake input at 50% of 2 = 1, both sent in the same pass.
-  assert.match(xml, /<value name="SECOND_STAKE"><shadow type="math_number" id="aiHedgeSecondStake"><field name="NUM">1<\/field><\/shadow><\/value>/);
-  assert.match(describeDbotAiStrategy(parsed), /both sides open together, hedge leg 50%/);
+  // The hedging block has NO second-leg stake configuration — both legs
+  // stake the Trade options amount — and the unapplied percentage is
+  // called out in the parse warnings instead of being silently dropped.
+  assert.doesNotMatch(xml, /SECOND_STAKE/);
+  assert.ok(
+    parsed?.warnings.some((warning) => /no separate second-leg stake|requested hedge percentage was not applied/i.test(warning)),
+    "the unapplied hedge percentage is stated, not silent",
+  );
+  assert.match(describeDbotAiStrategy(parsed), /both sides open together, same stake/);
+  // Default builds ship martingale recovery plus the take-profit/stop-loss
+  // risk gate — the hedge bot above named no staking plan, and still gets one.
+  assert.equal(parsed?.stakingPlan, "martingale");
+  assert.match(xml, /aiStakeGrow/);
 
-  // Matches hedges against Differs on the same digit.
+  // Over/Under hedges carry a Prediction input per leg on the block.
+  const overUnderXml = buildDbotAiStrategyXml(
+    parseDbotAiDescription("Hedging bot: buy both over and under barrier 5 on R_50"),
+  );
+  assert.match(overUnderXml, /<mutation has_prediction="true"/);
+  assert.match(overUnderXml, /<value name="PREDICTION">/);
+  assert.match(overUnderXml, /<value name="HEDGE_PREDICTION">/);
+  assert.doesNotMatch(overUnderXml, /SECOND_STAKE/);
+
+  // Matches hedges against Differs on the same digit, per-leg prediction.
   const matches = parseDbotAiDescription("Hedge digit matches 7 on R_100 stake 1");
   assert.equal(matches?.hedge, true);
   const matchesXml = buildDbotAiStrategyXml(matches);
   assert.match(matchesXml, /<field name="PURCHASE_LIST">DIGITMATCH<\/field>/);
   assert.match(matchesXml, /<field name="HEDGE_LIST">DIGITDIFF<\/field>/);
+  assert.match(matchesXml, /<value name="HEDGE_PREDICTION">/);
 
-  // A staking plan coexists with the hedge: the main leg reads the stake
-  // variable as usual and the second leg stakes the same share of the
-  // progressed stake, so both legs move together.
+  // A staking plan coexists with the hedge: both legs stake the Trade
+  // options amount, which reads the progressed stake variable, so the two
+  // legs move together.
   const martingaleHedge = buildDbotAiStrategyXml({
     family: "rise-fall", symbol: "R_100", duration: 5, stake: 1,
     hedge: true, stakingPlan: "martingale", stakeMultiplier: 2,
   });
   assert.match(martingaleHedge, /aiStakeGrow/);
   assert.match(martingaleHedge, /<block type="hedge_purchase"/);
-  assert.match(martingaleHedge, /id="aiHedgeSecondStake"/);
-  assert.match(martingaleHedge, /aiHedgeSecondStakeFraction/);
+  assert.doesNotMatch(martingaleHedge, /SECOND_STAKE/);
 
   // Paper positions are ledger entries, not engine contracts: a virtual
   // hedge opens both directions in the same pass.
@@ -407,4 +425,85 @@ test("no post-trade cooldown unless one is requested", () => {
   });
   assert.match(slow, /<block type="timeout" id="aiCooldown"/);
   assert.match(slow, /<field name="NUM">7<\/field>/);
+});
+
+test("every built bot ships martingale, take profit and stop loss as standard", () => {
+  const plain = parseDbotAiDescription("Build an even bot on R_100 stake 0.5");
+  assert.equal(plain?.stakingPlan, "martingale", "no staking named -> martingale is standard");
+  assert.equal(plain?.stakeMultiplier, 2);
+  assert.ok(plain?.lossLimit > 0 && plain?.profitTarget > 0, "TP/SL always set");
+  const xml = buildDbotAiStrategyXml(plain);
+  assert.match(xml, /aiStakeGrow/, "martingale progression is generated");
+  assert.match(xml, /total_profit/, "risk gate reads session P/L");
+
+  // Flat staking is the explicit opt-out, in any of its usual wordings.
+  for (const wording of ["flat staking", "fixed stake", "no martingale", "same stake every trade"]) {
+    const flat = parseDbotAiDescription(`Rise bot on R_50, ${wording}, stake 1`);
+    assert.equal(flat?.stakingPlan, "flat", wording);
+  }
+});
+
+test("the builder understands the staking systems Deriv traders name", () => {
+  const cases = [
+    ["Even bot, Fibonacci staking, stake 0.35", "fibonacci"],
+    ["Odd bot with reverse d'Alembert step 0.25", "reverse-dalembert"],
+    ["Rise bot with Paroli, stop after 3 wins in a row", "reverse-martingale"],
+    ["Under 6 bot, Oscar's grind", "reverse-dalembert"],
+    ["Even bot using the 1-3-2-6 system", "reverse-martingale"],
+    ["Fall bot, labouchere staking", "dalembert"],
+    ["Rise bot, double the stake after each loss", "martingale"],
+    ["Rise bot, increase stake after losing", "martingale"],
+    ["Even bot, Kelly staking at 2 per trade", "flat"],
+    ["Odd bot staking 2% of my balance", "flat"],
+  ];
+  for (const [prompt, plan] of cases)
+    assert.equal(parseDbotAiDescription(prompt)?.stakingPlan, plan, prompt);
+
+  // Approximated systems are flagged, never silently substituted.
+  const flags = [
+    ["Under 6 bot, Oscar's grind", /Oscar's Grind.*Reverse D'Alembert/],
+    ["Even bot using the 1-3-2-6 system", /1-3-2-6.*reverse martingale/],
+    ["Fall bot, labouchere staking", /Labouchère.*D'Alembert/],
+    ["Even bot, Kelly staking at 2 per trade", /Kelly and percent-of-balance/],
+    ["Odd bot staking 2% of my balance", /Kelly and percent-of-balance/],
+  ];
+  for (const [prompt, pattern] of flags)
+    assert.ok(
+      parseDbotAiDescription(prompt)?.warnings.some((warning) => pattern.test(warning)),
+      prompt,
+    );
+
+  // Fibonacci generates the two-variable ladder, balanced XML included.
+  const fib = parseDbotAiDescription("Even bot on R_75, Fibonacci, stake 0.35, stop loss 10");
+  const fibXml = buildDbotAiStrategyXml(fib);
+  assert.match(fibXml, /ai previous stake/);
+  assert.match(fibXml, /aiFibGrow/);
+  assert.match(fibXml, /aiFibCap/);
+  assert.match(describeDbotAiStrategy(fib), /Fibonacci ladder/);
+  assert.equal(tagCount(fibXml, "block").open, tagCount(fibXml, "block").close);
+});
+
+test("plain-word stakes, TP/SL, trade caps and durations are read faithfully", () => {
+  assert.equal(parseDbotAiDescription("Rise bot, $2 per trade on R_100")?.stake, 2);
+  assert.equal(parseDbotAiDescription("Even bot, risk 1 per trade")?.stake, 1);
+  const tpsl = parseDbotAiDescription("Fall bot on R_75 stake 1, TP 12, SL 6");
+  assert.equal(tpsl?.profitTarget, 12);
+  assert.equal(tpsl?.lossLimit, 6);
+  const stops = parseDbotAiDescription("Rise bot, stop when up 15, stop when down 8");
+  assert.equal(stops?.profitTarget, 15);
+  assert.equal(stops?.lossLimit, 8);
+  assert.equal(parseDbotAiDescription("Odd bot, stop after 40 trades")?.maxTrades, 40);
+  assert.equal(parseDbotAiDescription("Odd bot, 15 trades only")?.maxTrades, 15);
+  const secs = parseDbotAiDescription("Rise bot on R_100 for 5 seconds stake 1");
+  assert.equal(secs?.duration, 5, "seconds are honoured as ticks, not dropped to 1");
+  assert.ok(secs?.warnings.some((warning) => /seconds duration was read as/.test(warning)));
+});
+
+test("named-but-unbuilt contract families are explained in warnings", () => {
+  const mixed = parseDbotAiDescription("Over 5 bot on R_100, but make it a touch strategy");
+  assert.ok(mixed?.warnings.some((warning) => /Touch\/No Touch/.test(warning)));
+  const inOut = parseDbotAiDescription("Rise bot on R_100 with ends between logic");
+  assert.ok(inOut?.warnings.some((warning) => /In\/Out contracts/.test(warning)));
+  assert.equal(parseDbotAiDescription("Higher lower bot on R_100 stake 1"), null,
+    "a pure Higher/Lower request is not silently rebuilt as another family");
 });
