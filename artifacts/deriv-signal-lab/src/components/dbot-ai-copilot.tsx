@@ -263,9 +263,14 @@ function buildAnalysisSnapshot(
 ): DbotAiAnalysisSnapshot | null {
   const signal = signalOf(result);
   const action = signal.master.entry.action;
+  // A speculative call is a measured, positive edge that has not cleared its
+  // own error bar. It is still a market the analysis can act on, so the
+  // strategy is generated for it; only an honest NO_EDGE verdict leaves the
+  // generated strategy without an entry.
   const tradeable =
     (signal.master.verdict === "TRADE_NOW" ||
-      signal.master.verdict === "TRADE_ON_ENTRY") &&
+      signal.master.verdict === "TRADE_ON_ENTRY" ||
+      signal.master.verdict === "SPECULATIVE") &&
     action !== "no-edge";
   const familyForStrategy: DbotAiFamily =
     result.kind === "digit" ? result.family : "rise-fall";
@@ -327,7 +332,12 @@ function buildAnalysisSnapshot(
     asOfEpoch,
     maxAgeMs: 15 * 60_000,
     validForTicks: Math.max(
-      1,
+      // The measured decay window is the signal's own, but a one-tick entry
+      // would close the live gate on the very first tick — before the bot
+      // has placed it or run its after-purchase cooldown. A floor keeps the
+      // entry alive long enough to trade the measured signal instead of
+      // expiring it on arrival.
+      60,
       Math.min(500, Math.round(signal.master.validity.ticks)),
     ),
     tradeable,
@@ -467,7 +477,12 @@ export function DbotAiCopilot({
   const signalTradeable = Boolean(
     selectedSignal &&
     (selectedSignal.master.verdict === "TRADE_NOW" ||
-      selectedSignal.master.verdict === "TRADE_ON_ENTRY") &&
+      selectedSignal.master.verdict === "TRADE_ON_ENTRY" ||
+      // A speculative signal still carries a measured, positive edge; it is
+      // smaller than its error bar, so it is traded at the usual stake rather
+      // than size-down, but it is a market the analysis can act on. Only an
+      // honest NO_EDGE verdict leaves the strategy without an entry.
+      selectedSignal.master.verdict === "SPECULATIVE") &&
     selectedSignal.master.entry.action !== "no-edge",
   );
   const selectedMarket = markets.find(
@@ -884,8 +899,7 @@ export function DbotAiCopilot({
       !currentRun ||
       !analysisXml ||
       !selectedAnalysisSnapshot ||
-      !snapshotReady ||
-      !signalTradeable
+      !snapshotReady
     )
       return;
     if (
@@ -1565,7 +1579,6 @@ export function DbotAiCopilot({
                             !ready ||
                             !registryReady ||
                             !accountReady ||
-                            !signalTradeable ||
                             !snapshotReady ||
                             Boolean(analysis.error) ||
                             botRunning ||
@@ -1586,11 +1599,9 @@ export function DbotAiCopilot({
                             ? "Loading strategy…"
                             : botRunning
                               ? "DBot strategy running"
-                              : !snapshotReady && signalTradeable
-                                ? "Refresh analysis to load"
-                                : signalTradeable
-                                  ? "Load and Run"
-                                  : "No validated entry to run"}
+                              : !snapshotReady
+                                ? "Run a fresh analysis to load"
+                                : "Load and Run"}
                         </button>
                       </>
                     ) : (

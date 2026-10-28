@@ -24,6 +24,9 @@ window.Blockly.Categories = {
     Vision_Analysis: 'vision_analysis',
     Vision_Risk: 'vision_risk',
     Vision_Shortcut: 'vision_shortcut',
+    SignalLab_Scan: 'signal_lab_scan',
+    SignalLab_Hedge: 'signal_lab_hedge',
+    SignalLab_Virtual: 'signal_lab_virtual',
 };
 window.Blockly.OUTPUT_SHAPE_HEXAGONAL = 1;
 window.Blockly.OUTPUT_SHAPE_ROUND = 2;
