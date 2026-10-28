@@ -196,6 +196,10 @@ test("martingale builds a stake variable, init and after-purchase progression", 
   assert.match(xml, /contract_check_result/);
   assert.match(xml, /math_arithmetic/);
   assert.match(xml, /logic_null/);
+  // The stake variable is read by trade options BEFORE the first Purchase
+  // conditions run, so it must be initialised in INITIALIZATION — otherwise
+  // the first cycle's amount is unset.
+  assert.match(xml, /<statement name="INITIALIZATION">[\s\S]*?aiInitStakeVar/);
   assert.equal(tagCount(xml, "block").open, tagCount(xml, "block").close);
   assert.match(describeDbotAiStrategy(parsed), /martingale ×2\.2/);
 });
@@ -256,6 +260,11 @@ test("a bare 'hedging bot' request builds a two-legged hedge, not a one-sided bo
     "the defaulted family is stated, not silent",
   );
 
+  assert.ok(
+    parsed?.warnings.some((warning) => /one open contract per bot/i.test(warning)),
+    "the alternating-legs engine limit is stated up front",
+  );
+
   const xml = buildDbotAiStrategyXml(parsed);
   assert.match(xml, /<field name="PURCHASE_LIST">CALL<\/field>/);
   assert.match(xml, /<field name="PURCHASE_LIST">PUT<\/field>/);
@@ -265,8 +274,19 @@ test("a bare 'hedging bot' request builds a two-legged hedge, not a one-sided bo
   const purchaseBlocks = [...xml.matchAll(/<block type="purchase"[^>]*>([\s\S]*?)<\/block>/g)];
   assert.equal(purchaseBlocks.length, 2);
   for (const [, inner] of purchaseBlocks) assert.doesNotMatch(inner, /<next>/);
-  assert.match(xml, /aiHedgeLegMain/);
-  assert.match(xml, /aiHedgeLegOpposite/);
+  // The engine holds ONE open contract per bot (Purchase no-ops outside the
+  // before-purchase scope), so the legs alternate: an if/else on the leg
+  // variable picks this cycle's side, and After purchase flips the leg and
+  // the stake so BOTH sides open, back-to-back, every round. The old
+  // side-by-side pair silently dropped the second leg on every cycle.
+  assert.match(xml, /aiHedgeLegPick/);
+  assert.match(xml, /aiHedgeLegToggle/);
+  assert.match(xml, /ai hedge leg/);
+  // Trade options read the amount before Purchase conditions ever run, so
+  // the stake/leg variables must be set in INITIALIZATION and the amount
+  // must come from the stake variable (re-read every cycle).
+  assert.match(xml, /<statement name="INITIALIZATION">/);
+  assert.match(xml, /<value name="AMOUNT"><block type="variables_get" id="aiStakeAmount">/);
 
   const overUnder = parseDbotAiDescription("Hedging bot: buy both over and under barrier 5 on R_50");
   assert.equal(overUnder?.hedge, true);
@@ -274,6 +294,53 @@ test("a bare 'hedging bot' request builds a two-legged hedge, not a one-sided bo
 
   const base = parseDbotAiDescription("Build a fall bot on R_75 stake 0.5 for 3 ticks");
   assert.equal(applyDbotAiEdit(base, "make it a hedging bot")?.hedge, true);
+});
+
+test("hedge legs carry their own stakes; paper hedges open both sides together", () => {
+  const parsed = parseDbotAiDescription(
+    "Hedge bot on R_100 stake 2, hedge leg at 50%, buy both rise and fall for 5 ticks",
+  );
+  assert.equal(parsed?.hedge, true);
+  assert.equal(parsed?.hedgeStakePercent, 50);
+  // "buy both rise and fall": the first named side carries the main stake.
+  assert.equal(parsed?.direction, "RISE");
+  const xml = buildDbotAiStrategyXml(parsed);
+  assert.ok(xml.indexOf('PURCHASE_LIST">CALL') < xml.indexOf('PURCHASE_LIST">PUT'), "main leg (CALL) is the leg-0 branch");
+  // After a main-leg trade the toggle lines up the hedge leg at 50% of 2 = 1,
+  // and after the hedge leg it restores the main stake of 2.
+  assert.match(xml, /id="aiHedgeStakeHedgeValue"><field name="NUM">1<\/field>/);
+  assert.match(xml, /id="aiHedgeStakeMainValue"><field name="NUM">2<\/field>/);
+  assert.match(describeDbotAiStrategy(parsed), /alternating legs, hedge leg 50%/);
+
+  // Matches hedges against Differs on the same digit.
+  const matches = parseDbotAiDescription("Hedge digit matches 7 on R_100 stake 1");
+  assert.equal(matches?.hedge, true);
+  const matchesXml = buildDbotAiStrategyXml(matches);
+  assert.match(matchesXml, /<field name="PURCHASE_LIST">DIGITMATCH<\/field>/);
+  assert.match(matchesXml, /<field name="PURCHASE_LIST">DIGITDIFF<\/field>/);
+
+  // A progression would fight the leg toggle for the stake variable, so a
+  // martingale hedge builds the hedge and leaves the progression out.
+  const martingaleHedge = buildDbotAiStrategyXml({
+    family: "rise-fall", symbol: "R_100", duration: 5, stake: 1,
+    hedge: true, stakingPlan: "martingale", stakeMultiplier: 2,
+  });
+  assert.doesNotMatch(martingaleHedge, /aiStakeGrow/);
+  assert.match(martingaleHedge, /aiHedgeLegToggle/);
+
+  // Paper positions are ledger entries, not engine contracts: a virtual
+  // hedge opens both directions in the same pass.
+  const paper = parseDbotAiDescription("Virtual hedge bot: paper trade both rise and fall on R_100");
+  assert.equal(paper?.virtual, true);
+  assert.equal(paper?.hedge, true);
+  const paperXml = buildDbotAiStrategyXml(paper);
+  assert.equal([...paperXml.matchAll(/signal_lab_virtual_buy/g)].length, 2);
+  assert.match(paperXml, /<field name="DIRECTION">rise<\/field>/);
+  assert.match(paperXml, /<field name="DIRECTION">fall<\/field>/);
+  assert.doesNotMatch(paperXml, /<block type="purchase"/);
+  for (const x of [xml, matchesXml, martingaleHedge, paperXml]) {
+    assert.equal(tagCount(x, "block").open, tagCount(x, "block").close);
+  }
 });
 
 test("every family's TRADETYPE_LIST is a real key of the vendor opposites map", () => {

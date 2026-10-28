@@ -678,7 +678,7 @@ const getVisionInterface = tradeEngine => {
             const stats = memory.getStats();
             return Math.abs(stats.runningProfit || 0) < num(limit, 0) || (stats.runningProfit || 0) > 0;
         },
-        rProfitGuard: async target => memory.getStats().runningProfit < num(target, 0),
+        rProfitGuard: async target => (memory.getStats().runningProfit || 0) < num(target, 0),
         rLossGuard: async limit => Math.abs(Math.min(0, memory.getStats().runningProfit || 0)) < num(limit, 0),
         rLossStreak: async () => Math.max(0, -memory.getStats().streak),
         rWinStreak: async () => Math.max(0, memory.getStats().streak),

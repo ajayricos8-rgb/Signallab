@@ -50,8 +50,14 @@ export type DbotAiStrategyRequest = {
   scanMarkets?: boolean;
   /** Minimum scan lean (0–1) the best market must clear. */
   scanMinScore?: number;
-  /** Buy both sides at once (rise+fall, or over+under on one barrier). */
+  /**
+   * Trade both sides (rise+fall, over+under on one barrier, ...). The DBot
+   * engine tracks ONE open contract per bot, so the generated strategy
+   * alternates the two legs back-to-back instead of opening them together.
+   */
   hedge?: boolean;
+  /** Hedge-leg stake as a percentage of the main stake (default 100). */
+  hedgeStakePercent?: number;
   /** Paper-trade with the virtual blocks instead of real purchases. */
   virtual?: boolean;
 };
@@ -142,6 +148,8 @@ const AI_VARIABLES = {
   stake: { id: "aiStakeVariable", name: "ai stake" },
   lossStreak: { id: "aiLossStreakVariable", name: "ai loss streak" },
   winStreak: { id: "aiWinStreakVariable", name: "ai win streak" },
+  // 0 = the next entry is the main leg, 1 = the next entry is the hedge leg.
+  hedgeLeg: { id: "aiHedgeLegVariable", name: "ai hedge leg" },
 } as const;
 type AiVariableKey = keyof typeof AI_VARIABLES;
 
@@ -287,16 +295,35 @@ function tradeRoot(
     durationUnit === "m"
       ? clamp(Math.round(duration), 1, 15)
       : clamp(Math.round(duration), 1, 10);
-  // A stake progression reads the amount from the "ai stake" variable, which
-  // Purchase conditions initialise and After purchase updates after each
-  // result. A flat strategy keeps the plain stake number.
-  const amount =
-    request.stakingPlan && request.stakingPlan !== "flat"
-      ? variablesGet("aiStakeAmount", "stake")
-      : numberBlock("aiStake", stake);
+  // A stake progression — and a hedge, whose two legs stake different
+  // amounts — reads the amount from the "ai stake" variable. Trade options
+  // re-evaluate on every cycle (BinaryBotPrivateStart runs per loop), so
+  // After purchase can line up the next leg's stake before it is read. A
+  // flat one-sided strategy keeps the plain stake number.
+  const amountFromVariable =
+    (request.stakingPlan && request.stakingPlan !== "flat") || hedgeActive(request);
+  const amount = amountFromVariable
+    ? variablesGet("aiStakeAmount", "stake")
+    : numberBlock("aiStake", stake);
+  // Trade options are read BEFORE the first Purchase conditions run, so a
+  // variable they depend on must be set in INITIALIZATION (which the engine
+  // runs once, before the trading loop) — initialising it in Purchase
+  // conditions is one cycle too late and the first amount reads as unset.
+  const initializations: string[] = [];
+  if (amountFromVariable)
+    initializations.push(variablesSet("aiInitStakeVar", "stake", numberValue("aiInitStakeValue", stake)));
+  if (hedgeActive(request))
+    initializations.push(variablesSet("aiInitHedgeLegVar", "hedgeLeg", numberValue("aiInitHedgeLegValue", 0)));
+  if (request.stopAfterLossStreak)
+    initializations.push(variablesSet("aiInitLossStreakVar", "lossStreak", numberValue("aiInitLossStreakValue", 0)));
+  if (request.stopAfterWinStreak)
+    initializations.push(variablesSet("aiInitWinStreakVar", "winStreak", numberValue("aiInitWinStreakValue", 0)));
+  const initialization = initializations.length
+    ? `<statement name="INITIALIZATION">${chainStatements(initializations)}</statement>`
+    : "";
   const tradeOptions = `<block type="trade_definition_tradeoptions" id="aiTradeOptions"><mutation has_first_barrier="false" has_second_barrier="false" has_prediction="${hasPrediction ? "true" : "false"}"></mutation><field name="DURATIONTYPE_LIST">${durationUnit}</field><field name="CURRENCY_LIST">${escapeXml(currency)}</field><value name="DURATION">${numberBlock("aiDuration", durationValue)}</value><value name="AMOUNT">${amount}</value>${optionPrediction}</block>`;
   const market = `<block type="trade_definition_market" id="aiMarket"><field name="MARKET_LIST">volidx</field><field name="SUBMARKET_LIST">random_index</field><field name="SYMBOL_LIST">${escapeXml(cleanSymbol(request.symbol))}</field><next><block type="trade_definition_tradetype" id="aiTradeType"><field name="TRADETYPECAT_LIST">${contractFamily}</field><field name="TRADETYPE_LIST">${tradeType}</field><next><block type="trade_definition_contracttype" id="aiContractType"><field name="TYPE_LIST">both</field><next><block type="trade_definition_candleinterval" id="aiCandleInterval"><field name="CANDLEINTERVAL_LIST">60</field><next><block type="trade_definition_restartbuysell" id="aiRestartBuySell"><field name="TIME_MACHINE_ENABLED">FALSE</field><next><block type="trade_definition_restartonerror" id="aiRestartOnError"><field name="RESTARTONERROR">TRUE</field></block></next></block></next></block></next></block></next></block></next></block>`;
-  return `<block type="trade_definition" id="aiTradeDefinition" x="24" y="24"><statement name="TRADE_OPTIONS">${market}</statement><statement name="SUBMARKET">${tradeOptions}</statement></block>`;
+  return `<block type="trade_definition" id="aiTradeDefinition" x="24" y="24">${initialization}<statement name="TRADE_OPTIONS">${market}</statement><statement name="SUBMARKET">${tradeOptions}</statement></block>`;
 }
 
 function selectedPurchase(request: DbotAiStrategyRequest): string {
@@ -318,7 +345,25 @@ function hedgePurchase(request: DbotAiStrategyRequest): string | null {
     return request.digitSide === "DIGITUNDER" ? "DIGITOVER" : "DIGITUNDER";
   if (request.family === "even-odd")
     return request.paritySide === "DIGITODD" ? "DIGITEVEN" : "DIGITODD";
+  // Matches and Differs are opposites on the same trade type and digit.
+  if (request.family === "matches") return "DIGITDIFF";
+  if (request.family === "differs") return "DIGITMATCH";
   return null;
+}
+
+/** True when this request builds a real (non-paper) two-legged hedge. */
+function hedgeActive(request: DbotAiStrategyRequest): boolean {
+  return Boolean(request.hedge && hedgePurchase(request)) && !request.virtual;
+}
+
+/** The two leg stakes: the main stake and the hedge leg's share of it. */
+function hedgeLegStakes(
+  request: DbotAiStrategyRequest,
+  baseStake: number,
+): { main: number; hedge: number } {
+  const percent = clamp(numberOr(request.hedgeStakePercent, 100), 10, 200);
+  const hedge = Math.max(0.35, Math.round(baseStake * percent) / 100);
+  return { main: baseStake, hedge };
 }
 
 /** The bot market's own last digit, as an entry-filter condition. */
@@ -370,6 +415,30 @@ function virtualDirection(request: DbotAiStrategyRequest): string {
   return "match";
 }
 
+/**
+ * The opposite paper direction (and its rough payout) for a virtual hedge.
+ * Null for Matches/Differs: the virtual blocks have no "differ" direction.
+ */
+function virtualOpposite(
+  request: DbotAiStrategyRequest,
+): { direction: string; payout: number } | null {
+  if (request.family === "rise-fall")
+    return { direction: request.direction === "FALL" ? "rise" : "fall", payout: virtualPayout(request) };
+  if (request.family === "over-under") {
+    const flipped: DbotAiStrategyRequest = {
+      ...request,
+      digitSide: request.digitSide === "DIGITUNDER" ? "DIGITOVER" : "DIGITUNDER",
+    };
+    return {
+      direction: request.digitSide === "DIGITUNDER" ? "over" : "under",
+      payout: virtualPayout(flipped),
+    };
+  }
+  if (request.family === "even-odd")
+    return { direction: request.paritySide === "DIGITODD" ? "even" : "odd", payout: virtualPayout(request) };
+  return null;
+}
+
 function beforePurchase(
   request: DbotAiStrategyRequest,
   procedureName: string,
@@ -396,26 +465,35 @@ function beforePurchase(
       ? clamp(Math.round(numberOr(request.barrier, 5)), 1, 8)
       : clamp(Math.round(numberOr(request.targetDigit, 5)), 0, 9);
   const virtualBuy = `<block type="signal_lab_virtual_buy" id="aiVirtualBuy"><field name="DIRECTION">${virtualDirection(request)}</field><field name="MARKET_LIST">${escapeXml(cleanSymbol(request.symbol))}</field><value name="STAKE">${numberBlock("aiVirtualStake", baseStake)}</value><value name="PAYOUT">${numberBlock("aiVirtualPayout", virtualPayout(request))}</value><value name="BARRIER">${numberBlock("aiVirtualBarrier", barrierOrDigit)}</value></block>`;
+  // Paper positions live in the Signal Lab ledger, not the trade engine, so
+  // a virtual hedge CAN open both sides in the same pass.
+  const paperOpposite = request.virtual && request.hedge ? virtualOpposite(request) : null;
+  const virtualHedgeBuy = paperOpposite
+    ? `<block type="signal_lab_virtual_buy" id="aiVirtualHedgeBuy"><field name="DIRECTION">${paperOpposite.direction}</field><field name="MARKET_LIST">${escapeXml(cleanSymbol(request.symbol))}</field><value name="STAKE">${numberBlock("aiVirtualHedgeStake", hedgeLegStakes(request, baseStake).hedge)}</value><value name="PAYOUT">${numberBlock("aiVirtualHedgePayout", paperOpposite.payout)}</value><value name="BARRIER">${numberBlock("aiVirtualHedgeBarrier", barrierOrDigit)}</value></block>`
+    : null;
+  const hedged = hedgeActive(request);
   const entryAction = request.virtual
-    ? virtualBuy
-    : hedgeBlock
-      ? // The stock Purchase block forbids a following statement
-        // (setNextStatement(false) — "one of this type per statement-stack"),
-        // so two hedge legs can never be chained purchase-after-purchase:
-        // Blockly refuses to load that XML at all ("Next statement does not
-        // exist"). Give each leg its own always-true IF inside the gated
-        // entry instead — the IFs chain legally and every Purchase sits
-        // alone in its own stack.
-        chainStatements([
-          `<block type="controls_if" id="aiHedgeLegMain"><value name="IF0"><block type="logic_boolean" id="aiHedgeLegMainTrue"><field name="BOOL">TRUE</field></block></value><statement name="DO0">${purchase}</statement></block>`,
-          `<block type="controls_if" id="aiHedgeLegOpposite"><value name="IF0"><block type="logic_boolean" id="aiHedgeLegOppositeTrue"><field name="BOOL">TRUE</field></block></value><statement name="DO0">${hedgeBlock}</statement></block>`,
-        ])
+    ? virtualHedgeBuy
+      ? chainStatements([virtualBuy, virtualHedgeBuy])
+      : virtualBuy
+    : hedged && hedgeBlock
+      ? // The trade engine tracks ONE open contract per bot: Purchase is a
+        // silent no-op outside the before-purchase scope, and the first
+        // successful buy leaves that scope — so a second Purchase block in
+        // the same pass NEVER opens (two legs side by side only ever traded
+        // one side). Instead the legs alternate: "ai hedge leg" says which
+        // side this cycle buys, and After purchase flips it (and the stake
+        // variable) so the opposite leg opens on the very next cycle. Each
+        // Purchase still sits alone in its own statement stack, as the
+        // stock block requires (setNextStatement(false)).
+        `<block type="controls_if" id="aiHedgeLegPick"><mutation else="1"></mutation><value name="IF0">${compareValues("aiHedgeLegCheck", "EQ", variablesGet("aiHedgeLegGet", "hedgeLeg"), numberBlock("aiHedgeLegZero", 0))}</value><statement name="DO0">${purchase}</statement><statement name="ELSE">${hedgeBlock}</statement></block>`
       : purchase;
   const entryIf = `<block type="controls_if" id="aiEntryGate"><value name="IF0">${condition}</value><statement name="DO0">${entryAction}</statement></block>`;
 
   const prelude: string[] = [];
-  if (request.stakingPlan && request.stakingPlan !== "flat")
+  if ((request.stakingPlan && request.stakingPlan !== "flat") || hedged)
     prelude.push(initVariableIfNull("aiInitStake", "stake", baseStake));
+  if (hedged) prelude.push(initVariableIfNull("aiInitHedgeLeg", "hedgeLeg", 0));
   if (request.stopAfterLossStreak)
     prelude.push(initVariableIfNull("aiInitLossStreak", "lossStreak", 0));
   if (request.stopAfterWinStreak)
@@ -438,7 +516,12 @@ function beforePurchase(
 function progressionStatements(request: DbotAiStrategyRequest, baseStake: number): string[] {
   const statements: string[] = [];
   const won = `<block type="contract_check_result" id="aiResultWin"><field name="CHECK_RESULT">win</field></block>`;
-  const plan = request.stakingPlan ?? "flat";
+  const hedged = hedgeActive(request);
+  // A hedge owns the stake variable — each leg carries its own fixed stake —
+  // so a martingale-style progression would fight the leg toggle below for
+  // the same variable. When both are asked for, the hedge wins and the
+  // progression is left out; streak bookkeeping still applies.
+  const plan = hedged ? "flat" : (request.stakingPlan ?? "flat");
   if (plan === "martingale" || plan === "reverse-martingale") {
     const multiplier = clamp(numberOr(request.stakeMultiplier, 2), 1.1, 10);
     const grow = variablesSet(
@@ -491,6 +574,23 @@ function progressionStatements(request: DbotAiStrategyRequest, baseStake: number
     }
     statements.push(
       `<block type="controls_if" id="aiStreakUpdate"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${chainStatements(onWin)}</statement><statement name="ELSE">${chainStatements(onLoss)}</statement></block>`,
+    );
+  }
+  if (hedged) {
+    // Flip to the other leg and line up its stake: trade options re-read
+    // the stake variable at the top of the next cycle, so the opposite
+    // contract opens immediately after this one settles.
+    const { main, hedge } = hedgeLegStakes(request, baseStake);
+    const toHedge = chainStatements([
+      variablesSet("aiHedgeToHedge", "hedgeLeg", numberValue("aiHedgeOne", 1)),
+      variablesSet("aiHedgeStakeSetHedge", "stake", numberValue("aiHedgeStakeHedgeValue", hedge)),
+    ]);
+    const toMain = chainStatements([
+      variablesSet("aiHedgeToMain", "hedgeLeg", numberValue("aiHedgeZero", 0)),
+      variablesSet("aiHedgeStakeSetMain", "stake", numberValue("aiHedgeStakeMainValue", main)),
+    ]);
+    statements.push(
+      `<block type="controls_if" id="aiHedgeLegToggle"><mutation else="1"></mutation><value name="IF0">${compareValues("aiHedgeToggleCheck", "EQ", variablesGet("aiHedgeToggleGet", "hedgeLeg"), numberBlock("aiHedgeToggleZero", 0))}</value><statement name="DO0">${toHedge}</statement><statement name="ELSE">${toMain}</statement></block>`,
     );
   }
   return statements;
@@ -553,6 +653,10 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
   if (input.stakingPlan && input.stakingPlan !== "flat") variableKeys.push("stake");
   if (resolved.stopAfterLossStreak) variableKeys.push("lossStreak");
   if (resolved.stopAfterWinStreak) variableKeys.push("winStreak");
+  if (hedgeActive(normalized)) {
+    if (!variableKeys.includes("stake")) variableKeys.push("stake");
+    variableKeys.push("hedgeLeg");
+  }
   return `<?xml version="1.0" encoding="UTF-8"?><xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">${variablesSection(variableKeys)}${tradeRoot(normalized, duration, durationUnit, stake, currency)}${riskGateDefinition(resolved)}${beforePurchase(normalized, procedureName, stake)}${afterPurchase(normalized, stake, cooldownSeconds)}</xml>`;
 }
 
@@ -788,6 +892,18 @@ export function parseDbotAiDescription(
     /\b(?:both|buy|trade|cover)\s+(?:the\s+)?(?:rise\s+and\s+fall|fall\s+and\s+rise|over\s+and\s+under|under\s+and\s+over|even\s+and\s+odd|odd\s+and\s+even)\b/.test(
       prompt,
     );
+  // "hedge at 50%", "50% on the hedge side", "half the stake on the hedge".
+  const hedgePercentMatch =
+    prompt.match(/hedg\w*[^.]*?(\d+(?:\.\d+)?)\s*(?:%|percent)/) ??
+    prompt.match(/(\d+(?:\.\d+)?)\s*(?:%|percent)[^.]*?hedg/);
+  const hedgeStakePercent = !hedge
+    ? undefined
+    : hedgePercentMatch
+      ? clamp(Number(hedgePercentMatch[1]), 10, 200)
+      : /\bhalf\b[^.]*\bhedg|\bhedg\w*[^.]*\bhalf\b/.test(prompt)
+        ? 50
+        : undefined;
+  const virtual = /\b(virtual|paper\s+trad\w*)\b/.test(prompt);
   const namedFamily = familyFromSignalName(description);
   // A hedge request that names no contract family ("build a hedging bot")
   // still needs one pair of opposite contracts: default to Rise/Fall
@@ -819,24 +935,37 @@ export function parseDbotAiDescription(
       /\b(?:trade|find|pick|choose)\s+the\s+best\s+market\b/.test(prompt) ||
       /\bbest\s+market\b[^.]*\bscan\b/.test(prompt),
     hedge: hedge || undefined,
-    virtual: /\b(virtual|paper\s+trad\w*)\b/.test(prompt) || undefined,
+    hedgeStakePercent,
+    virtual: virtual || undefined,
     usedVisionAi: /\bvision\b/.test(prompt) && family === "over-under",
     warnings: [
       ...readWarnings(description),
       ...(hedge && !namedFamily
         ? [
-            "No contract family was named, so this hedges Rise/Fall (CALL and PUT bought together). Ask for over/under or even/odd hedging to hedge a different pair.",
+            "No contract family was named, so this hedges Rise/Fall. Ask for over/under, even/odd or matches hedging to hedge a different pair.",
+          ]
+        : []),
+      ...(hedge && !virtual
+        ? [
+            "DBot holds one open contract per bot, so the two hedge legs alternate back-to-back: the opposite side opens as soon as the first leg settles. For both positions open at the same instant, use the Hedging bot in Tools — it buys both legs together.",
           ]
         : []),
     ],
   };
   if (family === "rise-fall") {
-    return {
-      ...shared,
-      direction: /\b(fall|put|bearish|downward|go short)\b/.test(prompt)
-        ? "FALL"
-        : "RISE",
-    };
+    // In a hedge both sides are named ("buy both rise and fall"): the FIRST
+    // named side is the main leg (full stake), the other is the hedge leg.
+    const fallAt = prompt.search(/\b(fall|put|bearish|downward|go short)\b/);
+    const riseAt = prompt.search(/\b(rise|call|bullish|upward|go long)\b/);
+    const direction =
+      hedge && riseAt !== -1 && fallAt !== -1
+        ? riseAt < fallAt
+          ? "RISE"
+          : "FALL"
+        : fallAt !== -1
+          ? "FALL"
+          : "RISE";
+    return { ...shared, direction };
   }
   if (family === "over-under") {
     const barrier = clamp(
@@ -942,6 +1071,11 @@ export function applyDbotAiEdit(
   }
   if (/\bhedg/.test(prompt)) {
     next.hedge = !/\b(no|remove|without)\b[^.]*\bhedg/.test(prompt);
+    const percentMatch =
+      prompt.match(/hedg\w*[^.]*?(\d+(?:\.\d+)?)\s*(?:%|percent)/) ??
+      prompt.match(/(\d+(?:\.\d+)?)\s*(?:%|percent)[^.]*?hedg/);
+    if (percentMatch) next.hedgeStakePercent = clamp(Number(percentMatch[1]), 10, 200);
+    else if (/\bhalf\b[^.]*\bhedg|\bhedg\w*[^.]*\bhalf\b/.test(prompt)) next.hedgeStakePercent = 50;
     touched = true;
   }
   if (/\b(virtual|paper|real purchases?|live trading)\b/.test(prompt)) {
@@ -1005,7 +1139,12 @@ export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
     );
   }
   if (request.scanMarkets) parts.push("scans all markets and trades the strongest");
-  if (request.hedge) parts.push("hedged (both sides)");
+  if (request.hedge)
+    parts.push(
+      request.virtual
+        ? "hedged (both paper sides together)"
+        : `hedged (both sides, alternating legs${request.hedgeStakePercent ? `, hedge leg ${request.hedgeStakePercent}%` : ""})`,
+    );
   if (request.virtual) parts.push("virtual/paper trades only");
   if (request.cooldownSeconds) parts.push(`${request.cooldownSeconds}s between trades`);
   parts.push(`stop loss ${request.lossLimit ?? 5}, profit target ${request.profitTarget ?? 5}, max ${request.maxTrades ?? 25} trades`);
