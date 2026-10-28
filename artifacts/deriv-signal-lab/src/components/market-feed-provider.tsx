@@ -55,7 +55,7 @@ export type MarketFeedValue = {
   /** Latest data without waiting for the next render (used by Run Analysis). */
   getSnapshot: () => MarketFeedEntry[];
   /** Resolves once enough markets have history (or the timeout passes). */
-  waitForData: (options: { minimumTicks: number; symbols?: string[]; timeoutMs: number; signal?: AbortSignal; onUpdate?: (loaded: number, total: number) => void }) => Promise<MarketFeedEntry[]>;
+  waitForData: (options: { minimumTicks: number; symbols?: string[]; isReady?: (entry: MarketFeedEntry) => boolean; timeoutMs: number; signal?: AbortSignal; onUpdate?: (loaded: number, total: number) => void }) => Promise<MarketFeedEntry[]>;
   /** Per-tool memory so a finished analysis survives switching tabs. */
   memory: Map<string, unknown>;
 };
@@ -321,7 +321,7 @@ export function MarketFeedProvider({ children }: { children: ReactNode }) {
       .map((entry) => withFreshness(entry, stamp, offsetRef.current));
   }, []);
 
-  const waitForData = useCallback<MarketFeedValue['waitForData']>(({ minimumTicks, symbols, timeoutMs, signal, onUpdate }) => new Promise((resolve, reject) => {
+  const waitForData = useCallback<MarketFeedValue['waitForData']>(({ minimumTicks, symbols, isReady, timeoutMs, signal, onUpdate }) => new Promise((resolve, reject) => {
     const started = Date.now();
     let timer: number | undefined;
     const relevant = () => getSnapshot().filter((entry) => !symbols?.length || symbols.includes(entry.symbol));
@@ -334,9 +334,9 @@ export function MarketFeedProvider({ children }: { children: ReactNode }) {
     const onAbort = () => finish(new DOMException('The analysis was cancelled.', 'AbortError'));
     function check() {
       const markets = relevant();
-      const ready = markets.filter((entry) => entry.ticks.length >= minimumTicks).length;
+      const ready = markets.filter((entry) => isReady ? isReady(entry) : entry.ticks.length >= minimumTicks).length;
       onUpdate?.(ready, markets.length);
-      const settled = markets.every((entry) => entry.ticks.length >= minimumTicks || entry.error);
+      const settled = markets.every((entry) => (isReady ? isReady(entry) : entry.ticks.length >= minimumTicks) || entry.error);
       if ((markets.length && settled) || Date.now() - started >= timeoutMs) finish();
     }
     if (signal?.aborted) { onAbort(); return; }
