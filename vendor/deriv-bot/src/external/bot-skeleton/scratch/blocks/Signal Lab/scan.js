@@ -48,8 +48,12 @@ window.Blockly.Blocks.signal_lab_switch_market = {
         this.jsonInit({
             message0: localize('Switch market to %1'),
             args0: [marketField()],
-            previousStatement: 'signal_lab_block',
-            nextStatement: 'signal_lab_block',
+            // Unchecked connections on purpose: a checked ('signal_lab_block')
+            // connector cannot stack with ordinary statement blocks, so the
+            // block could never be placed inside Purchase conditions at all
+            // and silently never ran.
+            previousStatement: null,
+            nextStatement: null,
             colour: signalLabColour().colour,
             colourSecondary: signalLabColour().colourSecondary,
             colourTertiary: signalLabColour().colourTertiary,
@@ -68,13 +72,42 @@ window.Blockly.Blocks.signal_lab_switch_market = {
     },
 };
 
+// Statement generators return a plain code string, like every Deriv
+// statement block. Returning a [code, order] tuple is the value-block shape;
+// several generators in this group used it, which could corrupt or abort code
+// generation for the whole workspace — the bot then "ran" without ever
+// reaching a Purchase block.
 window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_switch_market = block => {
     const symbol = block.getFieldValue('MARKET_LIST');
-    return [
-        `Bot.signalLabSwitchMarket(${JSON.stringify(symbol)});\n`,
-        window.Blockly.JavaScript.javascriptGenerator.ORDER_ATOMIC,
-    ];
+    return `Bot.signalLabSwitchMarket(${JSON.stringify(symbol)});\n`;
 };
+
+window.Blockly.Blocks.signal_lab_switch_to_best = {
+    init() {
+        this.jsonInit({
+            message0: localize('Switch to the best market from the last scan'),
+            previousStatement: null,
+            nextStatement: null,
+            colour: signalLabColour().colour,
+            colourSecondary: signalLabColour().colourSecondary,
+            colourTertiary: signalLabColour().colourTertiary,
+            tooltip: localize('Move the running bot to the market the last all-markets scan scored strongest, so the next Purchase trades that market. Does nothing until a scan has run.'),
+            category: window.Blockly.Categories.SignalLab_Scan,
+        });
+    },
+    meta() {
+        return {
+            display_name: localize('Switch to scan best market'),
+            description: localize('Moves the running bot to the strongest market from the last all-markets scan and resubscribes its tick stream.'),
+        };
+    },
+    customContextMenu(menu) {
+        modifyContextMenu(menu);
+    },
+};
+
+window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_switch_to_best = () =>
+    'Bot.signalLabSwitchToBest();\n';
 
 window.Blockly.Blocks.signal_lab_scan_markets = {
     init() {
@@ -98,10 +131,7 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_scan_markets =
     const generator = window.Blockly.JavaScript.javascriptGenerator;
     const duration = generator.valueToCode(block, 'DURATION', generator.ORDER_ATOMIC) || '20';
     const minScore = generator.valueToCode(block, 'MIN_SCORE', generator.ORDER_ATOMIC) || '0.05';
-    return [
-        `Bot.signalLabScanMarkets(${JSON.stringify(family)}, ${duration}, ${minScore});\n`,
-        generator.ORDER_ATOMIC,
-    ];
+    return `Bot.signalLabScanMarkets(${JSON.stringify(family)}, ${duration}, ${minScore});\n`;
 };
 
 window.Blockly.Blocks.signal_lab_scan_best = {

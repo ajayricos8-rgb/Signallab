@@ -158,3 +158,60 @@ test("a feed reset clears the scan and the virtual ledger", () => {
 test.after(() => {
   Date.now = originalNow;
 });
+
+test("the gate status explains why entries are closed, and wide entry windows are accepted", () => {
+  sendFeed([rising(Array.from({ length: 10 }, (_, i) => 100 + i))]);
+  feed.setSignalLabAnalysisSnapshot(null);
+  assert.match(
+    feed.getSignalLabAnalysisGateReason("rise-fall", "R_100", "run-1", "CALL", 0, 0),
+    /No Signal Lab analysis is loaded/,
+  );
+  const snapshot = {
+    analysisId: "run-1",
+    family: "rise-fall",
+    symbol: "R_100",
+    contractType: "CALL",
+    barrier: null,
+    targetDigit: null,
+    generatedAt: clock,
+    asOfEpoch: tickEpoch,
+    maxAgeMs: 900_000,
+    validForTicks: 200,
+    tradeable: true,
+    entry: {
+      action: "enter-on-trigger",
+      trigger: "digit",
+      // 300 used to be rejected (>50) even though loading + booting a bot can
+      // take longer than 50 ticks on a 1-second market.
+      windowTicks: 300,
+      priceLevel: null,
+      priceCondition: null,
+      tolerance: null,
+      contextDigits: [7],
+    },
+  };
+  assert.equal(feed.setSignalLabAnalysisSnapshot(snapshot), true);
+  assert.match(
+    feed.getSignalLabAnalysisGateReason("rise-fall", "R_50", "run-1", "CALL", 0, 0),
+    /no ticks for R_50/,
+    "a gate on a market without shared ticks says so",
+  );
+  sendFeed([falling(Array.from({ length: 5 }, (_, i) => 100 - i))], false);
+  assert.match(
+    feed.getSignalLabAnalysisGateReason("rise-fall", "R_50", "run-1", "CALL", 0, 0),
+    /loaded analysis is for R_100/,
+    "a wrong-market gate names the analysed market",
+  );
+  assert.match(
+    feed.getSignalLabAnalysisGateReason("rise-fall", "R_100", "run-2", "CALL", 0, 0),
+    /does not match this strategy/,
+  );
+  assert.equal(feed.getSignalLabAnalysisGate("rise-fall", "R_100", "run-1", "CALL", 0, 0), false);
+});
+
+test("the data waits resolve empty instead of throwing, so a data block cannot kill a run", async () => {
+  sendFeed([]);
+  post({ type: "signal-lab-account", accountId: "" });
+  assert.deepEqual(await feed.waitForSignalLabTicks("R_999", 0), []);
+  assert.equal(await feed.waitForSignalLabAccount(0), null);
+});

@@ -117,7 +117,12 @@ export type SignalBotController = {
   running: boolean;
   /** True when the page has something to show and can be reset. */
   hasActivity: boolean;
-  start: (plan: SignalBotPlan, config: SignalBotConfig, speed?: 'fast' | 'normal') => void;
+  start: (
+    plan: SignalBotPlan,
+    config: SignalBotConfig,
+    speed?: 'fast' | 'normal',
+    options?: { userOverride?: boolean },
+  ) => void;
   stop: () => void;
   reset: () => void;
 };
@@ -367,12 +372,25 @@ export function useSignalBot(): SignalBotController {
   }, []);
 
   const start = useCallback(
-    (nextPlan: SignalBotPlan, rawConfig: SignalBotConfig, speed: 'fast' | 'normal' = 'normal') => {
+    (
+      nextPlan: SignalBotPlan,
+      rawConfig: SignalBotConfig,
+      speed: 'fast' | 'normal' = 'normal',
+      // The user pressed Load and Run BY HAND and confirmed they want to trade
+      // this candidate even though the master measured no decisive edge (or
+      // the forged model vetoed, or the measured validity window has passed).
+      // Automation never sets this: Auto still refuses NO_EDGE signals. The
+      // 15-minute analysis ceiling below is NOT overridable — by then the
+      // entry levels themselves are stale prices, and re-running the analysis
+      // takes seconds.
+      options: { userOverride?: boolean } = {},
+    ) => {
+      const userOverride = options.userOverride === true;
       const session = tradingRef.current;
       if (runningRef.current) return;
-      // Defense in depth: the dock disables manual/Auto starts on NO_EDGE, but
-      // the final execution hook must enforce the master's hard veto too.
-      if (masterBlocksEntry(nextPlan.master)) {
+      // Defense in depth: without an explicit, confirmed user override the
+      // final execution hook enforces the master's hard veto too.
+      if (!userOverride && masterBlocksEntry(nextPlan.master)) {
         setStatus('error');
         setStopReason('error');
         setError('The master decision vetoed this entry (NO_EDGE). Run Analysis again before Load and Run.');
@@ -408,7 +426,7 @@ export function useSignalBot(): SignalBotController {
       // The floor keeps ordinary "analyse, then configure the dock" use intact.
       const validityMs = nextPlan.master?.validity.ms ?? 0;
       const staleAfterMs = Math.max(120_000, validityMs * 3);
-      if (validityMs > 0 && Number.isFinite(nextPlan.ranAt) && nextPlan.ranAt > 0 && Date.now() - nextPlan.ranAt > staleAfterMs) {
+      if (!userOverride && validityMs > 0 && Number.isFinite(nextPlan.ranAt) && nextPlan.ranAt > 0 && Date.now() - nextPlan.ranAt > staleAfterMs) {
         setStatus('error');
         setStopReason('error');
         setError(
@@ -428,11 +446,27 @@ export function useSignalBot(): SignalBotController {
         validityMs,
         fair: nextPlan.entry.evidence.fairRate,
       });
-      if (forgeGate.decision === 'block') {
+      if (!userOverride && forgeGate.decision === 'block') {
         setStatus('error');
         setStopReason('error');
         setError(forgeGate.reason);
         return;
+      }
+      // A NO_EDGE master's validity collapses to a single tick, which the
+      // digit/rise-fall builders write into entry.validForTicks — so even a
+      // confirmed user override would watch its entry expire before the first
+      // poll and never buy. The user explicitly chose to trade this candidate
+      // now, so arm it with a usable 60-tick floor (the same floor the DBot
+      // analysis snapshot uses); the entry trigger itself is unchanged.
+      if (userOverride) {
+        nextPlan = {
+          ...nextPlan,
+          entry: {
+            ...nextPlan.entry,
+            windowTicks: Math.max(60, Math.round(nextPlan.entry.windowTicks) || 0),
+            validForTicks: Math.max(60, Math.round(nextPlan.entry.validForTicks ?? 0) || 0),
+          },
+        };
       }
       const config = sanitizeSignalBotConfig(rawConfig);
       // Fast mode reduces local scheduling delay only; feed, proposal and buy latency remain network/Deriv-bound.
@@ -611,7 +645,10 @@ export function useSignalBot(): SignalBotController {
             validityMs,
             fair: nextPlan.entry.evidence.fairRate,
           });
-          if (runForgeGate.decision === 'skip') {
+          // A confirmed user override trades the loaded signal as-is: the
+          // forge's per-run skip/block becomes a note on the run rather than
+          // a silent veto the user already accepted at start.
+          if (!userOverride && runForgeGate.decision === 'skip') {
             setRuns((current) =>
               current.map((run) =>
                 run.index === index
@@ -630,7 +667,7 @@ export function useSignalBot(): SignalBotController {
             if (generation !== generationRef.current) return;
             continue;
           }
-          if (runForgeGate.decision === 'block') {
+          if (!userOverride && runForgeGate.decision === 'block') {
             setStatus('error');
             setStopReason('error');
             setError(runForgeGate.reason);

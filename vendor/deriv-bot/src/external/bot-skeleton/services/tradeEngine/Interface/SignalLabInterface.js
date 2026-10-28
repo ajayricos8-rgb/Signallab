@@ -1,5 +1,6 @@
 import {
     getSignalLabAnalysisGate,
+    getSignalLabAnalysisGateReason,
     getSignalLabBalance,
     getSignalLabLastDigit,
     getSignalLabLastTick,
@@ -40,6 +41,10 @@ const getSignalLabInterface = (tradeEngine = null) => ({
         getSignalLabAnalysisGate(
             String(family), String(symbol), String(analysisId), String(contractType), Number(barrier), Number(targetDigit)
         ),
+    getSignalLabAnalysisGateReason: async (family, symbol, analysisId, contractType, barrier, targetDigit) =>
+        getSignalLabAnalysisGateReason(
+            String(family), String(symbol), String(analysisId), String(contractType), Number(barrier), Number(targetDigit)
+        ),
     getSignalLabLastTick: async symbol => {
         await waitForSignalLabTicks(String(symbol));
         return getSignalLabLastTick(String(symbol));
@@ -56,21 +61,25 @@ const getSignalLabInterface = (tradeEngine = null) => ({
         await waitForSignalLabTicks(String(symbol));
         return getSignalLabTickChange(String(symbol), Number(count));
     },
+    // The account waits resolve `null` when Signal Lab has not shared an
+    // account within the grace window. Neutral read values (0 / '') keep a
+    // strategy's conditions evaluable — and its Purchase blocks reachable —
+    // instead of an exception restarting the whole run.
     getSignalLabBalance: async () => {
         const account = await waitForSignalLabAccount();
-        return getSignalLabBalance() ?? account.balance ?? 0;
+        return getSignalLabBalance() ?? account?.balance ?? 0;
     },
     getSignalLabOpenPositions: async () => {
         const account = await waitForSignalLabAccount();
-        return account.openPositions.length;
+        return account?.openPositions.length ?? 0;
     },
     getSignalLabRealisedProfit: async () => {
         const account = await waitForSignalLabAccount();
-        return account.realizedProfit;
+        return account?.realizedProfit ?? 0;
     },
     getSignalLabAccountId: async () => {
         const account = await waitForSignalLabAccount();
-        return account.accountId;
+        return account?.accountId ?? '';
     },
     isSignalLabConnected: async () => isSignalLabConnected(),
     // Cross-market scan (all markets).
@@ -98,6 +107,23 @@ const getSignalLabInterface = (tradeEngine = null) => ({
         if (tradeEngine.options) tradeEngine.options.symbol = wanted;
         if (tradeEngine.tradeOptions) tradeEngine.tradeOptions.symbol = wanted;
         return wanted;
+    },
+    // Switch to whatever the last all-markets scan picked. The fixed-market
+    // switch block takes a dropdown value, so a scan-driven strategy needs
+    // this dynamic form to actually trade the market it found.
+    signalLabSwitchToBest: async () => {
+        const best = signalLabScanBest();
+        if (!best || !tradeEngine) return '';
+        const previous = tradeEngine.options?.symbol ?? tradeEngine.tradeOptions?.symbol ?? '';
+        if (best === previous) return best;
+        try {
+            await tradeEngine.switchSymbol(best);
+        } catch {
+            return previous || '';
+        }
+        if (tradeEngine.options) tradeEngine.options.symbol = best;
+        if (tradeEngine.tradeOptions) tradeEngine.tradeOptions.symbol = best;
+        return best;
     },
     // Hedging.
     signalLabHedgeLegs: async symbol => signalLabHedgeLegs(String(symbol)),

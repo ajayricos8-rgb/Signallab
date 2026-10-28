@@ -67,10 +67,8 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_virtual_buy = 
     const stake = generator.valueToCode(block, 'STAKE', generator.ORDER_ATOMIC) || '1';
     const payout = generator.valueToCode(block, 'PAYOUT', generator.ORDER_ATOMIC) || '1.9';
     const barrier = generator.valueToCode(block, 'BARRIER', generator.ORDER_ATOMIC) || '5';
-    return [
-        `Bot.signalLabVirtualBuy(${JSON.stringify(symbol)}, ${JSON.stringify(direction)}, ${stake}, ${payout}, ${barrier});\n`,
-        generator.ORDER_ATOMIC,
-    ];
+    // Statement block: return a code string, not a [code, order] tuple.
+    return `Bot.signalLabVirtualBuy(${JSON.stringify(symbol)}, ${JSON.stringify(direction)}, ${stake}, ${payout}, ${barrier});\n`;
 };
 
 window.Blockly.Blocks.signal_lab_virtual_settle = {
@@ -97,10 +95,8 @@ window.Blockly.Blocks.signal_lab_virtual_settle = {
     },
 };
 
-window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_virtual_settle = () => [
-    'Bot.signalLabVirtualSettle();\n',
-    window.Blockly.JavaScript.javascriptGenerator.ORDER_ATOMIC,
-];
+window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_virtual_settle = () =>
+    'Bot.signalLabVirtualSettle();\n';
 
 window.Blockly.Blocks.signal_lab_virtual_reset = {
     init() {
@@ -126,10 +122,8 @@ window.Blockly.Blocks.signal_lab_virtual_reset = {
     },
 };
 
-window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_virtual_reset = () => [
-    'Bot.signalLabVirtualReset();\n',
-    window.Blockly.JavaScript.javascriptGenerator.ORDER_ATOMIC,
-];
+window.Blockly.JavaScript.javascriptGenerator.forBlock.signal_lab_virtual_reset = () =>
+    'Bot.signalLabVirtualReset();\n';
 
 window.Blockly.Blocks.signal_lab_virtual_profit = {
     init() {

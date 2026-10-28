@@ -110,7 +110,10 @@ let virtualLedger: {
 const TICK_LIMIT = 1_000;
 const DATA_STALE_MS = 15_000;
 const REQUEST_RETRY_MS = 4_000;
-const DATA_WAIT_MS = 8_000;
+// A bot can start the moment the workspace opens, before the parent's first
+// snapshot lands. Thirty seconds covers a cold feed; after that the waiters
+// below resolve empty instead of throwing (see their doc comments).
+const DATA_WAIT_MS = 30_000;
 
 let markets = new Map<string, SignalLabMarket>();
 let account: SignalLabAccount | null = null;
@@ -343,7 +346,12 @@ function parseAnalysisSnapshot(value: unknown): SignalLabAnalysisSnapshot | null
         || !isFiniteNumber(asOfEpoch) || asOfEpoch <= 0
         || !isFiniteNumber(maxAgeMs) || maxAgeMs < 1_000 || maxAgeMs > 900_000
         || !isFiniteNumber(validForTicks) || validForTicks < 1 || validForTicks > 500
-        || !isFiniteNumber(windowTicks) || windowTicks < 1 || windowTicks > 50
+        // The entry window used to be capped at 50 ticks. Loading the
+        // strategy, confirming it and booting the bot can eat most of that on
+        // a 1-second market, so the gate expired before the first Purchase
+        // conditions ran and the bot watched forever without trading. The
+        // snapshot's own validForTicks (≤500) is still the hard expiry.
+        || !isFiniteNumber(windowTicks) || windowTicks < 1 || windowTicks > 500
         || (action !== 'enter-now' && action !== 'enter-on-trigger' && action !== 'no-edge')
         || (trigger !== 'immediate' && trigger !== 'quote' && trigger !== 'digit')
         || (priceCondition !== null && priceCondition !== 'above' && priceCondition !== 'below')) return null;
@@ -398,10 +406,68 @@ export function getSignalLabAnalysisSnapshot(): SignalLabAnalysisSnapshot | null
 }
 
 /**
+ * Why the live entry gate is open or closed, in one line. The gate itself is
+ * `reason === 'ok'`; the text exists so a strategy (or the journal) can say
+ * exactly which condition is holding entries closed instead of a bot that
+ * visibly runs yet never trades. The purchase block remains the only code
+ * that can place an order.
+ */
+export function getSignalLabAnalysisGateReason(
+    family: string,
+    symbol: string,
+    analysisId: string,
+    contractType: string,
+    barrier: number,
+    targetDigit: number,
+): string {
+    const snapshot = analysis;
+    const market = markets.get(String(symbol));
+    if (!connected) return 'Signal Lab feed is not connected to this workspace yet.';
+    if (!snapshot) return 'No Signal Lab analysis is loaded. Run Analysis, then Load and Run.';
+    if (!market || !market.ticks.length) return `Signal Lab has no ticks for ${String(symbol)} yet.`;
+    if (snapshot.tradeable !== true) return 'The loaded analysis is marked not tradeable.';
+    if (snapshot.family !== family) return `The loaded analysis is for ${snapshot.family}, not ${String(family)}.`;
+    if (snapshot.symbol !== symbol) return `The loaded analysis is for ${snapshot.symbol}, not ${String(symbol)}.`;
+    if (snapshot.analysisId !== analysisId) return 'The loaded analysis key does not match this strategy (it was built from a different analysis run).';
+    if (snapshot.contractType !== contractType) return `The loaded analysis trades ${snapshot.contractType}, not ${String(contractType)}.`;
+    if (snapshot.family === 'over-under' && snapshot.barrier !== barrier) return `The loaded analysis barrier is ${snapshot.barrier}, not ${barrier}.`;
+    if (snapshot.family === 'matches' && snapshot.targetDigit !== targetDigit) return `The loaded analysis target digit is ${snapshot.targetDigit}, not ${targetDigit}.`;
+    const now = Date.now();
+    if (now < snapshot.generatedAt - 60_000) return 'The loaded analysis is timestamped in the future; run a fresh analysis.';
+    if (now - snapshot.generatedAt > snapshot.maxAgeMs) return 'The loaded analysis is older than its 15-minute limit; run a fresh analysis.';
+    if (now - market.updatedAt > DATA_STALE_MS) return `The shared ${snapshot.symbol} feed has gone stale; waiting for fresh Signal Lab ticks.`;
+    const elapsedTicks = market.ticks.reduce((count, tick) => count + (tick.epoch > snapshot.asOfEpoch ? 1 : 0), 0);
+    if (snapshot.entry.action === 'no-edge') return 'The loaded analysis carries no entry; run a fresh analysis.';
+    if (elapsedTicks > snapshot.validForTicks) return `The analysis entry expired after ${snapshot.validForTicks} ticks (${elapsedTicks} have printed); run a fresh analysis.`;
+    if (snapshot.entry.action === 'enter-now') {
+        return snapshot.entry.trigger === 'immediate' ? 'ok' : 'The loaded analysis entry is malformed (enter-now without an immediate trigger).';
+    }
+    if (elapsedTicks > snapshot.entry.windowTicks) return `The measured entry window closed after ${snapshot.entry.windowTicks} ticks (${elapsedTicks} have printed).`;
+    if (snapshot.entry.trigger === 'digit') {
+        const digit = getSignalLabLastDigit(snapshot.symbol);
+        if (digit === null) return 'Waiting for the next tick to read its last digit.';
+        return snapshot.entry.contextDigits.includes(digit)
+            ? 'ok'
+            : `Waiting for a tick ending in ${snapshot.entry.contextDigits.join(' or ')} (last digit ${digit}).`;
+    }
+    if (snapshot.entry.trigger === 'quote') {
+        const quote = getSignalLabLastTick(snapshot.symbol);
+        if (quote === null || snapshot.entry.priceLevel === null || !snapshot.entry.priceCondition) return 'Waiting for a live quote at the entry level.';
+        const distance = snapshot.entry.priceCondition === 'below'
+            ? quote - snapshot.entry.priceLevel
+            : snapshot.entry.priceLevel - quote;
+        if (distance > 0) return `Waiting for the quote to trade ${snapshot.entry.priceCondition} ${snapshot.entry.priceLevel} (now ${quote}).`;
+        const overshoot = -distance;
+        if (snapshot.entry.tolerance !== null && overshoot > snapshot.entry.tolerance) return `The quote overshot the entry level ${snapshot.entry.priceLevel} by more than the no-chase band.`;
+        return 'ok';
+    }
+    return 'The loaded analysis entry trigger is not recognised.';
+}
+
+/**
  * Live entry gate for the generated Blockly strategy. It requires the exact
  * analysis key and market, a fresh feed, an unexpired measured window and the
- * analysis engine's current quote/digit trigger. The purchase block remains
- * the only code that can place an order.
+ * analysis engine's current quote/digit trigger.
  */
 export function getSignalLabAnalysisGate(
     family: string,
@@ -411,35 +477,7 @@ export function getSignalLabAnalysisGate(
     barrier: number,
     targetDigit: number,
 ): boolean {
-    const snapshot = analysis;
-    const market = markets.get(String(symbol));
-    if (!connected || !snapshot || !market || !market.ticks.length || snapshot.tradeable !== true) return false;
-    if (snapshot.family !== family || snapshot.symbol !== symbol || snapshot.analysisId !== analysisId) return false;
-    if (snapshot.contractType !== contractType) return false;
-    if (snapshot.family === 'over-under' && snapshot.barrier !== barrier) return false;
-    if (snapshot.family === 'matches' && snapshot.targetDigit !== targetDigit) return false;
-    const now = Date.now();
-    if (now < snapshot.generatedAt - 60_000 || now - snapshot.generatedAt > snapshot.maxAgeMs) return false;
-    if (now - market.updatedAt > DATA_STALE_MS) return false;
-    const elapsedTicks = market.ticks.reduce((count, tick) => count + (tick.epoch > snapshot.asOfEpoch ? 1 : 0), 0);
-    if (elapsedTicks > snapshot.validForTicks || snapshot.entry.action === 'no-edge') return false;
-    if (snapshot.entry.action === 'enter-now') return snapshot.entry.trigger === 'immediate';
-    if (elapsedTicks > snapshot.entry.windowTicks) return false;
-    if (snapshot.entry.trigger === 'digit') {
-        const digit = getSignalLabLastDigit(snapshot.symbol);
-        return digit !== null && snapshot.entry.contextDigits.includes(digit);
-    }
-    if (snapshot.entry.trigger === 'quote') {
-        const quote = getSignalLabLastTick(snapshot.symbol);
-        if (quote === null || snapshot.entry.priceLevel === null || !snapshot.entry.priceCondition) return false;
-        const distance = snapshot.entry.priceCondition === 'below'
-            ? quote - snapshot.entry.priceLevel
-            : snapshot.entry.priceLevel - quote;
-        if (distance > 0) return false;
-        const overshoot = -distance;
-        return snapshot.entry.tolerance === null || overshoot <= snapshot.entry.tolerance;
-    }
-    return false;
+    return getSignalLabAnalysisGateReason(family, symbol, analysisId, contractType, barrier, targetDigit) === 'ok';
 }
 
 export function connectSignalLabBridge() {
@@ -785,33 +823,35 @@ export function getSignalLabVirtualLedger(): typeof virtualLedger {
 }
 
 /**
- * Wait until a market has ticks (the snapshot may still be in flight when a bot
- * starts). Rejects with a message the bot's log can show instead of trading on
- * invented data.
+ * Wait until a market has ticks (the snapshot may still be in flight when a
+ * bot starts), resolving with an empty list after the timeout. This used to
+ * THROW: inside the bot interpreter that error either killed the run or —
+ * with "restart on error" enabled — restarted the strategy from the top
+ * every few seconds, so the bot visibly ran forever without ever reaching a
+ * Purchase block. A read-only data block must never be able to do that; an
+ * empty result simply makes the strategy's own conditions read "no data yet"
+ * and it re-checks on the next tick.
  */
 export async function waitForSignalLabTicks(symbol: string, timeoutMs = DATA_WAIT_MS): Promise<SignalLabTick[]> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         const ticks = markets.get(symbol)?.ticks;
         if (ticks && ticks.length) return ticks;
-        if (Date.now() >= deadline) {
-            throw new Error(
-                `Signal Lab has no ticks for ${symbol} yet. Open Signal Lab once so its feed can load, then run the bot again.`
-            );
-        }
+        if (Date.now() >= deadline) return [];
         await new Promise(resolve => window.setTimeout(resolve, 250));
     }
 }
 
-export async function waitForSignalLabAccount(timeoutMs = DATA_WAIT_MS): Promise<SignalLabAccount> {
+/**
+ * Wait for the shared account snapshot, resolving with `null` after the
+ * timeout (never throwing — see `waitForSignalLabTicks`). Callers map a null
+ * account to neutral read values so account blocks cannot kill a run.
+ */
+export async function waitForSignalLabAccount(timeoutMs = DATA_WAIT_MS): Promise<SignalLabAccount | null> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         if (account) return account;
-        if (Date.now() >= deadline) {
-            throw new Error(
-                'Signal Lab is not connected to an account. Connect an account in Signal Lab — DBot links it automatically.'
-            );
-        }
+        if (Date.now() >= deadline) return null;
         await new Promise(resolve => window.setTimeout(resolve, 250));
     }
 }
