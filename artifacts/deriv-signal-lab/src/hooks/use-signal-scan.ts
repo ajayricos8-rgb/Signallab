@@ -26,6 +26,8 @@ export type StartScanOptions<M> = {
   usableTicks: (entry: MarketFeedEntry) => number;
   buildJobs: (entries: MarketFeedEntry[]) => { jobs: ScanMarketJob[]; skipped: ScanFailure[] };
   meta: M;
+  /** Additional metadata required before building jobs. */
+  entryReady?: (entry: MarketFeedEntry) => boolean;
 };
 
 const DATA_PHASE = 6;
@@ -52,17 +54,18 @@ export function useSignalScan<R extends ScanJobResult, M>(memoryKey: string) {
     const controller = new AbortController();
     abortRef.current = controller;
     setError('');
-    const relevant = () => feed.getSnapshot().filter((entry) => options.symbols.includes(entry.symbol));
+    const relevant = () => feed.getSnapshot().filter((entry) => (!options.symbols.length || options.symbols.includes(entry.symbol)));
     const view = (entries: MarketFeedEntry[], state: MarketProgressState) => entries.map((entry) => ({ symbol: entry.symbol, name: entry.name, state, percent: 0 }));
     let entries = relevant();
     // Progress appears the instant Run Analysis is pressed.
     setProgress({ percent: 1, stage: 'Starting analysis…', completed: 0, total: entries.length, markets: view(entries, 'waiting') });
     try {
-      const ready = (entry: MarketFeedEntry) => options.usableTicks(entry) >= options.minimumTicks;
+      const ready = (entry: MarketFeedEntry) => options.usableTicks(entry) >= options.minimumTicks && (options.entryReady?.(entry) ?? true);
       if (!entries.length || entries.some((entry) => !ready(entry) && !entry.error)) {
         await feed.waitForData({
           symbols: options.symbols,
           minimumTicks: options.minimumTicks,
+          isReady: ready,
           timeoutMs: DATA_TIMEOUT_MS,
           signal: controller.signal,
           onUpdate: (loaded, total) => {

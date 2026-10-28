@@ -196,7 +196,13 @@ function beforePurchase(
   procedureName: string,
 ): string {
   const purchaseType = selectedPurchase(request);
-  return `<block type="before_purchase" id="aiBeforePurchase" x="24" y="300"><statement name="BEFOREPURCHASE_STACK"><block type="controls_if" id="aiEntryGate"><value name="IF0"><block type="logic_operation" id="aiEntryConditions"><field name="OP">AND</field><value name="A"><block type="procedures_callreturn" id="aiEntryGateCall"><mutation name="${escapeXml(procedureName)}"></mutation></block></value><value name="B">${analysisGate(request)}</value></block></value><statement name="DO0"><block type="purchase" id="aiPurchase"><field name="PURCHASE_LIST">${purchaseType}</field></block></statement></block></statement></block>`;
+  const riskGate = `<block type="procedures_callreturn" id="aiEntryGateCall"><mutation name="${escapeXml(procedureName)}"></mutation></block>`;
+  // Only strategies built from an analysis have a snapshot to validate. A
+  // prompt-built strategy must not contain a gate with an impossible empty key.
+  const condition = request.analysisId
+    ? `<block type="logic_operation" id="aiEntryConditions"><field name="OP">AND</field><value name="A">${riskGate}</value><value name="B">${analysisGate(request)}</value></block>`
+    : riskGate;
+  return `<block type="before_purchase" id="aiBeforePurchase" x="24" y="300"><statement name="BEFOREPURCHASE_STACK"><block type="controls_if" id="aiEntryGate"><value name="IF0">${condition}</value><statement name="DO0"><block type="purchase" id="aiPurchase"><field name="PURCHASE_LIST">${purchaseType}</field></block></statement></block></statement></block>`;
 }
 
 function afterPurchase(cooldownSeconds: number): string {

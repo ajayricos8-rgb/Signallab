@@ -68,6 +68,7 @@ test("digit family XML sets the correct contract, prediction and reusable guard"
     duration: 4,
     digitSide: "DIGITUNDER",
     barrier: 7,
+    analysisId: "over-analysis",
   });
   assert.match(over, /<field name="TRADETYPE_LIST">overunder<\/field>/);
   assert.match(over, /<field name="PURCHASE_LIST">DIGITUNDER<\/field>/);
@@ -91,6 +92,7 @@ test("digit family XML sets the correct contract, prediction and reusable guard"
     symbol: "R_50",
     duration: 1,
     targetDigit: 9,
+    analysisId: "match-analysis",
   });
   assert.match(match, /<field name="TRADETYPE_LIST">matchesdiffers<\/field>/);
   assert.match(match, /<field name="PURCHASE_LIST">DIGITMATCH<\/field>/);
@@ -151,4 +153,12 @@ test("prompt parsing extracts a family, market, stake, duration and custom block
   const vision = parseDbotAiDescription("Create an AI Vision over-under bot");
   assert.equal(vision?.family, "over-under");
   assert.equal(vision?.usedVisionAi, true);
+});
+
+ test("prompt strategies do not include an unfulfillable empty analysis gate", () => {
+  const parsed = parseDbotAiDescription("Trade rise on R_100");
+  const xml = buildDbotAiStrategyXml(parsed);
+  assert.doesNotMatch(xml, /signal_lab_analysis_gate/);
+  assert.match(xml, /procedures_callreturn/);
+  assert.match(xml, /<field name="PURCHASE_LIST">CALL<\/field>/);
 });

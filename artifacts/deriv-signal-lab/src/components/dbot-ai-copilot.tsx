@@ -601,9 +601,7 @@ export function DbotAiCopilot({
     setScanRequestAt(Date.now());
     if (!botRunning) onClearAnalysis();
     const symbols =
-      scope === ALL_MARKETS
-        ? feed.getSnapshot().map((entry) => entry.symbol)
-        : [scope];
+      scope === ALL_MARKETS ? [] : [scope];
     const next = await analysis.start({
       symbols,
       minimumTicks:
@@ -615,12 +613,13 @@ export function DbotAiCopilot({
               (count, tick) => count + (tick.digit === null ? 0 : 1),
               0,
             ),
+      entryReady: (entry) => family === "rise-fall" || entry.contractsLoaded || Boolean(entry.contractError),
       meta: { family, duration, scope },
       buildJobs: (entries) => {
         const jobs: ScanMarketJob[] = [];
         const skipped: ScanFailure[] = [];
         const usable = entries.filter((entry) =>
-          symbols.includes(entry.symbol),
+          !symbols.length || symbols.includes(entry.symbol),
         );
         for (const entry of usable) {
           if (entry.tradingSuspended === true) {
@@ -799,7 +798,7 @@ export function DbotAiCopilot({
       ...previous,
       {
         role: "assistant",
-        text: `Built a ${dbotAiFamilyLabel(parsed.family)} block strategy for ${parsed.symbol}, stake ${parsed.stake} ${parsed.currency ?? accountCurrency}, ${parsed.duration}${parsed.durationUnit === "m" ? " minute(s)" : " tick(s)"}, max ${parsed.maxTrades ?? 25} trades, stop loss ${parsed.lossLimit ?? 5}, and profit target ${parsed.profitTarget ?? 5}. Blocks: ${blockNames}. The reusable “${parsed.procedureName}” procedure is created by Blockly when loaded. A fresh, matching AI Analysis is required to open the entry gate.${extra}${missingNote} Your prompt stays in this browser; this builder uses a local block mapper, not an external chat API.`,
+        text: `Built a ${dbotAiFamilyLabel(parsed.family)} block strategy for ${parsed.symbol}, stake ${parsed.stake} ${parsed.currency ?? accountCurrency}, ${parsed.duration}${parsed.durationUnit === "m" ? " minute(s)" : " tick(s)"}, max ${parsed.maxTrades ?? 25} trades, stop loss ${parsed.lossLimit ?? 5}, and profit target ${parsed.profitTarget ?? 5}. Blocks: ${blockNames}. The reusable “${parsed.procedureName}” procedure is created by Blockly when loaded. The session risk limits guard entries; other prompt conditions are not interpreted. Review the blocks before running it.${extra}${missingNote} Your prompt stays in this browser; this builder uses a local block mapper, not an external chat API.`,
       },
     ]);
   }
@@ -1153,10 +1152,9 @@ export function DbotAiCopilot({
                             </p>
                           )}
                           <p className="mt-2 text-[9px] leading-4 text-amber-100/80">
-                            Guarded draft only: the analysis gate stays closed
-                            until a matching fresh AI Analysis snapshot is
-                            loaded. Use AI Analysis → Load and Run to start a
-                            verified strategy.
+                            Review the draft and its risk limits before running it.
+                            Use AI Analysis → Load and Run to start an
+                            analysis-gated strategy.
                           </p>
                           <button
                             type="button"
