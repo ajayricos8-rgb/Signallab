@@ -150,7 +150,7 @@ export function decideAutoRun(input: AutoRunInput): AutoRunDecision {
     return skip('not-tradeable', 'Auto skipped this signal: it cannot be expressed as a ticket on this market and duration.');
   }
   if (input.masterVetoed) {
-    return skip('master-veto', 'Auto skipped this signal: the master decision vetoed entry (NO_EDGE). Run Analysis again for a fresh, non-vetoed result.');
+    return skip('master-veto', 'Auto skipped this signal: the master decision vetoed entry (NO_EDGE), and Auto never trades a vetoed candidate on its own. Press Load and Run to trade it by hand, or Run Analysis again.');
   }
   // Never replace a run in progress: the contract already open belongs to the
   // signal the bot was loaded with.

@@ -402,11 +402,11 @@ export function TradeDock({
   }, [analysis, analysisEntryReady, botConfig.objective, expiryOptions, family, loadedEntry, marketName, recommendation]);
   const masterVetoed = masterBlocksEntry(botPlan?.master);
 
-  // Research advisories do not veto orders; the explicit master NO_EDGE action
-  // does, because it carries the validated Forge/confirmation hard veto.
-  //
-  // Advice only: the research library never blocks Load and Run any more. The
-  // bot trades the signal the analysis produced; warnings travel with the run.
+  // Research advisories do not veto orders. A master NO_EDGE verdict (or a
+  // validated forge veto) still stops AUTO, and a manual Load and Run on such
+  // a candidate asks the user to confirm first — but the button stays
+  // available, because Run Analysis must always produce a candidate the user
+  // can choose to trade with their own limits in place.
   const botResearchNote = botPlan ? researchAdvisory(botPlan.researchDecision) : null;
   const botRuns = botPlan ? resolveMaxRuns(botConfig, botPlan.recommendedRuns) : 0;
   // The bot always waits for the analysis entry; immediate is the analysis's own
@@ -524,15 +524,6 @@ export function TradeDock({
       );
       return;
     }
-    if (masterVetoed) {
-      const forge = botPlan?.entry.evidence.forge;
-      setTicketIssue(
-        forge?.decision === 'veto'
-          ? `The forged model validated a contrary estimate on this market (${percent1(forge.modelProbability)} vs ${percent1(botPlan.entry.evidence.fairRate)} fair) and the master vetoed entry. Run Analysis again before loading the bot.`
-          : 'The master decision is NO_EDGE and explicitly vetoes entry. Run Analysis again before loading the bot.',
-      );
-      return;
-    }
     if (!connected) {
       setTicketIssue('Connect your Deriv account before running the bot.');
       return;
@@ -542,9 +533,49 @@ export function TradeDock({
       setTicketIssue('Enter a positive stake with up to 2 decimal places.');
       return;
     }
+    // Run Analysis always yields a loadable candidate, even when the master
+    // measured no decisive edge: on synthetic indices that is the common
+    // case, and whether the strongest candidate is worth trading is the
+    // user's decision, not a hard veto. The measured verdict is named
+    // plainly and confirmed by hand; Auto still never starts on NO_EDGE.
+    const forge = botPlan.entry.evidence.forge;
+    const forgeVetoed = Boolean(forge?.validated && forge.decision === 'veto');
+    const validityMs = botPlan.master?.validity.ms ?? 0;
+    const analysisAgeMs = botPlan.ranAt > 0 ? Date.now() - botPlan.ranAt : 0;
+    const validityStale = validityMs > 0 && analysisAgeMs > Math.max(120_000, validityMs * 3);
+    const needsConfirm = masterVetoed || forgeVetoed || validityStale;
+    if (needsConfirm) {
+      const reasons: string[] = [];
+      if (masterVetoed)
+        reasons.push(
+          `the master measured no decisive edge on this signal (${botPlan.master ? `${botPlan.master.edgePts >= 0 ? '+' : ''}${botPlan.master.edgePts.toFixed(1)} pts vs fair` : 'NO_EDGE'}) — it is the strongest candidate from the scan, not a certified edge`,
+        );
+      if (forgeVetoed)
+        reasons.push(
+          `the forged model validated a contrary estimate (${percent1(forge!.modelProbability)} vs ${percent1(botPlan.entry.evidence.fairRate)} fair)`,
+        );
+      if (validityStale)
+        reasons.push(
+          `the analysis is ${Math.round(analysisAgeMs / 1_000)}s old, past the ~${Math.max(1, Math.round(validityMs / 1_000))}s validity the edge was measured for`,
+        );
+      const accountText = trading.activeAccount?.accountType === 'real' ? ' on your REAL Deriv account' : '';
+      if (
+        !window.confirm(
+          `Load and Run will trade ${botPlan.contractLabel} on ${botPlan.marketName}${accountText} even though ${reasons.join('; ')}. Your stake, stop loss, take profit and run limits still apply, and losses are possible. Run it anyway?`,
+        )
+      ) {
+        setTicketIssue('Load and Run cancelled. Run Analysis again for a fresh signal whenever you are ready.');
+        return;
+      }
+    }
     setTicketIssue('');
     setCollapsed(false);
-    signalBot.loadAndRun(botPlan, { ...botConfig, baseStake: stakeValue }, botSpeed);
+    signalBot.loadAndRun(
+      botPlan,
+      { ...botConfig, baseStake: stakeValue },
+      botSpeed,
+      needsConfirm ? { userOverride: true } : undefined,
+    );
   }
 
   function applyAnalysis() {
@@ -714,19 +745,19 @@ export function TradeDock({
                 <button
                   type="button"
                   onClick={handleLoadAndRun}
-                  disabled={bot.running || !stakeValid || masterVetoed}
+                  disabled={bot.running || !stakeValid}
                   title={
-                    masterVetoed
-                      ? 'The master decision is NO_EDGE; its validated veto blocks Load and Run.'
-                      : bot.running
-                        ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
+                    bot.running
+                      ? 'The bot is trading this signal. Press Stop on the bot page to end the run.'
+                      : masterVetoed
+                        ? `The master measured no decisive edge on this signal (${botPlan.master ? `${botPlan.master.edgePts >= 0 ? '+' : ''}${botPlan.master.edgePts.toFixed(1)} pts` : 'unmeasured'}). Load and Run stays available — it will ask you to confirm, and your stop loss, take profit and run limits still apply.`
                         : `Buy ${botPlan.contractLabel} on ${botPlan.symbol} for ${botRuns} run${botRuns === 1 ? '' : 's'}, one contract at a time, ${entryModeLabel(botPlan.entry).toLowerCase()}.${botConfig.objective === 'hit-rate' && recommendation && botPlan.contractType !== recommendation.contractType ? ` Aim: highest win rate — the analysis published ${recommendation.label ?? recommendation.contractType}, and this contract carries the better hit rate at a non-negative measured edge.` : ''}`
                   }
                   className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 text-[11px] font-extrabold text-[#052e1e] transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-55"
                   data-testid={`button-load-and-run-${family}`}
                 >
                   {bot.running ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
-                  {bot.running ? 'Running…' : masterVetoed ? 'Master veto' : 'Load and Run'}
+                  {bot.running ? 'Running…' : 'Load and Run'}
                 </button>
                 </>
               )}

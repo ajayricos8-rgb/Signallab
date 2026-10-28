@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  applyDbotAiEdit,
   buildDbotAiStrategyXml,
+  describeDbotAiStrategy,
   inferDbotAiFamily,
   parseDbotAiDescription,
 } from "../src/lib/dbot-ai.ts";
@@ -21,8 +23,8 @@ test("the local builder recognises the supported Deriv contract families", () =>
   assert.equal(inferDbotAiFamily("Use an under 4 digit barrier"), "over-under");
   assert.equal(inferDbotAiFamily("Trade odd digits"), "even-odd");
   assert.equal(inferDbotAiFamily("Match digit 7"), "matches");
-  assert.equal(inferDbotAiFamily("Trade differs"), null);
-  assert.equal(inferDbotAiFamily("Compare matches and differs"), null);
+  assert.equal(inferDbotAiFamily("Trade differs"), "differs");
+  assert.equal(inferDbotAiFamily("Build a differs bot on digit 3"), "differs");
   assert.equal(inferDbotAiFamily("Make a safe bot"), null);
 });
 
@@ -161,4 +163,83 @@ test("prompt parsing extracts a family, market, stake, duration and custom block
   assert.doesNotMatch(xml, /signal_lab_analysis_gate/);
   assert.match(xml, /procedures_callreturn/);
   assert.match(xml, /<field name="PURCHASE_LIST">CALL<\/field>/);
+});
+
+test("differs builds a DIGITDIFF purchase with a prediction", () => {
+  const parsed = parseDbotAiDescription("Build a differs bot on R_50, digit 3, stake 1");
+  assert.equal(parsed?.family, "differs");
+  assert.equal(parsed?.targetDigit, 3);
+  const xml = buildDbotAiStrategyXml(parsed);
+  assert.match(xml, /<field name="TRADETYPE_LIST">matchesdiffers<\/field>/);
+  assert.match(xml, /<field name="PURCHASE_LIST">DIGITDIFF<\/field>/);
+  assert.match(xml, /has_prediction="true"/);
+  assert.equal(tagCount(xml, "block").open, tagCount(xml, "block").close);
+});
+
+test("martingale builds a stake variable, init and after-purchase progression", () => {
+  const parsed = parseDbotAiDescription(
+    "Build an even digit martingale bot on volatility 100, stake 0.5, multiply by 2.2 after a loss, max stake 20, stop after 4 consecutive losses, wait 5 seconds between trades",
+  );
+  assert.equal(parsed?.family, "even-odd");
+  assert.equal(parsed?.symbol, "R_100");
+  assert.equal(parsed?.stakingPlan, "martingale");
+  assert.equal(parsed?.stakeMultiplier, 2.2);
+  assert.equal(parsed?.maxStake, 20);
+  assert.equal(parsed?.stopAfterLossStreak, 4);
+  assert.equal(parsed?.cooldownSeconds, 5);
+  const xml = buildDbotAiStrategyXml(parsed);
+  assert.match(xml, /<variables>/);
+  assert.match(xml, /ai stake/);
+  assert.match(xml, /ai loss streak/);
+  assert.match(xml, /variables_get/);
+  assert.match(xml, /contract_check_result/);
+  assert.match(xml, /math_arithmetic/);
+  assert.match(xml, /logic_null/);
+  assert.equal(tagCount(xml, "block").open, tagCount(xml, "block").close);
+  assert.match(describeDbotAiStrategy(parsed), /martingale ×2\.2/);
+});
+
+test("scan, hedge, virtual and digit-filter requests build their blocks", () => {
+  const scan = parseDbotAiDescription("Scan all markets and trade the best market rise on R_100");
+  assert.equal(scan?.scanMarkets, true);
+  const scanXml = buildDbotAiStrategyXml(scan);
+  assert.match(scanXml, /signal_lab_scan_markets/);
+  assert.match(scanXml, /signal_lab_switch_to_best/);
+  assert.match(scanXml, /signal_lab_scan_tradeable/);
+
+  const hedge = parseDbotAiDescription("Hedge bot: buy both rise and fall on V75 1s");
+  assert.equal(hedge?.hedge, true);
+  assert.equal(hedge?.symbol, "1HZ75V");
+  const hedgeXml = buildDbotAiStrategyXml(hedge);
+  assert.match(hedgeXml, /<field name="PURCHASE_LIST">CALL<\/field>/);
+  assert.match(hedgeXml, /<field name="PURCHASE_LIST">PUT<\/field>/);
+
+  const virtual = parseDbotAiDescription("Paper trade over 5 on R_25 in virtual mode, only buy when last digit is 7");
+  assert.equal(virtual?.virtual, true);
+  assert.deepEqual(virtual?.digitFilter, { kind: "equals", digit: 7 });
+  const virtualXml = buildDbotAiStrategyXml(virtual);
+  assert.match(virtualXml, /signal_lab_virtual_buy/);
+  assert.match(virtualXml, /signal_lab_virtual_settle/);
+  assert.match(virtualXml, /last_digit/);
+  assert.doesNotMatch(virtualXml, /<block type="purchase"/);
+  for (const xml of [scanXml, hedgeXml, virtualXml]) {
+    assert.equal(tagCount(xml, "block").open, tagCount(xml, "block").close);
+  }
+});
+
+test("unsupported concepts are reported as warnings, never silently dropped", () => {
+  const parsed = parseDbotAiDescription("Build a rise bot on R_100 when RSI is below 30");
+  assert.ok(parsed?.warnings.some((warning) => /RSI|indicator/i.test(warning)));
+});
+
+test("follow-up edits change only what they mention", () => {
+  const base = parseDbotAiDescription("Build a fall bot on R_75 stake 0.5 for 3 ticks");
+  const edited = applyDbotAiEdit(base, "make it martingale x3 and change stake to 1, switch to R_50");
+  assert.equal(edited?.stakingPlan, "martingale");
+  assert.equal(edited?.stakeMultiplier, 3);
+  assert.equal(edited?.stake, 1);
+  assert.equal(edited?.symbol, "R_50");
+  assert.equal(edited?.direction, "FALL");
+  assert.equal(edited?.duration, 3);
+  assert.equal(applyDbotAiEdit(base, "what is a martingale?"), null);
 });

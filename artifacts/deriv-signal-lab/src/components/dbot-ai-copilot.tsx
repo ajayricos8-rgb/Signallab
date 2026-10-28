@@ -51,8 +51,10 @@ import type {
 } from "@/lib/signal-engine/scan-runner";
 import type { ScanJobResult } from "@/lib/signal-engine/scan-protocol";
 import {
+  applyDbotAiEdit,
   buildDbotAiStrategyXml,
   dbotAiFamilyLabel,
+  describeDbotAiStrategy,
   parseDbotAiDescription,
   type DbotAiAnalysisSnapshot,
   type DbotAiFamily,
@@ -263,15 +265,14 @@ function buildAnalysisSnapshot(
 ): DbotAiAnalysisSnapshot | null {
   const signal = signalOf(result);
   const action = signal.master.entry.action;
-  // A speculative call is a measured, positive edge that has not cleared its
-  // own error bar. It is still a market the analysis can act on, so the
-  // strategy is generated for it; only an honest NO_EDGE verdict leaves the
-  // generated strategy without an entry.
-  const tradeable =
-    (signal.master.verdict === "TRADE_NOW" ||
-      signal.master.verdict === "TRADE_ON_ENTRY" ||
-      signal.master.verdict === "SPECULATIVE") &&
-    action !== "no-edge";
+  // The ranked candidate the user selected is ALWAYS loadable. On synthetic
+  // indices the precision layer honestly collapses most scans toward zero
+  // measured edge, so gating the snapshot on a decisive verdict meant Run
+  // Analysis almost never produced a strategy that could trade — the bot
+  // loaded, ran, and its entry gate stayed shut forever. The verdict remains
+  // on screen with its measured edge; whether to run the strongest candidate
+  // anyway is the user's call, confirmed at Load and Run.
+  const tradeable = true;
   const familyForStrategy: DbotAiFamily =
     result.kind === "digit" ? result.family : "rise-fall";
   if (familyForStrategy !== family) return null;
@@ -293,7 +294,11 @@ function buildAnalysisSnapshot(
     contract.targetDigit ?? "",
     digitDuration,
   ].join(":");
-  const trigger = action === "enter-now" ? "immediate" : entry.trigger;
+  // A no-edge master action carries no timing to wait for; the candidate is
+  // entered immediately while the snapshot is fresh (the bot's risk gate and
+  // trade caps still apply). Tradeable actions keep their measured trigger.
+  const trigger =
+    action === "enter-now" || action === "no-edge" ? "immediate" : entry.trigger;
   const contextDigits =
     trigger === "digit" ? [...(entry.contextDigits ?? [])] : [];
   const priceLevel = trigger === "quote" ? rebasedEntry.priceLevel : null;
@@ -307,17 +312,17 @@ function buildAnalysisSnapshot(
     return null;
   }
   const normalizedEntryAction =
-    action === "enter-on-trigger"
-      ? "enter-on-trigger"
-      : action === "no-edge"
-        ? "no-edge"
-        : "enter-now";
+    action === "enter-on-trigger" ? "enter-on-trigger" : "enter-now";
+  // Floor of 60 ticks for the same reason as validForTicks below: loading the
+  // strategy and booting the bot takes real ticks on a 1-second market, and a
+  // 3-tick measured window would expire before the first Purchase conditions
+  // evaluate. The snapshot's validForTicks still bounds the whole entry.
   const entryWindow = Math.max(
-    1,
+    60,
     Math.min(
-      50,
+      500,
       signal.master.entry.windowTicks,
-      signal.master.validity.ticks,
+      Math.max(60, signal.master.validity.ticks),
       entry.windowTicks,
     ),
   );
@@ -390,6 +395,83 @@ function displayVerdict(result: ScanJobResult): string {
   return result.best.master.verdict.replaceAll("_", " ");
 }
 
+/** Blocks whose type, name or category matches a plain-language topic. */
+function blocksForTopic(blocks: DbotAiBlockInfo[], topic: string): DbotAiBlockInfo[] {
+  const needle = topic.toLowerCase().trim();
+  const prefixes: Record<string, string[]> = {
+    scan: ["signal_lab_scan", "signal_lab_switch", "vision_market", "x_market"],
+    hedging: ["signal_lab_hedge"],
+    virtual: ["signal_lab_virtual"],
+    vision: ["vision_", "x_ai_"],
+    ai: ["vision_", "x_ai_"],
+    "signal lab": ["signal_lab_"],
+    account: ["signal_lab_balance", "signal_lab_account", "signal_lab_open", "signal_lab_profit", "signal_lab_connected"],
+    tick: ["signal_lab_last", "signal_lab_tick", "signal_lab_ticks"],
+    gate: ["signal_lab_analysis_gate", "signal_lab_gate_reason"],
+    analysis: ["signal_lab_analysis_gate", "signal_lab_gate_reason", "vision_analyse", "vision_go"],
+  };
+  const matched = Object.entries(prefixes).find(([key]) => needle.includes(key));
+  if (matched)
+    return blocks.filter((block) => matched[1].some((prefix) => block.type.startsWith(prefix)));
+  return blocks.filter(
+    (block) =>
+      block.type.toLowerCase().includes(needle.replace(/\s+/g, "_")) ||
+      block.name.toLowerCase().includes(needle) ||
+      block.category.toLowerCase().includes(needle),
+  );
+}
+
+function describeTopicBlocks(blocks: DbotAiBlockInfo[], topic: string): string {
+  const found = blocksForTopic(blocks, topic);
+  if (!found.length)
+    return `I could not find registered blocks matching “${topic}” yet. Ask “show available blocks” for the full registry, or describe the strategy you want and I will build it from the blocks that exist.`;
+  const list = found
+    .slice(0, 12)
+    .map((block) => (block.description ? `${block.name} — ${block.description.slice(0, 110)}` : block.name))
+    .join("; ");
+  return `${found.length} registered block${found.length === 1 ? "" : "s"} for ${topic}: ${list}${found.length > 12 ? ` …and ${found.length - 12} more in the toolbox.` : ""} Describe a strategy that uses them (for example “scan all markets and trade the best”) and I will wire the blocks for you.`;
+}
+
+/**
+ * The builder's bot knowledge: strategy patterns, how the workspace runs, and
+ * why a bot can look alive yet never trade. Answers are local and factual;
+ * anything the builder cannot generate is said plainly (see parse warnings).
+ */
+function answerBotQuestion(prompt: string): string | null {
+  const text = prompt.toLowerCase();
+  const asks = /\b(what|how|why|explain|teach|tell me|can you|do you|which|when|help)\b/.test(text) || text.includes("?");
+  if (!asks) return null;
+  if (/\b(not trading|no trades|never (buys|trades|opens)|won'?t (buy|trade|open)|no positions|not opening|runs but)\b/.test(text))
+    return "A bot that runs but never buys is almost always waiting on a condition in Purchase conditions. Check, in order: (1) the Signal Lab analysis gate — print the “Signal Lab gate status” block with a Notify block and it will say exactly what is holding entries (expired analysis, wrong market, waiting for a digit/price trigger); (2) the risk gate procedure — session profit/target or the trade cap may already be hit; (3) Run Analysis again and use Load and Run so the analysis key in the blocks matches the loaded snapshot; (4) account linked and balance above the stake. If the gate status says “ok” and it still does not buy, the Journal tab shows the refused proposal reason from Deriv.";
+  if (/\bmartingale\b/.test(text) && !/\breverse|anti\b/.test(text))
+    return "Martingale multiplies the stake after every loss (×2 by default) and resets to the base stake after a win, aiming to recover losses with one win. It does not change the odds — long losing streaks make the stake explode — so always pair it with a max stake and a session loss limit. I can build it: try “even bot on R_100, stake 0.35, martingale x2.2, max stake 10, stop loss 5”.";
+  if (/\b(reverse|anti)[-\s]?martingale\b/.test(text))
+    return "Reverse martingale multiplies the stake after a WIN and resets after a loss, pressing winning streaks instead of chasing losses. One loss wipes the streak's gains, so cap it (max stake / wins-in-a-row stop). Try: “rise bot on R_75, reverse martingale x2, stop after 3 wins in a row”.";
+  if (/\bd['’]?alembert\b/.test(text))
+    return "D'Alembert moves the stake by a fixed step: up one step after a loss, down one step after a win, never below the base stake. It grows much more slowly than martingale. Try: “over 4 on R_50, stake 0.5, d'Alembert step 0.5”.";
+  if (/\bhedg/.test(text))
+    return "Hedging here means opening both sides at once (Rise+Fall, or Over+Under on one barrier). The two payouts rarely sum to more than both stakes, so a plain hedge usually locks in a small loss — it only makes sense when one side is priced rich. The Hedging blocks (Signal Lab → Hedging) count open legs/pairs and the open profit so a strategy can balance itself. I can build the two-purchase pattern: “hedge bot, buy both rise and fall on R_100”.";
+  if (/\bvirtual|paper\b/.test(text))
+    return "Virtual blocks paper-trade: “Virtual trade” records a position at the live quote, “Settle virtual positions” books the win/loss on a 10,000 paper balance, and the profit/runs/wins/balance blocks report the rehearsal. Nothing is sent to Deriv. Ask for a bot “in virtual mode” and I generate the settle-then-buy pattern for you.";
+  if (/\bscan\b|\bbest market\b|\ball markets\b/.test(text))
+    return "The All markets scan blocks score every volatility market Signal Lab is streaming (rise/fall lean or digit lean over the last N ticks), remember the strongest, and “Switch to the best market from the last scan” moves the running bot onto it so the next Purchase trades there. Try: “scan all markets and trade the best market, even digits, stake 0.5”.";
+  if (/\b(analysis gate|gate|signal lab analysis)\b/.test(text))
+    return "The Signal Lab AI analysis gate is an entry condition, not an order: it is true only while the exact analysis that built the strategy is still fresh (same market, contract and analysis key, inside its measured entry window and tick validity). Strategies from AI Analysis → Load and Run carry it automatically. The companion “gate status” block explains in one line why the gate is open or closed — print it in the journal when a bot seems to wait forever.";
+  if (/\b(stop loss|loss limit|take profit|profit target|risk)\b/.test(text))
+    return "Every strategy I build carries a reusable risk-gate procedure: entries stop when session profit falls to the loss limit, reaches the profit target, or the trade cap is hit — plus optional stops after N losses/wins in a row. Say e.g. “stop loss 5, profit target 10, max 30 trades, stop after 3 consecutive losses”. These guard entries; they cannot close a contract that is already open.";
+  if (/\b(demo|real|account|balance|connect|link)\b/.test(text))
+    return "DBot trades whichever Deriv account is connected in Signal Lab (it auto-links the same account). The account chip at the top of DBot Space shows demo vs real — test every new bot on demo first. Signal Lab account blocks (balance, open positions, realised profit, account id, connected) let a strategy read that same account; orders still go through the normal Purchase block.";
+  if (/\b(save|export|download|import|load (a |my )?bot|xml)\b/.test(text))
+    return "Use the builder's own save/import controls (toolbar above the canvas) to store a strategy as XML or reload one. Strategies I generate load straight onto the canvas with Load guarded draft; from there you can edit and save them like any hand-built bot.";
+  if (/\b(run|start|stop)\b[^.]*\b(bot|strategy)\b/.test(text))
+    return "Load a strategy onto the canvas, check the market/stake/limits in the blocks, then press Run in the DBot panel (keep this browser tab open while it runs). AI Analysis → Load and Run does the loading and starting in one step with the analysis gate attached. Stop ends new entries; contracts already open still settle on Deriv.";
+  if (/\b(differs|matches|even|odd|over|under|rise|fall)\b/.test(text) && /\b(difference|mean|better|vs|versus)\b/.test(text))
+    return "Families: Rise/Fall pays on direction; Over/Under on the last digit vs a barrier 1–8 (equality loses); Even/Odd on digit parity (0 is even); Matches pays ~8–9× when the last digit equals your target; Differs pays a small amount when it does not. Lower payout = higher win rate needed is already priced in — none is 'better', they differ in variance. I can build any of them; AI Analysis measures Rise/Fall, Over/Under, Even/Odd and Matches.";
+  if (/\b(what can you|help|capabilit|features|options)\b/.test(text))
+    return "Describe a bot in plain words and I build real DBot blocks: Rise/Fall, Over/Under, Even/Odd, Matches and Differs on any volatility market (try “V100 1s”), stake, duration (ticks or minutes for Rise/Fall), stop loss / profit target / trade cap, martingale, reverse martingale or D'Alembert staking with a max stake, stop after N losses/wins in a row, last-digit entry filters (“only buy when last digit is 7”), all-markets scan trading the strongest market, two-sided hedges, virtual/paper mode, cooldowns, and named reusable custom blocks (“create a block called Session Gate”). I also answer questions about blocks — try “scan blocks” or “why is my bot not trading?” — and edit the bot on screen: “make it martingale x3”, “change stake to 1”. Indicator (RSI/MACD) conditions are the one thing I will flag instead of faking.";
+  return null;
+}
+
 export function DbotAiCopilot({
   ready,
   accountConnected,
@@ -415,7 +497,7 @@ export function DbotAiCopilot({
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      text: "Describe a Rise/Fall, Over/Under, Even/Odd or Matches bot. I map your request onto blocks registered in this DBot workspace and add a reusable risk gate. Ask me to create a named custom procedure block if you need one.",
+      text: "Describe any bot in plain words — Rise/Fall, Over/Under, Even/Odd, Matches or Differs, with martingale/D'Alembert staking, streak stops, last-digit entry filters, all-markets scan, hedging or virtual mode — and I build the real DBot blocks with a reusable risk gate. Ask “what can you do?”, search blocks (“scan blocks”), or edit the bot on screen (“make it martingale x3”).",
     },
   ]);
   const [builtStrategy, setBuiltStrategy] = useState<{
@@ -756,66 +838,87 @@ export function DbotAiCopilot({
     if (!prompt) return;
     setChatInput("");
     setMessages((previous) => [...previous, { role: "user", text: prompt }]);
-    const asksForBlocks =
-      /\b(show|list|what|which|available|registered)\b[\s\S]*\bblocks?\b/i.test(
-        prompt,
-      );
-    if (asksForBlocks) {
-      setBuiltStrategy(null);
-      setMessages((previous) => [
-        ...previous,
-        { role: "assistant", text: describeAvailableBlocks(blockRegistry) },
-      ]);
+    const reply = (text: string) =>
+      setMessages((previous) => [...previous, { role: "assistant", text }]);
+
+    // 1) Block-registry questions, including topic searches ("scan blocks").
+    const topicBlocks = prompt.match(
+      /\b(?:show|list|which|what|find|give me)?\s*(?:the\s+|all\s+)?([a-z][a-z\s]{2,24}?)\s+blocks?\b/i,
+    );
+    const asksForAllBlocks =
+      /\b(show|list|what|which|available|registered)\b[\s\S]*\bblocks?\b/i.test(prompt) &&
+      !topicBlocks?.[1]?.trim();
+    if (asksForAllBlocks) {
+      reply(describeAvailableBlocks(blockRegistry));
       return;
     }
+    if (topicBlocks?.[1]?.trim() && /\b(show|list|which|what|find|blocks? for|blocks?)\b/i.test(prompt) && !/\b(build|create|make|generate)\b/i.test(prompt)) {
+      reply(describeTopicBlocks(blockRegistry, topicBlocks[1].trim()));
+      return;
+    }
+
+    // 2) A follow-up edit to the strategy already on screen.
+    const finishBuild = (
+      parsed: NonNullable<ReturnType<typeof parseDbotAiDescription>>,
+      verb: string,
+    ) => {
+      const xml = buildDbotAiStrategyXml(parsed);
+      const types = [
+        ...new Set(
+          [...xml.matchAll(/<block type="([^"]+)"/g)].map((match) => match[1]),
+        ),
+      ];
+      const missing = blockRegistry.length
+        ? types.filter((type) => !registryTypes.has(type))
+        : types;
+      setBuiltStrategy({ xml, parsed, missing });
+      const blockNames = types
+        .map(
+          (type) =>
+            blockRegistry.find((block) => block.type === type)?.name ?? type,
+        )
+        .join(", ");
+      const extra = parsed.usedVisionAi
+        ? " The live Vision AI blocks are registered in this workspace; the AI Vision Over/Under bot in the Bot store trades them end-to-end."
+        : "";
+      const warningText = parsed.warnings.length
+        ? ` Not built: ${parsed.warnings.join(" ")}`
+        : "";
+      const missingNote = missing.length
+        ? ` I cannot verify these block registrations yet: ${missing.join(", ")}.`
+        : "";
+      reply(
+        `${verb}: ${describeDbotAiStrategy({ ...parsed, currency: parsed.currency ?? accountCurrency })}. Blocks: ${blockNames}. The reusable “${parsed.procedureName}” procedure guards every entry.${warningText}${extra}${missingNote} Review the blocks before running — and you can keep editing in plain words (“make it martingale x2”, “switch to R_50”). Your prompt stays in this browser; this builder uses a local block mapper, not an external chat API.`,
+      );
+    };
+    if (builtStrategy?.parsed) {
+      const edited = applyDbotAiEdit(builtStrategy.parsed, prompt);
+      if (edited) {
+        finishBuild(edited, "Updated the strategy");
+        return;
+      }
+    }
+
+    // 3) Bot knowledge questions.
+    const answer = answerBotQuestion(prompt);
+    if (answer) {
+      reply(answer);
+      return;
+    }
+
+    // 4) Build a new strategy from the description.
     const parsed = parseDbotAiDescription(
       prompt,
       selectedMarket?.symbol ?? "R_100",
       accountCurrency,
     );
     if (!parsed) {
-      const unsupported = /\bdiffers?\b/i.test(prompt)
-        ? "Differs is not a supported analysis family here; the registered signal engine only analyzes Matches as DIGITMATCH."
-        : "I could not map that request to a supported family. Try Rise/Fall, Over/Under, Even/Odd, or Matches; Differs is intentionally not labeled as analyzed.";
-      setBuiltStrategy(null);
-      setMessages((previous) => [
-        ...previous,
-        {
-          role: "assistant",
-          text: `${unsupported} You can also ask “show available blocks” to inspect the live DBot registry.`,
-        },
-      ]);
+      reply(
+        "I need a contract family to build from — Rise/Fall, Over/Under, Even/Odd, Matches or Differs. For example: “Build an even bot on R_100, stake 0.5, martingale x2, stop after 3 losses”. Ask “what can you do?” for everything I understand, or “show available blocks” for the live registry.",
+      );
       return;
     }
-    const xml = buildDbotAiStrategyXml(parsed);
-    const types = [
-      ...new Set(
-        [...xml.matchAll(/<block type="([^"]+)"/g)].map((match) => match[1]),
-      ),
-    ];
-    const missing = blockRegistry.length
-      ? types.filter((type) => !registryTypes.has(type))
-      : types;
-    setBuiltStrategy({ xml, parsed, missing });
-    const blockNames = types
-      .map(
-        (type) =>
-          blockRegistry.find((block) => block.type === type)?.name ?? type,
-      )
-      .join(", ");
-    const extra = parsed.usedVisionAi
-      ? " The live Vision AI blocks are registered in this workspace; the generated strategy still keeps the selected contract and its analysis gate explicit."
-      : "";
-    const missingNote = missing.length
-      ? ` I cannot verify these block registrations yet: ${missing.join(", ")}.`
-      : "";
-    setMessages((previous) => [
-      ...previous,
-      {
-        role: "assistant",
-        text: `Built a ${dbotAiFamilyLabel(parsed.family)} block strategy for ${parsed.symbol}, stake ${parsed.stake} ${parsed.currency ?? accountCurrency}, ${parsed.duration}${parsed.durationUnit === "m" ? " minute(s)" : " tick(s)"}, max ${parsed.maxTrades ?? 25} trades, stop loss ${parsed.lossLimit ?? 5}, and profit target ${parsed.profitTarget ?? 5}. Blocks: ${blockNames}. The reusable “${parsed.procedureName}” procedure is created by Blockly when loaded. The session risk limits guard entries; other prompt conditions are not interpreted. Review the blocks before running it.${extra}${missingNote} Your prompt stays in this browser; this builder uses a local block mapper, not an external chat API.`,
-      },
-    ]);
+    finishBuild(parsed, "Built a block strategy");
   }
 
   const resultRequest = useMemo<DbotAiStrategyRequest | null>(() => {
@@ -912,13 +1015,24 @@ export function DbotAiCopilot({
     )
       return;
     if (!registryReady) return;
-    if (
-      accountType === "real" &&
-      !window.confirm(
-        `This will start ${contractLabel(currentResult)} on ${currentResult.name} using your REAL Deriv account. The strategy has a ${lossLimit} loss limit and ${maxTrades} trade cap, but losses are possible. Continue?`,
+    // A weak (NO_EDGE) verdict no longer blocks loading — the user decides —
+    // but it is named plainly before anything starts, on demo and real alike.
+    const weakEdge = !signalTradeable;
+    if (weakEdge || accountType === "real") {
+      const edgeText = weakEdge
+        ? `The master measured no decisive edge on this candidate (${selectedSignal ? `${selectedSignal.master.edgePts >= 0 ? "+" : ""}${selectedSignal.master.edgePts.toFixed(1)} pts` : "unmeasured"}); it is the strongest market from this scan, not a certified edge. `
+        : "";
+      const accountText =
+        accountType === "real"
+          ? `This will start ${contractLabel(currentResult)} on ${currentResult.name} using your REAL Deriv account. `
+          : `This will start ${contractLabel(currentResult)} on ${currentResult.name}. `;
+      if (
+        !window.confirm(
+          `${edgeText}${accountText}The strategy has a ${lossLimit} loss limit and ${maxTrades} trade cap, but losses are possible. Continue?`,
+        )
       )
-    )
-      return;
+        return;
+    }
     setLoadingRun(true);
     onLoadAndRun(
       analysisXml,
@@ -942,6 +1056,7 @@ export function DbotAiCopilot({
     ready,
     registryReady,
     selectedAnalysisSnapshot,
+    selectedSignal,
     signalTradeable,
     snapshotReady,
   ]);
@@ -1232,9 +1347,10 @@ export function DbotAiCopilot({
                       </div>
                       <p className="mt-1.5 text-[9px] leading-4 text-slate-400">
                         Choose a Deriv contract family. Signal Lab analyzes the
-                        shared live feed, ranks markets, and will only start a
-                        DBot strategy when the master decision validates an
-                        entry.
+                        shared live feed and ranks every market; the strongest
+                        candidate is always loadable as a DBot strategy, with
+                        its measured edge shown so you decide whether to run
+                        it.
                       </p>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
@@ -1551,12 +1667,28 @@ export function DbotAiCopilot({
                           <div className="mb-1 flex items-center gap-1.5 font-bold text-amber-100">
                             <ShieldAlert size={12} /> Evidence, not a guarantee
                           </div>
-                          Only decisive Trade Now / Trade on Entry signals can
-                          start. The exact analysis key, market, entry window,
-                          session loss cap and run limit are checked inside the
-                          generated DBot blocks. Synthetic-index outcomes remain
+                          The strongest ranked candidate can always be loaded —
+                          when its measured edge is small the panel says so and
+                          Load and Run asks you to confirm. The exact analysis
+                          key, market, entry window, session loss cap and run
+                          limit are still checked inside the generated DBot
+                          blocks on every tick. Synthetic-index outcomes remain
                           uncertain; use a demo account first.
                         </div>
+                        {!signalTradeable && (
+                          <div
+                            className="rounded-lg border border-amber-200/15 bg-amber-200/[.04] px-3 py-2 text-[9px] leading-4 text-amber-100"
+                            data-testid="dbot-ai-weak-edge"
+                          >
+                            Best available candidate: the master measured no
+                            decisive edge on this scan (
+                            {selectedSignal.master.edgePts >= 0 ? "+" : ""}
+                            {selectedSignal.master.edgePts.toFixed(1)} pts).
+                            Load and Run still works — it will ask you to
+                            confirm, and the strategy keeps its loss cap and
+                            trade limit.
+                          </div>
+                        )}
                         {!accountReady && (
                           <div className="rounded-lg border border-amber-200/15 bg-amber-200/[.04] px-3 py-2 text-[9px] text-amber-100">
                             Link a Deriv account in DBot Space before using Load

@@ -117,15 +117,14 @@ test('a closed bridge clears ticks and account together', () => {
   assert.deepEqual(feed.getSignalLabMarketOptions()[0], ['R_10', 'Volatility 10 Index'], 'the fallback list returns before data');
 });
 
-test('a block waiting for ticks fails with a message instead of trading on nothing', async () => {
-  await assert.rejects(
-    () => feed.waitForSignalLabTicks('R_75', 50),
-    /Signal Lab has no ticks for R_75 yet/,
-  );
-  await assert.rejects(
-    () => feed.waitForSignalLabAccount(50),
-    /Signal Lab is not connected to an account/,
-  );
+test('a block waiting for ticks resolves empty instead of throwing, so the run survives', async () => {
+  // The waits used to reject. Inside the bot interpreter that either killed
+  // the run or — with restart-on-error — restarted the strategy every few
+  // seconds, so bots with Signal Lab blocks visibly ran without ever buying.
+  // An empty result makes the strategy's conditions read "no data yet" and
+  // it re-checks on the next tick.
+  assert.deepEqual(await feed.waitForSignalLabTicks('R_75', 50), []);
+  assert.equal(await feed.waitForSignalLabAccount(50), null);
 });
 
 test.after(() => {

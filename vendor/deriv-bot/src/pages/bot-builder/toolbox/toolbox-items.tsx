@@ -452,6 +452,11 @@ export const ToolboxItems = () =>
                     <Field name='SYMBOL'>R_100</Field>
                     <Field name='ANALYSIS_ID' />
                 </Block>
+                <Block type='signal_lab_gate_reason'>
+                    <Field name='FAMILY'>rise-fall</Field>
+                    <Field name='SYMBOL'>R_100</Field>
+                    <Field name='ANALYSIS_ID' />
+                </Block>
                 <Category id='signal_lab_scan' name={localize('All markets scan')}>
                     <Block type='signal_lab_scan_markets'>
                         <Field name='FAMILY'>rise-fall</Field>
@@ -478,6 +483,7 @@ export const ToolboxItems = () =>
                     <Block type='signal_lab_switch_market'>
                         <Field name='MARKET_LIST'>R_100</Field>
                     </Block>
+                    <Block type='signal_lab_switch_to_best' />
                 </Category>
                 <Category id='signal_lab_hedge' name={localize('Hedging')}>
                     <Block type='signal_lab_hedge_legs'>
