@@ -75,7 +75,15 @@ const Interpreter = () => {
             const function_args = first_defined_arg_idx < 0 ? [] : reversed_args.slice(first_defined_arg_idx).reverse();
             // End of workaround
 
-            func(...function_args.map(arg => js_interpreter.pseudoToNative(arg)))
+            // Promise.resolve().then(...) so a Bot.* function that returns a
+            // plain value — or throws synchronously — behaves exactly like an
+            // async one. Calling .then on a non-promise used to throw inside
+            // the interpreter step, which killed loop() mid-flight: the run
+            // promise never settled and the workspace sat on "Bot is
+            // starting" forever. A custom block must never be able to wedge
+            // the trading loop that way.
+            Promise.resolve()
+                .then(() => func(...function_args.map(arg => js_interpreter.pseudoToNative(arg))))
                 .then(rv => {
                     callback(js_interpreter.nativeToPseudo(rv));
                     loop();

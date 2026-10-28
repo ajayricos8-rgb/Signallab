@@ -76,17 +76,24 @@ export default Engine =>
         }
 
         getTicks(toString = false) {
-            return new Promise(resolve => {
-                this.$scope.ticksService.request({ symbol: this.symbol }).then(ticks => {
-                    const ticks_list = ticks.map(tick => {
-                        if (toString) {
-                            return tick.quote.toFixed(this.getPipSize());
-                        }
-                        return tick.quote;
-                    });
+            // Forward rejections: a promise that never settles parks the
+            // interpreter mid-step and the bot hangs on "Bot is starting"
+            // with no error anywhere. Rejecting routes through the normal
+            // interpreter error/restart path instead.
+            return new Promise((resolve, reject) => {
+                this.$scope.ticksService
+                    .request({ symbol: this.symbol })
+                    .then(ticks => {
+                        const ticks_list = ticks.map(tick => {
+                            if (toString) {
+                                return tick.quote.toFixed(this.getPipSize());
+                            }
+                            return tick.quote;
+                        });
 
-                    resolve(ticks_list);
-                });
+                        resolve(ticks_list);
+                    })
+                    .catch(reject);
             });
         }
 
@@ -113,6 +120,12 @@ export default Engine =>
                             };
                             globalObserver.emit('Error', localizedError);
                             resolve(e.code);
+                        } else {
+                            // See getTicks: never leave this promise unsettled.
+                            // BinaryBotPrivateTickAnalysis awaits it at the top
+                            // of every loop, so a swallowed error here froze
+                            // the whole run before Bot.start was even reached.
+                            reject(e);
                         }
                     })
             );
