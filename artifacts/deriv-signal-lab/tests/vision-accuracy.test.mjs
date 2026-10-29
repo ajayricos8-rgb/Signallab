@@ -87,3 +87,57 @@ test('the interface targets the settling tick and grades the opening forecast', 
     assert.match(source, /visionMarkEntry: async \(\) => \{\s*\n\s*pacer\.mark\(\);\s*\n\s*snapshotEntryPlan\(\)/);
     assert.match(source, /const graded = opening \|\| cached\?\.plan/);
 });
+
+test('the regime expert reverses a stretch and refuses to extrapolate a burst', () => {
+    const base = walk(1400);
+    // A quiet tape parked above its long mean: reversion is the only honest read.
+    const quiet = base.slice(0, 1200).map((value, index) => (index > 1100 ? Number((value + 1.6).toFixed(2)) : value));
+    const reversion = ai.regimeDistribution(quiet, 5);
+    assert.equal(reversion.regime, 'reversion');
+    assert.ok(reversion.conviction > 0.3, `a 1.6-point stretch should carry conviction (${reversion.conviction.toFixed(2)})`);
+    // The reversion forecast lands below the quote, the momentum forecast above
+    // it: the two experts disagree by construction, which is the point of having
+    // both. Compare the probability mass below the current digit.
+    const below = distribution => {
+        const digits = ai.momentumDistribution(quiet, 5);
+        const current = Math.round((quiet[quiet.length - 1] * 100) % 10);
+        const mass = dist => dist.reduce((acc, p, d) => acc + (d < current ? p : 0), 0);
+        return { regime: mass(distribution), momentum: mass(digits), current };
+    };
+    const split = below(reversion.distribution);
+    assert.ok(split.regime >= split.momentum, 'a stretched tape forecasts lower digits than pure momentum');
+
+    // An expanding burst must NOT be extrapolated: the distribution widens out
+    // toward uniform instead of chasing the move.
+    const burst = walk(1400, { seed: 21 }).slice();
+    for (let i = burst.length - 60; i < burst.length; i++) burst[i] = Number((burst[i] + (i % 2 ? 9 : -9)).toFixed(2));
+    const expanded = ai.regimeDistribution(burst, 5);
+    const entropy = dist => -dist.reduce((acc, p) => acc + (p > 0 ? p * Math.log(p) : 0), 0);
+    assert.ok(expanded.conviction >= 0 && expanded.conviction <= 1);
+    assert.ok(entropy(expanded.distribution) > 1.5, 'a burst widens the band rather than naming a digit');
+});
+
+test('the own record calibrates the estimate instead of vetoing the trade', () => {
+    // No record: nothing measured, nothing changed.
+    assert.deepEqual(ai.recordCalibration(0, 0, 0.55), { factor: 1, hitRate: null, samples: 0, earned: null });
+    // A record below break-even pulls the estimate back toward the anchor...
+    const cold = ai.recordCalibration(5, 40, 0.55);
+    assert.equal(cold.factor, 0.35);
+    assert.equal(cold.earned, false);
+    // ...but never parks it: the floor is 0.35, not zero.
+    assert.ok(cold.factor > 0);
+    // An earned record sharpens it, capped at 1.25.
+    assert.equal(ai.recordCalibration(36, 40, 0.55).factor, 1.25);
+    // At break-even the factor is exactly 1.
+    assert.equal(ai.recordCalibration(22, 40, 0.55).factor, 1);
+
+    const series = walk(1400);
+    const coldPlan = ai.planTrade(series, { horizon: 5, brain: { ...ai.defaultBrain(), wins: 5, losses: 35 } });
+    assert.equal(coldPlan.hitSamples, 40);
+    assert.ok(coldPlan.hitRate < 0.2);
+    assert.equal(coldPlan.calibration, 0.35);
+    // The lean is still measured and published: significance is a property of
+    // the data, not of the record.
+    assert.ok(Number.isFinite(coldPlan.tStat));
+    assert.match(coldPlan.summary, /own record/);
+});

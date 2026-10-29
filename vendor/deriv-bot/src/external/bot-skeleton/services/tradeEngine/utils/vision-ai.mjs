@@ -5,7 +5,7 @@
  * lands on each of the ten digits?* Everything else (barrier choice, direction,
  * stake, whether to trade at all) is derived from that distribution.
  *
- * It is an ensemble of seven experts, each producing a full digit distribution:
+ * It is an ensemble of eight experts, each producing a full digit distribution:
  *
  *   uniform    — the fair 10% anchor (a synthetic index is, to a first
  *                approximation, a random walk)
@@ -20,12 +20,27 @@
  *                collapses to uniform, which is the honest answer.
  *   neural     — a ten-class softmax regression over the same features, trained
  *                online from the contracts the bot actually traded.
+ *   regime     — a regime-switching forecast: the same price-to-digit mapping as
+ *                momentum, but the drift is whatever the current regime implies.
+ *                In a quiet, stretched tape it pulls the quote back toward its
+ *                long mean; in an expanding tape it stops extrapolating
+ *                altogether and widens the band instead, because a drift
+ *                measured in a burst is the least trustworthy number in the
+ *                series.
  *
  * Experts are combined with multiplicative weights driven by each expert's own
  * measured Brier loss, so the mix adapts to the market instead of being fixed.
  * Every estimate is shrunk toward uniform by its effective sample size, and the
  * trade decision subtracts the payout margin before it fires: the engine is
  * built to say *no* far more often than it says yes.
+ *
+ * On top of the mixture sits a second, empirical layer: the rule grades every
+ * decision it publishes against the tick that settled it. Once enough of those
+ * decisions are on the record, the estimate is pulled toward the fair anchor by
+ * how the bot has actually done against the payout it was paid — an earned
+ * record sharpens the estimate, a losing one shrinks it instead of parking the
+ * bot. The factor is published as `calibration` and on the plan, so the entry
+ * line can show what the record is doing to the numbers.
  */
 
 import {
@@ -47,7 +62,7 @@ import {
 } from './vision-math.mjs';
 import { isAllowedBarrier } from './vision-entry.mjs';
 
-export const MODEL_NAMES = ['uniform', 'frequency', 'recent', 'transition', 'analog', 'momentum', 'neural'];
+export const MODEL_NAMES = ['uniform', 'frequency', 'recent', 'transition', 'analog', 'momentum', 'neural', 'regime'];
 
 /**
  * The experts that actually measure the market, as opposed to the two
@@ -55,11 +70,14 @@ export const MODEL_NAMES = ['uniform', 'frequency', 'recent', 'transition', 'ana
  * these alone: the anchors are deliberately blind to digit bias, so counting
  * their sample size would make every lean look overwhelmingly significant.
  */
-const MEASURED_MODELS = ['frequency', 'recent', 'transition', 'analog', 'neural'];
+const MEASURED_MODELS = ['frequency', 'recent', 'transition', 'analog', 'neural', 'regime'];
 
 const NEURAL_FEATURE_COUNT = 6;
 const PRIOR_STRENGTH = 320; // how many pseudo-ticks of uniform each estimate is shrunk by
 const MIN_TICKS = 60;
+
+/** Graded decisions needed before the own-record calibration is trusted. */
+const CALIBRATION_SAMPLES = 20;
 
 export const defaultBrain = () => ({
     version: 1,
@@ -195,21 +213,135 @@ export function momentumDistribution(values, horizon, pipSize = null) {
     const mu = list[list.length - 1] + driftPerTick * h;
     const sigma = sigmaPerTick * Math.sqrt(h);
 
-    const muY = mu / unit;
-    const sigmaY = sigma / unit;
+    return digitDistributionFromPrice(mu / unit, sigma / unit);
+}
+
+/**
+ * Exact digit distribution of a price quoted on a grid of `unit`, given the mean
+ * (`muY`) and standard deviation (`sigmaY`) of the landing quote measured in
+ * units. A Fourier series of the wrapped normal: the first three harmonics are
+ * enough for every band a tick series can produce, and the decay term is what
+ * collapses the answer to uniform when the horizon moves several units.
+ */
+export function digitDistributionFromPrice(muY, sigmaY) {
+    const mu = safe(muY, 0);
+    const sigma = Math.max(0, safe(sigmaY, 1e6));
     const distribution = new Array(10);
     for (let d = 0; d < 10; d++) {
         let p = 0.1;
         for (let m = 1; m <= 3; m++) {
-            const decay = Math.exp((-2 * Math.PI * Math.PI * m * m * sigmaY * sigmaY) / 100);
+            const decay = Math.exp((-2 * Math.PI * Math.PI * m * m * sigma * sigma) / 100);
             if (decay < 1e-9) break;
             const coefficient = (Math.sin((Math.PI * m) / 10) / (Math.PI * m)) * 2;
-            p += coefficient * Math.cos((2 * Math.PI * m * (muY - d - 0.5)) / 10) * decay;
+            p += coefficient * Math.cos((2 * Math.PI * m * (mu - d - 0.5)) / 10) * decay;
         }
         distribution[d] = clamp(p, 0, 1);
     }
     const total = sum(distribution);
     return total > 0 ? distribution.map(value => value / total) : uniformDistribution();
+}
+
+/**
+ * Read the tape's current regime, scale-free, from the feature space and the
+ * quote history. Three states, because that is what the two statistics actually
+ * separate:
+ *
+ *   expansion — short-run volatility is running well above its long-run level,
+ *               so a drift measured over the last few hundred ticks is the least
+ *               reliable number in the series;
+ *   reversion — the tape is quiet and the quote is stretched away from its long
+ *               mean, which is the state in which a pull back is measurable;
+ *   balanced  — neither, and the honest forecast is the neutral one.
+ */
+export function readRegime(space) {
+    const features = space?.features || [];
+    const last = features[features.length - 1] || { displacement: 0, drift: 0, volRatio: 1 };
+    const expansion = safe(last.volRatio, 1);
+    const stretch = safe(last.displacement, 0);
+    const slope = safe(last.drift, 0);
+    const state =
+        expansion > 1.25
+            ? 'expansion'
+            : expansion < 0.92 && Math.abs(stretch) > 0.75
+              ? 'reversion'
+              : 'balanced';
+    // How much of a claim the read has. Each statistic is scored against a bar
+    // it has to clear before it counts at all, so a random walk's ordinary
+    // one-sigma wobble does not read as a regime: -15 % volatility, 0.5 sigma of
+    // stretch and 1 sigma of slope are the neutral zone, and the score ramps to 1
+    // at -75 %, 2 sigma and 3.5 sigma respectively.
+    const burst = clamp((Math.abs(expansion - 1) - 0.15) / 0.6, 0, 1);
+    const pinned = clamp((Math.abs(stretch) - 0.5) / 1.5, 0, 1);
+    const trend = clamp((Math.abs(slope) - 1) / 2.5, 0, 1);
+    const conviction =
+        state === 'expansion'
+            ? Math.max(burst, 0.5 * pinned)
+            : state === 'reversion'
+              ? Math.max(pinned, 0.4 * trend)
+              : Math.max(0.2 * burst, 0.2 * pinned, 0.15 * trend);
+    return { state, expansion, stretch, slope, conviction: clamp(conviction, 0, 1) };
+}
+
+/**
+ * The regime expert: the same price-to-digit mapping as momentum, driven by what
+ * the regime says about the *next* `horizon` ticks rather than by the sample
+ * mean of the last few hundred.
+ *
+ *   reversion — the quote is pulled back toward its long mean, recovering a
+ *               fraction of its stretch over the horizon;
+ *   expansion — no extrapolation at all (the mean is the current quote) and a
+ *               widened band, because a burst says nothing about direction but
+ *               a great deal about dispersion;
+ *   balanced  — half of the measured drift, which is the shrinkage a fair market
+ *               deserves.
+ *
+ * It is a genuinely different model from momentum, not a relabel: momentum
+ * extrapolates a mean, this one reverses a stretch, and the two disagree
+ * exactly when it matters.
+ */
+export function regimeDistribution(values, horizon, pipSize = null, space = null) {
+    const list = toNumbers(values);
+    if (list.length < MIN_TICKS) return { distribution: uniformDistribution(), effective: 0, regime: 'balanced' };
+    const decimals = pipSize != null ? clamp(Math.round(pipSize), 0, 8) : inferPipSize(list);
+    const unit = 10 ** -decimals;
+    const spaceRead = space || buildFeatureSpace(list);
+    const regime = readRegime(spaceRead);
+    const h = Math.max(1, Math.floor(horizon) || 1);
+
+    const changes = returns(list);
+    const sample = changes.slice(-Math.min(changes.length, 220));
+    const driftPerTick = mean(sample);
+    const sigmaPerTick = stdDev(sample) || unit;
+    const last = list[list.length - 1];
+
+    const longWindow = Math.min(list.length, 480);
+    const longMean = mean(list.slice(-longWindow));
+    const longStd = stdDev(list.slice(-longWindow)) || unit;
+
+    let mu = last;
+    let sigma = sigmaPerTick * Math.sqrt(h);
+    if (regime.state === 'reversion') {
+        // Recover a share of the stretch, scaled by how quiet the tape is: a
+        // dead tape mean-reverts further within the same horizon than a busy one.
+        const recovery = clamp(0.45 * (1 - Math.min(regime.expansion, 1)), 0.05, 0.45);
+        mu = last + (longMean - last) * recovery;
+        sigma *= 0.9;
+    } else if (regime.state === 'expansion') {
+        mu = last;
+        sigma *= 1.25;
+    } else {
+        mu = last + driftPerTick * h * 0.5;
+    }
+
+    // A regime read that is barely off neutral has no business claiming much;
+    // the effective sample is what the blend shrinks this expert by.
+    const effective = clamp((list.length / 4) * (0.2 + 0.8 * regime.conviction), 0, 400);
+    return {
+        distribution: digitDistributionFromPrice(mu / unit, sigma / unit),
+        effective,
+        regime: regime.state,
+        conviction: regime.conviction,
+    };
 }
 
 /**
@@ -315,6 +447,7 @@ export function forecastDigits(values, options = {}) {
     const transition = transitionDistribution(digits, horizon);
     const analog = analogDistribution(values, horizon, { window: options.window || 40 });
     const neural = neuralDistribution(brain, featureVector(space, digits, digits.length - 1));
+    const regime = regimeDistribution(values, horizon, space.pipSize, space);
 
     const raw = {
         uniform: { distribution: uniformDistribution(), effective: 1e6 },
@@ -330,6 +463,7 @@ export function forecastDigits(values, options = {}) {
         analog: { distribution: analog.distribution, effective: analog.effective },
         momentum: { distribution: momentumDistribution(values, horizon, space.pipSize), effective: 400 },
         neural: { distribution: neural.distribution, effective: neural.effective },
+        regime: { distribution: regime.distribution, effective: regime.effective },
     };
 
     const experts = {};
@@ -371,6 +505,8 @@ export function forecastDigits(values, options = {}) {
     return {
         distribution: blended,
         experts,
+        regime: regime.regime,
+        regimeConviction: regime.conviction,
         confidence,
         dataQuality,
         digits,
@@ -381,6 +517,28 @@ export function forecastDigits(values, options = {}) {
         acf: autocorrelation(values, 1),
         hurst: hurst(values),
     };
+}
+
+/**
+ * How much the rule's own graded record should move the estimate.
+ *
+ * `hits`/`graded` are the decisions this rule published that have since been
+ * settled — a shadow sample scores the forecast but never counts here, because
+ * it was never paid. `breakEven` is the probability the payout on the contract
+ * being priced demands. The factor is 1 with no record: nothing measured, no
+ * change. A record at or above break-even sharpens the estimate (up to +25 %),
+ * a record below it pulls the estimate back toward the anchor, floored at 0.35
+ * so a losing streak shrinks the bot instead of parking it.
+ */
+export function recordCalibration(hits, graded, breakEven) {
+    const samples = safe(graded, 0);
+    if (samples < CALIBRATION_SAMPLES || !(safe(breakEven, 0) > 0)) {
+        return { factor: 1, hitRate: samples > 0 ? clamp(safe(hits, 0) / samples, 0, 1) : null, samples, earned: null };
+    }
+    const rate = clamp(safe(hits, 0) / samples, 0, 1);
+    const ratio = rate / breakEven;
+    const factor = ratio >= 1 ? 1 + Math.min(0.25, (ratio - 1) * 0.5) : clamp(ratio, 0.35, 1);
+    return { factor, hitRate: rate, samples, earned: ratio >= 1 };
 }
 
 export const probabilityOver = (distribution, barrier) => {
@@ -508,6 +666,33 @@ export function planTrade(values, options = {}) {
             });
         });
     }
+
+    /**
+     * Own-record calibration, per candidate: the break-even is 1/payout, which
+     * differs by barrier, so the same record means different things on a 1.5x
+     * contract and a 3.4x one. The measured lean (`rawBias`, `tStat`) is left
+     * alone — significance is a property of the data, not of the record — while
+     * the probability used for the expected value, the size and the sign test is
+     * pulled toward the fair anchor when the record is behind break-even.
+     */
+    const graded = safe(options.brain?.wins) + safe(options.brain?.losses);
+    const hits = safe(options.brain?.wins);
+    let calibrationFactor = 1;
+    let hitRate = null;
+    candidates.forEach(candidate => {
+        const record = recordCalibration(hits, graded, candidate.payout > 0 ? 1 / candidate.payout : 0);
+        candidate.calibration = record.factor;
+        candidate.hitRate = record.hitRate;
+        candidate.recordEarned = record.earned;
+        candidate.probability = clamp(candidate.fair + (candidate.probability - candidate.fair) * record.factor, 0, 1);
+        candidate.edge = candidate.probability * candidate.payout - 1;
+        candidate.adjusted = candidate.edge - (1 - (forecast.dataQuality ?? 0)) * 0.06;
+        candidate.bias = candidate.probability - candidate.fair;
+        candidate.biasPoints = candidate.bias * 100;
+        candidate.kelly = kellyFraction(candidate.probability, candidate.payout);
+    });
+    calibrationFactor = candidates.length ? candidates.reduce((acc, c) => acc + c.calibration, 0) / candidates.length : 1;
+    hitRate = candidates.length ? candidates[0].hitRate : null;
 
     const minAgreement = options.minAgreement ?? 0.7;
     const skill = clamp((0.25 - (options.brain?.experts?.analog?.brier ?? 0.25)) * 8, 0, 1);
@@ -641,6 +826,11 @@ export function planTrade(values, options = {}) {
         biasPoints: best?.biasPoints ?? 0,
         stakeFactor,
         agreementRatio,
+        calibration: best?.calibration ?? calibrationFactor,
+        hitRate,
+        hitSamples: graded,
+        recordEarned: best?.recordEarned ?? null,
+        regime: forecast.regime,
         stable,
         minLean,
         strictValue,
@@ -665,7 +855,7 @@ export function planTrade(values, options = {}) {
                                     ? `edge ${(best.adjusted * 100).toFixed(2)}% below the ${rawMinEdge.toFixed(1)}% floor`
                                     : 'entry confirmed',
         summary: best
-            ? `${best.direction.toUpperCase()} ${best.barrier} · p ${(best.probability * 100).toFixed(2)}% · fair ${(best.fair * 100).toFixed(0)}% · lean ${best.rawBiasPoints.toFixed(2)}pt (${best.tStat.toFixed(2)}σ) · payout ${best.payout.toFixed(2)}x · EV ${(best.edge * 100).toFixed(2)}% · conf ${decisionConfidence.toFixed(0)}${forced ? ' · forced' : ''}`
+            ? `${best.direction.toUpperCase()} ${best.barrier} · p ${(best.probability * 100).toFixed(2)}% · fair ${(best.fair * 100).toFixed(0)}% · lean ${best.rawBiasPoints.toFixed(2)}pt (${best.tStat.toFixed(2)}σ) · payout ${best.payout.toFixed(2)}x · EV ${(best.edge * 100).toFixed(2)}% · conf ${decisionConfidence.toFixed(0)}${forced ? ' · forced' : ''}${graded >= CALIBRATION_SAMPLES ? ` · own record ${((hitRate ?? 0) * 100).toFixed(1)}% of ${graded} · cal ${calibrationFactor.toFixed(2)}` : ''}`
             : 'no candidate',
     };
 }
@@ -745,6 +935,10 @@ export function learn(brain, record = {}) {
 
 export default {
     analogDistribution,
+    digitDistributionFromPrice,
+    readRegime,
+    recordCalibration,
+    regimeDistribution,
     defaultBrain,
     fallbackPayout,
     featureVector,

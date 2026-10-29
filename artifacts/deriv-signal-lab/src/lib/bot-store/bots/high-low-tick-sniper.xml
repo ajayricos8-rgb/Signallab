@@ -20,7 +20,7 @@
   arcsine structure instead of a flat one-in-five guess.
 
   Agreement is measured on the *side* (high vs low), not on the exact tick index: requiring
-  seven models to name the same one of five ticks scored a strong consensus as disagreement.
+  nine models to name the same one of five ticks scored a strong consensus as disagreement.
   The payout is read from the live TICKHIGH/TICKLOW proposals, so the edge gate compares the
   estimate with what the contract actually pays; 3.5 is only the fallback before the first
   quotes arrive.
@@ -63,9 +63,9 @@
     <variable type="" id="vai_ready">ai ready</variable>
     <variable type="" id="vai_side">ai side</variable>
   </variables>
-<block type="trade_definition" id="trade0197" x="0" y="0">
+<block type="trade_definition" id="trade0205" x="0" y="0">
   <statement name="TRADE_OPTIONS">
-    <block type="trade_definition_market" id="td0195"><field name="MARKET_LIST">volidx</field><field name="SUBMARKET_LIST">random_index</field><field name="SYMBOL_LIST">R_100</field><next><block type="trade_definition_tradetype" id="td0194"><field name="TRADETYPECAT_LIST">highlowticks</field><field name="TRADETYPE_LIST">highlowticks</field><next><block type="trade_definition_contracttype" id="td0193"><field name="TYPE_LIST">both</field><next><block type="trade_definition_candleinterval" id="td0192"><field name="CANDLEINTERVAL_LIST">60</field><next><block type="trade_definition_restartbuysell" id="td0191"><field name="TIME_MACHINE_ENABLED">FALSE</field><next><block type="trade_definition_restartonerror" id="td0190"><field name="RESTARTONERROR">FALSE</field></block></next></block></next></block></next></block></next></block></next></block>
+    <block type="trade_definition_market" id="td0203"><field name="MARKET_LIST">volidx</field><field name="SUBMARKET_LIST">random_index</field><field name="SYMBOL_LIST">R_100</field><next><block type="trade_definition_tradetype" id="td0202"><field name="TRADETYPECAT_LIST">highlowticks</field><field name="TRADETYPE_LIST">highlowticks</field><next><block type="trade_definition_contracttype" id="td0201"><field name="TYPE_LIST">both</field><next><block type="trade_definition_candleinterval" id="td0200"><field name="CANDLEINTERVAL_LIST">60</field><next><block type="trade_definition_restartbuysell" id="td0199"><field name="TIME_MACHINE_ENABLED">FALSE</field><next><block type="trade_definition_restartonerror" id="td0198"><field name="RESTARTONERROR">FALSE</field></block></next></block></next></block></next></block></next></block></next></block>
   </statement>
   <statement name="INITIALIZATION">
     <block type="variables_set" id="b0002">
@@ -358,17 +358,17 @@
     </block>
   </statement>
   <statement name="SUBMARKET">
-    <block type="trade_definition_tradeoptions" id="b0196">
+    <block type="trade_definition_tradeoptions" id="b0204">
       <field name="DURATIONTYPE_LIST">t</field>
       <field name="CURRENCY_LIST">USD</field>
       <field name="AMOUNT_LIMITS"></field>
       <value name="DURATION">
-        <block type="variables_get" id="b0188">
+        <block type="variables_get" id="b0196">
           <field name="VAR" id="vai_duration">ai duration</field>
         </block>
       </value>
       <value name="AMOUNT">
-        <block type="variables_get" id="b0189">
+        <block type="variables_get" id="b0197">
           <field name="VAR" id="vstake">stake</field>
         </block>
       </value>
@@ -903,106 +903,144 @@
                 </block>
               </statement>
               <next>
-                <block type="controls_if" id="b0187">
+                <block type="controls_if" id="b0191">
                   <value name="IF0">
-                    <block type="logic_operation" id="b0163">
-                      <field name="OP">AND</field>
+                    <block type="logic_compare" id="b0188">
+                      <field name="OP">EQ</field>
                       <value name="A">
-                        <block type="x_price_risk" id="b0153">
-                          <value name="STAKE">
-                            <block type="variables_get" id="b0147">
-                              <field name="VAR" id="vbase_stake">base stake</field>
+                        <block type="math_modulo" id="b0186">
+                          <value name="DIVIDEND">
+                            <block type="variables_get" id="b0184">
+                              <field name="VAR" id="vai_contracts">ai contracts</field>
                             </block>
                           </value>
-                          <value name="LEGS">
-                            <block type="math_number" id="b0148">
-                              <field name="NUM">1</field>
-                            </block>
-                          </value>
-                          <value name="BASELINE">
-                            <block type="variables_get" id="b0150">
-                              <field name="VAR" id="vai_baseline">ai baseline</field>
-                            </block>
-                          </value>
-                          <value name="LOSS">
-                            <block type="variables_get" id="b0151">
-                              <field name="VAR" id="vai_loss_limit">ai loss limit</field>
-                            </block>
-                          </value>
-                          <value name="TARGET">
-                            <block type="variables_get" id="b0152">
-                              <field name="VAR" id="vai_profit_target">ai profit target</field>
-                            </block>
-                          </value>
-                          <value name="PERCENT">
-                            <block type="variables_get" id="b0149">
-                              <field name="VAR" id="vai_stake_percent">ai stake percent</field>
+                          <value name="DIVISOR">
+                            <block type="math_number" id="b0185">
+                              <field name="NUM">25</field>
                             </block>
                           </value>
                         </block>
                       </value>
                       <value name="B">
-                        <block type="logic_operation" id="b0162">
-                          <field name="OP">AND</field>
-                          <value name="A">
-                            <block type="logic_compare" id="b0158">
-                              <field name="OP">GT</field>
-                              <value name="A">
-                                <block type="variables_get" id="b0154">
-                                  <field name="VAR" id="vbaseline_profit">baseline profit</field>
-                                </block>
-                              </value>
-                              <value name="B">
-                                <block type="math_arithmetic" id="b0157">
-                                  <field name="OP">MULTIPLY</field>
-                                  <value name="A">
-                                    <block type="math_number" id="b0155">
-                                      <field name="NUM">-1</field>
-                                    </block>
-                                  </value>
-                                  <value name="B">
-                                    <block type="variables_get" id="b0156">
-                                      <field name="VAR" id="vai_loss_limit">ai loss limit</field>
-                                    </block>
-                                  </value>
-                                </block>
-                              </value>
-                            </block>
-                          </value>
-                          <value name="B">
-                            <block type="logic_compare" id="b0161">
-                              <field name="OP">LT</field>
-                              <value name="A">
-                                <block type="variables_get" id="b0159">
-                                  <field name="VAR" id="vbaseline_profit">baseline profit</field>
-                                </block>
-                              </value>
-                              <value name="B">
-                                <block type="variables_get" id="b0160">
-                                  <field name="VAR" id="vai_profit_target">ai profit target</field>
-                                </block>
-                              </value>
-                            </block>
-                          </value>
+                        <block type="math_number" id="b0187">
+                          <field name="NUM">0</field>
                         </block>
                       </value>
                     </block>
                   </value>
                   <statement name="DO0">
-                    <block type="trade_again" id="b0184">
-                    </block>
-                  </statement>
-                  <statement name="ELSE">
-                    <block type="notify" id="b0186">
-                      <field name="NOTIFICATION_TYPE">warn</field>
+                    <block type="notify" id="b0190">
+                      <field name="NOTIFICATION_TYPE">info</field>
                       <field name="NOTIFICATION_SOUND">silent</field>
                       <value name="MESSAGE">
-                        <block type="text" id="b0185">
-                          <field name="TEXT">AI session stop — the loss limit, the profit target or the balance rule was reached. Open contracts still settle; restart the bot to begin a new session.</field>
+                        <block type="x_price_model_weights" id="b0189">
                         </block>
                       </value>
                     </block>
                   </statement>
+                  <next>
+                    <block type="controls_if" id="b0195">
+                      <value name="IF0">
+                        <block type="logic_operation" id="b0163">
+                          <field name="OP">AND</field>
+                          <value name="A">
+                            <block type="x_price_risk" id="b0153">
+                              <value name="STAKE">
+                                <block type="variables_get" id="b0147">
+                                  <field name="VAR" id="vbase_stake">base stake</field>
+                                </block>
+                              </value>
+                              <value name="LEGS">
+                                <block type="math_number" id="b0148">
+                                  <field name="NUM">1</field>
+                                </block>
+                              </value>
+                              <value name="BASELINE">
+                                <block type="variables_get" id="b0150">
+                                  <field name="VAR" id="vai_baseline">ai baseline</field>
+                                </block>
+                              </value>
+                              <value name="LOSS">
+                                <block type="variables_get" id="b0151">
+                                  <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                </block>
+                              </value>
+                              <value name="TARGET">
+                                <block type="variables_get" id="b0152">
+                                  <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                </block>
+                              </value>
+                              <value name="PERCENT">
+                                <block type="variables_get" id="b0149">
+                                  <field name="VAR" id="vai_stake_percent">ai stake percent</field>
+                                </block>
+                              </value>
+                            </block>
+                          </value>
+                          <value name="B">
+                            <block type="logic_operation" id="b0162">
+                              <field name="OP">AND</field>
+                              <value name="A">
+                                <block type="logic_compare" id="b0158">
+                                  <field name="OP">GT</field>
+                                  <value name="A">
+                                    <block type="variables_get" id="b0154">
+                                      <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                    </block>
+                                  </value>
+                                  <value name="B">
+                                    <block type="math_arithmetic" id="b0157">
+                                      <field name="OP">MULTIPLY</field>
+                                      <value name="A">
+                                        <block type="math_number" id="b0155">
+                                          <field name="NUM">-1</field>
+                                        </block>
+                                      </value>
+                                      <value name="B">
+                                        <block type="variables_get" id="b0156">
+                                          <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                        </block>
+                                      </value>
+                                    </block>
+                                  </value>
+                                </block>
+                              </value>
+                              <value name="B">
+                                <block type="logic_compare" id="b0161">
+                                  <field name="OP">LT</field>
+                                  <value name="A">
+                                    <block type="variables_get" id="b0159">
+                                      <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                    </block>
+                                  </value>
+                                  <value name="B">
+                                    <block type="variables_get" id="b0160">
+                                      <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                    </block>
+                                  </value>
+                                </block>
+                              </value>
+                            </block>
+                          </value>
+                        </block>
+                      </value>
+                      <statement name="DO0">
+                        <block type="trade_again" id="b0192">
+                        </block>
+                      </statement>
+                      <statement name="ELSE">
+                        <block type="notify" id="b0194">
+                          <field name="NOTIFICATION_TYPE">warn</field>
+                          <field name="NOTIFICATION_SOUND">silent</field>
+                          <value name="MESSAGE">
+                            <block type="text" id="b0193">
+                              <field name="TEXT">AI session stop — the loss limit, the profit target or the balance rule was reached. Open contracts still settle; restart the bot to begin a new session.</field>
+                            </block>
+                          </value>
+                        </block>
+                      </statement>
+                    </block>
+                  </next>
                 </block>
               </next>
             </block>

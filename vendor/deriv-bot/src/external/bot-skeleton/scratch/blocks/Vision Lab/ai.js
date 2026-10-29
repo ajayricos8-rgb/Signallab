@@ -38,6 +38,7 @@ const MODELS = [
     [localize('digit transition'), 'transition'],
     [localize('price momentum'), 'momentum'],
     [localize('neural net'), 'neural'],
+    [localize('regime switching'), 'regime'],
     [localize('fair odds'), 'uniform'],
 ];
 
@@ -61,7 +62,7 @@ defineStatementBlock({
     colour,
     category,
     tooltip: localize(
-        'Runs the full AI read once per tick: seven models forecast the last digit, the payout table prices every barrier, and the best expected value is cached for the other AI blocks. A minimum edge below -50 switches the expected-value gate off, and a minimum lean of 0 switches the significance gate off too, which is the default: the bot trades the strongest lean it can measure on every tick. Raise the lean to 1.5 or more to insist on a lean bigger than the noise.'
+        'Runs the full AI read once per tick: eight models forecast the last digit, the payout table prices every barrier, and the best expected value is cached for the other AI blocks. A minimum edge below -50 switches the expected-value gate off, and a minimum lean of 0 switches the significance gate off too, which is the default: the bot trades the strongest lean it can measure on every tick. Raise the lean to 1.5 or more to insist on a lean bigger than the noise.'
     ),
     display_name: localize('AI Vision: read the market'),
     description: localize(
@@ -395,6 +396,51 @@ defineValueBlock({
     display_name: localize('AI model weight'),
     description: localize('Weights move on their own: a model that forecasts well on this market earns a bigger share, one that keeps missing fades away.'),
     call: (input, field) => `Bot.visionModelWeight(${field.MODEL})`,
+});
+
+defineValueBlock({
+    type: 'vision_record',
+    message: localize('AI own hit rate %'),
+    args: [],
+    output: 'Number',
+    colour,
+    category,
+    tooltip: localize(
+        'The share of the decisions this rule published that went on to win, over the contracts that have settled. Shadow samples never count here.'
+    ),
+    display_name: localize('AI own hit rate'),
+    description: localize(
+        'The rule grading itself. Compare it with the break-even of the contracts it buys (100 / payout): above it, the estimates have been earned; below it, the estimate is being pulled back toward the fair anchor.'
+    ),
+    call: () => 'Bot.visionRecord()',
+});
+
+defineValueBlock({
+    type: 'vision_record_samples',
+    message: localize('AI own record samples'),
+    args: [],
+    output: 'Number',
+    colour,
+    category,
+    tooltip: localize('How many settled decisions the own hit rate is measured on. Below 20 the calibration is switched off.'),
+    display_name: localize('AI own record samples'),
+    description: localize('A hit rate on ten trades is noise. The engine waits for twenty before it lets the record move a single estimate.'),
+    call: () => 'Bot.visionRecordSamples()',
+});
+
+defineValueBlock({
+    type: 'vision_calibration',
+    message: localize('AI calibration factor'),
+    args: [],
+    output: 'Number',
+    colour,
+    category,
+    tooltip: localize('How far the record is moving the estimate: 1 neutral, up to 1.25 when earned, down to 0.35 when it is not.'),
+    display_name: localize('AI calibration factor'),
+    description: localize(
+        'The second opinion on the ensemble: the probability is pulled toward the fair anchor by this factor, so a losing record shrinks the edge instead of parking the bot.'
+    ),
+    call: () => 'Bot.visionCalibration()',
 });
 
 defineValueBlock({

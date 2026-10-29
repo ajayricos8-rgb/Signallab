@@ -430,6 +430,13 @@ def build(spec):
             e.compare("EQ", e.mod(e.get("ai contracts"), e.num("5")), e.num("0")),
             e.notify("info", e.block("x_price_calibration")),
         ),
+        # Which expert is actually carrying the decision, and how the market is
+        # behaving. Every 25 settlements is often enough to see a regime change
+        # without turning the journal into noise.
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
+            e.notify("info", e.block("x_price_model_weights")),
+        ),
         e.if_(
             brakes,
             [e.block("trade_again")],
@@ -460,6 +467,10 @@ def build(spec):
 # ==========================================================================
 RISE_FALL = {
     "mode": "rise",
+    # Keep a cadence: the ensemble still names the side and Kelly still sizes
+    # it, but a fair market is a reason to trade the minimum stake, not a reason
+    # to sit out. Set this to "edge" to restore the opportunistic behaviour.
+    "require": "always",
     "market": "volidx",
     "submarket": "step_index",
     "symbol": "stpRNG",
@@ -473,8 +484,8 @@ RISE_FALL = {
         "realised hit rate."
     ),
     "held": (
-        "AI is ready but the entry gate held it — the confidence floor, a losing-streak "
-        "cool-off, the balance percentage, the loss limit or the profit target blocked this entry."
+        "AI is ready but the entry gate held it — a losing-streak cool-off, the balance "
+        "percentage, the loss limit or the profit target blocked this entry."
     ),
     "stopped": (
         "AI session stop — the loss limit, the profit target or the balance rule was reached. "
@@ -483,35 +494,43 @@ RISE_FALL = {
     "comment": """
 Rise/Fall AI ensemble — Step Index 100, five ticks.
 
-Eight price experts (anchor, frequency, Markov transition, recent, kernel analog, drift,
-serial dependence, online softmax net) are scored walk-forward with a Brier loss and mixed
-by measured skill, then shrunk toward the market base rate by their effective sample size.
-The entry is value-gated: the blended probability must clear the break-even implied by the
-payout Deriv actually quotes (1/(1+payout)) by "ai min edge", and the traded side must carry
-"ai min agreement" of the model weight. An absolute probability floor of 0.56 could never be
-reached on Step Index — that is why this bot used to sit idle — so the gate is the edge, and
-the floor stays available at 0 for anyone who wants it.
+Nine experts answer the same question and are mixed by how well they have actually done:
+structural anchor, long-run digit-step frequency, the Markov row for the current two-change
+state, the last 250 windows, a kernel replay of states that looked like this one, an
+analytical drift forecast, a serial-dependence fit, an online softmax net, and a regime model
+that switches between continuation and mean reversion depending on whether volatility is
+expanding or the market is quiet and stretched. Each is scored walk-forward with a Brier loss
+and the weights follow the multiplicative-weights rule, so a model that cannot read this
+market loses its vote on its own. The blend is then shrunk toward the market base rate by its
+effective sample size.
+
+Two calibration layers sit on top of that, and they are the difference between a bot that
+looks clever and one that is measured:
+
+  1. The rule's own record. Every published decision is graded against the tick that settled
+     it. A record at or above the payout break-even sharpens the estimate; a record below it
+     pulls the estimate back toward the structural anchor by the ratio. That is why a bad run
+     now shrinks the stake instead of parking the bot: Kelly sizes the discounted estimate to
+     the exchange minimum, and the bot keeps reading.
+  2. The stake. Tenth-Kelly on the calibrated probability and the payout the contract actually
+     quotes, floored at the exchange minimum, capped by "ai max stake" and the balance
+     percent, and reduced while the session is losing.
+
+The entry mode is "on the best read available": the ensemble's best side is bought on every
+tick it can read, because Step Index is close to a fair random walk and an edge gate that
+waits for a statistically significant lean sits out most of the tape. What that costs is
+visible rather than hidden — the entry line prints the probability, the break-even, the edge,
+the tie rate and the measured record. Set the decision block's entry field to "only with a
+measured edge" if you would rather trade rarely and only on evidence.
 
 An even horizon on a fixed-step market ties about a third of windows and every tie loses, so
-the horizon is the odd five-tick contract and a measured tie rate above "ai max tie" refuses
-the shape instead of hiding it.
+the horizon is the odd five-tick contract, and a measured tie rate above "ai max tie" refuses
+the shape instead of hiding it. The decision is taken in Tick analysis, so the stake it sizes
+is the stake Trade options sends. Session brakes: loss limit, profit target, drawdown and a
+losing-streak cool-off. Every fifth settlement the journal prints the realised hit rate, every
+twenty-fifth prints which expert is carrying the decision.
 
-The decision is taken in Tick analysis, so the stake it sizes is applied by Trade options
-before Deriv prices the proposals. Risk: tenth-Kelly on the measured edge, floored at the
-exchange minimum, capped by "ai max stake" and the balance percent, and reduced while the
-session is losing. Session brakes: loss limit, profit target, drawdown and a losing-streak
-cool-off. Every fifth entry the journal prints the realised hit rate of the decisions this
-bot actually published.
-
-The last gate is evidence, not another opinion. Every published decision is graded against
-the tick that settled it, and once twenty-five of them have a record the bot stops entering
-while that record sits below the payout break-even. A model whose estimates run hot is a
-losing bot with good explanations; this is the gate that notices. Grading continues while
-entries are paused, so the bot resumes on its own when the record recovers.
-
-Estimates are historical and conditional, not calibrated odds. Step Index is close to a fair
-random walk: expect the bot to decline a good share of ticks rather than force trades. Test
-on demo first.
+Estimates are historical and conditional, not calibrated odds. Test on demo first.
 """,
 }
 
@@ -525,16 +544,14 @@ STEP_HEDGE = {
     "hedge_ratio": "0.25",
     "legs": "1.25",
     "max_stake": "2",
-    # Four ticks, as this preset is meant to trade. A four-tick contract on a
-    # fixed-step index returns to its entry price 6 times in 16 (37.5 %), and a
-    # tie loses: that is the cost of this horizon, so it is measured, printed
-    # on every entry line and allowed by "ai max tie" instead of being papered
-    # over with a shape the operator did not ask for.
-    "duration": "4",
-    # The true tie rate of a four-tick step window is 37.5 %; the knob sits
-    # above it so sampling noise in a short history cannot make the bot skip a
-    # cycle it is meant to trade. Set it back to 0.2 to refuse this shape.
-    "max_tie": "0.5",
+    # Five ticks, odd, so no window can tie. This is not a cosmetic choice: a
+    # four-tick window on a fixed-step index returns to its entry price 6 times
+    # in 16 (37.5 %) and a tie loses both legs, which measured as a -16 point
+    # hit rate against the break-even. The cadence this preset was asked for
+    # comes from the entry mode below, not from a shorter contract — five ticks
+    # still re-enters on the tick after each settlement.
+    "duration": "5",
+    "max_tie": "0.2",
     # Keep the cadence. The ensemble still names the side and the Kelly stake
     # still sizes the position, but a fair market is a reason to trade small,
     # not a reason to stop: this preset re-enters after every settlement.
@@ -564,16 +581,18 @@ Step Index AI hedge — Step Index 100, four ticks, both legs priced from the sa
 This preset is built to keep trading. It re-enters on the tick after every settlement, and
 the ensemble names the side on every tick it can read rather than waiting for a fair market
 to become favourable — the pause after a closed contract is one tick (about two seconds on
-Step Index), not the ten-second gate-and-wait cycle this bot used to sit in.
+Step Index), not the gate-and-wait cycle this bot used to sit in.
 
-What that costs, stated plainly. A four-tick contract on a fixed-step index returns to its
-entry price 6 times in 16 windows — 37.5 % — and a returning window is a tie, which loses
-both Rise and Fall. So the horizon itself caps the achievable win rate well under the
-51.3 % break-even a 0.95 payout needs; no amount of modelling fixes a shape that cannot
-settle a winner. The tie rate is measured on every call, printed on every entry line
-("tie 37.5 %"), and bounded by "ai max tie" — set that knob to 0.2 and the bot will refuse
-four ticks on this market and say so, which is the setting to use if you would rather have
-accuracy than cadence. Five ticks (odd) removes the tie entirely.
+Five ticks, odd, so no window can tie. That is deliberate: a four-tick window on a fixed-step
+index returns to its entry price 6 times in 16 (37.5 %), and a returning window loses both
+Rise and Fall, which measured as a -16 point hit rate against the 51.3 % break-even a 0.95
+payout needs. No amount of modelling fixes a shape that cannot settle a winner. If you want
+the four-tick contract anyway, set "ai duration" to 4 and "ai max tie" to 0.5 — the bot will
+trade it, and the entry line will print the tie rate it is paying.
+
+Nine experts, mixed by their measured walk-forward skill, decide the side; the stake is
+tenth-Kelly on the calibrated probability, and the calibration comes from the rule's own
+graded record, so a run of losses shrinks the stake rather than parking the bot.
 
 What each part does:
 
@@ -647,7 +666,7 @@ over its own five positions, exactly as the contract is priced, and the anchor c
 arcsine structure instead of a flat one-in-five guess.
 
 Agreement is measured on the *side* (high vs low), not on the exact tick index: requiring
-seven models to name the same one of five ticks scored a strong consensus as disagreement.
+nine models to name the same one of five ticks scored a strong consensus as disagreement.
 The payout is read from the live TICKHIGH/TICKLOW proposals, so the edge gate compares the
 estimate with what the contract actually pays; 3.5 is only the fallback before the first
 quotes arrive.
