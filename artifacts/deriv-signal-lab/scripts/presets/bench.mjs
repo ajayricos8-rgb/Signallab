@@ -152,7 +152,10 @@ const presets = {
   'hedge preset': ['step-hedge', { threshold: 0, maxTie: 0.2, minAgreement: 0, minEdge: 0, payout: 0.95, minConfidence: 0, requireEdge: false, horizon: 5 }],
   // What the four-tick contract would have measured — the tie, priced.
   'hedge 4 ticks': ['step-hedge', { threshold: 0, maxTie: 0.5, minAgreement: 0, minEdge: 0, payout: 0.95, minConfidence: 0, requireEdge: false, horizon: 4 }],
-  'tick preset': ['tick', { threshold: 0, maxTie: 0.35, minAgreement: 0.5, minEdge: 0.005, payout: 3.5, minConfidence: 50 }],
+  // Shipped sniper: five ticks, cadence mode — the best-ranked of ten on every
+  // readable cycle, Kelly sizes the stake. (Live, the ten-quote ladder ranks
+  // by EV; the bench has no ladder, so it ranks by probability.)
+  'tick preset': ['tick', { threshold: 0, maxTie: 0.35, minAgreement: 0, minEdge: 0, payout: 3.5, minConfidence: 0, requireEdge: false }],
 };
 
 const markets = {

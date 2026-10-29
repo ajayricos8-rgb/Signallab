@@ -370,8 +370,13 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   // sizes the stake down to the exchange minimum when the edge is thin.
   assert.match(hedge, /<field name="REQUIRE">always<\/field>/, 'the hedge trades on the best read available');
   assert.match(rise, /<field name="REQUIRE">always<\/field>/, 'the Rise/Fall preset trades on the best read available');
-  // High/Low Tick has a structural edge to wait for, so it keeps the edge gate.
-  assert.match(tick, /<field name="REQUIRE">edge<\/field>/);
+  // High/Low Tick keeps the same cadence: the selective posture published ~0
+  // entries on live-like ladders, so the sniper buys the best-ranked of ten on
+  // every readable cycle and lets Kelly carry the caution. Selectivity is one
+  // dropdown flip away ("only with a measured edge" + ai min ev 0.01).
+  assert.match(tick, /<field name=\"REQUIRE\">always<\/field>/, 'the sniper trades on the best read available');
+  assert.match(tick, /<field name=\"VAR\" id=\"vai_min_ev\">ai min ev<\/field>[\s\S]*?<field name=\"NUM\">0<\/field>/, 'the EV veto ships off in cadence mode');
+  assert.match(tick, /<field name=\"VAR\" id=\"vai_min_agreement\">ai min agreement<\/field>[\s\S]*?<field name=\"NUM\">0<\/field>/, 'agreement ships off in cadence mode');
   // Every preset journals which expert is carrying the decision.
   for (const xml of [tick, rise, hedge]) assert.match(xml, /x_price_model_weights/);
 
@@ -940,6 +945,11 @@ test('the runtime wires the clock, the ladder and the v5 report fields', async (
   }
   assert.match(items, /<Value name='MIN_EV'>/, 'the EV floor is editable from the toolbox');
   assert.match(items, /<Value name='SLIP'>/, 'the entry slip is editable from the toolbox');
+  // The entry-mode switch the presets (and the docs) choose by: without this
+  // dropdown the REQUIRE field in the XML never reaches the runtime and every
+  // strategy silently runs in edge mode.
+  assert.match(blocks, /dropdown[(]'REQUIRE'/, 'the entry-mode dropdown exists on the decision block');
+  assert.match(items, /<Field name='REQUIRE'>edge/, 'the toolbox default entry mode is selective');
 });
 
 test('the record is calibrated against what the rule claimed, not against the payout', () => {

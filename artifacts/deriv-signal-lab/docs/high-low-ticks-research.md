@@ -1115,3 +1115,31 @@ same refusal to pretend.
 - [c3b] Deriv legacy docs, *Highest/Lowest Tick* — API trading flow
   (`TICKHIGH`/`TICKLOW`, proposal → buy → monitor).
   <https://legacy-docs.deriv.com/docs/highestlowest-tick>
+
+### 16.9 The cadence rebalance (why the sniper trades every cycle)
+
+The v6 sniper first shipped in the selective posture: entry "only with a
+measured edge", `ai min ev` 0.01 against a one-sigma lower bound, agreement
+0.5, confidence 50. Measured against live-like ladders (fair multiples at a
+5 % margin), that posture published **0 entries in ~800 decision points** on
+R_100-like tape and 24 on step-like tape — refused by `no value` on nearly
+every tick. A bot that never trades teaches nothing and earns nothing, so the
+preset was rebalanced to the cadence the Rise/Fall and hedge presets already
+keep: **the best-ranked of ten on every readable cycle** (entry "on the best
+read available", EV veto 0, agreement 0), with Kelly sizing thin reads to the
+exchange minimum and the journal printing the EV, quote and record behind
+every entry. The same measurement publishes on nearly every readable cycle —
+about one position per contract length live (five ticks plus re-entry), well
+above one per minute on R_100. The DNA floor (35), the tie gate, the
+losing-streak cool-off (paced by `ai min confidence` 50), the stand-down and
+the session brakes all still apply; only the value vetoes moved from "refuse"
+to "rank and size". To restore the selective sniper: entry "only with a
+measured edge", `ai min ev` 0.01, `ai min agreement` 0.5.
+
+The rebalance also completed the decision block's design: the "entry %12"
+selector the message, toolbox and docs always described never had a backing
+dropdown, so the `REQUIRE` field in saved XML never reached the runtime and
+every strategy silently ran in edge mode (the zero thresholds of the
+directional presets made that vacuous, which is why nobody noticed). The
+`REQUIRE` dropdown now exists, defaults to "only with a measured edge", and
+the wiring test pins it.

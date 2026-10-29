@@ -753,15 +753,30 @@ TICK_SNIPER = {
     # The APEX core (v6): sixteen experts, a deep online brain, regime-gated
     # mixture, DNA v2 auto-reverse-engineering and per-outcome calibration.
     "apex": True,
+    # Cadence posture: trade the best read every cycle instead of waiting for a
+    # statistically significant edge. Measured on live-like ladders, the old
+    # sniper posture (min_ev 0.01 one-sigma) published 0 entries in ~800 ticks
+    # on R_100-likes — a bot that never trades teaches nothing. The cadence
+    # still buys the best of ten by expected value; Kelly sizes thin reads to
+    # the exchange minimum, and the journal prints the EV, quote and record
+    # behind every entry so the cost of the cadence is visible, not hidden.
+    # To restore the selective sniper: entry "only with a measured edge",
+    # ai min ev 0.01, ai min agreement 0.5.
+    "require": "always",
     # The value gate on this family is the expected value of the chosen
     # contract against the live ten-outcome ladder, not an absolute probability
     # (there is no single probability that means anything across five positions)
     # and not a scalar break-even (the ten quotes are different contracts).
+    # Ships at 0 in cadence mode: the ladder still RANKS all ten outcomes, the
+    # veto is off.
     "floor": "0",
     "min_edge": "0",
-    "min_ev": "0.01",
+    "min_ev": "0",
     "max_tie": "0.35",
-    "agreement": "0.5",
+    "agreement": "0",
+    # In cadence mode the engine does not veto on confidence; this knob paces
+    # the losing-streak cool-off instead (trade through a 3-loss streak only at
+    # confidence 55+). The DNA floor still refuses unreadable markets outright.
     "confidence": "50",
     # Fallback only: the live TICKHIGH/TICKLOW ladder prices every position, and
     # this number is used for the first ticks before the quotes arrive.
@@ -783,18 +798,18 @@ TICK_SNIPER = {
     "scout_dwell": "900",
     "ids": {"tick": "hlTick01", "before": "hlBefore01", "after": "hlAfter01"},
     "armed": (
-        "High/Low Tick AI Sniper v6 armed — five-tick contract. Sixteen experts mixed by measured "
-        "skill and gated by the live market regime, a deep online brain that learns from settled "
+        "High/Low Tick AI Sniper v6 armed — five-tick contract, cadence mode. Sixteen experts mixed by "
+        "measured skill and gated by the live market regime, a deep online brain that learns from settled "
         "windows only, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys "
-        "the position with the highest expected value against what Deriv actually quotes, and "
-        "refuses when there is none. Every skip names its gate; every tenth settlement prints the "
-        "self-audit, every twenty-fifth the expert league, the market DNA, the AI core, the reverse "
-        "engineering and the execution clock, every fifth the payout ladder and the outcome forecast. "
-        "Demo first: estimates are not guarantees; confirm equal-extreme settlement with Deriv."
+        "the position with the highest expected value against what Deriv actually quotes on every cycle "
+        "it can read, sizing thin reads down to the exchange minimum. Every skip names its gate; every "
+        "tenth settlement prints the self-audit, every twenty-fifth the expert league, the market DNA, the "
+        "AI core, the reverse engineering and the execution clock, every fifth the payout ladder and the "
+        "outcome forecast. Demo first: estimates are not guarantees; confirm equal-extreme settlement with Deriv."
     ),
     "held": (
-        "AI is ready but the entry gate held it — the confidence floor, the DNA floor, the skill floor, "
-        "the rule's own graded record, a losing-streak cool-off, the balance percentage, the loss limit or "
+        "AI is ready but the entry gate held it — a losing-streak cool-off, the DNA floor, the skill floor, "
+        "the rule's own graded record, the balance percentage, the loss limit or "
         "the profit target blocked this entry."
     ),
     "stopped": (
@@ -839,13 +854,23 @@ on a Step index that overstated its win probability by 45 %.)
 THE PAYOUT LADDER IS THE GAME
 Deriv quotes TICKHIGH and TICKLOW per selected_tick, and those ten quotes are different
 contracts. The bot reads all ten from live proposals and ranks outcomes by expected value,
-p(m+1) - 1, against the quote it would actually be paid. It buys the position whose quote is
-worse than its probability deserves and refuses everything else — "ai min ev" is that gate, and
-the journal prints the quote, the fair odds and the EV on every entry. The gate compares a
-one-sigma lower bound on that EV, not the point estimate: the bot buys the best of ten noisy
-quotes, and the maximum of ten is biased upward by about its own standard error. A single payout
-number cannot do any of this, which is why the old preset could not see a mispriced position even
-in principle.
+p(m+1) - 1, against the quote it would actually be paid. It buys the best-ranked position on
+every cycle it can read — "ai min ev" is the veto that restores selectivity (set the entry field
+to "only with a measured edge" and ai min ev to 0.01 to refuse everything below a one-sigma
+EV floor), and the journal prints the quote, the fair odds and the EV on every entry. A single
+payout number cannot do any of this, which is why the old preset could not see a mispriced
+position even in principle.
+
+CADENCE, NOT VIGIL
+This preset keeps a trading cadence: the ensemble's best read is bought on every cycle the bot
+can read (about one position per contract length — five ticks plus re-entry), because a fair
+market is a reason to trade the minimum stake, not a reason to sit out. Measured against
+live-like ladders, the selective posture published 0 entries in ~800 ticks on R_100-like tape;
+the cadence publishes on nearly every readable cycle, and what that costs is visible rather
+than hidden — the entry line prints the probability, the quote, the EV and the measured record.
+Kelly sizes thin reads to the 0.35 exchange minimum; the DNA floor still refuses unreadable
+markets outright (the scout then moves), and the losing-streak cool-off still paces entries
+after three straight losses.
 
 THE EXECUTION CLOCK
 Five ticks is the contract, but it is not a duration until the tick rate is known: on R_100 a tick
