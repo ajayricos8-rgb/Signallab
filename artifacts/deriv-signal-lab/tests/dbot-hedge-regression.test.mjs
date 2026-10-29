@@ -186,7 +186,23 @@ test('partial hedge stops further pairs while retaining the accepted contract', 
   engine.tradeOptions = { amount: 1 }; engine.accountInfo = { loginid: 'demo' }; engine.updateAndReturnTotalRuns = () => 1;
   await engine.purchaseHedge('CALL', 'PUT');
   assert.equal(engine.contractId, 10); assert.equal(engine.hedgeIncomplete, true);
-  assert.throws(() => engine.purchaseHedge('CALL', 'PUT'), /previously opened only one leg/);
+  // A half-open pair still blocks the next one — but as a skipped cycle, not as
+  // a session-ending throw: OpenContract clears the flag once the leg that did
+  // open has settled. Throwing here used to stop the strategy for good after a
+  // single rejected leg, which is indistinguishable from a bot that never
+  // trades.
+  await engine.purchaseHedge('CALL', 'PUT');
+  assert.equal(engine.contractId, 10, 'no second pair is bought while the leg is open');
+  assert.equal(engine.hedgeIncomplete, true, 'the warning stands until the leg settles');
+});
+
+test('the half-hedge warning clears when the outstanding leg settles', async () => {
+  let source = await readFile(new URL('services/tradeEngine/trade/OpenContract.js', vendor), 'utf8');
+  source = source.replace(/^import .*;\s*$/gm, '');
+  // The reset lives in the all-settled branch; this pins it in place, because
+  // dropping it is what stopped the strategy after one rejected leg.
+  assert.match(source, /allSettled[\s\S]*?this\.hedgeIncomplete = false/, 'settlement clears the half-hedge flag');
+  assert.match(source, /this\.contractId = ''/, 'settlement releases the tracked contract');
 });
 
 test('selected tick purchase overrides the stale trade option and is not retried', async () => {

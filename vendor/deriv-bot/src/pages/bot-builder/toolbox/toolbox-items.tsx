@@ -1005,6 +1005,7 @@ export const ToolboxItems = () =>
                         duration, so the models replay the shape that will
                         actually settle. */}
                     <Block type='x_price_decision'>
+                        <Field name='REQUIRE'>edge</Field>
                         <Value name='LIST'>
                             <Block type='ticks' />
                         </Value>

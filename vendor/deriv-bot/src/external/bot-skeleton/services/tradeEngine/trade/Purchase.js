@@ -144,7 +144,15 @@ export default Engine =>
                 return Promise.resolve();
             }
             if (this.hedgeIncomplete) {
-                throw new Error('A hedge previously opened only one leg. Inspect the account and restart the bot before trading again.');
+                // A previous pair opened only one leg and that leg is still
+                // open. Buying another pair now would stack exposure on top of
+                // a position nobody has measured, so this cycle is skipped —
+                // but it is a skip, not a lock: OpenContract clears the flag as
+                // soon as the outstanding leg settles.
+                log(LogTypes.ERROR, {
+                    error: 'Hedge skipped: the previous pair opened only one leg and it has not settled yet.',
+                });
+                return Promise.resolve();
             }
             if (!hedge_contract_type || hedge_contract_type === contract_type) {
                 return this.purchase(contract_type);

@@ -861,7 +861,7 @@ const getVisionInterface = tradeEngine => {
          * with `priceDecisionPart`; the first four slots are unchanged so old
          * strategies keep working.
          */
-        priceDecision: async (list, mode, horizon, threshold, maxTie, minAgreement, minEdge, payout, minConfidence) => {
+        priceDecision: async (list, mode, horizon, threshold, maxTie, minAgreement, minEdge, payout, minConfidence, require) => {
             const symbol = symbolOf();
             const options = tradeOptions();
             const context = resolvePriceContext(mode, horizon, options, tradeEngine.options);
@@ -882,6 +882,9 @@ const getVisionInterface = tradeEngine => {
                 minAgreement: num(minAgreement, 0),
                 minEdge: num(minEdge, 0),
                 minConfidence: num(minConfidence, 0),
+                // 'always' keeps the cadence a hedged strategy needs: the best
+                // side every readable tick, sized down when the read is thin.
+                requireEdge: String(require) !== 'always',
                 payout: effectivePayout,
                 // The rule's own graded record, measured on the decisions it
                 // published. This is the one input that is evidence rather

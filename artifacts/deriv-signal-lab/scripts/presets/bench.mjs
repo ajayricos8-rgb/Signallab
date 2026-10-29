@@ -80,7 +80,7 @@ function settled(prices, entry, mode, decision, horizon) {
   return decision.side === 1 ? change > 0 : change < 0;
 }
 
-function evaluate(prices, mode, options, horizon = 5) {
+function evaluate(prices, mode, options, horizon = options.horizon || 5) {
   let entries = 0;
   let published = 0;
   let wins = 0;
@@ -111,6 +111,7 @@ function evaluate(prices, mode, options, horizon = 5) {
       minEdge: options.minEdge ?? 0,
       payout: options.payout ?? 0.95,
       minConfidence: options.minConfidence ?? 0,
+      requireEdge: options.requireEdge !== false,
       evidence,
     });
     if (decision.modelReady) {
@@ -142,7 +143,8 @@ function evaluate(prices, mode, options, horizon = 5) {
 
 const presets = {
   'rise/fall preset': ['rise', { threshold: 0, maxTie: 0.2, minAgreement: 0.55, minEdge: 0.004, payout: 0.95, minConfidence: 55 }],
-  'hedge preset': ['step-hedge', { threshold: 0, maxTie: 0.2, minAgreement: 0.55, minEdge: 0, payout: 0.95, minConfidence: 55 }],
+  // Shipped hedge: four ticks, best read available, tie cost printed.
+  'hedge preset': ['step-hedge', { threshold: 0, maxTie: 0.5, minAgreement: 0, minEdge: 0, payout: 0.95, minConfidence: 0, requireEdge: false, horizon: 4 }],
   'tick preset': ['tick', { threshold: 0, maxTie: 0.35, minAgreement: 0.5, minEdge: 0.005, payout: 3.5, minConfidence: 50 }],
 };
 

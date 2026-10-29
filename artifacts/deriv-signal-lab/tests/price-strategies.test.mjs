@@ -302,10 +302,28 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
     assert.doesNotMatch(xml, /multiplier/, 'no multiplier knob');
     assert.doesNotMatch(xml, /loss count/, 'no ladder state');
     assert.doesNotMatch(xml, /rStakeStep/, 'no ladder step block');
-    // Every horizon is five ticks: odd, tie-free on Step Index, and the
-    // shortest tick contract High/Low Tick is sold in.
-    assert.match(xml, /<field name="VAR" id="vai_duration">ai duration<\/field>[\s\S]*?<field name="NUM">5<\/field>/, 'duration 5');
   }
+
+  // The horizon is the contract's duration, and each preset ships the one it
+  // is meant to trade: five ticks for the tie-free shapes, four for the hedge.
+  const shippedDuration = xml => {
+    const at = xml.indexOf('id="vai_duration">ai duration</field>');
+    assert.ok(at > 0, 'ai duration is a declared knob');
+    return xml.slice(at).match(/<field name="NUM">([0-9.]+)<\/field>/)[1];
+  };
+  assert.equal(shippedDuration(tick), '5', 'High/Low Tick is a five-tick contract');
+  assert.equal(shippedDuration(rise), '5', 'Rise/Fall stays on the odd, tie-free horizon');
+  assert.equal(shippedDuration(hedge), '4', 'the hedge trades the four-tick contract');
+  // Four ticks on a fixed-step index ties 37.5 % of the time, so the preset has
+  // to allow that rate to be measured rather than refused — and the tie gate is
+  // still there for anyone who would rather have accuracy than cadence.
+  assert.match(hedge, /<field name="VAR" id="vai_max_tie">ai max tie<\/field>[\s\S]*?<field name="NUM">0\.5<\/field>/);
+
+  // The hedge keeps a cadence: it publishes the best read on every tick it can
+  // read, and the session brakes — not the edge estimate — are what stop it.
+  assert.match(hedge, /<field name="REQUIRE">always<\/field>/, 'the hedge trades on the best read available');
+  assert.match(rise, /<field name="REQUIRE">edge<\/field>/, 'the Rise/Fall preset still waits for a measured edge');
+  assert.match(tick, /<field name="REQUIRE">edge<\/field>/);
 
   assert.match(tick, /type="x_tick_decision_purchase"/);
   assert.match(tick, /<field name="MODE">tick<\/field>/);
@@ -404,3 +422,93 @@ test('the tick break-even is one chance in five when no payout is quoted', () =>
   const priced = priceDecision(trend, 'tick', 5, 0.3, { payout: 3.5 });
   assert.equal(Math.round(priced.breakEven * 1e6) / 1e6, Math.round((1 / 4.5) * 1e6) / 1e6);
 });
+
+// ---------------------------------------------------------------------------
+// Cadence mode: "on the best read available"
+// ---------------------------------------------------------------------------
+
+test('the hedge can trade the best read available, and still measures what it costs', () => {
+  const prices = stepStream(1600, 0.5, 21);
+  const strict = priceDecision(prices, 'step-hedge', 4, 0, {
+    maxTie: 0.45,
+    minEdge: 0.004,
+    minAgreement: 0.55,
+    minConfidence: 55,
+    payout: 0.95,
+  });
+  // A four-tick window on a fixed-step market returns to its entry 37.5 % of
+  // the time, so the honest edge on that shape is negative and the strict gate
+  // says so rather than trading it.
+  assert.equal(strict.tieRate > 0.3, true, `tie rate ${strict.tieRate}`);
+
+  const cadence = priceDecision(prices, 'step-hedge', 4, 0, {
+    maxTie: 0.45,
+    minEdge: 0,
+    minAgreement: 0,
+    minConfidence: 0,
+    requireEdge: false,
+    payout: 0.95,
+  });
+  assert.equal(cadence.ready, true, 'the preset must be able to open a position every cycle');
+  assert.equal(cadence.requireEdge, false);
+  assert.ok([1, -1].includes(cadence.side), 'a side is always named');
+  // The cost of the cadence is printed, not hidden: the tie rate is part of the
+  // journal line the entry emits.
+  assert.match(cadence.reason, /tie \d+\.\d%/);
+  assert.match(cadence.reason, /4 ticks/);
+
+  // Cadence mode is not a blindfold. A market it cannot read yet still refuses.
+  const warming = priceDecision(prices.slice(0, 40), 'step-hedge', 4, 0, {
+    maxTie: 0.45,
+    requireEdge: false,
+  });
+  assert.equal(warming.ready, false);
+  assert.match(warming.reason, /warming up|thin history/);
+
+  // Nor does it trade a shape that cannot settle a winner: the tie gate stands.
+  const refused = priceDecision(prices, 'step-hedge', 4, 0, {
+    maxTie: 0.2,
+    requireEdge: false,
+  });
+  assert.equal(refused.ready, false);
+  assert.match(refused.reason, /tie risk/);
+});
+
+test('cadence mode keeps every readable tick readable, so a hedged pair re-enters after each settlement', () => {
+  const prices = stepStream(2400, 0.5, 33);
+  const options = {
+    // The shipped knobs, exactly: a four-tick step window ties 37.5 % of the
+    // time, and the allowed rate sits above that so measurement noise cannot
+    // stall a cycle.
+    maxTie: 0.5,
+    minEdge: 0,
+    minAgreement: 0,
+    minConfidence: 0,
+    requireEdge: false,
+    payout: 0.95,
+  };
+  // Replay: a four-tick contract is open from the entry tick, so the next
+  // decision can be made four ticks later. Count how many of those decisions
+  // published an entry, i.e. how often the strategy can re-enter immediately.
+  let considered = 0;
+  let published = 0;
+  let open = -1;
+  const gaps = [];
+  for (let t = 400; t < prices.length - 6; t++) {
+    if (open >= 0 && t < open + 4) continue;
+    considered++;
+    const decision = priceDecision(prices.slice(Math.max(0, t - 399), t + 1), 'step-hedge', 4, 0, options);
+    if (!decision.ready) continue;
+    if (open >= 0) gaps.push(t - open);
+    published++;
+    open = t;
+  }
+  assert.ok(considered > 200);
+  assert.ok(published / considered > 0.95, `published on ${published}/${considered} eligible ticks`);
+  assert.ok(gaps.length > 100, 'the replay settles many contracts');
+  // "At least every three seconds after a contract is closed" is one tick on a
+  // two-second market: the bot must not sit out a cycle it could trade.
+  const immediate = gaps.filter(gap => gap === 4).length / gaps.length;
+  assert.ok(immediate > 0.95, `re-entered on the next tick ${(immediate * 100).toFixed(1)}% of the time`);
+});
+
