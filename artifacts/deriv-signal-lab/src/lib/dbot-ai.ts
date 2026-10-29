@@ -1,4 +1,38 @@
-export type DbotAiFamily = "rise-fall" | "over-under" | "even-odd" | "matches" | "differs";
+export type DbotAiFamily =
+  | "rise-fall"
+  | "higher-lower"
+  | "over-under"
+  | "even-odd"
+  | "matches"
+  | "differs";
+/**
+ * The entry-logic shape of the bot, independent of the contract family:
+ * - standard: buy the named side whenever the risk gate passes;
+ * - markov: only enter when the measured digit-transition chance for the
+ *   chosen side clears a threshold (`m_transition` blocks);
+ * - streak: enter after N same-parity/same-side digits (or rises/falls) in
+ *   a row, following the run or fading it (`streakMode`);
+ * - momentum: follow the measured tick slope — Rise while rising, Fall
+ *   while falling (`q_slope`);
+ * - reversal: fade extremes — RSI overbought/oversold on Rise/Fall, a long
+ *   parity/over-under run faded on digit contracts;
+ * - switcher: trade the primary strategy until a loss, then switch to a
+ *   Markov + market-scan recovery mode and revert once the session is back
+ *   in profit;
+ * - comprehensive: scan all markets + Markov gate + profit/loss guards +
+ *   the standard risk gate, all at once;
+ * - ai: let the AI analysis decide entries (Vision entry signal on
+ *   Over/Under, the all-markets scan everywhere else).
+ */
+export type DbotAiArchetype =
+  | "standard"
+  | "markov"
+  | "streak"
+  | "momentum"
+  | "reversal"
+  | "switcher"
+  | "comprehensive"
+  | "ai";
 export type DbotAiDirection = "RISE" | "FALL";
 export type DbotAiDigitSide = "DIGITOVER" | "DIGITUNDER";
 export type DbotAiParitySide = "DIGITEVEN" | "DIGITODD";
@@ -30,6 +64,21 @@ export type DbotAiStrategyRequest = {
   barrier?: number;
   paritySide?: DbotAiParitySide;
   targetDigit?: number;
+  /** Entry-logic shape (default "standard"). */
+  archetype?: DbotAiArchetype;
+  /**
+   * Signed barrier offset for Higher/Lower (e.g. 1 → "+1", -1.5 → "-1.5").
+   * Defaults: +1 for Higher, -1 for Lower.
+   */
+  barrierOffset?: number;
+  /** Signed barrier offset for the second (hedge) leg of a hedged Higher/Lower. */
+  hedgeBarrierOffset?: number;
+  /** Markov transition chance (percent) the chosen side must clear. */
+  markovThreshold?: number;
+  /** Run length a streak/reversal entry waits for (default 3). */
+  streakLength?: number;
+  /** Follow a run or trade against it (streak archetype; default "follow"). */
+  streakMode?: "follow" | "fade";
   /** Blockly's user-defined procedure becomes a reusable custom block. */
   procedureName?: string;
   /** Exact Signal Lab analysis snapshot required by the generated entry gate. */
@@ -159,6 +208,8 @@ const AI_VARIABLES = {
   prevStake: { id: "aiPrevStakeVariable", name: "ai previous stake" },
   lossStreak: { id: "aiLossStreakVariable", name: "ai loss streak" },
   winStreak: { id: "aiWinStreakVariable", name: "ai win streak" },
+  markov: { id: "aiMarkovVariable", name: "ai markov" },
+  mode: { id: "aiModeVariable", name: "ai mode" },
 } as const;
 type AiVariableKey = keyof typeof AI_VARIABLES;
 
@@ -281,21 +332,33 @@ function tradeRoot(
   // block — the workspace then sits on "Bot is starting" with zero trades.
   // Rise/Fall is "callput", not "risefall" (see the shipped strategy XMLs,
   // e.g. vendor src/xml/martingale.xml).
-  const contractFamily = request.family === "rise-fall" ? "callput" : "digits";
+  const contractFamily =
+    request.family === "rise-fall" || request.family === "higher-lower"
+      ? "callput"
+      : "digits";
   const tradeType =
     request.family === "rise-fall"
       ? "callput"
-      : request.family === "over-under"
-        ? "overunder"
-        : request.family === "even-odd"
-          ? "evenodd"
-          : "matchesdiffers";
-  const prediction =
-    request.family === "over-under"
+      : request.family === "higher-lower"
+        ? "higherlower"
+        : request.family === "over-under"
+          ? "overunder"
+          : request.family === "even-odd"
+            ? "evenodd"
+            : "matchesdiffers";
+  // When the strategy hedges, the prediction/barrier configuration lives on
+  // the hedge block's Purchase 1 / Purchase 2 rows — Trade options carries
+  // no third one (the workspace also hides these inputs in that shape).
+  const hedged = Boolean(request.hedge && hedgePurchase(request));
+  const prediction = hedged
+    ? null
+    : request.family === "over-under"
       ? clamp(Math.round(numberOr(request.barrier, 5)), 1, 8)
       : request.family === "matches" || request.family === "differs"
         ? clamp(Math.round(numberOr(request.targetDigit, 5)), 0, 9)
         : null;
+  const barrierOffset =
+    request.family === "higher-lower" && !hedged ? resolvedBarrierOffset(request) : null;
   const hasPrediction = prediction !== null;
   const optionPrediction = hasPrediction
     ? `<value name="PREDICTION">${numberBlock("aiPrediction", prediction)}</value>`
@@ -323,16 +386,27 @@ function tradeRoot(
     initializations.push(variablesSet("aiInitLossStreakVar", "lossStreak", numberValue("aiInitLossStreakValue", 0)));
   if (request.stopAfterWinStreak)
     initializations.push(variablesSet("aiInitWinStreakVar", "winStreak", numberValue("aiInitWinStreakValue", 0)));
+  if (usesMarkov(request))
+    initializations.push(variablesSet("aiInitMarkovVar", "markov", numberValue("aiInitMarkovValue", 0)));
+  if (isSwitcher(request))
+    initializations.push(variablesSet("aiInitModeVar", "mode", numberValue("aiInitModeValue", 0)));
   const initialization = initializations.length
     ? `<statement name="INITIALIZATION">${chainStatements(initializations)}</statement>`
     : "";
-  const tradeOptions = `<block type="trade_definition_tradeoptions" id="aiTradeOptions"><mutation has_first_barrier="false" has_second_barrier="false" has_prediction="${hasPrediction ? "true" : "false"}"></mutation><field name="DURATIONTYPE_LIST">${durationUnit}</field><field name="CURRENCY_LIST">${escapeXml(currency)}</field><value name="DURATION">${numberBlock("aiDuration", durationValue)}</value><value name="AMOUNT">${amount}</value>${optionPrediction}</block>`;
+  const optionBarrier =
+    barrierOffset !== null
+      ? `<field name="BARRIEROFFSETTYPE_LIST">${barrierOffset < 0 ? "-" : "+"}</field><value name="BARRIEROFFSET">${numberBlock("aiBarrierOffset", Math.abs(barrierOffset))}</value>`
+      : "";
+  const tradeOptions = `<block type="trade_definition_tradeoptions" id="aiTradeOptions"><mutation has_first_barrier="${barrierOffset !== null ? "true" : "false"}" has_second_barrier="false" has_prediction="${hasPrediction ? "true" : "false"}"></mutation><field name="DURATIONTYPE_LIST">${durationUnit}</field><field name="CURRENCY_LIST">${escapeXml(currency)}</field>${optionBarrier}<value name="DURATION">${numberBlock("aiDuration", durationValue)}</value><value name="AMOUNT">${amount}</value>${optionPrediction}</block>`;
   const market = `<block type="trade_definition_market" id="aiMarket"><field name="MARKET_LIST">volidx</field><field name="SUBMARKET_LIST">random_index</field><field name="SYMBOL_LIST">${escapeXml(cleanSymbol(request.symbol))}</field><next><block type="trade_definition_tradetype" id="aiTradeType"><field name="TRADETYPECAT_LIST">${contractFamily}</field><field name="TRADETYPE_LIST">${tradeType}</field><next><block type="trade_definition_contracttype" id="aiContractType"><field name="TYPE_LIST">both</field><next><block type="trade_definition_candleinterval" id="aiCandleInterval"><field name="CANDLEINTERVAL_LIST">60</field><next><block type="trade_definition_restartbuysell" id="aiRestartBuySell"><field name="TIME_MACHINE_ENABLED">FALSE</field><next><block type="trade_definition_restartonerror" id="aiRestartOnError"><field name="RESTARTONERROR">TRUE</field></block></next></block></next></block></next></block></next></block></next></block>`;
   return `<block type="trade_definition" id="aiTradeDefinition" x="24" y="24">${initialization}<statement name="TRADE_OPTIONS">${market}</statement><statement name="SUBMARKET">${tradeOptions}</statement></block>`;
 }
 
 function selectedPurchase(request: DbotAiStrategyRequest): string {
-  if (request.family === "rise-fall")
+  // Higher/Lower trades the same CALL/PUT contracts as Rise/Fall; the
+  // barrier in Trade options (or on the hedge block) is what makes them
+  // Higher/Lower instead of at-the-money Rise/Fall.
+  if (request.family === "rise-fall" || request.family === "higher-lower")
     return request.direction === "FALL" ? "PUT" : "CALL";
   if (request.family === "over-under")
     return request.digitSide === "DIGITUNDER" ? "DIGITUNDER" : "DIGITOVER";
@@ -344,7 +418,7 @@ function selectedPurchase(request: DbotAiStrategyRequest): string {
 
 /** The opposite contract, for a two-legged hedge. Null when there is none. */
 function hedgePurchase(request: DbotAiStrategyRequest): string | null {
-  if (request.family === "rise-fall")
+  if (request.family === "rise-fall" || request.family === "higher-lower")
     return request.direction === "FALL" ? "CALL" : "PUT";
   if (request.family === "over-under")
     return request.digitSide === "DIGITUNDER" ? "DIGITOVER" : "DIGITUNDER";
@@ -359,6 +433,47 @@ function hedgePurchase(request: DbotAiStrategyRequest): string | null {
 /** True when this request builds a real (non-paper) two-legged hedge. */
 function hedgeActive(request: DbotAiStrategyRequest): boolean {
   return Boolean(request.hedge && hedgePurchase(request)) && !request.virtual;
+}
+
+/** The strategy's archetype, defaulting to the plain gated purchase. */
+function archetypeOf(request: DbotAiStrategyRequest): DbotAiArchetype {
+  return request.archetype ?? "standard";
+}
+
+/** Archetypes whose entries read the Markov transition measurement. */
+function usesMarkov(request: DbotAiStrategyRequest): boolean {
+  const archetype = archetypeOf(request);
+  return (
+    (archetype === "markov" || archetype === "comprehensive" || archetype === "switcher") &&
+    (request.family === "even-odd" ||
+      request.family === "over-under" ||
+      request.family === "matches")
+  );
+}
+
+/** A switcher needs a digit family its Markov recovery can measure. */
+function isSwitcher(request: DbotAiStrategyRequest): boolean {
+  return archetypeOf(request) === "switcher" && usesMarkov(request) && !request.virtual;
+}
+
+/**
+ * The main leg's signed Higher/Lower barrier offset. Unspecified offsets
+ * point away from spot in the traded direction (+1 Higher, -1 Lower).
+ */
+function resolvedBarrierOffset(request: DbotAiStrategyRequest): number {
+  if (Number.isFinite(request.barrierOffset) && request.barrierOffset !== 0)
+    return clamp(Number(request.barrierOffset), -10_000, 10_000);
+  return request.direction === "FALL" ? -1 : 1;
+}
+
+/** The hedge leg's signed offset: named value, else the main magnitude mirrored. */
+function resolvedHedgeBarrierOffset(request: DbotAiStrategyRequest): number {
+  if (Number.isFinite(request.hedgeBarrierOffset) && request.hedgeBarrierOffset !== 0)
+    return clamp(Number(request.hedgeBarrierOffset), -10_000, 10_000);
+  const magnitude = Math.abs(resolvedBarrierOffset(request));
+  // The hedge leg is the opposite contract: CALL offsets sit above spot,
+  // PUT offsets below it.
+  return hedgePurchase(request) === "PUT" ? -magnitude : magnitude;
 }
 
 /** The two leg stakes: the main stake and the hedge leg's share of it. */
@@ -398,7 +513,10 @@ function analysisGate(request: DbotAiStrategyRequest): string {
     request.family === "matches"
       ? clamp(Math.round(numberOr(request.targetDigit, 5)), 0, 9)
       : 0;
-  return `<block type="signal_lab_analysis_gate" id="aiAnalysisGate"><field name="FAMILY">${request.family}</field><field name="SYMBOL">${escapeXml(cleanSymbol(request.symbol))}</field><field name="CONTRACT_TYPE">${selectedPurchase(request)}</field><field name="BARRIER">${barrier}</field><field name="TARGET_DIGIT">${targetDigit}</field><field name="ANALYSIS_ID">${escapeXml((request.analysisId ?? "").slice(0, 180))}</field></block>`;
+  // The analysis gate has no Higher/Lower family (analysis never produces
+  // one); map it to its Rise/Fall sibling so the field stays valid.
+  const gateFamily = request.family === "higher-lower" ? "rise-fall" : request.family;
+  return `<block type="signal_lab_analysis_gate" id="aiAnalysisGate"><field name="FAMILY">${gateFamily}</field><field name="SYMBOL">${escapeXml(cleanSymbol(request.symbol))}</field><field name="CONTRACT_TYPE">${selectedPurchase(request)}</field><field name="BARRIER">${barrier}</field><field name="TARGET_DIGIT">${targetDigit}</field><field name="ANALYSIS_ID">${escapeXml((request.analysisId ?? "").slice(0, 180))}</field></block>`;
 }
 
 /** Rough net-profit multiple a virtual (paper) position books on a win. */
@@ -414,7 +532,8 @@ function virtualPayout(request: DbotAiStrategyRequest): number {
 }
 
 function virtualDirection(request: DbotAiStrategyRequest): string {
-  if (request.family === "rise-fall") return request.direction === "FALL" ? "fall" : "rise";
+  if (request.family === "rise-fall" || request.family === "higher-lower")
+    return request.direction === "FALL" ? "fall" : "rise";
   if (request.family === "over-under") return request.digitSide === "DIGITUNDER" ? "under" : "over";
   if (request.family === "even-odd") return request.paritySide === "DIGITODD" ? "odd" : "even";
   return "match";
@@ -427,7 +546,7 @@ function virtualDirection(request: DbotAiStrategyRequest): string {
 function virtualOpposite(
   request: DbotAiStrategyRequest,
 ): { direction: string; payout: number } | null {
-  if (request.family === "rise-fall")
+  if (request.family === "rise-fall" || request.family === "higher-lower")
     return { direction: request.direction === "FALL" ? "rise" : "fall", payout: virtualPayout(request) };
   if (request.family === "over-under") {
     const flipped: DbotAiStrategyRequest = {
@@ -444,6 +563,162 @@ function virtualOpposite(
   return null;
 }
 
+/**
+ * The archetype that will actually be built for this family: momentum on a
+ * digit contract becomes a digit-run follow, reversal on digits becomes a
+ * run fade, and shapes a family cannot express fall back to standard. The
+ * parser warns by name whenever the built shape differs from the asked one.
+ */
+function effectiveArchetype(request: DbotAiStrategyRequest): DbotAiArchetype {
+  const archetype = archetypeOf(request);
+  const digitFamily =
+    request.family === "even-odd" ||
+    request.family === "over-under" ||
+    request.family === "matches" ||
+    request.family === "differs";
+  if (archetype === "momentum" && digitFamily) return "streak";
+  if (archetype === "reversal" && (request.family === "matches" || request.family === "differs"))
+    return "standard";
+  if (archetype === "streak" && (request.family === "matches" || request.family === "differs"))
+    return "standard";
+  if (archetype === "switcher" && !isSwitcher(request)) return "standard";
+  return archetype;
+}
+
+/** The last-1000-ticks list every Vision Lab measurement reads. */
+function ticksBlock(id: string): string {
+  return `<block type="ticks" id="${id}"></block>`;
+}
+
+/** One measured Markov transition: P(digit becomes `to` after `horizon` ticks | digit is `from`). */
+function markovTransition(id: string, to: number, horizon: number): string {
+  return `<block type="m_transition" id="${id}"><value name="FROM"><block type="last_digit" id="${id}From"></block></value><value name="TO">${numberBlock(`${id}To`, to)}</value><value name="HORIZON">${numberBlock(`${id}Horizon`, horizon)}</value><value name="LIST">${ticksBlock(`${id}Ticks`)}</value></block>`;
+}
+
+/** The digits that WIN the configured side — the Markov sum measures their combined chance. */
+function markovDigitSet(request: DbotAiStrategyRequest): number[] {
+  if (request.family === "even-odd")
+    return request.paritySide === "DIGITODD" ? [1, 3, 5, 7, 9] : [0, 2, 4, 6, 8];
+  if (request.family === "over-under") {
+    const barrier = clamp(Math.round(numberOr(request.barrier, 5)), 1, 8);
+    return request.digitSide === "DIGITUNDER"
+      ? Array.from({ length: barrier }, (_, digit) => digit)
+      : Array.from({ length: 9 - barrier }, (_, index) => barrier + 1 + index);
+  }
+  if (request.family === "matches")
+    return [clamp(Math.round(numberOr(request.targetDigit, 5)), 0, 9)];
+  return [];
+}
+
+/**
+ * The Markov bar: the measured chance must beat the FAIR chance of the
+ * digit set (10% per digit) by a small margin, unless the user set one.
+ */
+function markovThresholdFor(request: DbotAiStrategyRequest): number {
+  if (Number.isFinite(request.markovThreshold))
+    return clamp(Number(request.markovThreshold), 1, 99);
+  return clamp(markovDigitSet(request).length * 10 + 3, 1, 99);
+}
+
+/** "set ai markov to Σ P(last digit → each winning digit)" — the Markov read. */
+function markovPrelude(request: DbotAiStrategyRequest): string {
+  const digits = markovDigitSet(request);
+  const horizon = clamp(Math.round(numberOr(request.duration, 1)), 1, 10);
+  let sum = markovTransition(`aiMarkovT${digits[digits.length - 1]}`, digits[digits.length - 1], horizon);
+  for (let index = digits.length - 2; index >= 0; index -= 1) {
+    sum = arithmetic(
+      `aiMarkovSum${digits[index]}`,
+      "ADD",
+      markovTransition(`aiMarkovT${digits[index]}`, digits[index], horizon),
+      sum,
+    );
+  }
+  return variablesSet("aiMarkovSet", "markov", sum);
+}
+
+/** "ai markov ≥ threshold": the measured transition chance clears its bar. */
+function markovCondition(request: DbotAiStrategyRequest, idPrefix = "aiMarkovGate"): string {
+  return compareValues(
+    idPrefix,
+    "GTE",
+    variablesGet(`${idPrefix}Get`, "markov"),
+    numberBlock(`${idPrefix}Bar`, markovThresholdFor(request)),
+  );
+}
+
+/** The signed run measurement for streak/reversal entries (+ first side, − second side). */
+function runMeasurement(request: DbotAiStrategyRequest, idPrefix: string): string {
+  if (request.family === "even-odd")
+    return `<block type="m_parity_run" id="${idPrefix}Run"><value name="LIST">${ticksBlock(`${idPrefix}Ticks`)}</value></block>`;
+  if (request.family === "over-under")
+    return `<block type="m_over_under_run" id="${idPrefix}Run"><value name="BARRIER">${numberBlock(`${idPrefix}Barrier`, clamp(Math.round(numberOr(request.barrier, 5)), 1, 8))}</value><value name="LIST">${ticksBlock(`${idPrefix}Ticks`)}</value></block>`;
+  return `<block type="q_streak" id="${idPrefix}Run"><value name="LIST">${ticksBlock(`${idPrefix}Ticks`)}</value></block>`;
+}
+
+/** The two purchase contracts a dynamic entry chooses between, first side then second. */
+function dynamicSides(request: DbotAiStrategyRequest): [string, string] {
+  if (request.family === "even-odd") return ["DIGITEVEN", "DIGITODD"];
+  if (request.family === "over-under") return ["DIGITOVER", "DIGITUNDER"];
+  return ["CALL", "PUT"];
+}
+
+function purchaseBlock(id: string, contractType: string): string {
+  return `<block type="purchase" id="${id}"><field name="PURCHASE_LIST">${contractType}</field></block>`;
+}
+
+/**
+ * The branch conditions of a dynamic (side-choosing) entry for momentum,
+ * reversal and streak archetypes: [first-side signal, second-side signal].
+ */
+function dynamicBranchConditions(request: DbotAiStrategyRequest): [string, string] {
+  const archetype = effectiveArchetype(request);
+  const runLength = clamp(Math.round(numberOr(request.streakLength, 3)), 2, 10);
+  const fade =
+    archetype === "reversal" || (archetype === "streak" && request.streakMode === "fade");
+  if (archetype === "momentum") {
+    const slope = (idPrefix: string) =>
+      `<block type="q_slope" id="${idPrefix}Slope"><value name="LIST">${ticksBlock(`${idPrefix}Ticks`)}</value></block>`;
+    return [
+      compareValues("aiDynUp", "GT", slope("aiDynUp"), numberBlock("aiDynUpZero", 0)),
+      compareValues("aiDynDown", "LT", slope("aiDynDown"), numberBlock("aiDynDownZero", 0)),
+    ];
+  }
+  if (
+    archetype === "reversal" &&
+    (request.family === "rise-fall" || request.family === "higher-lower")
+  ) {
+    const rsi = (idPrefix: string) =>
+      `<block type="q_rsi" id="${idPrefix}Rsi"><value name="LIST">${ticksBlock(`${idPrefix}Ticks`)}</value><value name="PERIOD">${numberBlock(`${idPrefix}Period`, 14)}</value></block>`;
+    // Oversold (RSI < 30) fades up into a Rise; overbought (RSI > 70) into a Fall.
+    return [
+      compareValues("aiDynUp", "LT", rsi("aiDynUp"), numberBlock("aiDynUpBar", 30)),
+      compareValues("aiDynDown", "GT", rsi("aiDynDown"), numberBlock("aiDynDownBar", 70)),
+    ];
+  }
+  // Streak (and digit reversal = streak fade): a run of N on one side.
+  const up = compareValues(
+    "aiDynUp",
+    "GTE",
+    runMeasurement(request, "aiDynUp"),
+    numberBlock("aiDynUpBar", runLength),
+  );
+  const down = compareValues(
+    "aiDynDown",
+    "LTE",
+    runMeasurement(request, "aiDynDown"),
+    numberBlock("aiDynDownBar", -runLength),
+  );
+  // Following buys the side that is running; fading buys the other one.
+  return fade ? [down, up] : [up, down];
+}
+
+/** True when the entry picks its side per tick instead of a fixed side. */
+function dynamicEntry(request: DbotAiStrategyRequest): boolean {
+  if (request.virtual || hedgeActive(request) || request.analysisId) return false;
+  const archetype = effectiveArchetype(request);
+  return archetype === "momentum" || archetype === "reversal" || archetype === "streak";
+}
+
 function beforePurchase(
   request: DbotAiStrategyRequest,
   procedureName: string,
@@ -458,6 +733,31 @@ function beforePurchase(
   if (request.digitFilter) conditions.push(digitFilterCondition(request.digitFilter));
   if (request.scanMarkets)
     conditions.push(`<block type="signal_lab_scan_tradeable" id="aiScanTradeable"></block>`);
+  // Fixed-side archetype gates stack onto the same entry condition. (The
+  // side-choosing archetypes branch below instead, and the switcher's
+  // Markov gate lives inside its recovery branch.)
+  const archetype = effectiveArchetype(request);
+  if ((archetype === "markov" || archetype === "comprehensive") && usesMarkov(request))
+    conditions.push(markovCondition(request));
+  if (archetype === "comprehensive") {
+    conditions.push(
+      `<block type="r_loss_guard" id="aiCompLossGuard"><value name="LIMIT">${numberBlock("aiCompLossLimit", clamp(numberOr(request.lossLimit, 5), 0.35, 10_000))}</value></block>`,
+      `<block type="r_profit_guard" id="aiCompProfitGuard"><value name="TARGET">${numberBlock("aiCompProfitTarget", clamp(numberOr(request.profitTarget, 5), 0.35, 10_000))}</value></block>`,
+    );
+    if (request.family === "rise-fall" || request.family === "higher-lower")
+      conditions.push(
+        compareValues(
+          "aiCompTrend",
+          request.direction === "FALL" ? "LT" : "GT",
+          `<block type="q_slope" id="aiCompSlope"><value name="LIST">${ticksBlock("aiCompTicks")}</value></block>`,
+          numberBlock("aiCompTrendZero", 0),
+        ),
+      );
+  }
+  if (archetype === "ai" && request.family === "over-under" && !request.virtual)
+    conditions.push(
+      `<block type="x_ai_should_buy" id="aiAiSignal"><value name="MIN_EDGE">${numberBlock("aiAiMinEdge", 0)}</value></block>`,
+    );
   const condition = andAll("aiEntry", conditions);
 
   const purchase = `<block type="purchase" id="aiPurchase"><field name="PURCHASE_LIST">${purchaseType}</field></block>`;
@@ -476,7 +776,16 @@ function beforePurchase(
         const predictionInputs =
           request.family === "over-under" || request.family === "matches" || request.family === "differs"
             ? `<mutation has_prediction="true" has_first_barrier="false" has_second_barrier="false"></mutation><value name="PREDICTION">${numberBlock("aiHedgePrediction", predictionValue)}</value><value name="HEDGE_PREDICTION">${numberBlock("aiHedgeSecondPrediction", predictionValue)}</value>`
-            : "";
+            : request.family === "higher-lower"
+              ? (() => {
+                  // Each leg carries its own signed barrier offset on the
+                  // block's Purchase 1 / Purchase 2 rows — the only two
+                  // barrier configurations in the workspace.
+                  const mainOffset = resolvedBarrierOffset(request);
+                  const hedgeOffset = resolvedHedgeBarrierOffset(request);
+                  return `<mutation has_prediction="false" has_first_barrier="true" has_second_barrier="false"></mutation><field name="BARRIEROFFSETTYPE_LIST">${mainOffset < 0 ? "-" : "+"}</field><field name="HEDGE_BARRIEROFFSETTYPE_LIST">${hedgeOffset < 0 ? "-" : "+"}</field><value name="BARRIEROFFSET">${numberBlock("aiHedgeBarrierOffset", Math.abs(mainOffset))}</value><value name="HEDGE_BARRIEROFFSET">${numberBlock("aiHedgeSecondBarrierOffset", Math.abs(hedgeOffset))}</value>`;
+                })()
+              : "";
         return `<block type="hedge_purchase" id="aiHedgePurchase">${predictionInputs}<field name="PURCHASE_LIST">${purchaseType}</field><field name="HEDGE_LIST">${hedgeType}</field></block>`;
       })()
     : null;
@@ -499,7 +808,50 @@ function beforePurchase(
     : hedged && hedgeEntry
       ? hedgeEntry
       : purchase;
-  const entryIf = `<block type="controls_if" id="aiEntryGate"><value name="IF0">${condition}</value><statement name="DO0">${entryAction}</statement></block>`;
+  // Side-choosing archetypes nest their signal branches inside the shared
+  // entry condition, so every gate above is evaluated exactly once.
+  const branchedAction = (): string | null => {
+    if (request.virtual || hedged) return null;
+    if (isSwitcher(request)) {
+      const [firstSide, secondSide] = dynamicSides(request);
+      const primary = purchaseBlock("aiPurchasePrimary", purchaseType);
+      const modeIsPrimary = compareValues(
+        "aiModeCheck",
+        "EQ",
+        variablesGet("aiModeCheckGet", "mode"),
+        numberBlock("aiModeCheckValue", 0),
+      );
+      const recoveryMain = markovCondition(request, "aiRecoveryGate");
+      const mainPurchase = purchaseBlock("aiPurchaseRecovery", purchaseType);
+      // Even/Odd's digit sets partition 0–9, so the opposite side's Markov
+      // chance is the complement of the measured one and the recovery can
+      // trade whichever parity the transitions favour. Over/Under sets do
+      // not partition (the barrier digit loses both ways), so that
+      // recovery only buys its configured side when it clears the bar.
+      if (request.family === "even-odd") {
+        const recoveryOther = compareValues(
+          "aiRecoveryOtherGate",
+          "LTE",
+          variablesGet("aiRecoveryOtherGet", "markov"),
+          numberBlock("aiRecoveryOtherBar", 100 - markovThresholdFor(request)),
+        );
+        const otherPurchase = purchaseBlock(
+          "aiPurchaseRecoveryOther",
+          purchaseType === firstSide ? secondSide : firstSide,
+        );
+        return `<block type="controls_if" id="aiModeBranch"><mutation elseif="2"></mutation><value name="IF0">${modeIsPrimary}</value><statement name="DO0">${primary}</statement><value name="IF1">${recoveryMain}</value><statement name="DO1">${mainPurchase}</statement><value name="IF2">${recoveryOther}</value><statement name="DO2">${otherPurchase}</statement></block>`;
+      }
+      return `<block type="controls_if" id="aiModeBranch"><mutation elseif="1"></mutation><value name="IF0">${modeIsPrimary}</value><statement name="DO0">${primary}</statement><value name="IF1">${recoveryMain}</value><statement name="DO1">${mainPurchase}</statement></block>`;
+    }
+    if (dynamicEntry(request)) {
+      const [firstSide, secondSide] = dynamicSides(request);
+      const [firstSignal, secondSignal] = dynamicBranchConditions(request);
+      return `<block type="controls_if" id="aiSignalBranch"><mutation elseif="1"></mutation><value name="IF0">${firstSignal}</value><statement name="DO0">${purchaseBlock("aiPurchaseFirst", firstSide)}</statement><value name="IF1">${secondSignal}</value><statement name="DO1">${purchaseBlock("aiPurchaseSecond", secondSide)}</statement></block>`;
+    }
+    return null;
+  };
+  const branched = branchedAction();
+  const entryIf = `<block type="controls_if" id="aiEntryGate"><value name="IF0">${condition}</value><statement name="DO0">${branched ?? entryAction}</statement></block>`;
 
   const prelude: string[] = [];
   if (request.stakingPlan && request.stakingPlan !== "flat")
@@ -511,12 +863,20 @@ function beforePurchase(
   if (request.stopAfterWinStreak)
     prelude.push(initVariableIfNull("aiInitWinStreak", "winStreak", 0));
   if (request.scanMarkets) {
-    const scanFamily = request.family === "differs" ? "matches" : request.family;
+    const scanFamily =
+      request.family === "differs"
+        ? "matches"
+        : request.family === "higher-lower"
+          ? "rise-fall"
+          : request.family;
     prelude.push(
       `<block type="signal_lab_scan_markets" id="aiScanMarkets"><field name="FAMILY">${scanFamily}</field><value name="DURATION">${numberBlock("aiScanDuration", 20)}</value><value name="MIN_SCORE">${numberBlock("aiScanMinScore", clamp(numberOr(request.scanMinScore, 0.05), 0, 1))}</value></block>`,
       `<block type="controls_if" id="aiScanSwitch"><value name="IF0"><block type="signal_lab_scan_tradeable" id="aiScanSwitchCheck"></block></value><statement name="DO0"><block type="signal_lab_switch_to_best" id="aiScanSwitchToBest"></block></statement></block>`,
     );
   }
+  // The Markov read runs after any market switch, on the market the bot is
+  // actually standing on, and before the entry gate reads it.
+  if (usesMarkov(request)) prelude.push(markovPrelude(request));
   if (request.virtual)
     prelude.push(`<block type="signal_lab_virtual_settle" id="aiVirtualSettle"></block>`);
 
@@ -629,9 +989,25 @@ function afterPurchase(request: DbotAiStrategyRequest, baseStake: number, cooldo
     cooldownSeconds > 0
       ? `<block type="timeout" id="aiCooldown"><statement name="TIMEOUTSTACK"><block type="trade_again" id="aiTradeAgain"></block></statement><value name="SECONDS">${numberBlock("aiCooldownSeconds", cooldownSeconds)}</value></block>`
       : `<block type="trade_again" id="aiTradeAgain"></block>`;
+  // Switcher mode machine: a loss moves the bot into Markov recovery
+  // (mode 1); it stays there until a win returns the session to profit,
+  // then reverts to the primary strategy (mode 0).
+  const modeStatements: string[] = [];
+  if (isSwitcher(request)) {
+    const won = `<block type="contract_check_result" id="aiModeResultWin"><field name="CHECK_RESULT">win</field></block>`;
+    const recovered = compareValues(
+      "aiModeRecovered",
+      "GTE",
+      `<block type="total_profit" id="aiModeRecoveredProfit"></block>`,
+      numberBlock("aiModeRecoveredZero", 0),
+    );
+    modeStatements.push(
+      `<block type="controls_if" id="aiModeUpdate"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0"><block type="controls_if" id="aiModeRevert"><value name="IF0">${recovered}</value><statement name="DO0">${variablesSet("aiModeRevertSet", "mode", numberValue("aiModeRevertValue", 0))}</statement></block></statement><statement name="ELSE">${variablesSet("aiModeSwitchSet", "mode", numberValue("aiModeSwitchValue", 1))}</statement></block>`,
+    );
+  }
   const stack = request.virtual
     ? again
-    : chainStatements([...progressionStatements(request, baseStake), again]);
+    : chainStatements([...modeStatements, ...progressionStatements(request, baseStake), again]);
   return `<block type="after_purchase" id="aiAfterPurchase" x="700" y="300"><statement name="AFTERPURCHASE_STACK">${stack}</statement></block>`;
 }
 
@@ -643,11 +1019,16 @@ function afterPurchase(request: DbotAiStrategyRequest, baseStake: number, cooldo
 export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
   const family = input.family;
   const durationUnit: DbotAiDurationUnit =
-    family === "rise-fall" && input.durationUnit === "m" ? "m" : "t";
+    (family === "rise-fall" || family === "higher-lower") && input.durationUnit === "m"
+      ? "m"
+      : "t";
   const duration =
     durationUnit === "m"
       ? clamp(Math.round(numberOr(input.duration, 1)), 1, 15)
-      : clamp(Math.round(numberOr(input.duration, 1)), 1, 10);
+      : // Higher/Lower is only offered from 5 ticks up: a shorter barrier
+        // contract is rejected by Deriv as "Invalid barrier", so the
+        // generated strategy never asks for one.
+        clamp(Math.round(numberOr(input.duration, 1)), family === "higher-lower" ? 5 : 1, 10);
   const stake = clamp(numberOr(input.stake, 0.35), 0.35, 10);
   const currency = cleanCurrency(input.currency);
   const procedureName = cleanProcedureName(input.procedureName);
@@ -672,6 +1053,10 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
   };
   const normalized: DbotAiStrategyRequest = {
     ...input,
+    // The resolved duration is what Trade options will trade, so signal
+    // blocks that look `duration` ticks ahead (Markov horizon) read it too.
+    duration,
+    durationUnit,
     stopAfterLossStreak: resolved.stopAfterLossStreak,
     stopAfterWinStreak: resolved.stopAfterWinStreak,
   };
@@ -680,6 +1065,8 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
   if (input.stakingPlan === "fibonacci") variableKeys.push("prevStake");
   if (resolved.stopAfterLossStreak) variableKeys.push("lossStreak");
   if (resolved.stopAfterWinStreak) variableKeys.push("winStreak");
+  if (usesMarkov(normalized)) variableKeys.push("markov");
+  if (isSwitcher(normalized)) variableKeys.push("mode");
 
   return `<?xml version="1.0" encoding="UTF-8"?><xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">${variablesSection(variableKeys)}${tradeRoot(normalized, duration, durationUnit, stake, currency)}${riskGateDefinition(resolved)}${beforePurchase(normalized, procedureName, stake)}${afterPurchase(normalized, stake, cooldownSeconds)}</xml>`;
 }
@@ -694,6 +1081,15 @@ export function inferDbotAiFamily(description: string): DbotAiFamily | null {
   if (/\b(differs?|digit differs?|not matches?|does ?n['’]?t match)\b/.test(prompt))
     return "differs";
   if (/\b(matches?|digit match|match digit)\b/.test(prompt)) return "matches";
+  // Higher/Lower must be read before Over/Under: both talk about barriers,
+  // but only Higher/Lower names the pair (or a side next to "barrier").
+  if (
+    /\bhigher[\s/-]+(?:and[\s]+)?lower\b/.test(prompt) ||
+    /\blower[\s/-]+(?:and[\s]+)?higher\b/.test(prompt) ||
+    /\b(?:buy|trade|go)\s+(?:higher|lower)\b/.test(prompt) ||
+    /\b(?:higher|lower)\b[^.]{0,40}\bbarrier\b/.test(prompt)
+  )
+    return "higher-lower";
   if (/\b(over|under|barrier)\b/.test(prompt)) return "over-under";
   if (/\b(rise|fall|call|put|bullish|bearish|upward|downward|go long|go short)\b/.test(prompt))
     return "rise-fall";
@@ -827,13 +1223,151 @@ function readDigitFilter(description: string): DbotAiDigitFilter | undefined {
   return undefined;
 }
 
+/**
+ * The entry-logic shape the description asks for. Order matters: a bot
+ * that "switches to Markov after a loss" is a switcher first; "Markov" on
+ * its own is the gated Markov bot; "comprehensive" stacks everything.
+ */
+function readArchetype(description: string): {
+  archetype: DbotAiArchetype;
+  streakLength?: number;
+  streakMode?: "follow" | "fade";
+  markovThreshold?: number;
+} {
+  const prompt = description.toLowerCase();
+  const thresholdMatch = prompt.match(
+    /\b(?:markov|transition|confidence|probability|chance)\b[^.]*?(\d{2}(?:\.\d+)?)\s*(?:%|percent)/,
+  );
+  const markovThreshold = thresholdMatch
+    ? clamp(Number(thresholdMatch[1]), 1, 99)
+    : undefined;
+  const streakMatch =
+    prompt.match(/\bafter\s+(\d+)\s+(?:\w+\s+){0,2}?(?:in a row|streak|straight)\b/) ??
+    prompt.match(/\b(\d+)\s+(?:\w+\s+){0,2}?in a row\b/) ??
+    prompt.match(/\bstreak\s+(?:of\s+)?(\d+)\b/) ??
+    prompt.match(/\brun\s+of\s+(\d+)\b/);
+  const streakLength = streakMatch ? clamp(Number(streakMatch[1]), 2, 10) : undefined;
+  const streakMode: "follow" | "fade" | undefined = /\b(fade|against|opposite|reverse|reversal)\b/.test(
+    prompt,
+  )
+    ? "fade"
+    : /\b(follow|ride|with the)\b/.test(prompt)
+      ? "follow"
+      : undefined;
+  if (
+    /\bswitch\w*/.test(prompt) ||
+    /\bafter\s+(?:a\s+)?loss\b[^.]*\b(?:change|move|use)\b/.test(prompt) ||
+    /\brecovery\s+(?:mode|strategy|bot)\b/.test(prompt) ||
+    /\b(?:revert|switch\s+back|go\s+back)\b[^.]*\b(?:after|when|once)\b/.test(prompt)
+  )
+    return { archetype: "switcher", markovThreshold };
+  if (/\bmarkov\b|\btransition\s+(?:matrix|table|probabilit)/.test(prompt))
+    return { archetype: "markov", markovThreshold };
+  if (/\bcomprehensive\b|\ball[-\s]?in[-\s]?one\b|\bfull[-\s]?(?:featured|bot|strategy|package)\b|\beverything\b[^.]*\b(?:bot|strategy)\b/.test(prompt))
+    return { archetype: "comprehensive", markovThreshold, streakLength, streakMode };
+  if (/\bmomentum\b|\btrend[-\s]?follow\w*\b|\bfollow\s+the\s+trend\b/.test(prompt))
+    return { archetype: "momentum" };
+  if (/\breversal\b|\bmean[-\s]?revert\w*\b|\boverbought\b|\boversold\b/.test(prompt))
+    return { archetype: "reversal", streakLength, streakMode: "fade" };
+  if (/\bstreak\b|\bin a row\b|\brun\s+of\s+\d+\b|\bconsecutive\s+(?:even|odd|digits?|rises?|falls?)\b/.test(prompt))
+    return { archetype: "streak", streakLength, streakMode };
+  if (
+    /\bai[-\s]?(?:based|powered|driven)\b/.test(prompt) ||
+    /\buse\s+(?:the\s+)?ai\b/.test(prompt) ||
+    /\bai\s+(?:analysis|decides|chooses|picks|signals?|bot|trading)\b/.test(prompt) ||
+    /\bartificial\s+intelligence\b/.test(prompt)
+  )
+    return { archetype: "ai" };
+  return { archetype: "standard" };
+}
+
+/**
+ * Signed Higher/Lower barrier offsets: "barrier +1.5", "higher at +1 and
+ * lower at -2". Per-side values are returned by side; the parse branch
+ * assigns them to the main/hedge legs by the traded direction.
+ */
+function readBarrierOffsets(description: string): {
+  higherOffset?: number;
+  lowerOffset?: number;
+  barrierOffset?: number;
+} {
+  const prompt = description.toLowerCase();
+  const signed = (match: RegExpMatchArray | null) =>
+    match ? clamp(Number(match[1].replace(/\s+/g, "")), -10_000, 10_000) : undefined;
+  return {
+    higherOffset: signed(prompt.match(/\bhigher\b[^.]*?([+-]\s*\d+(?:\.\d+)?)/)),
+    lowerOffset: signed(prompt.match(/\blower\b[^.]*?([+-]\s*\d+(?:\.\d+)?)/)),
+    barrierOffset: signed(
+      prompt.match(/\bbarrier(?:\s+offset)?\s*(?:of|=|:|at|to)?\s*([+-]?\s*\d+(?:\.\d+)?)/) ??
+        prompt.match(/\boffset\s*(?:of|=|:|at|to)?\s*([+-]?\s*\d+(?:\.\d+)?)/),
+    ),
+  };
+}
+
+/**
+ * Warnings for archetype asks the chosen family/resolution changes —
+ * computed from the resolved request, so parse and edits agree.
+ */
+function archetypeWarnings(request: DbotAiStrategyRequest, description: string): string[] {
+  const prompt = description.toLowerCase();
+  const warnings: string[] = [];
+  const asked = archetypeOf(request);
+  const built = effectiveArchetype(request);
+  if (asked === "switcher" && built !== "switcher") {
+    warnings.push(
+      request.virtual
+        ? "A strategy switcher needs real contract results, so the paper version trades the primary strategy only."
+        : "The strategy switcher was built for Even/Odd or Over/Under (its recovery mode measures digit transitions); this family trades the primary strategy with the standard risk gate instead.",
+    );
+  }
+  if (built === "switcher") {
+    warnings.push(
+      "Switcher built: the primary strategy trades until a loss, then the bot switches to Markov-transition recovery (mode 1, with the all-markets scan choosing where to stand) and reverts to the primary strategy once the session profit is back at or above zero. Martingale recovery runs alongside.",
+    );
+    if (/\b(rise|fall)\b/.test(prompt))
+      warnings.push(
+        "The recovery stays inside this workspace's trade type: one DBot workspace has a single Trade options trade type, so a Rise/Fall recovery leg cannot be bought from an Even/Odd (or Over/Under) bot — the Markov + AI recovery covers that role here. Run a separate Rise/Fall bot alongside if you want both.",
+      );
+  }
+  if (asked === "momentum" && built === "streak")
+    warnings.push(
+      "Momentum on a digit contract is measured as the digit run: the bot follows a run of same-side digits (the digit equivalent of a price trend).",
+    );
+  if (asked === "markov" && !usesMarkov(request))
+    warnings.push(
+      "Markov transition gating measures last-digit probabilities, so it applies to Even/Odd, Over/Under and Matches; this family was built with the standard entry gate.",
+    );
+  if (asked === "ai" && request.family !== "over-under")
+    warnings.push(
+      "AI entries here come from the Signal Lab all-markets analysis: every shared market is scored each cycle and the bot trades the strongest one. (The Vision AI entry signal block prices Over/Under barriers, so it is wired automatically when you ask for an AI Over/Under bot.)",
+    );
+  if (
+    request.family === "higher-lower" &&
+    request.durationUnit !== "m" &&
+    Number.isFinite(request.duration) &&
+    Number(request.duration) < 5
+  )
+    warnings.push(
+      "Higher/Lower is only offered from 5 ticks up — Deriv rejects shorter barrier contracts as an invalid barrier — so the duration was set to 5 ticks.",
+    );
+  return warnings;
+}
+
 /** Concepts real users ask for that this mapper cannot build yet — named, never faked. */
 function readWarnings(description: string): string[] {
   const prompt = description.toLowerCase();
   const warnings: string[] = [];
-  if (/\b(rsi|macd|bollinger|ema|sma|stochastic|moving average|indicator)\b/.test(prompt))
+  if (/\b(macd|bollinger|stochastic)\b/.test(prompt))
     warnings.push(
-      "Indicator conditions (RSI/MACD/Bollinger/EMA) were not generated — this builder does not wire indicator blocks yet. After loading, add an Indicators block from the DBot toolbox into Purchase conditions; everything else you described is built.",
+      "MACD/Bollinger/Stochastic conditions were not generated — this builder wires the measured blocks it has (RSI for reversal bots, slope for momentum, Markov transitions and runs for digits). After loading, MACD/Bollinger blocks can be added from the DBot toolbox into Purchase conditions; everything else you described is built.",
+    );
+  if (/\brsi\b/.test(prompt) && !/\b(reversal|overbought|oversold)\b/.test(prompt))
+    warnings.push(
+      "That custom RSI rule was not generated — the builder wires RSI as the reversal archetype (fade above 70, fade below 30): ask for a \"reversal\" bot to get it. Other RSI blocks live in the DBot toolbox.",
+    );
+  if (/\b(ema|sma|moving average)\b/.test(prompt))
+    warnings.push(
+      "Moving-average crossover conditions were not generated; momentum here is measured with the regression-slope block. EMA/SMA blocks live in the DBot Indicators toolbox if you want the crossover version.",
     );
   if (/\b(candle|candlestick|engulfing|doji|hammer|pin bar)\b/.test(prompt))
     warnings.push(
@@ -878,10 +1412,8 @@ function readWarnings(description: string): string[] {
       "Kelly and percent-of-balance staking size each trade from a live win-rate edge or the live balance, which a generated block strategy cannot recalculate per trade — the bot was built with a flat stake at the amount named. Recompute the stake from the Balance block inside Purchase conditions for true percentage staking.",
     );
   // Contract families Deriv offers that this builder does not generate.
-  if (/\b(higher|lower)\b/.test(prompt) && !/\b(over|under|digit|barrier \d|last digit)\b/.test(prompt))
-    warnings.push(
-      "Higher/Lower is a barrier contract this builder does not generate (it builds Rise/Fall and the digit families). In DBot: set the trade type to Higher/Lower and the barrier offset in Trade options for a plain Purchase; to hedge it, use the Purchase hedge block and set each leg's barrier offset on its Purchase 1 / Purchase 2 rows.",
-    );
+  // (Higher/Lower IS generated: barrier offsets land in Trade options for a
+  // single purchase, or on the hedge block's two rows when hedging.)
   if (/\btouch/.test(prompt))
     warnings.push(
       "Touch/No Touch is a barrier contract this builder does not generate. In DBot: set the trade type to Touch/No Touch with minutes/hours duration and a barrier offset; the Purchase hedge block carries a barrier offset on each of its Purchase 1 / Purchase 2 rows if you hedge it.",
@@ -959,7 +1491,7 @@ function readDuration(
   family: DbotAiFamily,
 ): { duration: number; durationUnit: DbotAiDurationUnit } {
   const minutes =
-    family === "rise-fall"
+    family === "rise-fall" || family === "higher-lower"
       ? description.match(/\b(\d+)\s*(?:minutes?|mins?)\b/i)
       : null;
   if (minutes)
@@ -970,7 +1502,9 @@ function readDuration(
   if (seconds) return { duration: clamp(Number(seconds[1]), 1, 10), durationUnit: "t" };
   const ticks = description.match(/\b(\d+)\s*(?:ticks?|t)\b/i);
   return {
-    duration: ticks ? clamp(Number(ticks[1]), 1, 10) : 1,
+    // Higher/Lower defaults to its 5-tick minimum; a shorter named value
+    // is floored at 5 by the strategy builder (and warned about).
+    duration: ticks ? clamp(Number(ticks[1]), 1, 10) : family === "higher-lower" ? 5 : 1,
     durationUnit: "t",
   };
 }
@@ -995,6 +1529,17 @@ function readProcedureName(description: string): string {
     /\b(?:block|function)\s+(?:called|named)\s+["“']([^"”']{2,44})["”']/i,
   )?.[1];
   return cleanProcedureName(named);
+}
+
+/** Append the warnings that depend on the fully resolved request. */
+function withArchetypeWarnings(
+  parsed: ParsedBotDescription,
+  description: string,
+): ParsedBotDescription {
+  return {
+    ...parsed,
+    warnings: [...parsed.warnings, ...archetypeWarnings(parsed, description)],
+  };
 }
 
 /** Turns a natural-language request into a bounded, reviewable block strategy. */
@@ -1028,11 +1573,22 @@ export function parseDbotAiDescription(
         ? 50
         : undefined;
   const virtual = /\b(virtual|paper\s+trad\w*)\b/.test(prompt);
+  const archetypeRead = readArchetype(description);
   const namedFamily = familyFromSignalName(description);
   // A hedge request that names no contract family ("build a hedging bot")
   // still needs one pair of opposite contracts: default to Rise/Fall
   // (CALL + PUT) and say so in the warnings, instead of building nothing.
-  const family = namedFamily ?? (hedge ? "rise-fall" : null);
+  // An archetype request ("a Markov bot", "a strategy switcher") likewise
+  // implies the family that archetype measures.
+  const archetypeFamily: DbotAiFamily | null =
+    archetypeRead.archetype === "momentum" || archetypeRead.archetype === "reversal"
+      ? "rise-fall"
+      : archetypeRead.archetype === "ai"
+        ? "over-under"
+        : archetypeRead.archetype === "standard"
+          ? null
+          : "even-odd";
+  const family = namedFamily ?? (hedge ? "rise-fall" : archetypeFamily);
   if (!family) return null;
   const duration = readDuration(description, family);
   const procedureName = readProcedureName(description);
@@ -1053,20 +1609,37 @@ export function parseDbotAiDescription(
     ...readStakingPlan(description),
     ...readStreakStops(description),
     digitFilter: readDigitFilter(description),
+    archetype: archetypeRead.archetype,
+    streakLength: archetypeRead.streakLength,
+    streakMode: archetypeRead.streakMode,
+    markovThreshold: archetypeRead.markovThreshold,
     scanMarkets:
       /\bscan\s+(?:all|every)\s+markets?\b/.test(prompt) ||
       /\ball[- ]markets?\s+scan\b/.test(prompt) ||
       /\b(?:trade|find|pick|choose)\s+the\s+best\s+market\b/.test(prompt) ||
-      /\bbest\s+market\b[^.]*\bscan\b/.test(prompt),
+      /\bbest\s+market\b[^.]*\bscan\b/.test(prompt) ||
+      /\banalys\w*\s+(?:all|every)\s+markets?\b/.test(prompt) ||
+      // Switchers, comprehensive and AI bots stand on the strongest
+      // scanned market by design.
+      archetypeRead.archetype === "switcher" ||
+      archetypeRead.archetype === "comprehensive" ||
+      archetypeRead.archetype === "ai",
     hedge: hedge || undefined,
     hedgeStakePercent,
     virtual: virtual || undefined,
-    usedVisionAi: /\bvision\b/.test(prompt) && family === "over-under",
+    usedVisionAi:
+      (/\bvision\b/.test(prompt) || archetypeRead.archetype === "ai") &&
+      family === "over-under",
     warnings: [
       ...readWarnings(description),
       ...(hedge && !namedFamily
         ? [
             "No contract family was named, so this hedges Rise/Fall. Ask for over/under, even/odd or matches hedging to hedge a different pair.",
+          ]
+        : []),
+      ...(!namedFamily && !hedge && archetypeFamily
+        ? [
+            `No contract family was named, so this ${archetypeRead.archetype} bot was built on ${dbotAiFamilyLabel(archetypeFamily)} — name a family (rise/fall, higher/lower, even/odd, over/under, matches) to build it elsewhere.`,
           ]
         : []),
       ...(hedge && !virtual
@@ -1084,8 +1657,14 @@ export function parseDbotAiDescription(
   if (family === "rise-fall") {
     // In a hedge both sides are named ("buy both rise and fall"): the FIRST
     // named side is the main leg (full stake), the other is the hedge leg.
-    const fallAt = prompt.search(/\b(fall|put|bearish|downward|go short)\b/);
-    const riseAt = prompt.search(/\b(rise|call|bullish|upward|go long)\b/);
+    // The family name itself ("rise/fall bot") names both sides, so pair
+    // phrases are stripped before looking for the side the user picked.
+    const sidePrompt = prompt.replace(
+      /\brise[\s/-]+(?:and[\s]+)?fall\b|\bfall[\s/-]+(?:and[\s]+)?rise\b/g,
+      " ",
+    );
+    const fallAt = sidePrompt.search(/\b(fall|put|bearish|downward|go short)\b/);
+    const riseAt = sidePrompt.search(/\b(rise|call|bullish|upward|go long)\b/);
     const direction =
       hedge && riseAt !== -1 && fallAt !== -1
         ? riseAt < fallAt
@@ -1094,7 +1673,37 @@ export function parseDbotAiDescription(
         : fallAt !== -1
           ? "FALL"
           : "RISE";
-    return { ...shared, direction };
+    return withArchetypeWarnings({ ...shared, direction }, description);
+  }
+  if (family === "higher-lower") {
+    const sidePrompt = prompt.replace(
+      /\bhigher[\s/-]+(?:and[\s]+)?lower\b|\blower[\s/-]+(?:and[\s]+)?higher\b/g,
+      " ",
+    );
+    const lowerAt = sidePrompt.search(/\b(lower|put|fall)\b/);
+    const higherAt = sidePrompt.search(/\b(higher|call|rise)\b/);
+    const direction: DbotAiDirection =
+      hedge && higherAt !== -1 && lowerAt !== -1
+        ? higherAt < lowerAt
+          ? "RISE"
+          : "FALL"
+        : lowerAt !== -1
+          ? "FALL"
+          : "RISE";
+    const offsets = readBarrierOffsets(description);
+    return withArchetypeWarnings(
+      {
+        ...shared,
+        direction,
+        barrierOffset:
+          direction === "FALL"
+            ? (offsets.lowerOffset ?? offsets.barrierOffset)
+            : (offsets.higherOffset ?? offsets.barrierOffset),
+        hedgeBarrierOffset:
+          direction === "FALL" ? offsets.higherOffset : offsets.lowerOffset,
+      },
+      description,
+    );
   }
   if (family === "over-under") {
     const barrier = clamp(
@@ -1106,29 +1715,38 @@ export function parseDbotAiDescription(
       1,
       8,
     );
-    return {
-      ...shared,
-      digitSide:
-        /\bunder\b/i.test(prompt) && !/\bover\b/i.test(prompt)
-          ? "DIGITUNDER"
-          : "DIGITOVER",
-      barrier,
-    };
+    return withArchetypeWarnings(
+      {
+        ...shared,
+        digitSide:
+          /\bunder\b/i.test(prompt) && !/\bover\b/i.test(prompt)
+            ? "DIGITUNDER"
+            : "DIGITOVER",
+        barrier,
+      },
+      description,
+    );
   }
   if (family === "even-odd")
-    return {
-      ...shared,
-      paritySide:
-        /\bodd\b/i.test(prompt) && !/\beven\b/i.test(prompt)
-          ? "DIGITODD"
-          : "DIGITEVEN",
-    };
+    return withArchetypeWarnings(
+      {
+        ...shared,
+        paritySide:
+          /\bodd\b/i.test(prompt) && !/\beven\b/i.test(prompt)
+            ? "DIGITODD"
+            : "DIGITEVEN",
+      },
+      description,
+    );
   const targetDigit = Number(
     description.match(
       /\b(?:target|digit|match(?:es)?(?:\s+digit)?|differs?(?:\s+(?:from|digit))?)\s*(?:of|is|=|:|to|on|from)?\s*(\d)\b/i,
     )?.[1] ?? 5,
   );
-  return { ...shared, targetDigit: clamp(targetDigit, 0, 9) };
+  return withArchetypeWarnings(
+    { ...shared, targetDigit: clamp(targetDigit, 0, 9) },
+    description,
+  );
 }
 
 /**
@@ -1148,12 +1766,44 @@ export function applyDbotAiEdit(
   const next: ParsedBotDescription = { ...previous, warnings: [...readWarnings(edit)] };
   let touched = false;
   const family = familyFromSignalName(edit);
-  if (family && family !== previous.family) {
+  // "Change the barrier offset" on a Higher/Lower bot mentions the word
+  // barrier, which alone would read as Over/Under — a barrier edit is not
+  // a family change.
+  const barrierEditOnHigherLower =
+    previous.family === "higher-lower" &&
+    family === "over-under" &&
+    /\b(barrier|offset)\b/.test(prompt) &&
+    !/\bover\b|\bunder\b/.test(prompt);
+  if (family && family !== previous.family && !barrierEditOnHigherLower) {
     const reparsed = parseDbotAiDescription(edit, previous.symbol, previous.currency);
     if (reparsed) return { ...previous, ...reparsed, procedureName: previous.procedureName };
   }
   if (/\b(?:R_\d{1,3}|1HZ\d{1,3}V|volatility|vol\s*\d|v\d{2,3}\b)/i.test(edit)) {
     next.symbol = readMarket(edit, previous.symbol);
+    touched = true;
+  }
+  // "make it a Markov bot", "turn it into a strategy switcher", "use
+  // momentum entries": swap the entry-logic shape, keeping the rest.
+  const archetypeEdit = readArchetype(edit);
+  const wantsSwitcher =
+    archetypeEdit.archetype === "switcher" &&
+    /\b(strateg\w*|markov|recover\w*|modes?|switcher|loss|revert)\b/.test(prompt);
+  if (
+    archetypeEdit.archetype !== "standard" &&
+    (archetypeEdit.archetype !== "switcher" || wantsSwitcher) &&
+    archetypeEdit.archetype !== previous.archetype
+  ) {
+    next.archetype = archetypeEdit.archetype;
+    if (archetypeEdit.streakLength) next.streakLength = archetypeEdit.streakLength;
+    if (archetypeEdit.streakMode) next.streakMode = archetypeEdit.streakMode;
+    if (archetypeEdit.markovThreshold) next.markovThreshold = archetypeEdit.markovThreshold;
+    if (
+      archetypeEdit.archetype === "switcher" ||
+      archetypeEdit.archetype === "comprehensive" ||
+      archetypeEdit.archetype === "ai"
+    )
+      next.scanMarkets = true;
+    next.warnings = [...next.warnings, ...archetypeWarnings(next, edit)];
     touched = true;
   }
   if (/\bstake\b|\$\s*\d/.test(prompt)) {
@@ -1215,9 +1865,23 @@ export function applyDbotAiEdit(
     next.digitFilter = readDigitFilter(edit);
     touched = true;
   }
-  if (next.family === "rise-fall" && /\b(rise|fall|call|put)\b/.test(prompt)) {
-    next.direction = /\b(fall|put)\b/.test(prompt) ? "FALL" : "RISE";
+  if (
+    (next.family === "rise-fall" || next.family === "higher-lower") &&
+    /\b(rise|fall|call|put|higher|lower)\b/.test(prompt)
+  ) {
+    next.direction = /\b(fall|put|lower)\b/.test(prompt) ? "FALL" : "RISE";
     touched = true;
+  }
+  if (next.family === "higher-lower" && /\b(barrier|offset)\b/.test(prompt)) {
+    const offsets = readBarrierOffsets(edit);
+    const main =
+      next.direction === "FALL"
+        ? (offsets.lowerOffset ?? offsets.barrierOffset)
+        : (offsets.higherOffset ?? offsets.barrierOffset);
+    const hedgeLeg = next.direction === "FALL" ? offsets.higherOffset : offsets.lowerOffset;
+    if (main !== undefined) next.barrierOffset = main;
+    if (hedgeLeg !== undefined) next.hedgeBarrierOffset = hedgeLeg;
+    if (main !== undefined || hedgeLeg !== undefined) touched = true;
   }
   if (next.family === "over-under" && /\b(over|under|barrier)\b/.test(prompt)) {
     const barrier = edit.match(/\b(?:barrier|over|under)\s*(?:of|=|:)?\s*(\d)\b/i)?.[1];
@@ -1240,13 +1904,26 @@ export function applyDbotAiEdit(
 export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
   const parts: string[] = [`${dbotAiFamilyLabel(request.family)} on ${request.symbol}`];
   if (request.family === "rise-fall") parts.push(request.direction === "FALL" ? "Fall" : "Rise");
+  if (request.family === "higher-lower") {
+    const main = resolvedBarrierOffset(request);
+    parts.push(
+      request.hedge
+        ? `Higher ${formatOffset(request.direction === "FALL" ? resolvedHedgeBarrierOffset(request) : main)} / Lower ${formatOffset(request.direction === "FALL" ? main : resolvedHedgeBarrierOffset(request))}`
+        : `${request.direction === "FALL" ? "Lower" : "Higher"} ${formatOffset(main)}`,
+    );
+  }
   if (request.family === "over-under")
     parts.push(`${request.digitSide === "DIGITUNDER" ? "Under" : "Over"} ${request.barrier ?? 5}`);
   if (request.family === "even-odd") parts.push(request.paritySide === "DIGITODD" ? "Odd" : "Even");
   if (request.family === "matches") parts.push(`Matches ${request.targetDigit ?? 5}`);
   if (request.family === "differs") parts.push(`Differs from ${request.targetDigit ?? 5}`);
   parts.push(`stake ${request.stake ?? 0.35} ${request.currency ?? "USD"}`);
-  parts.push(`${request.duration}${request.durationUnit === "m" ? "m" : "t"}`);
+  // Show the duration that will actually trade: Higher/Lower floors at 5t.
+  const displayDuration =
+    request.family === "higher-lower" && request.durationUnit !== "m"
+      ? Math.max(5, Math.round(numberOr(request.duration, 5)))
+      : request.duration;
+  parts.push(`${displayDuration}${request.durationUnit === "m" ? "m" : "t"}`);
   if (request.stakingPlan === "martingale")
     parts.push(`martingale ×${request.stakeMultiplier ?? 2}${request.maxStake ? ` capped at ${request.maxStake}` : ""}`);
   if (request.stakingPlan === "reverse-martingale")
@@ -1271,6 +1948,30 @@ export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
             : `only when last digit < ${filter.digit}`,
     );
   }
+  const archetype = effectiveArchetype(request);
+  if (archetype === "markov" && usesMarkov(request))
+    parts.push(`Markov-gated (transition chance ≥ ${markovThresholdFor(request)}%)`);
+  if (archetype === "streak")
+    parts.push(
+      `${request.streakMode === "fade" ? "fades" : "follows"} runs of ${request.streakLength ?? 3}`,
+    );
+  if (archetype === "momentum") parts.push("momentum entries (follows the tick slope)");
+  if (archetype === "reversal")
+    parts.push(
+      request.family === "rise-fall" || request.family === "higher-lower"
+        ? "reversal entries (fades RSI extremes)"
+        : `reversal entries (fades runs of ${request.streakLength ?? 3})`,
+    );
+  if (archetype === "switcher")
+    parts.push("strategy switcher (primary → Markov + scan recovery after a loss, reverts in profit)");
+  if (archetype === "comprehensive")
+    parts.push("comprehensive (scan + Markov gate + profit/loss guards)");
+  if (archetype === "ai")
+    parts.push(
+      request.family === "over-under"
+        ? "AI-based entries (Vision entry signal)"
+        : "AI-based entries (all-markets analysis picks the market)",
+    );
   if (request.scanMarkets) parts.push("scans all markets and trades the strongest");
   if (request.hedge)
     parts.push(
@@ -1284,8 +1985,13 @@ export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
   return parts.join(" · ");
 }
 
+function formatOffset(offset: number): string {
+  return offset < 0 ? String(offset) : `+${offset}`;
+}
+
 export function dbotAiFamilyLabel(family: DbotAiFamily): string {
   if (family === "rise-fall") return "Rise/Fall";
+  if (family === "higher-lower") return "Higher/Lower";
   if (family === "over-under") return "Over/Under";
   if (family === "even-odd") return "Even/Odd";
   if (family === "differs") return "Differs";

@@ -504,6 +504,176 @@ test("named-but-unbuilt contract families are explained in warnings", () => {
   assert.ok(mixed?.warnings.some((warning) => /Touch\/No Touch/.test(warning)));
   const inOut = parseDbotAiDescription("Rise bot on R_100 with ends between logic");
   assert.ok(inOut?.warnings.some((warning) => /In\/Out contracts/.test(warning)));
-  assert.equal(parseDbotAiDescription("Higher lower bot on R_100 stake 1"), null,
-    "a pure Higher/Lower request is not silently rebuilt as another family");
+  // Higher/Lower graduated: it now builds as itself (never rebuilt as
+  // another family), covered in full by the next test.
+  assert.equal(
+    parseDbotAiDescription("Higher lower bot on R_100 stake 1")?.family,
+    "higher-lower",
+    "a pure Higher/Lower request builds a Higher/Lower bot",
+  );
+});
+
+test("Higher/Lower is a first-class family with a 5-tick floor", () => {
+  assert.equal(inferDbotAiFamily("Build a higher/lower bot"), "higher-lower");
+  assert.equal(inferDbotAiFamily("a higher lower hedging bot"), "higher-lower", "the bare space-separated pair name counts");
+  assert.equal(inferDbotAiFamily("higher-lower bot on R_50"), "higher-lower");
+  assert.equal(inferDbotAiFamily("buy higher with a barrier of +1"), "higher-lower");
+  assert.equal(inferDbotAiFamily("Use an under 4 digit barrier"), "over-under");
+
+  const parsed = parseDbotAiDescription(
+    "higher/lower bot, buy higher barrier +1.5, duration 1 tick, stake 1",
+  );
+  assert.equal(parsed?.family, "higher-lower");
+  assert.equal(parsed?.direction, "RISE", "the pair name does not pick the side");
+  assert.equal(parsed?.barrierOffset, 1.5);
+  assert.ok(
+    parsed?.warnings.some((warning) => /5 ticks|invalid barrier/i.test(warning)),
+    "the 1-tick request is explained, not silently built",
+  );
+
+  const xml = buildDbotAiStrategyXml(parsed);
+  assert.match(xml, /<field name="TRADETYPECAT_LIST">callput<\/field>/);
+  assert.match(xml, /<field name="TRADETYPE_LIST">higherlower<\/field>/);
+  assert.match(xml, /<field name="PURCHASE_LIST">CALL<\/field>/);
+  // The single-purchase barrier lives in Trade options…
+  assert.match(xml, /has_first_barrier="true"/);
+  assert.match(xml, /<field name="BARRIEROFFSETTYPE_LIST">\+<\/field>/);
+  assert.match(xml, /<value name="BARRIEROFFSET">/);
+  // …and the duration never goes out below Deriv's 5-tick Higher/Lower offer.
+  assert.match(xml, /id="aiDuration"><field name="NUM">5<\/field>/);
+  assert.match(describeDbotAiStrategy(parsed), /Higher \+1\.5/);
+  assert.match(describeDbotAiStrategy(parsed), /5t/);
+});
+
+test("a hedged bot carries exactly two barrier/prediction configurations", () => {
+  // The user's case: Higher/Lower hedge. Both offsets sit on the hedge
+  // block's rows and Trade options carries NOTHING — no third config.
+  const parsed = parseDbotAiDescription(
+    "build a higher lower hedging bot on R_100 with stake 0.35, higher barrier +1 and lower barrier -1",
+  );
+  assert.equal(parsed?.family, "higher-lower");
+  assert.equal(parsed?.hedge, true);
+  const xml = buildDbotAiStrategyXml(parsed);
+  const tradeOptions = xml.slice(
+    xml.indexOf("trade_definition_tradeoptions"),
+    xml.indexOf("before_purchase"),
+  );
+  assert.doesNotMatch(tradeOptions, /BARRIEROFFSET/, "no barrier in Trade options");
+  assert.doesNotMatch(tradeOptions, /PREDICTION/, "no prediction in Trade options");
+  assert.match(tradeOptions, /has_first_barrier="false" has_second_barrier="false" has_prediction="false"/);
+  assert.match(xml, /<block type="hedge_purchase" id="aiHedgePurchase">/);
+  assert.match(xml, /has_prediction="false" has_first_barrier="true"/);
+  assert.match(xml, /<field name="BARRIEROFFSETTYPE_LIST">\+<\/field>/);
+  assert.match(xml, /<field name="HEDGE_BARRIEROFFSETTYPE_LIST">-<\/field>/);
+  assert.match(xml, /<value name="BARRIEROFFSET">/);
+  assert.match(xml, /<value name="HEDGE_BARRIEROFFSET">/);
+  assert.match(xml, /<field name="PURCHASE_LIST">CALL<\/field><field name="HEDGE_LIST">PUT<\/field>/);
+  // And the hedge duration floors at 5 ticks like any Higher/Lower.
+  assert.match(xml, /id="aiDuration"><field name="NUM">5<\/field>/);
+
+  // Same rule for digit hedges: predictions live on the hedge block only.
+  const overUnder = buildDbotAiStrategyXml(
+    parseDbotAiDescription("hedge over under barrier 5 on R_100"),
+  );
+  const digitOptions = overUnder.slice(
+    overUnder.indexOf("trade_definition_tradeoptions"),
+    overUnder.indexOf("before_purchase"),
+  );
+  assert.doesNotMatch(digitOptions, /PREDICTION/, "digit hedge keeps Trade options clean too");
+  assert.match(overUnder, /<value name="PREDICTION">/);
+  assert.match(overUnder, /<value name="HEDGE_PREDICTION">/);
+});
+
+test("strategy archetypes build their measured entry blocks", () => {
+  const markov = parseDbotAiDescription("markov even odd bot on R_50 stake 0.5");
+  assert.equal(markov?.archetype, "markov");
+  const markovXml = buildDbotAiStrategyXml(markov);
+  assert.equal((markovXml.match(/type="m_transition"/g) ?? []).length, 5, "five even transitions summed");
+  assert.match(markovXml, /ai markov/, "the measurement lives in a variable");
+  assert.match(markovXml, /id="aiMarkovGateBar"><field name="NUM">53<\/field>/, "default bar is fair (50) + 3");
+  assert.match(describeDbotAiStrategy(markov), /Markov-gated/);
+
+  const momentum = parseDbotAiDescription("momentum rise fall bot on R_75");
+  assert.equal(momentum?.archetype, "momentum");
+  const momentumXml = buildDbotAiStrategyXml(momentum);
+  assert.match(momentumXml, /type="q_slope"/);
+  assert.equal((momentumXml.match(/type="purchase"/g) ?? []).length, 2, "slope picks CALL or PUT per tick");
+
+  const reversal = parseDbotAiDescription("reversal bot fading RSI extremes on R_100, 5 ticks");
+  assert.equal(reversal?.archetype, "reversal");
+  const reversalXml = buildDbotAiStrategyXml(reversal);
+  assert.match(reversalXml, /type="q_rsi"/);
+  assert.equal((reversalXml.match(/type="purchase"/g) ?? []).length, 2);
+
+  const streak = parseDbotAiDescription("streak bot: after 4 even digits in a row follow the run, even odd R_25");
+  assert.equal(streak?.archetype, "streak");
+  assert.equal(streak?.streakLength, 4);
+  const streakXml = buildDbotAiStrategyXml(streak);
+  assert.match(streakXml, /type="m_parity_run"/);
+
+  const comprehensive = parseDbotAiDescription("comprehensive over under bot barrier 5");
+  assert.equal(comprehensive?.archetype, "comprehensive");
+  assert.equal(comprehensive?.scanMarkets, true);
+  const comprehensiveXml = buildDbotAiStrategyXml(comprehensive);
+  assert.match(comprehensiveXml, /type="r_loss_guard"/);
+  assert.match(comprehensiveXml, /type="r_profit_guard"/);
+  assert.match(comprehensiveXml, /type="m_transition"/, "comprehensive includes the Markov gate");
+
+  const ai = parseDbotAiDescription("AI based over under bot barrier 4");
+  assert.equal(ai?.archetype, "ai");
+  assert.match(buildDbotAiStrategyXml(ai), /type="x_ai_should_buy"/);
+});
+
+test("the strategy switcher builds a primary → Markov recovery → revert machine", () => {
+  const parsed = parseDbotAiDescription(
+    "an AI even bot that analyses all markets and trades the suitable one, after a loss it switches strategy to markov plus ai and after recovery it reverts back to even odd",
+  );
+  assert.equal(parsed?.family, "even-odd");
+  assert.equal(parsed?.archetype, "switcher");
+  assert.equal(parsed?.scanMarkets, true, "switchers stand on the scanned market");
+  assert.ok(parsed?.warnings.some((warning) => /Switcher built/.test(warning)));
+
+  const xml = buildDbotAiStrategyXml(parsed);
+  assert.match(xml, /ai mode/, "mode variable declared");
+  assert.match(xml, /id="aiInitModeVar"/, "mode initialised at start");
+  assert.match(xml, /type="signal_lab_scan_markets"/);
+  assert.match(xml, /type="signal_lab_switch_to_best"/);
+  assert.equal((xml.match(/type="m_transition"/g) ?? []).length, 5, "Markov recovery measurement");
+  assert.equal((xml.match(/type="purchase"/g) ?? []).length, 3, "primary Even + recovery Even + recovery Odd");
+  assert.match(xml, /id="aiPurchasePrimary"/);
+  assert.match(xml, /id="aiPurchaseRecoveryOther"/, "recovery can take the favoured parity");
+  // After purchase: a loss flips to mode 1; a win back at/above zero flips to 0.
+  assert.match(xml, /id="aiModeSwitchSet"/);
+  assert.match(xml, /id="aiModeRevertSet"/);
+  assert.match(xml, /id="aiModeRecoveredProfit"/, "revert reads the session profit");
+  // Standard equipment still applies.
+  assert.match(xml, /procedures_defreturn/, "risk gate present");
+  assert.equal(parsed?.stakingPlan, "martingale");
+});
+
+test("cross-family recovery asks are answered honestly", () => {
+  const parsed = parseDbotAiDescription(
+    "even odd bot, after a loss switch to rise and fall recovery, revert after recovery",
+  );
+  assert.equal(parsed?.archetype, "switcher");
+  assert.ok(
+    parsed?.warnings.some((warning) => /single Trade options trade type|stays inside/.test(warning)),
+    "the Rise/Fall recovery limit is named, with Markov covering the role",
+  );
+});
+
+test("follow-up edits can change the strategy shape", () => {
+  const base = parseDbotAiDescription("even bot on R_100 stake 0.5");
+  const asMarkov = applyDbotAiEdit(base, "make it a Markov bot");
+  assert.equal(asMarkov?.archetype, "markov");
+  const asSwitcher = applyDbotAiEdit(base, "turn it into a strategy switcher with markov recovery");
+  assert.equal(asSwitcher?.archetype, "switcher");
+  assert.equal(asSwitcher?.scanMarkets, true);
+  const marketMove = applyDbotAiEdit(base, "switch to R_50");
+  assert.equal(marketMove?.symbol, "R_50");
+  assert.notEqual(marketMove?.archetype, "switcher", "switching MARKET is not a strategy switcher");
+
+  const hl = parseDbotAiDescription("higher/lower bot on R_100 barrier +1");
+  const widened = applyDbotAiEdit(hl, "change the barrier offset to +2.5");
+  assert.equal(widened?.barrierOffset, 2.5);
 });

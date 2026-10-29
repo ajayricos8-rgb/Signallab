@@ -5,6 +5,28 @@ import { localize } from '@deriv-com/translations';
 import { observer as globalObserver } from '../../../utils/observer';
 import { error as logError } from './broadcast';
 
+/**
+ * Deriv does not offer Higher/Lower (CALL/PUT carrying a barrier) below 5
+ * ticks: a 1–4 tick request with a barrier is rejected with "Invalid
+ * barrier" even though the barrier value itself is fine — it is the
+ * contract shape that is not offered (SmartTrader states Higher/Lower
+ * "only offers 5 ticks", and Deriv's own example strategies use 5). Raise
+ * such requests to the 5-tick floor instead of sending a shape Deriv
+ * cannot price. Barrier-less Rise/Fall and digit contracts (whose
+ * "barrier" is a digit prediction) are untouched.
+ */
+export const barrierDurationFloor = (contract_type, trade_option) => {
+    if (
+        ['CALL', 'PUT'].includes(contract_type) &&
+        trade_option.barrierOffset != null &&
+        trade_option.duration_unit === 't' &&
+        Number(trade_option.duration) < 5
+    ) {
+        return 5;
+    }
+    return trade_option.duration;
+};
+
 export const tradeOptionToProposal = (trade_option, purchase_reference) =>
     trade_option.contractTypes.map(type => {
         const proposal = {
@@ -12,7 +34,7 @@ export const tradeOptionToProposal = (trade_option, purchase_reference) =>
             basis: trade_option.basis,
             contract_type: type,
             currency: trade_option.currency,
-            duration: trade_option.duration,
+            duration: barrierDurationFloor(type, trade_option),
             duration_unit: trade_option.duration_unit,
             multiplier: trade_option.multiplier,
             passthrough: {
@@ -52,7 +74,7 @@ export const tradeOptionToBuy = (contract_type, trade_option) => {
             basis: trade_option.basis,
             contract_type,
             currency: trade_option.currency,
-            duration: trade_option.duration,
+            duration: barrierDurationFloor(contract_type, trade_option),
             duration_unit: trade_option.duration_unit,
             multiplier: trade_option.multiplier,
             underlying_symbol: trade_option.symbol,

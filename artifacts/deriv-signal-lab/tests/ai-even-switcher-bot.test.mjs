@@ -1,0 +1,106 @@
+// Structural checks on the shipped AI Even Switcher bot.
+//
+// The bot is a strategy file, so the things that stop it trading are wiring
+// mistakes: a scan that never runs before the purchase conditions, a Markov
+// read the entry branches never see, a mode variable nothing flips, or a
+// recovery that can never revert. These assertions pin that wiring down
+// without a browser, the same way the AI Vision bot is pinned.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+
+const XML_PATH = new URL("../src/lib/bot-store/bots/ai-even-switcher.xml", import.meta.url);
+const XML = await readFile(XML_PATH, "utf8");
+
+const types = [...XML.matchAll(/<block type="([^"]+)"/g)].map((match) => match[1]);
+const has = (type) => types.includes(type);
+const count = (type) => types.filter((entry) => entry === type).length;
+const section = (rootType, nextTypes) => {
+  const start = XML.indexOf(`<block type="${rootType}"`);
+  if (start < 0) return "";
+  const following = nextTypes
+    .map((type) => XML.indexOf(`<block type="${type}"`, start + 1))
+    .filter((index) => index > 0)
+    .sort((a, b) => a - b)[0];
+  return XML.slice(start, following ?? XML.length);
+};
+const before = section("before_purchase", ["after_purchase"]);
+const after = section("after_purchase", []);
+
+test("the bot is a complete Even/Odd DBot program", () => {
+  ["trade_definition", "trade_definition_market", "trade_definition_tradetype",
+    "trade_definition_tradeoptions", "before_purchase", "after_purchase"].forEach((type) => {
+    assert.ok(has(type), `missing mandatory block ${type}`);
+  });
+  assert.match(XML, /<field name="TRADETYPE_LIST">evenodd<\/field>/);
+  assert.ok(has("trade_again"), "the bot restarts its cycle after a settlement");
+  assert.equal(count("purchase"), 3, "primary Even + recovery Even + recovery Odd");
+  assert.equal((XML.match(/<field name="PURCHASE_LIST">DIGITEVEN<\/field>/g) ?? []).length, 2);
+  assert.equal((XML.match(/<field name="PURCHASE_LIST">DIGITODD<\/field>/g) ?? []).length, 1);
+});
+
+test("every cycle scans all markets and stands on the strongest", () => {
+  assert.match(before, /signal_lab_scan_markets/, "the all-markets scan runs per cycle");
+  assert.match(before, /<field name="FAMILY">even-odd<\/field>/);
+  assert.match(before, /signal_lab_switch_to_best/, "the bot moves to the scanned market");
+  const scanAt = before.indexOf("signal_lab_scan_markets");
+  const purchaseAt = before.indexOf('type="purchase"');
+  assert.ok(scanAt < purchaseAt, "the scan happens before any purchase can fire");
+  // Floor 0: the scan always finds a market, so the primary strategy never starves.
+  assert.match(before, /<value name="MIN_SCORE"><shadow type="math_number" id="evScanFloor"><field name="NUM">0<\/field>/);
+});
+
+test("the Markov read measures the even transition chance at the traded horizon", () => {
+  assert.equal(count("m_transition"), 5, "one transition per even digit");
+  for (const digit of [0, 2, 4, 6, 8])
+    assert.match(before, new RegExp(`id="evT${digit}To"><field name="NUM">${digit}<\\/field>`));
+  assert.equal(count("ticks"), 5, "each transition reads the real tick list");
+  assert.equal(count("last_digit"), 5, "each transition starts from the current digit");
+  assert.match(before, /id="evT0Hor"><field name="VAR" id="evVar03">ai duration<\/field>/, "horizon matches the contract duration");
+  assert.match(before, /id="evMarkovSet"/, "the sum lands in the ai markov variable before the entry gate");
+});
+
+test("mode 0 buys Even; recovery buys whichever parity clears the Markov bar", () => {
+  assert.match(before, /id="evModeBranch"/);
+  assert.match(before, /<mutation elseif="2"><\/mutation>/, "three-way branch: primary, recovery Even, recovery Odd");
+  assert.match(before, /id="evBuyPrimary"/);
+  assert.match(before, /id="evBuyRecoveryEven"/);
+  assert.match(before, /id="evBuyRecoveryOdd"/);
+  // The Odd branch is the complement bar (100 − threshold) on the same read.
+  assert.match(before, /id="evOddBar"/);
+  assert.match(before, /<field name="OP">MINUS<\/field>/);
+});
+
+test("a loss switches to recovery; a win back in profit reverts and resets", () => {
+  assert.match(after, /id="evResultWin"/);
+  assert.match(after, /id="evModeSwitch"/, "loss branch sets the mode");
+  assert.match(after, /id="evModeSwitchN"><field name="NUM">1<\/field>/);
+  assert.match(after, /id="evModeRevert"/, "recovered branch clears the mode");
+  assert.match(after, /id="evModeRevertN"><field name="NUM">0<\/field>/);
+  assert.match(after, /type="total_profit"/, "the revert reads the session profit");
+  assert.match(after, /id="evStakeReset"/, "the stake resets on revert");
+  assert.match(after, /id="evNotifySwitch"/, "the switch is announced");
+  assert.match(after, /id="evNotifyRevert"/, "the revert is announced");
+});
+
+test("risk is standard issue: capped martingale ladder, TP/SL guards, balance cap", () => {
+  assert.match(after, /id="evStakeGrow"/, "losses multiply the stake");
+  assert.match(after, /id="evLadderCheck"/, "the ladder is checked against its cap");
+  assert.match(after, /id="evStakeCapReset"/, "past the cap the ladder restarts");
+  assert.equal(count("r_loss_guard"), 2, "loss guard on entries and on trade-again");
+  assert.equal(count("r_profit_guard"), 2, "profit guard on entries and on trade-again");
+  assert.ok(has("r_safe_stake"), "the stake is capped by balance share");
+  // The bot only stops at its limits (or manually): trade_again is gated by
+  // the guards, never skipped silently.
+  assert.match(after, /id="evAgainIf"/);
+  assert.match(after, /id="evTradeAgain"/);
+  assert.match(after, /id="evNotifyLimit"/);
+});
+
+test("the knobs live in Run once at start, all variables declared", () => {
+  const declared = new Set([...XML.matchAll(/<variable type="" id="([^"]+)">([^<]+)<\/variable>/g)].map((m) => m[1]));
+  const used = new Set([...XML.matchAll(/<field name="VAR" id="([^"]+)"/g)].map((m) => m[1]));
+  for (const id of used) assert.ok(declared.has(id), `variable ${id} is declared`);
+  for (const knob of ["ai base stake", "ai markov threshold", "ai multiplier", "ai max steps", "ai loss limit", "ai profit target"])
+    assert.ok(XML.includes(knob), `knob "${knob}" exists`);
+});
