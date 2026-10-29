@@ -78,19 +78,20 @@ test('the entry gate can actually open: AI verdict, pace and risk guards', () =>
     assert.doesNotMatch(before, /r_cooldown/, 'the pace control replaced the old cooldown guard');
 });
 
-test('the shipped tuning trades instead of waiting', () => {
-    const variable = name => {
-        const match = XML.match(new RegExp(`<variable type="" id="[^"]+">${name}</variable>`));
-        return Boolean(match);
-    };
-    ['ai min lean', 'ai entry gap', 'ai market dwell', 'ai loss limit', 'ai profit target'].forEach(variable);
-    // The significance and value bars ship off, so the AI always has a contract.
-    assert.match(XML, /id="aiVar04">ai min lean<\/field><value name="VALUE"><shadow type="math_number" id="in04"><field name="NUM">0</,
-        'ai min lean ships at 0 (bars off)');
-    assert.match(XML, /id="aiVar03">ai min edge<\/field><value name="VALUE"><shadow type="math_number" id="in03"><field name="NUM">-100/,
-        'ai min edge ships off');
-    assert.match(XML, /id="aiVar15">ai entry gap<\/field><value name="VALUE"><shadow type="math_number" id="in15"><field name="NUM">2</,
-        'one position every two seconds at most');
+test('the shipped tuning is evidence-gated and skips weak or negative-edge setups', () => {
+    for (const [variable, name, value] of [
+        ['aiVar03', 'ai min edge', '0.5'],
+        ['aiVar04', 'ai min lean', '1.5'],
+        ['aiVar05', 'ai min confidence', '55'],
+        ['aiVar06', 'ai agreement', '0.7'],
+    ]) {
+        assert.ok(XML.includes(`id="${variable}">${name}</field>`), `${name} variable is declared`);
+        const input = variable.replace('aiVar', 'in');
+        assert.ok(XML.includes(`id="${input}"><field name="NUM">${value}</field>`), `${name} default is ${value}`);
+    }
+    assert.match(XML, /ai multiplier<\/field>[\s\S]*?id="in16"><field name="NUM">1<\/field>/, 'flat staking is the default');
+    assert.match(XML, /weak signals are skipped/);
+    assert.ok(XML.includes('id="in07"><field name="NUM">0.2</field>'), 'fractional risk is conservative by default');
 });
 
 test('the market block cannot strand the bot on a market it cannot read', () => {

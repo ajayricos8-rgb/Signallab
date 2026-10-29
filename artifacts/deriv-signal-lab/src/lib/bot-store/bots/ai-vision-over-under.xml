@@ -23,12 +23,10 @@
        never waits on twenty proposals to make a two-second decision;
     3. picks the barrier and the side with the best expected value, and sizes the
        stake by how strong that lean is and how much the models agree;
-    4. buys it. The entry bars ship OFF, so it buys the best contract it can
-       price on every tick. When no barrier leans past the fair odds it still
-       trades — it takes the safest contract (the widest Over or Under, where
-       nine or eight digits win) and says "forced" in the journal rather than
-       sitting the tick out. A bot that analyses every tick and then refuses to
-       buy is the one thing this strategy must not be;
+    4. buys it. It only enters when the edge, significance, confidence and model-agreement
+       thresholds are met. When the evidence is weak or expected value is not
+       positive, it waits; it never substitutes a convenient but negative-edge
+       contract just to increase trade count;
     5. paces itself: one position at most every "ai entry gap" seconds (2 by
        default). Each contract settles on the next tick, so on a two-second
        market that is one position per tick and never more;
@@ -38,24 +36,19 @@
   Set the knobs in the "Run once at start" block. Open the journal to watch the
   reasoning: every entry prints the market, the contract, the measured lean in
   points and standard deviations, the payout, the expected value and the
-  confidence, plus "forced" when the AI had no lean to work with.
+  confidence, plus the reason any candidate was accepted or rejected.
 
   If it ever looks idle, the journal says why: "warming up — 3/12 ticks on this
   market" means the tick stream has not filled yet; a plan line without an entry
   means the guard above it (loss limit, profit target or entry gap) is holding.
 
   Read this before running it for real
-  The entry bars are OFF. "ai min lean" is 0, which means the bot buys the best
-  contract it can price on every tick, whether or not that contract leans past
-  the fair odds. That is what makes it trade instead of waiting; it does not
-  make it right. Digit contracts carry an exchange margin, so the expected value
-  printed in the journal on each entry is usually negative, and a bot that fires
-  this often will reach the loss limit quickly on a market that is not paying.
-
-  Raise "ai min lean" back to 1.5 or more to put the significance bar on — the
-  forced entries stop with it — and watch the trade rate collapse. That collapse
-  is the honest measure of how much of what this bot does is signal and how much
-  is noise.
+  The bot ships with a positive expected-value floor, a significance requirement,
+  a confidence floor and a model-agreement requirement. These gates reduce trade
+  frequency by design: a market with no measured edge is a no-trade market.
+  Historical model scores are estimates, not guarantees; payout estimates can
+  move and backtests can overfit. Review the live quote and journal before using
+  real funds.
 
   Start on a demo account, keep "ai base stake" small, set "ai loss limit" to
   what you are willing to lose in a session, and never raise the stake to chase
@@ -65,17 +58,17 @@
 
     ai base stake       0.35   the stake the AI scales up and down
     ai duration         1      ticks per contract (1 = settle on the next tick)
-    ai min lean         0      sigma the lean must clear. 0 = no bar, always trade
-    ai min confidence   0      0-100 quality floor. 0 = no floor
-    ai agreement        0      share of models that must agree. 0 = no floor
+    ai min lean         1.5    minimum statistical lean in standard deviations
+    ai min confidence   55     minimum model confidence (0-100)
+    ai agreement        0.7    minimum share of models that must agree
     ai entry gap        2      seconds between positions. 0 = no limit
     ai market dwell     15     seconds to stay on a market before moving on
     ai market floor     20     with the "most suitable" mode, the score below
                                which the bot leaves a market
     ai loss limit       30     stop the bot after this much loss
     ai profit target    50     stop the bot after this much profit
-    ai multiplier       x1     martingale: x2 after a loss, back to x1 after
-                               a win, capped at x8. Scales the stake.
+    ai multiplier       x1     flat-stake default; increase only if you understand
+                               the added exposure and keep the stake caps.
 
   The market block is set to "the most suitable market". Change its dropdown to
   "the next market in turn" to walk the ten markets, or "any market at random".
@@ -132,7 +125,7 @@
       </block>
     </statement>
     <statement name="INITIALIZATION">
-      <block type="variables_set" id="is01"><field name="VAR" id="aiVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="in01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="is02"><field name="VAR" id="aiVar02">ai duration</field><value name="VALUE"><shadow type="math_number" id="in02"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is03"><field name="VAR" id="aiVar03">ai min edge</field><value name="VALUE"><shadow type="math_number" id="in03"><field name="NUM">-100</field></shadow></value><next><block type="variables_set" id="is04"><field name="VAR" id="aiVar04">ai min lean</field><value name="VALUE"><shadow type="math_number" id="in04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is05"><field name="VAR" id="aiVar05">ai min confidence</field><value name="VALUE"><shadow type="math_number" id="in05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is06"><field name="VAR" id="aiVar06">ai agreement</field><value name="VALUE"><shadow type="math_number" id="in06"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is07"><field name="VAR" id="aiVar07">ai risk</field><value name="VALUE"><shadow type="math_number" id="in07"><field name="NUM">0.6</field></shadow></value><next><block type="variables_set" id="is08"><field name="VAR" id="aiVar08">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="in08"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="is09"><field name="VAR" id="aiVar09">ai profit target</field><value name="VALUE"><shadow type="math_number" id="in09"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="is11"><field name="VAR" id="aiVar11">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="in11"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is12"><field name="VAR" id="aiVar12">ai contracts</field><value name="VALUE"><shadow type="math_number" id="in12"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is13"><field name="VAR" id="aiVar13">ai market dwell</field><value name="VALUE"><shadow type="math_number" id="in13"><field name="NUM">15</field></shadow></value><next><block type="variables_set" id="is14"><field name="VAR" id="aiVar14">ai market floor</field><value name="VALUE"><shadow type="math_number" id="in14"><field name="NUM">20</field></shadow></value><next><block type="variables_set" id="is15"><field name="VAR" id="aiVar15">ai entry gap</field><value name="VALUE"><shadow type="math_number" id="in15"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="is16"><field name="VAR" id="aiVar16">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="in16"><field name="NUM">1</field></shadow></value><next><block type="notify" id="in900"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="it900"><field name="TEXT">AI Vision Over/Under armed — reading every volatility market and opening a position at most every 2 s. Tuning is in the Run once at start block.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
+      <block type="variables_set" id="is01"><field name="VAR" id="aiVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="in01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="is02"><field name="VAR" id="aiVar02">ai duration</field><value name="VALUE"><shadow type="math_number" id="in02"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is03"><field name="VAR" id="aiVar03">ai min edge</field><value name="VALUE"><shadow type="math_number" id="in03"><field name="NUM">0.5</field></shadow></value><next><block type="variables_set" id="is04"><field name="VAR" id="aiVar04">ai min lean</field><value name="VALUE"><shadow type="math_number" id="in04"><field name="NUM">1.5</field></shadow></value><next><block type="variables_set" id="is05"><field name="VAR" id="aiVar05">ai min confidence</field><value name="VALUE"><shadow type="math_number" id="in05"><field name="NUM">55</field></shadow></value><next><block type="variables_set" id="is06"><field name="VAR" id="aiVar06">ai agreement</field><value name="VALUE"><shadow type="math_number" id="in06"><field name="NUM">0.7</field></shadow></value><next><block type="variables_set" id="is07"><field name="VAR" id="aiVar07">ai risk</field><value name="VALUE"><shadow type="math_number" id="in07"><field name="NUM">0.2</field></shadow></value><next><block type="variables_set" id="is08"><field name="VAR" id="aiVar08">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="in08"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="is09"><field name="VAR" id="aiVar09">ai profit target</field><value name="VALUE"><shadow type="math_number" id="in09"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="is11"><field name="VAR" id="aiVar11">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="in11"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="is12"><field name="VAR" id="aiVar12">ai contracts</field><value name="VALUE"><shadow type="math_number" id="in12"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="is13"><field name="VAR" id="aiVar13">ai market dwell</field><value name="VALUE"><shadow type="math_number" id="in13"><field name="NUM">15</field></shadow></value><next><block type="variables_set" id="is14"><field name="VAR" id="aiVar14">ai market floor</field><value name="VALUE"><shadow type="math_number" id="in14"><field name="NUM">20</field></shadow></value><next><block type="variables_set" id="is15"><field name="VAR" id="aiVar15">ai entry gap</field><value name="VALUE"><shadow type="math_number" id="in15"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="is16"><field name="VAR" id="aiVar16">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="in16"><field name="NUM">1</field></shadow></value><next><block type="notify" id="in900"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="it900"><field name="TEXT">AI Vision Over/Under armed — edge, significance, confidence and agreement gates are active; weak signals are skipped.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
     </next></block></statement>
     <statement name="SUBMARKET">
       <block type="trade_definition_tradeoptions" id="aiOptions01">

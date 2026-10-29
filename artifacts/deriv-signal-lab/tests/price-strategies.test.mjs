@@ -61,7 +61,7 @@ test('strategy context refuses wrong family, duration, market or units', () => {
   assert.equal(priceContextAllowed('tick', 5, { ...step, duration: 5 }, { contractTypes: ['TICKHIGH', 'TICKLOW'] }), true);
 });
 
-test('store files contain actual strategy blocks and the step bot is four ticks', async () => {
+test('store presets target their supported markets and ship flat-stake defaults', async () => {
   const root = new URL('../src/lib/bot-store/bots/', import.meta.url);
   const tick = await readFile(new URL('high-low-tick-sniper.xml', root), 'utf8');
   const rise = await readFile(new URL('rise-fall-ensemble.xml', root), 'utf8');
@@ -74,8 +74,13 @@ test('store files contain actual strategy blocks and the step bot is four ticks'
   assert.match(tick, /<field name="MODE">tick<\/field>/);
   assert.match(rise, /<field name="PURCHASE_LIST">CALL<\/field>/);
   assert.match(rise, /<field name="PURCHASE_LIST">PUT<\/field>/);
+  assert.match(rise, /<field name="SUBMARKET_LIST">step_index<\/field>/);
+  assert.match(rise, /<field name="SYMBOL_LIST">stpRNG<\/field>/);
   assert.match(hedge, /<field name="SYMBOL_LIST">stpRNG<\/field>/);
   assert.match(hedge, /<field name="MODE">step-hedge<\/field>/);
   assert.match(hedge, /<field name="HEDGE_LIST">PUT<\/field>/);
   assert.match(hedge, /<field name="NUM">4<\/field>/);
+  for (const xml of [tick, rise, hedge]) assert.match(xml, /<field name="VAR" id="vmultiplier">multiplier<\/field>[\s\S]*?<field name="NUM">1<\/field>/, 'flat-stake default multiplier');
+  assert.equal(priceContextAllowed('rise', 4, { symbol: 'stpRNG', duration: 4, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), true);
+  assert.equal(priceContextAllowed('step-hedge', 4, { symbol: 'stpRNG', duration: 4, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), true);
 });

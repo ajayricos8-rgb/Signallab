@@ -7,15 +7,13 @@
 
   Primary strategy (mode 0 — "AI Even"): every cycle the bot scans EVERY
   volatility market Signal Lab is streaming, scores each one for Even/Odd,
-  moves to the strongest market and buys Even there. The scan floor ships at
-  0, so the bot always finds a market to stand on; it never sits idle for
-  want of a signal. The entry itself is confirmed against the blended
-  parity score below: on a tick where that score says Odd is likelier by
-  the full threshold margin, the bot simply waits for the next tick rather
-  than buying Even into a contrary measurement.
+  moves to the strongest market, then buys Even only when the blended parity
+  score clears "ai markov threshold". A zero scan floor means a candidate market
+  is always available; it does not force an entry when parity evidence is weak.
 
-  The parity score ("ai markov") blends two measurements of the market the
-  bot is standing on: 65% Markov transition (from the last 1000 ticks, the
+  Both primary and recovery entries are evidence-gated by the same parity score
+  ("ai markov"), which blends two measurements of the current market: 65%
+  Markov transition (from the last 1000 ticks, the
   chance the current last digit becomes an EVEN digit at the expiry tick —
   the five "digit transition" blocks summed into "ai markov raw", each
   looking duration+1 ticks ahead because a buy's entry tick is the tick
@@ -38,7 +36,8 @@
   session below zero keeps the bot in recovery at the current stake — it
   does not declare victory early.
 
-  Staking: after a loss the stake multiplies by "ai multiplier", up to
+  Staking: the default multiplier is 1 (flat stake). If configured above 1,
+  the stake multiplies after a loss up to
   "ai max steps" multiplications in a row; past the cap the ladder restarts
   at the base stake instead of growing without bound. Every stake also
   passes the balance cap ("ai stake percent"), and the loss/profit guards
@@ -53,18 +52,18 @@
 
   Read this before running it for real
   Even/Odd pays a little under double and the digit stream is close to
-  fair, so neither strategy here manufactures an edge: the scan finds the
-  market leaning most right now, and the Markov gate only lets recovery
-  entries through when transitions measurably favour a side. Martingale
-  recovery can still reach its cap. Start on a demo account, keep
+  fair, so neither strategy here manufactures an edge: the scan ranks markets,
+  and both entry gates require transitions to measurably favour the selected
+  parity. Any configured recovery progression can still reach its cap. Start
+  on a demo account, keep
   "ai base stake" small, and set "ai loss limit" to what a session may cost.
 
   Tuning, all of it in the "Run once at start" block:
 
     ai base stake        0.35  the first stake, and the one recovery resets to
     ai duration          1     ticks per contract (also the Markov horizon)
-    ai markov threshold  53    measured chance (%) a recovery entry must clear
-    ai multiplier        2     martingale multiplier after a loss
+    ai markov threshold  54    measured chance (%) an entry must clear
+    ai multiplier        1     flat-stake default; set above 1 only if intended
     ai max steps         5     stake multiplications before the ladder restarts
     ai loss limit        30    stop entering after this much session loss
     ai profit target     50    stop entering after this much session profit
@@ -123,7 +122,7 @@
       </block>
     </statement>
     <statement name="INITIALIZATION">
-      <block type="variables_set" id="evIs01"><field name="VAR" id="evVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="evIn01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs02"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><shadow type="math_number" id="evIn02"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs03"><field name="VAR" id="evVar03">ai duration</field><value name="VALUE"><shadow type="math_number" id="evIn03"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs04"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evIn04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs05"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><shadow type="math_number" id="evIn05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs06"><field name="VAR" id="evVar06">ai markov threshold</field><value name="VALUE"><shadow type="math_number" id="evIn06"><field name="NUM">54</field></shadow></value><next><block type="variables_set" id="evIs07"><field name="VAR" id="evVar07">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="evIn07"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs08"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evIn08"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs09"><field name="VAR" id="evVar09">ai max steps</field><value name="VALUE"><shadow type="math_number" id="evIn09"><field name="NUM">5</field></shadow></value><next><block type="variables_set" id="evIs10"><field name="VAR" id="evVar10">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="evIn10"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="evIs11"><field name="VAR" id="evVar11">ai profit target</field><value name="VALUE"><shadow type="math_number" id="evIn11"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="evIs12"><field name="VAR" id="evVar12">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="evIn12"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs13"><field name="VAR" id="evVar13">ai contracts</field><value name="VALUE"><shadow type="math_number" id="evIn13"><field name="NUM">0</field></shadow></value><next><block type="notify" id="evNotifyBoot"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evBootText"><field name="TEXT">AI Even Switcher armed — scanning every market for Even; a loss switches to Markov + AI recovery, recovery reverts in profit.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
+      <block type="variables_set" id="evIs01"><field name="VAR" id="evVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="evIn01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs02"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><shadow type="math_number" id="evIn02"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs03"><field name="VAR" id="evVar03">ai duration</field><value name="VALUE"><shadow type="math_number" id="evIn03"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs04"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evIn04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs05"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><shadow type="math_number" id="evIn05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs06"><field name="VAR" id="evVar06">ai markov threshold</field><value name="VALUE"><shadow type="math_number" id="evIn06"><field name="NUM">54</field></shadow></value><next><block type="variables_set" id="evIs07"><field name="VAR" id="evVar07">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="evIn07"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs08"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evIn08"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs09"><field name="VAR" id="evVar09">ai max steps</field><value name="VALUE"><shadow type="math_number" id="evIn09"><field name="NUM">5</field></shadow></value><next><block type="variables_set" id="evIs10"><field name="VAR" id="evVar10">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="evIn10"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="evIs11"><field name="VAR" id="evVar11">ai profit target</field><value name="VALUE"><shadow type="math_number" id="evIn11"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="evIs12"><field name="VAR" id="evVar12">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="evIn12"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs13"><field name="VAR" id="evVar13">ai contracts</field><value name="VALUE"><shadow type="math_number" id="evIn13"><field name="NUM">0</field></shadow></value><next><block type="notify" id="evNotifyBoot"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evBootText"><field name="TEXT">AI Even Switcher armed — scanning every market for Even; a loss switches to Markov + AI recovery, recovery reverts in profit.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
     </statement>
     <statement name="SUBMARKET">
       <block type="trade_definition_tradeoptions" id="evOptions01">
@@ -197,7 +196,7 @@
                           <block type="controls_if" id="evModeBranch">
                             <mutation elseif="2"></mutation>
                             <value name="IF0"><block type="logic_compare" id="evModeCheck"><field name="OP">EQ</field><value name="A"><block type="variables_get" id="evModeGet"><field name="VAR" id="evVar04">ai mode</field></block></value><value name="B"><shadow type="math_number" id="evModeZero"><field name="NUM">0</field></shadow></value></block></value>
-                            <statement name="DO0"><block type="controls_if" id="evPrimaryGateIf"><value name="IF0"><block type="logic_compare" id="evPrimaryGate"><field name="OP">GT</field><value name="A"><block type="variables_get" id="evPrimaryGateGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="math_arithmetic" id="evPrimaryGateBar"><field name="OP">MINUS</field><value name="A"><shadow type="math_number" id="evPrimaryGate100"><field name="NUM">100</field></shadow></value><value name="B"><block type="variables_get" id="evPrimaryGateThresh"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value></block></value><statement name="DO0"><block type="purchase" id="evBuyPrimary"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement></block></statement>
+                            <statement name="DO0"><block type="controls_if" id="evPrimaryGateIf"><value name="IF0"><block type="logic_compare" id="evPrimaryGate"><field name="OP">GTE</field><value name="A"><block type="variables_get" id="evPrimaryGateGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="variables_get" id="evPrimaryGateThreshold"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value><statement name="DO0"><block type="purchase" id="evBuyPrimary"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement></block></statement>
                             <value name="IF1"><block type="logic_compare" id="evMarkovEvenCheck"><field name="OP">GTE</field><value name="A"><block type="variables_get" id="evMarkovEvenGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="variables_get" id="evThreshGet"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value>
                             <statement name="DO1"><block type="purchase" id="evBuyRecoveryEven"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement>
                             <value name="IF2"><block type="logic_compare" id="evMarkovOddCheck"><field name="OP">LTE</field><value name="A"><block type="variables_get" id="evMarkovOddGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="math_arithmetic" id="evOddBar"><field name="OP">MINUS</field><value name="A"><shadow type="math_number" id="evOddHundred"><field name="NUM">100</field></shadow></value><value name="B"><block type="variables_get" id="evOddThreshGet"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value></block></value>

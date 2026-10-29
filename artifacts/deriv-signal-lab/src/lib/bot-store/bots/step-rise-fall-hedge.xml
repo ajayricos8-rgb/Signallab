@@ -126,7 +126,7 @@
                                             <field name="VAR" id="vmultiplier">multiplier</field>
                                             <value name="VALUE">
                                               <block type="math_number" id="price0019">
-                                                <field name="NUM">2</field>
+                                                <field name="NUM">1</field>
                                               </block>
                                             </value>
                                             <next>

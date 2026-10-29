@@ -49,7 +49,7 @@ def produce(filename, kind):
     hedged=kind=='hedge'; tick=kind=='tick'; legs=2 if hedged else 1
     var_defaults={'base stake':0.35, 'stake':0.35, 'loss limit':10, 'profit target':10, 'balance percent':5,
                   'duration':5 if tick else 4, 'threshold':0.30 if tick else 0.56,
-                  'loss count':0, 'max steps':3, 'multiplier':2, 'max stake':2.8, 'baseline profit':0, 'decision':0}
+                  'loss count':0, 'max steps':3, 'multiplier':1, 'max stake':2.8, 'baseline profit':0, 'decision':0}
     root=node('xml',collection='false',is_dbot='true')
     variables=ET.SubElement(root,q('variables'))
     for name in var_defaults:
@@ -60,8 +60,8 @@ def produce(filename, kind):
         for f in b.findall(q('field')):
             name=f.get('name')
             if t=='trade_definition_market':
-                if name=='SUBMARKET_LIST': f.text='step_index' if hedged else 'random_index'
-                if name=='SYMBOL_LIST': f.text='stpRNG' if hedged else 'R_100'
+                if name=='SUBMARKET_LIST': f.text='step_index' if not tick else 'random_index'
+                if name=='SYMBOL_LIST': f.text='stpRNG' if not tick else 'R_100'
             if t=='trade_definition_tradetype':
                 if name=='TRADETYPECAT_LIST': f.text='highlowticks' if tick else 'callput'
                 if name=='TRADETYPE_LIST': f.text='highlowticks' if tick else 'callput'
