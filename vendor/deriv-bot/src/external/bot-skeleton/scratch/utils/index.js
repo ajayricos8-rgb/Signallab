@@ -407,7 +407,7 @@ const getMissingBlocks = (workspace, required_block_types) => {
         if (blockType === 'purchase') {
             return !workspace
                 .getAllBlocks()
-                .some(block => block.type === 'purchase' || block.type === 'hedge_purchase');
+                .some(block => block.type === 'purchase' || block.type === 'hedge_purchase' || block.type === 'x_tick_decision_purchase');
         }
         return !workspace.getAllBlocks().some(block => block.type === blockType);
     });
@@ -415,7 +415,7 @@ const getMissingBlocks = (workspace, required_block_types) => {
 
 const getDisabledBlocks = required_blocks_check => {
     const workspace = window.Blockly.derivWorkspace;
-    const required_block_types = [getSelectedTradeType(workspace), ...config().mandatoryMainBlocks, 'hedge_purchase'];
+    const required_block_types = [getSelectedTradeType(workspace), ...config().mandatoryMainBlocks, 'hedge_purchase', 'x_tick_decision_purchase'];
     const disabled_blocks = Object.fromEntries(
         workspace
             .getAllBlocks()
@@ -426,6 +426,7 @@ const getDisabledBlocks = required_blocks_check => {
         'before_purchase',
         'purchase',
         'hedge_purchase',
+        'x_tick_decision_purchase',
         'trade_definition',
         'trade_definition_tradeoptions',
     ];

@@ -16,6 +16,9 @@ import {
 // blocks in, blocks out. It is dropped into the builder untouched.
 import aiVisionOverUnderXml from '@/lib/bot-store/bots/ai-vision-over-under.xml?raw';
 import aiEvenSwitcherXml from '@/lib/bot-store/bots/ai-even-switcher.xml?raw';
+import highLowTickSniperXml from '@/lib/bot-store/bots/high-low-tick-sniper.xml?raw';
+import riseFallEnsembleXml from '@/lib/bot-store/bots/rise-fall-ensemble.xml?raw';
+import stepRiseFallHedgeXml from '@/lib/bot-store/bots/step-rise-fall-hedge.xml?raw';
 
 type SpaceView = 'builder' | 'chart' | 'store';
 type LinkState = 'idle' | 'connecting' | 'connected';
@@ -67,6 +70,27 @@ const STRATEGIES: Strategy[] = [
     accent: 'teal',
     icon: BrainCircuit,
     xml: aiEvenSwitcherXml,
+  },
+  {
+    id: 'HIGH_LOW_TICK_SNIPER', name: 'High/Low Tick Sniper', category: 'AI', icon: BrainCircuit, accent: 'emerald',
+    short: 'Selects High or Low and its prediction tick from a price-path ensemble, with capped martingale and session limits.',
+    detail: 'Replays five-tick windows, counts strict high and low positions, and blends overall, recent and two-change Markov-conditioned frequencies with an online-trained logistic learner. It requires at least 256 quotes and 20 matching states, then chooses a side and tick from one coherent decision. The purchase sends that selected tick directly; the contract duration is fixed at five ticks. The minimum estimated probability, base stake, martingale cap, balance cap and session profit/loss limits are editable in Run once at start. The learner trains only on completed historical windows; the score is not a live payout-based expected-value calculation.',
+    risk: 'Historical frequencies are not a guaranteed edge and do not account for the quoted payout. Ties, execution delays and overlapping windows can invalidate the estimate. Martingale magnifies losses; limits are checked before entry and cannot guarantee a maximum loss. Start on demo.',
+    xml: highLowTickSniperXml,
+  },
+  {
+    id: 'RISE_FALL_ENSEMBLE', name: 'Rise/Fall AI Ensemble', category: 'AI', icon: BrainCircuit, accent: 'blue',
+    short: 'A directional price-path model combining recent history, Markov states, RSI and momentum, with configurable risk controls.',
+    detail: 'Estimates Rise and Fall from historical entry-to-expiry windows, conditioned on the last two price changes and blended with recent outcomes, an online-trained logistic learner, RSI and normalized momentum. Equality is counted as neither a Rise nor a Fall. The model uses the same tick duration as Trade options and waits for sufficient history and a configurable probability threshold. A capped martingale, per-entry balance cap, stop loss and take profit are editable in Run once at start.',
+    risk: 'The scores are historical estimates, not calibrated odds or guarantees of speed, accuracy or profitability. The model does not compare its estimates against live payouts. Martingale can amplify losses; use a demo account first.',
+    xml: riseFallEnsembleXml,
+  },
+  {
+    id: 'STEP_RISE_FALL_HEDGE', name: 'Step Index Rise/Fall Hedge', category: 'AI', icon: BrainCircuit, accent: 'violet',
+    short: 'Gates a simultaneous Rise and Fall pair on a four-tick Step Index price-path and Markov analysis.',
+    detail: 'Uses four-tick entry-to-expiry historical windows with a two-change Markov state, recent outcomes, an online-trained logistic learner, RSI and normalized momentum. When the confidence threshold and risk checks pass, the hedge block sends CALL and PUT purchases together, each with the configured stake. It refuses new entries unless the market is a Step Index and the contract is exactly four ticks. Both legs must settle before the next cycle; session risk checks include both legs. Orders are separate and may open at different ticks or only one may be accepted.',
+    risk: 'Equal-stake opposite trades are not a guaranteed hedge or profit: payouts, ties, different entry ticks and rejected legs can cause losses, even when a directional signal is strong. The two-leg exposure is checked before entry, but open positions can exceed a stop limit. Test on demo first.',
+    xml: stepRiseFallHedgeXml,
   },
 ];
 

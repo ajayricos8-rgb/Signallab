@@ -1,7 +1,7 @@
 import { LogTypes } from '../../../constants/messages';
 import { api_base } from '../../api/api-base';
 import { contractStatus, info, log } from '../utils/broadcast';
-import { doUntilDone, getUUID, recoverFromError, tradeOptionToBuy } from '../utils/helpers';
+import { doUntilDone, getUUID, recoverFromError, tradeOptionToBuy, tradeOptionToProposal } from '../utils/helpers';
 import { sanitizeHedgeOptions } from '../utils/hedge-options.mjs';
 import { purchaseSuccessful } from './state/actions';
 import { BEFORE_PURCHASE } from './state/constants';
@@ -11,7 +11,11 @@ let purchase_reference;
 
 export default Engine =>
     class Purchase extends Engine {
-        purchase(contract_type) {
+        purchase(contract_type, predictionOverride) {
+            if (predictionOverride !== undefined &&
+                (!['TICKHIGH', 'TICKLOW'].includes(contract_type) || !Number.isInteger(predictionOverride) || predictionOverride < 1 || predictionOverride > 5)) {
+                throw new Error('High/Low Tick prediction must be an integer from 1 to 5.');
+            }
             // Prevent calling purchase twice
             if (this.store.getState().scope !== BEFORE_PURCHASE) {
                 return Promise.resolve();
@@ -45,7 +49,7 @@ export default Engine =>
                 });
             };
 
-            if (this.is_proposal_subscription_required) {
+            if (this.is_proposal_subscription_required && predictionOverride === undefined) {
                 const { id, askPrice } = this.selectProposal(contract_type);
 
                 const action = () => api_base.api.send({ buy: id, price: askPrice });
@@ -83,7 +87,7 @@ export default Engine =>
                     delayIndex++
                 ).then(onSuccess);
             }
-            const trade_option = tradeOptionToBuy(contract_type, this.tradeOptions);
+            const trade_option = tradeOptionToBuy(contract_type, predictionOverride === undefined ? this.tradeOptions : { ...this.tradeOptions, prediction: predictionOverride });
             const action = () => api_base.api.send(trade_option);
 
             this.isSold = false;
@@ -93,6 +97,10 @@ export default Engine =>
                 data: this.tradeOptions.amount,
             });
 
+            // An analysis-selected tick must never be silently retried after
+            // a lost response: the first request may already have been filled,
+            // and the old prediction is no longer a current signal.
+            if (predictionOverride !== undefined) return action().then(onSuccess);
             if (!this.options.timeMachineEnabled) {
                 return doUntilDone(action).then(onSuccess);
             }
@@ -134,6 +142,9 @@ export default Engine =>
         purchaseHedge(contract_type, hedge_contract_type, main_options = {}, hedge_options = {}) {
             if (this.store.getState().scope !== BEFORE_PURCHASE) {
                 return Promise.resolve();
+            }
+            if (this.hedgeIncomplete) {
+                throw new Error('A hedge previously opened only one leg. Inspect the account and restart the bot before trading again.');
             }
             if (!hedge_contract_type || hedge_contract_type === contract_type) {
                 return this.purchase(contract_type);
@@ -192,24 +203,16 @@ export default Engine =>
             // leg with its own prediction/barriers cannot reuse the
             // subscribed proposal (those are priced from the trade options),
             // so that leg buys directly with its merged parameters instead.
-            const useProposals = this.is_proposal_subscription_required;
+            const priceBarrier = [mainTradeOptions, hedgeTradeOptions].some(options =>
+                options.barrierOffset != null || options.secondBarrierOffset != null
+            );
+            const useProposals = this.is_proposal_subscription_required && !priceBarrier;
             const mainProposal =
                 useProposals && !hasBlockConfig(contract_type, main_options) ? this.selectProposal(contract_type) : null;
             const hedgeProposal =
                 useProposals && !hasBlockConfig(hedge_contract_type, hedge_options)
                     ? this.selectProposal(hedge_contract_type)
                     : null;
-
-            const buyMain = mainProposal
-                ? () => api_base.api.send({ buy: mainProposal.id, price: mainProposal.askPrice })
-                : () => api_base.api.send(tradeOptionToBuy(contract_type, mainTradeOptions));
-            const buyHedge = hedgeProposal
-                ? () => api_base.api.send({ buy: hedgeProposal.id, price: hedgeProposal.askPrice })
-                : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, hedgeTradeOptions));
-
-            this.isSold = false;
-            contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
-            contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
 
             const announce = (buy, type) => {
                 contractStatus({ id: 'contract.purchase_received', data: buy.transaction_id, buy });
@@ -223,20 +226,56 @@ export default Engine =>
                 });
             };
 
-            return Promise.allSettled([doUntilDone(buyMain), doUntilDone(buyHedge)]).then(([main, hedge]) => {
+            // For price barriers, ask Deriv to price BOTH exact leg shapes
+            // before placing either order. Never guess or alter a user's
+            // barrier: availability and minimum distances vary by market.
+            // This reduces partial hedges from invalid settings, but buys can
+            // still fail independently after the quotes arrive.
+            const quoteLeg = async (type, options) => {
+                const request = tradeOptionToProposal({ ...options, contractTypes: [type] }, this.getPurchaseReference())[0];
+                try {
+                    const response = await api_base.api.send(request);
+                    if (response?.error) throw response;
+                    const proposal = response?.proposal;
+                    if (!proposal?.id || !Number.isFinite(Number(proposal.ask_price))) throw new Error('No valid quote returned');
+                    return { id: proposal.id, askPrice: Number(proposal.ask_price) };
+                } catch (failure) {
+                    const detail = failure?.error?.message || failure?.message || String(failure);
+                    throw new Error(`Hedge ${type} quote rejected (market ${options.symbol}, duration ${request.duration}${request.duration_unit}, barrier ${options.barrierOffset ?? 'none'}): ${detail}. Review market availability, duration and barrier; neither leg was bought.`);
+                }
+            };
+            const quotes = priceBarrier
+                ? Promise.all([quoteLeg(contract_type, mainTradeOptions), quoteLeg(hedge_contract_type, hedgeTradeOptions)])
+                : Promise.resolve([mainProposal, hedgeProposal]);
+            return quotes.then(([first, second]) => {
+                const buyMain = first
+                    ? () => api_base.api.send({ buy: first.id, price: first.askPrice })
+                    : () => api_base.api.send(tradeOptionToBuy(contract_type, mainTradeOptions));
+                const buyHedge = second
+                    ? () => api_base.api.send({ buy: second.id, price: second.askPrice })
+                    : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, hedgeTradeOptions));
+                this.isSold = false;
+                contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
+                contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
+                // Do not automatically retry a buy on a lost response: the
+                // broker may have filled it even though the reply was lost.
+                return Promise.allSettled([Promise.resolve().then(buyMain), Promise.resolve().then(buyHedge)]);
+            }).then(([main, hedge]) => {
                 const bought = [];
                 if (main.status === 'fulfilled') bought.push({ buy: main.value.buy, type: contract_type });
                 if (hedge.status === 'fulfilled') bought.push({ buy: hedge.value.buy, type: hedge_contract_type });
 
                 if (bought.length === 0) {
-                    // Neither leg could be bought: fail the way a failed
-                    // single purchase fails.
+                    // A rejected response can be ambiguous after a disconnect;
+                    // require account inspection before another hedge.
+                    this.hedgeIncomplete = true;
                     throw main.status === 'rejected' ? main.reason : hedge.reason;
                 }
                 if (bought.length === 1) {
                     // One leg was rejected outright: track the leg that did
                     // open as a normal single position rather than strand it,
                     // and say so loudly in the log.
+                    this.hedgeIncomplete = true;
                     const failure = main.status === 'rejected' ? main.reason : hedge.reason;
                     const detail = failure?.error?.message || failure?.message || String(failure);
                     log(LogTypes.ERROR, {

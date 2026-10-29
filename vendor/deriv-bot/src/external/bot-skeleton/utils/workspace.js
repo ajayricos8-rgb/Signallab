@@ -9,7 +9,7 @@ export const hasAllRequiredBlocks = () => {
         // The hedge block is a doubled Purchase: it covers the purchase
         // requirement without a separate Purchase block.
         if (required_block_type === 'purchase') {
-            return all_block_types.includes('purchase') || all_block_types.includes('hedge_purchase');
+            return all_block_types.includes('purchase') || all_block_types.includes('hedge_purchase') || all_block_types.includes('x_tick_decision_purchase');
         }
         return all_block_types.includes(required_block_type);
     });
