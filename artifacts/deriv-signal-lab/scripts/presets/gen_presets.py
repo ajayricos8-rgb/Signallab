@@ -127,7 +127,7 @@ class Emitter:
         )
 
     # ---- price blocks ----------------------------------------------------
-    def decision(self, mode, horizon, floor, max_tie, agreement, min_edge, payout, confidence):
+    def decision(self, mode, horizon, floor, max_tie, agreement, min_edge, payout, confidence, require):
         # The confidence floor is an input of the decision block, not a check
         # bolted on afterwards: the engine grades the decisions it publishes, so
         # a floor applied downstream would grade a different population from the
@@ -135,7 +135,7 @@ class Emitter:
         # never traded.
         return self.block(
             "x_price_decision",
-            fields={"MODE": mode},
+            fields={"MODE": mode, "REQUIRE": require},
             values={
                 "LIST": self.block("ticks"),
                 "HORIZON": horizon,
@@ -294,6 +294,7 @@ def build(spec):
                 e.get("ai min edge"),
                 e.get("ai payout"),
                 e.get("ai min confidence"),
+                spec.get("require", "edge"),
             ),
         )
     )
@@ -318,6 +319,7 @@ def build(spec):
                 e.get("ai min edge"),
                 e.get("ai payout"),
                 e.get("ai min confidence"),
+                spec.get("require", "edge"),
             ),
         ),
         e.set_("ai ready", e.part("ready", e.get(plan))),
@@ -523,46 +525,75 @@ STEP_HEDGE = {
     "hedge_ratio": "0.25",
     "legs": "1.25",
     "max_stake": "2",
+    # Four ticks, as this preset is meant to trade. A four-tick contract on a
+    # fixed-step index returns to its entry price 6 times in 16 (37.5 %), and a
+    # tie loses: that is the cost of this horizon, so it is measured, printed
+    # on every entry line and allowed by "ai max tie" instead of being papered
+    # over with a shape the operator did not ask for.
+    "duration": "4",
+    # The true tie rate of a four-tick step window is 37.5 %; the knob sits
+    # above it so sampling noise in a short history cannot make the bot skip a
+    # cycle it is meant to trade. Set it back to 0.2 to refuse this shape.
+    "max_tie": "0.5",
+    # Keep the cadence. The ensemble still names the side and the Kelly stake
+    # still sizes the position, but a fair market is a reason to trade small,
+    # not a reason to stop: this preset re-enters after every settlement.
+    "require": "always",
+    "min_edge": "0",
+    "agreement": "0",
+    "confidence": "0",
     "ids": {"tick": "shTick01", "before": "shBefore01", "after": "shAfter01"},
     "armed": (
-        "Step Index AI hedge armed — Step Index 100, five ticks. The model's side is bought at "
-        "full size and the opposite side at \"ai hedge ratio\" of it, so the pair keeps most of a "
-        "measured edge while it caps the swing. Entries need the edge, agreement, confidence and "
-        "a two-leg risk check."
+        "Step Index AI hedge armed — Step Index 100, four ticks. The ensemble names the side on "
+        "every readable tick and the Kelly stake sizes it; when the stake is large enough the "
+        "opposite leg is bought at \"ai hedge ratio\" of it, so the pair keeps most of a measured "
+        "edge while it caps the swing. Every entry is risk-checked at the pair's combined "
+        "exposure before either order is sent."
     ),
     "held": (
-        "AI is ready but the entry gate held it — the confidence floor, the losing-streak "
-        "cool-off, or the pair's combined exposure against the balance percentage, loss limit "
-        "and profit target blocked this cycle."
+        "AI is ready but the entry gate held it — the pair's combined exposure against the "
+        "balance percentage, the loss limit or the profit target blocked this cycle."
     ),
     "stopped": (
         "AI session stop — the loss limit, the profit target or the balance rule was reached. "
         "Open contracts still settle; restart the bot to begin a new session."
     ),
     "comment": """
-Step Index AI hedge — Step Index 100, five ticks, both legs priced from the same decision.
+Step Index AI hedge — Step Index 100, four ticks, both legs priced from the same decision.
 
-The defect this replaces was structural, not cosmetic. The bot refused to trade because its
-gate was an absolute win probability no shrunk ensemble can honestly claim on a fixed-step
-index; the horizon was then even, which ties about a third of windows and loses both legs;
-and both legs staked the same amount, which guarantees a loss of the spread every cycle
-whatever the market does. All three are fixed here:
+This preset is built to keep trading. It re-enters on the tick after every settlement, and
+the ensemble names the side on every tick it can read rather than waiting for a fair market
+to become favourable — the pause after a closed contract is one tick (about two seconds on
+Step Index), not the ten-second gate-and-wait cycle this bot used to sit in.
 
-  1. The gate is the measured edge over the payout-adjusted break-even, exactly like the
-     Rise/Fall preset, plus the evidence gate: the rule's own graded record must clear that
-     break-even before another pair is opened.
-  2. The horizon is the odd five-tick contract, so no window can tie, and the measured tie
-     rate is still refused above "ai max tie".
-  3. The hedge is partial: "ai hedge ratio" sizes the opposite leg as a fraction of the main
-     leg. A ratio of 1 is the old both-sides behaviour (a guaranteed loss of the spread); the
-     preset ships 0.25, which keeps most of the model's edge while it caps the drawdown. A
-     ratio whose second leg would fall below Deriv's minimum stake buys the model's side
-     alone and says so in the journal.
+What that costs, stated plainly. A four-tick contract on a fixed-step index returns to its
+entry price 6 times in 16 windows — 37.5 % — and a returning window is a tie, which loses
+both Rise and Fall. So the horizon itself caps the achievable win rate well under the
+51.3 % break-even a 0.95 payout needs; no amount of modelling fixes a shape that cannot
+settle a winner. The tie rate is measured on every call, printed on every entry line
+("tie 37.5 %"), and bounded by "ai max tie" — set that knob to 0.2 and the bot will refuse
+four ticks on this market and say so, which is the setting to use if you would rather have
+accuracy than cadence. Five ticks (odd) removes the tie entirely.
 
-Risk: the risk gate checks the *pair's* combined exposure (main stake x (1 + ratio)) against
-the balance percent, the loss limit and the remaining budget, and After purchase waits for
-both legs to settle before the next cycle. Estimates are historical and conditional, not
-calibrated odds. Test on demo first.
+What each part does:
+
+  1. The decision is "on the best read available": the ensemble's measured probability picks
+     the side, and the Kelly stake sizes the position. A thin read is traded *small* — at the
+     exchange minimum — instead of not at all. Set the decision block's entry field to "only
+     with a measured edge" to restore the old behaviour, where a read under the payout
+     break-even was skipped.
+  2. The hedge is partial: "ai hedge ratio" sizes the opposite leg as a fraction of the main
+     stake. At the 0.35 exchange minimum the second leg would round below Deriv's own minimum,
+     so the preset buys the model's side alone and says so in the journal; the pair appears
+     once the stake is large enough to carry it. Two equal legs are never bought, because that
+     locks in a loss of the spread every cycle.
+  3. The risk gate checks the *pair's* combined exposure (main stake x (1 + ratio)) against the
+     balance percent, the loss limit and the remaining budget before either order is sent, and
+     After purchase waits for both legs to settle before the next cycle.
+
+Session brakes still stop the bot: the loss limit, the profit target and the balance rule are
+entry checks, not guarantees, and open contracts can settle beyond them. Estimates are
+historical and conditional, not calibrated odds. Test on demo first.
 """,
 }
 

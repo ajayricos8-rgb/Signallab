@@ -58,6 +58,13 @@ export default Engine =>
                             this.contractId = '';
                             this.hedgeContractIds = [];
                             this.settledContractIds = new Set();
+                            // The half-hedge warning has done its job by now:
+                            // the leg that did open has settled, so there is no
+                            // dangling exposure left to inspect and the next
+                            // cycle may trade again. Leaving this set used to
+                            // stop the strategy for the rest of the session
+                            // after a single rejected leg.
+                            this.hedgeIncomplete = false;
                             clearTimeout(this.transaction_recovery_timeout);
 
                             if (this.afterPromise) {

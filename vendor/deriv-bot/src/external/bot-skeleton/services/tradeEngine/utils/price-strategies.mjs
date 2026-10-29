@@ -352,6 +352,23 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         return emptyDecision({ reason: `unsupported horizon ${horizon}` });
     }
     const count = isTick ? 10 : 2;
+    // `requireEdge` is the operator's choice between two different jobs:
+    //
+    //   true  (default) — publish a decision only when the evidence clears the
+    //                     payout break-even. Opportunistic: an idle bot is
+    //                     doing its job.
+    //   false           — publish the best side the ensemble can name on every
+    //                     readable tick, and let the *stake* carry the caution
+    //                     (Kelly sizes a thin read to the exchange minimum).
+    //                     This is for strategies that must keep a cadence — a
+    //                     hedged pair re-entering after each settlement — where
+    //                     "the market is fair" is not a reason to stop trading
+    //                     but a reason to trade small.
+    //
+    // What is never disabled by it: the warm-up and thin-history floors (there
+    // is nothing to read yet), the tie gate (a shape that cannot settle a
+    // winner), and the caller's own session brakes.
+    const requireEdge = options.requireEdge !== false;
     const maxTie = clamp(safe(options.maxTie, 0.2), 0, 1);
     const minAgreement = clamp(safe(options.minAgreement, 0), 0, 1);
     const minEdge = safe(options.minEdge, 0);
@@ -707,6 +724,9 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         decisive,
         models,
         probabilities,
+        requireEdge,
+        hitRate: NaN,
+        hitSamples: 0,
         reason: '',
         version: PRICE_MODEL_VERSION,
     };
@@ -743,7 +763,7 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     // describe the ten outcomes. The gate is therefore directional by default
     // and a tick strategy opts in only by asking for an edge *and* supplying
     // the payout of the tick it buys.
-    const valueGate = !isTick || minEdge > 0;
+    const valueGate = requireEdge && (!isTick || minEdge > 0);
     if (valueGate && edge < minEdge) {
         const need = (breakEven + minEdge) * 100;
         return {
@@ -751,7 +771,7 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
             reason: `no edge — ${(best.probability * 100).toFixed(1)}% vs break-even ${(breakEven * 100).toFixed(1)}% (needs ${need.toFixed(1)}%)`,
         };
     }
-    if (agreeWeight < minAgreement) {
+    if (requireEdge && agreeWeight < minAgreement) {
         return {
             ...result,
             reason: `only ${(agreeWeight * 100).toFixed(0)}% of the model weight is on this side, floor ${(minAgreement * 100).toFixed(0)}%`,
@@ -768,7 +788,7 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     // engine grades the decisions it publishes: a floor applied downstream
     // would grade a different population from the one the strategy trades.
     const minConfidence = clamp(safe(options.minConfidence, 0), 0, 100);
-    if (minConfidence > 0 && confidence < minConfidence) {
+    if (requireEdge && minConfidence > 0 && confidence < minConfidence) {
         return {
             ...result,
             reason: `confidence ${confidence.toFixed(0)} below the ${minConfidence.toFixed(0)} floor`,
@@ -783,7 +803,12 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
             : evidence && graded > 0
               ? Number(evidence.hits || 0) / graded
               : NaN;
-    if (graded >= MIN_EVIDENCE_SAMPLES && Number.isFinite(evidenceRate) && evidenceRate < breakEven) {
+    if (
+        requireEdge &&
+        graded >= MIN_EVIDENCE_SAMPLES &&
+        Number.isFinite(evidenceRate) &&
+        evidenceRate < breakEven
+    ) {
         return {
             ...result,
             hitRate: evidenceRate,
@@ -794,9 +819,16 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         };
     }
 
+    // The journal line carries the measured record and the tie rate as well as
+    // the estimate: with the edge gate off, "how is this rule actually doing"
+    // is the number the operator needs to see.
+    const record =
+        graded >= MIN_EVIDENCE_SAMPLES && Number.isFinite(evidenceRate)
+            ? ` · record ${(evidenceRate * 100).toFixed(0)}%/${graded}`
+            : '';
     const summary = isTick
-        ? `${side > 0 ? 'HIGH' : 'LOW'} tick ${tick} · p ${(best.probability * 100).toFixed(1)}% · EV ${(ev * 100).toFixed(1)}% · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · 5 ticks`
-        : `${side > 0 ? 'RISE' : 'FALL'} · p ${(best.probability * 100).toFixed(1)}% · break-even ${(breakEven * 100).toFixed(1)}% · edge ${(edge * 100).toFixed(1)}pt · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · ${h} ticks`;
+        ? `${side > 0 ? 'HIGH' : 'LOW'} tick ${tick} · p ${(best.probability * 100).toFixed(1)}% · EV ${(ev * 100).toFixed(1)}% · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · 5 ticks${record}`
+        : `${side > 0 ? 'RISE' : 'FALL'} · p ${(best.probability * 100).toFixed(1)}% · break-even ${(breakEven * 100).toFixed(1)}% · edge ${(edge * 100).toFixed(1)}pt · tie ${(tieRate * 100).toFixed(1)}% · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · ${h} ticks${record}`;
 
     return { ...result, ready: true, reason: summary };
 }

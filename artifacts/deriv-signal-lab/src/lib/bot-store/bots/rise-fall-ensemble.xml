@@ -227,6 +227,7 @@
                                                                                       <value name="VALUE">
                                                                                         <block type="x_price_decision" id="b0049">
                                                                                           <field name="MODE">rise</field>
+                                                                                          <field name="REQUIRE">edge</field>
                                                                                           <value name="LIST">
                                                                                             <block type="ticks" id="b0048">
                                                                                             </block>
@@ -393,6 +394,7 @@
           <value name="VALUE">
             <block type="x_price_decision" id="b0071">
               <field name="MODE">rise</field>
+              <field name="REQUIRE">edge</field>
               <value name="LIST">
                 <block type="ticks" id="b0070">
                 </block>

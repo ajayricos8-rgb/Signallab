@@ -5,15 +5,15 @@ import { visionColours } from './colour';
 const colour = visionColours().analysis;
 const category = window.Blockly.Categories.Vision_Analysis;
 defineValueBlock({
-    type: 'x_price_decision', message: localize('Price-path AI ensemble %1 ticks %2 horizon %3 probability floor %4 max tie rate %5 min model agreement %6 min edge over break-even %7 payout %8 min confidence %9'),
+    type: 'x_price_decision', message: localize('Price-path AI ensemble %1 ticks %2 horizon %3 probability floor %4 max tie rate %5 min model agreement %6 min edge over break-even %7 payout %8 min confidence %9 entry %10'),
     args: [dropdown('MODE', [[localize('High/Low Tick'), 'tick'], [localize('Rise/Fall'), 'rise'], [localize('Step hedge (odd ticks)'), 'step-hedge']]),
         { type: 'input_value', name: 'LIST', check: 'Array', default: '[]' }, numberInput('HORIZON', '5'), numberInput('THRESHOLD', '0'),
         numberInput('MAX_TIE', '0.2'), numberInput('MIN_AGREEMENT', '0'), numberInput('MIN_EDGE', '0'), numberInput('PAYOUT', '0.95'),
         numberInput('MIN_CONFIDENCE', '0')],
     output: 'Array', colour, category, inputsInline: false,
-    tooltip: localize('Eight experts (anchor, frequency, Markov transition, recent, kernel analog, drift, serial dependence and an online softmax net) mixed by their measured Brier loss. The entry needs a positive edge over the break-even implied by the live payout (1/(1+payout)), not an unreachable absolute probability. A tie rate above the limit blocks the entry: on a fixed-step market an even horizon ties far too often to trade. The confidence floor, when set, is applied inside the engine so the decisions it grades are the decisions the bot would have taken. Historical estimates do not guarantee an edge.'),
+    tooltip: localize('Eight experts (anchor, frequency, Markov transition, recent, kernel analog, drift, serial dependence and an online softmax net) mixed by their measured Brier loss. The entry needs a positive edge over the break-even implied by the live payout (1/(1+payout)), not an unreachable absolute probability. A tie rate above the limit blocks the entry: on a fixed-step market an even horizon ties far too often to trade. The confidence floor, when set, is applied inside the engine so the decisions it grades are the decisions the bot would have taken. "On the best read available" trades the ensemble's best side on every readable tick and lets the stake carry the caution — Kelly sizes a thin read down to the exchange minimum — which is what a strategy that must keep a cadence needs. Historical estimates do not guarantee an edge.'),
     display_name: localize('Price-path AI ensemble'), description: localize('Scores every expert walk-forward, blends them by measured skill, shrinks the result by its sample size and returns one decision with its tie rate, edge over break-even, expected value, confidence and agreement. The horizon is the contract duration; the payout is read from the live proposal and this value is only the fallback.'),
-    call: (input, field) => `Bot.priceDecision(${input.LIST}, ${field.MODE}, ${input.HORIZON}, ${input.THRESHOLD}, ${input.MAX_TIE}, ${input.MIN_AGREEMENT}, ${input.MIN_EDGE}, ${input.PAYOUT}, ${input.MIN_CONFIDENCE})`,
+    call: (input, field) => `Bot.priceDecision(${input.LIST}, ${field.MODE}, ${input.HORIZON}, ${input.THRESHOLD}, ${input.MAX_TIE}, ${input.MIN_AGREEMENT}, ${input.MIN_EDGE}, ${input.PAYOUT}, ${input.MIN_CONFIDENCE}, ${field.REQUIRE})`,
 });
 defineValueBlock({
     type: 'x_price_decision_part', message: localize('Decision %1 from %2'),
