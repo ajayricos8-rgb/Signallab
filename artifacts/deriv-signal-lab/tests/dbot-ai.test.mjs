@@ -589,6 +589,9 @@ test("strategy archetypes build their measured entry blocks", () => {
   assert.equal(markov?.archetype, "markov");
   const markovXml = buildDbotAiStrategyXml(markov);
   assert.equal((markovXml.match(/type="m_transition"/g) ?? []).length, 5, "five even transitions summed");
+  // Transitions target the settling tick: entry is the next tick, so a
+  // 1-tick contract is measured 2 ticks out, not 1.
+  assert.equal((markovXml.match(/Horizon"><field name="NUM">2<\/field>/g) ?? []).length, 5, "horizons aim at the expiry tick");
   assert.match(markovXml, /ai markov/, "the measurement lives in a variable");
   assert.match(markovXml, /id="aiMarkovGateBar"><field name="NUM">53<\/field>/, "default bar is fair (50) + 3");
   assert.match(describeDbotAiStrategy(markov), /Markov-gated/);

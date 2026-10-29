@@ -466,14 +466,17 @@ function resolvedBarrierOffset(request: DbotAiStrategyRequest): number {
   return request.direction === "FALL" ? -1 : 1;
 }
 
-/** The hedge leg's signed offset: named value, else the main magnitude mirrored. */
+/**
+ * The hedge leg's signed offset: a named value, else the SAME barrier as
+ * the main leg — Deriv's own hedge rows carry one barrier level on both
+ * rows (Higher +0.39 / Lower +0.39), which makes the pair complementary:
+ * exactly one leg wins (bar the barrier itself). Mirrored offsets
+ * (+1 / −1) instead open a middle zone where BOTH legs lose.
+ */
 function resolvedHedgeBarrierOffset(request: DbotAiStrategyRequest): number {
   if (Number.isFinite(request.hedgeBarrierOffset) && request.hedgeBarrierOffset !== 0)
     return clamp(Number(request.hedgeBarrierOffset), -10_000, 10_000);
-  const magnitude = Math.abs(resolvedBarrierOffset(request));
-  // The hedge leg is the opposite contract: CALL offsets sit above spot,
-  // PUT offsets below it.
-  return hedgePurchase(request) === "PUT" ? -magnitude : magnitude;
+  return resolvedBarrierOffset(request);
 }
 
 /** The two leg stakes: the main stake and the hedge leg's share of it. */
@@ -623,7 +626,10 @@ function markovThresholdFor(request: DbotAiStrategyRequest): number {
 /** "set ai markov to Σ P(last digit → each winning digit)" — the Markov read. */
 function markovPrelude(request: DbotAiStrategyRequest): string {
   const digits = markovDigitSet(request);
-  const horizon = clamp(Math.round(numberOr(request.duration, 1)), 1, 10);
+  // A buy's entry tick is the tick AFTER the purchase, so the digit that
+  // settles a D-tick contract prints D+1 ticks after the last digit in
+  // hand — the Markov sums measure the transition to THAT tick.
+  const horizon = clamp(Math.round(numberOr(request.duration, 1)) + 1, 2, 11);
   let sum = markovTransition(`aiMarkovT${digits[digits.length - 1]}`, digits[digits.length - 1], horizon);
   for (let index = digits.length - 2; index >= 0; index -= 1) {
     sum = arithmetic(
@@ -1906,11 +1912,17 @@ export function describeDbotAiStrategy(request: DbotAiStrategyRequest): string {
   if (request.family === "rise-fall") parts.push(request.direction === "FALL" ? "Fall" : "Rise");
   if (request.family === "higher-lower") {
     const main = resolvedBarrierOffset(request);
-    parts.push(
-      request.hedge
-        ? `Higher ${formatOffset(request.direction === "FALL" ? resolvedHedgeBarrierOffset(request) : main)} / Lower ${formatOffset(request.direction === "FALL" ? main : resolvedHedgeBarrierOffset(request))}`
-        : `${request.direction === "FALL" ? "Lower" : "Higher"} ${formatOffset(main)}`,
-    );
+    if (request.hedge) {
+      const higher = request.direction === "FALL" ? resolvedHedgeBarrierOffset(request) : main;
+      const lower = request.direction === "FALL" ? main : resolvedHedgeBarrierOffset(request);
+      parts.push(
+        higher === lower
+          ? `barrier ${formatOffset(higher)} on both legs`
+          : `Higher ${formatOffset(higher)} / Lower ${formatOffset(lower)}`,
+      );
+    } else {
+      parts.push(`${request.direction === "FALL" ? "Lower" : "Higher"} ${formatOffset(main)}`);
+    }
   }
   if (request.family === "over-under")
     parts.push(`${request.digitSide === "DIGITUNDER" ? "Under" : "Over"} ${request.barrier ?? 5}`);

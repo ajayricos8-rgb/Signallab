@@ -1,5 +1,6 @@
 import { localize } from '@deriv-com/translations';
 import { config } from '../../../../constants/config';
+import ApiHelpers from '../../../../services/api/api-helpers';
 import { getContractTypeOptions } from '../../../shared';
 import { excludeOptionFromContextMenu, modifyContextMenu, runIrreversibleEvents } from '../../../utils';
 
@@ -75,14 +76,36 @@ window.Blockly.Blocks.hedge_purchase = {
         };
     },
     onchange(event) {
-        if (!this.workspace || window.Blockly.derivWorkspace.isFlyoutVisible || this.workspace.isDragging()) {
+        if (!this.workspace) {
+            return;
+        }
+
+        // A strategy load must sync the rows to the workspace trade type
+        // even when the toolbox flyout is open. Stale rows — Prediction
+        // rows surviving on a Higher/Lower workspace, say — would
+        // otherwise generate leg options for the wrong contract family
+        // (a digit prediction sent as a price barrier: "Invalid
+        // barrier"). Loads fire one BLOCK_CREATE batch for the whole
+        // workspace, so the trade definition is already in place here.
+        const is_load_event = /^dbot-load/.test(event.group || '');
+        if (is_load_event && event.type === window.Blockly.Events.BLOCK_CREATE && event.ids.includes(this.id)) {
+            this.populatePurchaseList(event);
+            return;
+        }
+
+        if (window.Blockly.derivWorkspace.isFlyoutVisible || this.workspace.isDragging()) {
             return;
         }
 
         if (event.type === window.Blockly.Events.BLOCK_CREATE && event.ids.includes(this.id)) {
             this.populatePurchaseList(event);
         } else if (event.type === window.Blockly.Events.BLOCK_CHANGE) {
-            if (event.name === 'TYPE_LIST' || event.name === 'TRADETYPE_LIST') {
+            if (
+                event.name === 'TYPE_LIST' ||
+                event.name === 'TRADETYPE_LIST' ||
+                event.name === 'SYMBOL_LIST' ||
+                event.name === 'DURATIONTYPE_LIST'
+            ) {
                 this.populatePurchaseList(event);
             }
         } else if (event.type === window.Blockly.Events.BLOCK_DRAG && !event.isStart && event.blockId === this.id) {
@@ -106,7 +129,7 @@ window.Blockly.Blocks.hedge_purchase = {
 
             // Rows first: a trade-type change rebuilds them (new dropdown
             // fields), so options must be applied to the rebuilt fields.
-            this.updateLegInputs(legSettingsFor(trade_type));
+            const rows_rebuilt = this.updateLegInputs(legSettingsFor(trade_type));
 
             ['PURCHASE_LIST', 'HEDGE_LIST'].forEach(field_name => {
                 const field = this.getField(field_name);
@@ -127,7 +150,64 @@ window.Blockly.Blocks.hedge_purchase = {
                 const opposite = contract_type_options.find(([, value]) => value && value !== main_value);
                 if (opposite) this.setFieldValue(opposite[1], 'HEDGE_LIST');
             }
+
+            this.applyDefaultBarriers(trade_definition_block, trade_type, rows_rebuilt);
         }
+    },
+    /**
+     * Default each row's barrier offset to the value Deriv itself
+     * suggests for this market/trade type (the same contracts_for lookup
+     * Trade options uses), instead of a hard-coded 1 — a made-up offset
+     * can sit inside the minimum distance from spot for the duration and
+     * be rejected. Only the built-in shadow default is ever written; a
+     * value the user typed, or a real block they attached, is left alone.
+     */
+    applyDefaultBarriers(trade_definition_block, trade_type, rows_rebuilt) {
+        const settings = legSettingsFor(trade_type);
+        if (!settings.barriers) return;
+
+        const { contracts_for } = ApiHelpers?.instance ?? {};
+        if (!contracts_for) return;
+
+        const market_block = trade_definition_block.getChildByType('trade_definition_market');
+        const options_block =
+            trade_definition_block.getChildByType('trade_definition_tradeoptions') ||
+            trade_definition_block.getChildByType('trade_definition_tradeoptions_payout');
+        const symbol = market_block?.getFieldValue('SYMBOL_LIST');
+        if (!symbol) return;
+        const duration_unit = options_block?.getFieldValue('DURATIONTYPE_LIST') || 't';
+        const barrier_types = [
+            this.getFieldValue('BARRIEROFFSETTYPE_LIST') || '+',
+            this.getFieldValue('SECONDBARRIEROFFSETTYPE_LIST') || '-',
+        ];
+
+        contracts_for
+            .getBarriers(symbol, trade_type, duration_unit, barrier_types)
+            .then(barriers => {
+                if (!barriers?.values?.length || !this.workspace) return;
+                runIrreversibleEvents(() => {
+                    ['', 'HEDGE_'].forEach(prefix => {
+                        ['BARRIEROFFSET', 'SECONDBARRIEROFFSET'].forEach((base_name, index) => {
+                            if (index >= settings.barriers) return;
+                            const value = barriers.values[settings.barriers === 1 ? 0 : index];
+                            if (value === undefined || value === '' || value === false) return;
+                            const target = this.getInput(`${prefix}${base_name}`)?.connection?.targetBlock();
+                            if (!target?.isShadow()) return;
+                            const current = target.getFieldValue('NUM');
+                            const is_stale_default =
+                                current === '1' || current === this.appliedBarrierDefault_;
+                            if (rows_rebuilt || is_stale_default) {
+                                target.setFieldValue(String(value), 'NUM');
+                                this.appliedBarrierDefault_ = String(value);
+                            }
+                        });
+                    });
+                });
+            })
+            .catch(() => {
+                // No contracts data (offline, not authorized yet): keep the
+                // built-in defaults rather than breaking the block.
+            });
     },
     /**
      * Build the two purchase rows for the current trade-type shape. Rows
@@ -137,7 +217,7 @@ window.Blockly.Blocks.hedge_purchase = {
      */
     updateLegInputs(settings) {
         const signature = shapeSignature(settings);
-        if (signature === this.legShape_) return;
+        if (signature === this.legShape_) return false;
 
         runIrreversibleEvents(() => {
             const field_names = [
@@ -166,6 +246,7 @@ window.Blockly.Blocks.hedge_purchase = {
 
             this.legShape_ = signature;
         });
+        return true;
     },
     buildLegRow(prefix, { prediction, barriers }) {
         const is_hedge = prefix === 'HEDGE_';

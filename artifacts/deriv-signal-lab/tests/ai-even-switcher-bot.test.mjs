@@ -50,14 +50,39 @@ test("every cycle scans all markets and stands on the strongest", () => {
   assert.match(before, /<value name="MIN_SCORE"><shadow type="math_number" id="evScanFloor"><field name="NUM">0<\/field>/);
 });
 
-test("the Markov read measures the even transition chance at the traded horizon", () => {
+test("the Markov read measures the even transition chance at the settling tick", () => {
   assert.equal(count("m_transition"), 5, "one transition per even digit");
   for (const digit of [0, 2, 4, 6, 8])
     assert.match(before, new RegExp(`id="evT${digit}To"><field name="NUM">${digit}<\\/field>`));
-  assert.equal(count("ticks"), 5, "each transition reads the real tick list");
+  assert.equal(count("ticks"), 6, "each transition (and the share read) uses the real tick list");
   assert.equal(count("last_digit"), 5, "each transition starts from the current digit");
-  assert.match(before, /id="evT0Hor"><field name="VAR" id="evVar03">ai duration<\/field>/, "horizon matches the contract duration");
-  assert.match(before, /id="evMarkovSet"/, "the sum lands in the ai markov variable before the entry gate");
+  // A buy's entry tick is the tick AFTER the purchase, so every transition
+  // looks duration+1 ticks out: the tick that settles the contract.
+  for (const digit of [0, 2, 4, 6, 8]) {
+    assert.match(
+      before,
+      new RegExp(`id="evHz${digit}"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT${digit}Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz${digit}One"><field name="NUM">1</field>`),
+      `transition to ${digit} targets the settling tick`,
+    );
+  }
+});
+
+test("the parity score blends Markov with even share, and entries are precision-gated", () => {
+  // Raw Markov is measured first, then blended 65/35 with the even-digit
+  // share so thin transition rows cannot swing the gate on noise alone.
+  assert.match(before, /id="evMarkovSet">\s*<field name="VAR" id="evVar14">ai markov raw<\/field>/);
+  assert.match(before, /type="m_even_share" id="evShareBlock"/);
+  assert.match(before, /id="evBlendShareW"><field name="NUM">0\.35<\/field>/);
+  assert.match(before, /id="evBlendRawW"><field name="NUM">0\.65<\/field>/);
+  assert.match(before, /id="evBlendSet"><field name="VAR" id="evVar05">ai markov<\/field>/, "the blend is what the gates read");
+  // Primary entries are confirmed: no Even into a full-margin Odd read.
+  assert.match(before, /type="logic_compare" id="evPrimaryGate"><field name="OP">GT<\/field>/);
+  assert.match(before, /id="evPrimaryGateIf"[\s\S]*?id="evBuyPrimary"/, "the primary buy sits inside the confirmation gate");
+  // Market roaming happens only in primary mode: recovery keeps its warm
+  // 1000-tick history instead of trading it for a cold stream every cycle.
+  assert.match(before, /type="logic_operation" id="evSwitchAnd"/);
+  assert.match(before, /type="logic_compare" id="evRoamModeCheck"><field name="OP">EQ<\/field>/);
+  assert.match(XML, /id="evIn06"><field name="NUM">54<\/field>/, "the threshold ships at 54 for the less noisy blend");
 });
 
 test("mode 0 buys Even; recovery buys whichever parity clears the Markov bar", () => {
