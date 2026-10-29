@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { PRICE_MODEL_NAMES, arcsinePrior, priceDecision } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-strategies.mjs';
+import {
+  PRICE_MODEL_NAMES,
+  PRICE_MODEL_VERSION,
+  arcsinePrior,
+  gridStrictPrior,
+  labelFidelity,
+  marketDna,
+  priceDecision,
+  strictExtremePrior,
+} from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-strategies.mjs';
 import {
   adaptiveStake,
   priceContextAllowed,
@@ -37,16 +46,26 @@ function stepStream(length, bias = 0.5, seed = 7) {
 const outcome = (prices, entry, horizon) => Math.sign(prices[entry + horizon] - prices[entry]);
 
 test('High/Low Tick chooses an actual strict extreme of five ticks from historical paths', () => {
+  // A linear ramp has a determined answer: on a rising tape the high prints at
+  // tick 5 and the low at tick 1, and the two are equally certain. The bot is
+  // allowed to buy either (they are both true statements about the window); what
+  // it may not do is name a position that is not the strict extreme.
+  const strictlyExtreme = (series, decision, step) => {
+    const last = series[series.length - 1];
+    const window = Array.from({ length: 5 }, (_, k) => Number((last + step * (k + 1)).toFixed(4)));
+    const extreme = decision.side > 0 ? Math.max(...window) : Math.min(...window);
+    const unique = window.filter(value => value === extreme).length === 1;
+    return unique && window[decision.tick - 1] === extreme;
+  };
   const decision = priceDecision(trend, 'tick', 5, 0.3);
   assert.equal(decision.ready, true);
-  assert.equal(decision.side, 1);
-  assert.equal(decision.tick, 5);
   assert.equal(decision.horizon, 5);
+  assert.ok(decision.tick === 1 || decision.tick === 5, 'the ends carry the structure');
+  assert.ok(strictlyExtreme(trend, decision, 0.01), 'the chosen position is a strict extreme of the window');
   assert.ok(decision.samples >= 200 && decision.conditionalSamples >= 20);
   const reversed = priceDecision([...trend].reverse(), 'tick', 5, 0.3);
   assert.equal(reversed.ready, true);
-  assert.equal(reversed.side, 1);
-  assert.equal(reversed.tick, 1);
+  assert.ok(strictlyExtreme([...trend].reverse(), reversed, -0.01), 'and so is the falling-tape answer');
   // The decision is explainable: a reason line, a confidence and a mixture.
   assert.match(decision.reason, /HIGH|LOW/);
   assert.ok(decision.confidence > 0 && decision.confidence <= 100);
@@ -133,20 +152,38 @@ test('the ensemble is adaptive: weights normalise and an uninformative expert de
 });
 
 test('a real edge is found and a fair market is not forced', () => {
-  // 55/45 Step Index: the ensemble should publish entries and those entries
+  // A 55/45 Step Index: the ensemble should publish entries and those entries
   // should win more often than chance — the model must not be decorative.
-  const prices = stepStream(2400, 0.55, 11);
+  //
+  // Pooled over three seeds, for the same reason a lab repeats a measurement:
+  // v5's walk-forward replay is honest (a window is only tallied once its last
+  // tick has printed), so one 700-tick slice of a 55/45 stream can land at 42 %
+  // by luck alone. Pooled, the edge is unambiguous — and the fair stream, which
+  // shares the wiring, publishes a couple of dozen reads where the leaning one
+  // publishes hundreds.
   let entries = 0;
   let wins = 0;
-  for (let index = 1200; index < 1900; index += 5) {
-    const decision = priceDecision(prices.slice(index - 999, index + 1), 'rise', 5, 0.56);
-    if (!decision.ready) continue;
-    entries += 1;
-    const result = outcome(prices, index + 1, 5);
-    if ((decision.side > 0 && result > 0) || (decision.side < 0 && result < 0)) wins += 1;
+  let fairReads = 0;
+  for (const seed of [11, 12, 13]) {
+    const leaning = stepStream(2400, 0.55, seed);
+    for (let index = 1200; index < 1900; index += 5) {
+      const decision = priceDecision(leaning.slice(index - 999, index + 1), 'rise', 5, 0.56);
+      if (!decision.ready) continue;
+      entries += 1;
+      const result = outcome(leaning, index + 1, 5);
+      if ((decision.side > 0 && result > 0) || (decision.side < 0 && result < 0)) wins += 1;
+    }
+    const fair = stepStream(2400, 0.5, seed);
+    for (let index = 1200; index < 1900; index += 5) {
+      if (priceDecision(fair.slice(index - 999, index + 1), 'rise', 5, 0.56).ready) fairReads += 1;
+    }
   }
-  assert.ok(entries > 25, `expected entries on a biased market, got ${entries}`);
-  assert.ok(wins / entries > 0.5, `win rate ${(wins / entries).toFixed(3)} must beat chance`);
+  assert.ok(entries > 60, `expected entries on a biased market, got ${entries}`);
+  assert.ok(wins / entries > 0.55, `win rate ${(wins / entries).toFixed(3)} must beat chance`);
+  assert.ok(
+    fairReads * 8 < entries,
+    `evidence discriminates (fair ${fairReads} vs leaning ${entries})`
+  );
 
   // Flat-stake freedom is not forced either: a fair market may simply decline.
   const fair = priceDecision(stepStream(1200), 'rise', 5, 0.99);
@@ -334,6 +371,32 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   for (const xml of [tick, rise, hedge]) assert.match(xml, /x_price_model_weights/);
 
   assert.match(tick, /type="x_tick_decision_purchase"/);
+  // The v5 layer ships with the sniper: the EV gate that reads the ten-outcome
+  // ladder, the entry-slip charge, the DNA floor, the self-audit and league
+  // journal lines, and the market scout.
+  assert.match(tick, /<field name="VAR" id="vai_min_ev">ai min ev<\/field>/, 'the EV gate is a knob');
+  assert.match(tick, /<field name="VAR" id="vai_entry_slip">ai entry slip<\/field>/, 'entry slip is charged');
+  assert.match(tick, /<field name="VAR" id="vai_dna_floor">ai dna floor<\/field>/, 'the DNA floor is a knob');
+  assert.match(tick, /<value name="MIN_EV">[\s\S]{0,400}?ai min ev<\/field>/, 'the EV gate reaches the engine');
+  assert.match(tick, /<value name="SLIP">[\s\S]{0,400}?ai entry slip<\/field>/, 'the slip reaches the engine');
+  assert.match(tick, /<field name="PART">stand-down<\/field>/, 'a broken record can stand the bot down');
+  assert.match(tick, /<field name="PART">dna-score<\/field>/, 'a market that cannot be measured is not traded');
+  assert.match(tick, /type="x_price_dna"/, 'the market DNA is reported');
+  assert.match(tick, /type="x_price_league"/, 'the expert league is reported');
+  assert.match(tick, /type="x_price_audit"/, 'the bot audits itself');
+  assert.match(tick, /type="x_price_payout_table"/, 'the payout ladder is reported');
+  assert.match(tick, /type="x_price_auto_market"/, 'the scout can choose a market');
+  // The execution clock ships with the sniper: five ticks is not a duration
+  // until the tick rate is known, and the bot says so at start-up.
+  assert.match(tick, /type="x_price_clock"/, 'the clock is reported');
+  assert.equal((tick.match(/type="x_price_clock"/g) || []).length >= 2, true, 'start-up and every 25 settlements');
+  // The other two presets keep the EV gate off (their quotes are a single
+  // multiple) but still declare the slip, and neither gains the tick-only knobs.
+  for (const xml of [rise, hedge]) {
+    assert.match(xml, /<field name="VAR" id="vai_entry_slip">ai entry slip<\/field>/);
+    assert.doesNotMatch(xml, /ai dna floor/, 'the DNA gate is a High/Low Tick knob');
+    assert.doesNotMatch(xml, /x_price_auto_market/, 'the scout is a High/Low Tick block');
+  }
   assert.match(tick, /<field name="MODE">tick<\/field>/);
   assert.match(tick, /<field name="SYMBOL_LIST">R_100<\/field>/);
 
@@ -541,3 +604,360 @@ test('cadence mode keeps every readable tick readable, so a hedged pair re-enter
   assert.ok(immediate > 0.95, `re-entered on the next tick ${(immediate * 100).toFixed(1)}% of the time`);
 });
 
+
+
+// ---------------------------------------------------------------------------
+// v5 — the tie-aware structural prior, the EV scan, market DNA and the
+// integrity of the walk-forward replay
+// ---------------------------------------------------------------------------
+
+test('the grid-walk prior is enumerated, not guessed, and the market picks its own structure', () => {
+  // A Step Index moves exactly one quote increment per tick, so the strict
+  // maximum is not distributed like the continuous arcsine law: enumerating the
+  // 32 paths gives 6/22, 4/22, 2/22, 4/22, 6/22 strict windows and a tie in 10
+  // of the 32.
+  const grid = gridStrictPrior(5);
+  assert.equal(grid.h, 5);
+  assert.deepEqual(grid.positions.map(value => Math.round(value * 1e3) / 1e3), [0.273, 0.182, 0.091, 0.182, 0.273]);
+  assert.equal(Math.round(grid.tieRate * 1e4) / 1e4, 0.3125);
+
+  // No ties at all: the continuous law, exactly as before.
+  const continuous = strictExtremePrior(5, 0);
+  assert.deepEqual(continuous.map(value => Math.round(value * 1e3) / 1e3), [0.273, 0.156, 0.141, 0.156, 0.273]);
+  // Fully tied: the enumerated grid distribution.
+  const tied = strictExtremePrior(5, grid.tieRate);
+  assert.deepEqual(tied.map(value => Math.round(value * 1e3) / 1e3), [0.273, 0.182, 0.091, 0.182, 0.273]);
+  // Halfway is halfway, and every prior is still a distribution.
+  const half = strictExtremePrior(5, grid.tieRate / 2);
+  // A tie-heavy market pushes the middle position DOWN, not up: the extreme is
+  // an end far more often than a continuous walk would suggest.
+  assert.ok(half[2] < continuous[2] && half[2] > tied[2], `middle position ${half[2]}`);
+  for (const prior of [continuous, half, tied]) {
+    assert.ok(Math.abs(prior.reduce((sum, value) => sum + value, 0) - 1) < 1e-9);
+  }
+});
+
+test('a tie is missing mass: the win probability is the strict probability, not the conditional one', () => {
+  // A Step Index has a tie in about a third of its five-tick windows, and a tie
+  // loses on both sides. The engine must therefore report a win probability
+  // below its conditional position probability — the v4 bug was reporting the
+  // conditional one as if ties could not happen.
+  const prices = stepStream(2400, 0.5, 17);
+  const decision = priceDecision(prices, 'tick', 5, 0, { maxTie: 0.5, payout: 3 });
+  assert.equal(decision.horizon, 5);
+  assert.ok(decision.tieRate > 0.25, `measured tie rate ${decision.tieRate}`);
+  assert.ok(decision.tieForecast > 0.15, `tie forecast ${decision.tieForecast}`);
+  const chosen = decision.side > 0 ? decision.tick - 1 : 5 + decision.tick - 1;
+  const conditional = decision.probabilities[chosen];
+  assert.ok(
+    decision.winProbability < conditional,
+    `the win probability (${decision.winProbability}) is below the conditional one (${conditional})`
+  );
+  assert.ok(
+    Math.abs(decision.winProbability / conditional - (1 - decision.tieForecast)) < 1e-9,
+    'the discount is exactly one minus the tie forecast'
+  );
+  assert.equal(decision.evByOutcome.length, 10);
+  assert.ok(decision.evByOutcome.some(value => !Number.isFinite(value)) === false);
+  // Each side is still a distribution over its own five positions.
+  for (const offset of [0, 5]) {
+    const mass = decision.probabilities.slice(offset, offset + 5).reduce((sum, value) => sum + value, 0);
+    assert.ok(Math.abs(mass - 1) < 1e-9, `side mass ${mass}`);
+  }
+  // The DNA of that market says the same thing in structural terms.
+  const dna = marketDna(prices);
+  assert.equal(dna.phase, 'grid');
+  assert.ok(dna.tieHigh > 0.25 && dna.tieHigh < 0.4, `dna tie ${dna.tieHigh}`);
+  assert.ok(dna.gridRatio < 2.5, `grid ratio ${dna.gridRatio}`);
+  assert.ok(dna.readability > 0 && dna.readability <= 100);
+});
+
+test('the EV scan buys the mispriced position, not the likeliest one', () => {
+  // The contract is quoted per selected tick, so the ranking must be by
+  // expected value once the ladder is known. On a grid walk the ends are the
+  // likeliest positions (18.75 %) and the middle is the rarest (6.25 %), so a
+  // ladder that pays the middle its fair 15x must win the scan even though the
+  // end carries three times the probability — and a fair ladder must not.
+  const prices = stepStream(1600, 0.5, 41);
+  const middleOverlay = [5.0, 6.0, 22.0, 6.0, 5.0, 0, 0, 0, 0, 0];
+  const scan = priceDecision(prices, 'tick', 5, 0, { maxTie: 0.5, payouts: middleOverlay });
+  assert.equal(scan.side, 1);
+  assert.equal(scan.tick, 3, 'the scan buys the overlay, not the modal position');
+  assert.equal(scan.payoutAt, 22);
+  assert.ok(scan.ev > 0, `EV ${scan.ev}`);
+  assert.ok(scan.fairPayout > 0 && scan.fairPayout < 22);
+  // The same market with a fair ladder picks the likeliest position instead.
+  const fairLadder = [4.333, 7, 15, 7, 4.333, 0, 0, 0, 0, 0];
+  const fairPick = priceDecision(prices, 'tick', 5, 0, { maxTie: 0.5, payouts: fairLadder });
+  assert.ok([1, 5].includes(fairPick.tick), `the fair ladder picks an end (${fairPick.tick})`);
+
+  // A quote ladder that is uniformly poor produces no entry when the strategy
+  // asks for value: that is the gate that stops a bot paying for a discovery it
+  // did not make.
+  const poor = new Array(10).fill(1.2);
+  const refused = priceDecision(prices, 'tick', 5, 0, { maxTie: 0.5, payouts: poor, minEv: 0.01 });
+  assert.equal(refused.ready, false);
+  assert.match(refused.reason, /no value/);
+  assert.match(refused.reason, /fair \d+\.\d+×/);
+});
+
+test('market DNA describes the market it is given, not the one it expects', () => {
+  const step = marketDna(stepStream(1600, 0.5, 3));
+  assert.equal(step.phase, 'grid');
+  assert.ok(step.windows > 500, `windows ${step.windows}`);
+  assert.equal(step.strictHigh.length, 5);
+  assert.equal(step.positionZ.length, 5);
+  // Strict histogram plus ties must account for every window.
+  for (const side of [step.strictHigh, step.strictLow]) {
+    const covered = side.reduce((sum, value) => sum + value, 0);
+    assert.ok(covered <= 1 && covered > 0.5, `strict mass ${covered}`);
+  }
+  assert.match(step.verdict, /grid/);
+
+  // A fine-grained walk (Gaussian increments, far larger than the quote grid)
+  // is the continuous case: ties rare, ends favoured, phase continuous.
+  let state = 5;
+  const random = () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+  const gauss = () => Math.sqrt(-2 * Math.log(random() + 1e-12)) * Math.cos(2 * Math.PI * random());
+  let price = 1000;
+  const fine = [price];
+  for (let i = 0; i < 1600; i += 1) {
+    price = Number((price + gauss() * 1.5).toFixed(2));
+    fine.push(price);
+  }
+  const continuous = marketDna(fine);
+  assert.equal(continuous.phase, 'continuous');
+  assert.ok(continuous.tieHigh < 0.15, `ties ${continuous.tieHigh}`);
+  assert.ok(continuous.strictHigh[0] > continuous.strictHigh[2], 'the ends favour the extreme');
+  // A market with no history explains itself instead of inventing a verdict.
+  const cold = marketDna([1, 2, 3]);
+  assert.equal(cold.windows, 0);
+  assert.match(cold.verdict, /warming up/);
+});
+
+test('entry slip is charged against the estimate, and a bad record can stand a bot down', () => {
+  const clean = priceDecision(trend, 'tick', 5, 0, { entrySlip: 0 });
+  const slipped = priceDecision(trend, 'tick', 5, 0, { entrySlip: 2 });
+  assert.ok(
+    Math.abs(slipped.probability - 0.2) <= Math.abs(clean.probability - 0.2) + 1e-9,
+    `slip must shrink toward the anchor (${slipped.probability} vs ${clean.probability})`
+  );
+
+  // A record whose whole 90 % interval sits under the break-even is not bad
+  // luck, it is a broken estimate: the flag the preset can act on.
+  const doomed = priceDecision(trend, 'tick', 5, 0, { evidence: { hits: 2, samples: 80 } });
+  assert.equal(doomed.standDown, 1);
+  const earned = priceDecision(trend, 'tick', 5, 0, { evidence: { hits: 60, samples: 80 } });
+  assert.equal(earned.standDown, 0);
+  // Below 40 graded decisions nothing is concluded.
+  assert.equal(priceDecision(trend, 'tick', 5, 0, { evidence: { hits: 1, samples: 20 } }).standDown, 0);
+});
+
+test('the expert league is scored against the structural anchor, and the version moved to v5', () => {
+  assert.equal(PRICE_MODEL_VERSION, 5);
+  assert.deepEqual(PRICE_MODEL_NAMES.slice(-1), ['position']);
+  const decision = priceDecision(stepStream(1600, 0.5, 23), 'tick', 5, 0, { maxTie: 0.5 });
+  assert.equal(decision.league.length, PRICE_MODEL_NAMES.length);
+  // Sorted by measured skill, best first, and the anchor is always scored so
+  // "how much better than the prior is this?" always has an answer.
+  for (let i = 1; i < decision.league.length; i += 1) {
+    assert.ok(decision.league[i - 1].skill >= decision.league[i].skill);
+  }
+  assert.ok(Math.abs(decision.league[0].weight - Math.max(...decision.league.map(e => e.weight))) < 1e-12);
+  assert.ok(Number.isFinite(decision.skill) && decision.skill <= 1);
+  // Certainty folds skill and value into confidence; it can never exceed it by
+  // much, and it is always on the same 0-100 scale.
+  assert.ok(decision.certainty >= 0 && decision.certainty <= 100);
+  assert.ok(decision.confidence >= 0 && decision.confidence <= 100);
+});
+
+test('the execution clock turns five ticks into seconds and refuses an impossible fill', () => {
+  // A one-second market with a one-second fill: the contract starts a tick late,
+  // so half the labels are wrong and the bot must know it.
+  const fast = labelFidelity(1, 1);
+  assert.equal(fast.expectedLag, 1);
+  assert.equal(fast.horizon, 5);
+  assert.ok(Math.abs(fast.fidelity - 0.5) < 1e-12, `fidelity ${fast.fidelity}`);
+  // A two-second market with a 0.3 s round trip: the window is still the window.
+  const comfortable = labelFidelity(2, 0.3);
+  assert.ok(comfortable.expectedLag > 0.1 && comfortable.expectedLag < 0.2);
+  assert.ok(comfortable.fidelity > 0.9);
+  assert.equal(comfortable.horizon, 10, 'five ticks on a 2 s market is a ten-second contract');
+  assert.equal(comfortable.concurrent, 5, 'one ticket at a time still means five positions in flight');
+
+  const decision = priceDecision(trend, 'tick', 5, 0, { interval: 2, latency: 0.3 });
+  assert.equal(decision.intervalSeconds, 2);
+  assert.equal(decision.horizonSeconds, 10);
+  assert.ok(decision.stakeable > 0.1 && decision.stakeable < 0.2, `stakeable ${decision.stakeable}`);
+  assert.match(decision.reason, /10s/);
+
+  // A fill that cannot land inside the first tick is a different contract, and
+  // the bot refuses rather than trading a window it did not score.
+  const impossible = priceDecision(trend, 'tick', 5, 0, { interval: 1, latency: 1.2 });
+  assert.equal(impossible.ready, false);
+  assert.match(impossible.reason, /execution/);
+  assert.match(impossible.reason, /window would start late/);
+});
+
+test('the EV ladder prices all ten outcomes and buys the mispriced position', () => {
+  // Probability says "the ends"; the quote says "the middle is underpriced".
+  // Only a per-outcome ladder can tell the difference, and only the ladder can
+  // be the thing a bot trades.
+  const stream = stepStream(1800, 0.5, 41);
+  const payouts = [4, 8, 20, 8, 4, 4, 8, 20, 8, 4];
+  const decision = priceDecision(stream, 'tick', 5, 0, { payouts, maxTie: 0.5 });
+  assert.equal(decision.evTable.length, 10);
+  assert.equal(decision.quoted, 10);
+  decision.evTable.forEach((row, index) => {
+    assert.equal(row.payout, payouts[index]);
+    assert.ok(Math.abs(row.ev - (row.winProbability * (1 + payouts[index]) - 1)) < 1e-12);
+    assert.ok(row.fairPayout > 0);
+  });
+  // The ladder is sorted by expected value, not by probability.
+  for (let i = 1; i < decision.ladderRows.length; i += 1) {
+    const previous = decision.ladderRows[i - 1].ev;
+    const current = decision.ladderRows[i].ev;
+    assert.ok(!Number.isFinite(current) || !Number.isFinite(previous) || previous >= current);
+  }
+  // The chosen outcome is the ladder's head: the biggest expected value in the
+  // table, which is a rarer position than the likeliest one — the trade the
+  // probability ranking would never have found.
+  const bestEv = Math.max(...decision.evTable.map(row => row.ev));
+  assert.ok(Math.abs(decision.ev - bestEv) < 1e-12, `chose EV ${decision.ev}, table head ${bestEv}`);
+  const chosen = decision.evTable.find(row => row.side === decision.side && row.tick === decision.tick);
+  const mostLikely = decision.evTable.reduce((best, row) =>
+    row.probability > best.probability ? row : best, decision.evTable[0]);
+  assert.ok(chosen.probability <= mostLikely.probability, 'it bought rarity, not likelihood');
+  assert.ok(chosen.payout > 4, 'the chosen position pays more than the near-fair ends do');
+
+  // With nothing quoted the engine falls back to ranking by probability, which
+  // is the only sane read before quotes arrive.
+  const unquoted = priceDecision(stream, 'tick', 5, 0, { maxTie: 0.5 });
+  assert.equal(unquoted.quoted, 0);
+  assert.ok(unquoted.tick === 1 || unquoted.tick === 5, `fallback picked tick ${unquoted.tick}`);
+});
+
+test('the minimum-EV gate names the quote it refused', () => {
+  const refused = priceDecision(trend, 'tick', 5, 0, { payouts: new Array(10).fill(2), minEv: 2.5 });
+  assert.equal(refused.ready, false);
+  assert.match(refused.reason, /no value/);
+  assert.match(refused.reason, /quote 2\.00x|fair/);
+  // The same decision clears a floor it can actually reach.
+  assert.equal(priceDecision(trend, 'tick', 5, 0, { payouts: new Array(10).fill(2), minEv: 0 }).ready, true);
+});
+
+test('the market DNA reports sampling bands and the fair multiple of every position', () => {
+  const dna = marketDna(stepStream(1800, 0.5, 43));
+  assert.equal(dna.phase, 'grid');
+  assert.ok(dna.tieHigh > 0.2, `grid-walk ties ${dna.tieHigh}`);
+  assert.ok(dna.tieBandHigh.high > dna.tieBandHigh.low, 'the tie rate has an interval');
+  assert.ok(dna.tieBandHigh.low > 0.1 && dna.tieBandHigh.high < 0.5, 'but it is a tight one');
+  assert.equal(dna.fairPayoutHigh.length, 5);
+  assert.ok(dna.fairPayoutHigh.every(value => value > 0));
+  // The middle position is the rarest on a grid walk, so it needs the biggest
+  // fair multiple; that is the number a quote has to beat.
+  assert.ok(dna.fairPayoutHigh[2] > dna.fairPayoutHigh[0]);
+  assert.ok(dna.fairPayoutHigh[2] > dna.fairPayoutHigh[1]);
+});
+
+test('the runtime wires the clock, the ladder and the v5 report fields', async () => {
+  const read = path =>
+    readFile(
+      new URL(`../../../vendor/deriv-bot/src/external/bot-skeleton/${path}`, import.meta.url),
+      'utf8'
+    );
+  const iface = await read('services/tradeEngine/Interface/VisionInterface.js');
+  const blocks = await read('scratch/blocks/Vision Lab/price-strategies.js');
+  const toolbox = await readFile(new URL('../src/../', import.meta.url), 'utf8').catch(() => '');
+  void toolbox;
+
+  // The clock is measured, not assumed, and reaches the engine.
+  assert.match(iface, /const tickClock = \(\) =>/);
+  assert.match(iface, /interval: clock\.interval/);
+  assert.match(iface, /latency: clock\.latency/);
+  assert.match(iface, /priceClock: async \(\) =>/);
+  assert.match(iface, /labelFidelity/);
+  // The ladder and the per-contract reads the EV scan decides on.
+  assert.match(iface, /pricePayoutTable/);
+  assert.match(iface, /priceContractEv: async/);
+  assert.match(iface, /priceContractFair: async/);
+  assert.match(iface, /plan\??\.evTable/);
+  // Every new decision slot has a name the blocks can ask for.
+  for (const part of ['interval', 'horizon-seconds', 'slip', 'fidelity', 'stakeable', 'quoted', 'ev-lower']) {
+    assert.match(iface, new RegExp(`['"]?${part}['"]?: (2[89]|3[0-9])`), `${part} has a slot`);
+    assert.match(blocks, new RegExp(`'${part}'`), `${part} is in the dropdown`);
+  }
+  // The blocks exist and call the interface by name.
+  for (const [name, call] of [
+    ['x_price_clock', 'Bot.priceClock()'],
+    ['x_price_contract_ev', 'Bot.priceContractEv('],
+    ['x_price_contract_fair', 'Bot.priceContractFair('],
+  ]) {
+    assert.match(blocks, new RegExp(`type: '${name}'`), name);
+    assert.match(blocks, new RegExp(call.replace(/[().]/g, '\\$&')), `${name} calls ${call}`);
+  }
+  // And they are reachable from the toolbox, or nobody could use them.
+  const items = await readFile(
+    new URL('../../../vendor/deriv-bot/src/pages/bot-builder/toolbox/toolbox-items.tsx', import.meta.url),
+    'utf8'
+  );
+  for (const name of [
+    'x_price_dna',
+    'x_price_dna_part',
+    'x_price_payout_table',
+    'x_price_league',
+    'x_price_audit',
+    'x_price_market_score',
+    'x_price_auto_market',
+    'x_price_clock',
+    'x_price_contract_ev',
+    'x_price_contract_fair',
+  ]) {
+    assert.ok(items.includes(`type='${name}'`), `${name} is in the toolbox`);
+  }
+  assert.match(items, /<Value name='MIN_EV'>/, 'the EV floor is editable from the toolbox');
+  assert.match(items, /<Value name='SLIP'>/, 'the entry slip is editable from the toolbox');
+});
+
+test('the record is calibrated against what the rule claimed, not against the payout', () => {
+  // The same realised rate means different things depending on what was
+  // published. 60 % over 100 decisions is honest if the bot claimed 60 %, and
+  // wishful if it claimed 80 %.
+  const honest = priceDecision(trend, 'tick', 5, 0, { evidence: { hits: 60, samples: 100, rate: 0.6, mean: 0.6 } });
+  const wishful = priceDecision(trend, 'tick', 5, 0, { evidence: { hits: 60, samples: 100, rate: 0.6, mean: 0.8 } });
+  assert.ok(Math.abs(honest.calibration - 1) < 1e-9, `honest calibration ${honest.calibration}`);
+  assert.ok(wishful.calibration < 1, `an over-confident record must shrink the estimate (${wishful.calibration})`);
+  // And it is applied to the estimate, not just reported.
+  assert.ok(wishful.probability <= honest.probability);
+  // Without a mean prediction the break-even comparison is still the fallback,
+  // so older callers keep the behaviour they had.
+  const legacy = priceDecision(trend, 'tick', 5, 0, { evidence: { hits: 20, samples: 100, rate: 0.2 } });
+  assert.ok(legacy.calibration >= 0.35 && legacy.calibration <= 1.25);
+});
+
+test('the EV gate is a lower bound, not the best of ten noisy bets', () => {
+  // Ten quotes, ten probabilities, one argmax: the winner is biased upward by
+  // roughly its own noise. The gate therefore compares a one-sigma floor with
+  // the minimum EV, and `evZ: 0` restores the naive comparison so the
+  // difference between the two is exactly the correction.
+  const stream = stepStream(2000, 0.5, 51);
+  const fair = [4.33, 7.0, 15.0, 7.0, 4.33];
+  const payouts = [...fair, ...fair];
+  const naive = priceDecision(stream, 'tick', 5, 0, { payouts, minEv: 0.15, maxTie: 0.5, evZ: 0 });
+  const cautious = priceDecision(stream, 'tick', 5, 0, { payouts, minEv: 0.15, maxTie: 0.5, evZ: 1 });
+  assert.ok(naive.ev >= 0.15, `the point estimate clears the floor (${naive.ev})`);
+  assert.equal(naive.ready, true, 'a naive gate would take this quote');
+  assert.ok(cautious.evLower < 0.15, `the floor does not (${cautious.evLower})`);
+  assert.equal(cautious.ready, false, 'the corrected gate refuses it');
+  assert.match(cautious.reason, /no value/);
+  assert.match(cautious.reason, /one-sigma floor/);
+  // evLower is the EV minus evZ standard errors, and the table carries both.
+  assert.ok(Math.abs(cautious.ev - cautious.evLower - cautious.seEv) < 1e-12);
+  assert.equal(cautious.evLower, cautious.evTable.find(row => row.side === cautious.side && row.tick === cautious.tick).evLower);
+  // The exchange minimum stake is a floor, never a target: a deflated EV of
+  // zero is not stakeable even when the point estimate is positive.
+  assert.ok(cautious.evTable.some(row => row.ev > 0 && row.stakeable === false));
+});

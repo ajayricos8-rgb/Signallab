@@ -1047,8 +1047,31 @@ export const ToolboxItems = () =>
                                 <Field name='NUM'>0</Field>
                             </Shadow>
                         </Value>
+                        <Value name='MIN_EV'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='SLIP'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
                     </Block>
                     <Block type='x_price_decision_part' />
+                    {/* v5: the market's measured structure, the live ten-outcome
+                        ladder it is priced against, the expert league, the
+                        self-audit and the market scout. */}
+                    <Block type='x_price_dna' />
+                    <Block type='x_price_dna_part' />
+                    <Block type='x_price_payout_table' />
+                    <Block type='x_price_league' />
+                    <Block type='x_price_audit' />
+                    <Block type='x_price_market_score' />
+                    <Block type='x_price_auto_market' />
+                    <Block type='x_price_clock' />
+                    <Block type='x_price_contract_ev' />
+                    <Block type='x_price_contract_fair' />
                     <Block type='x_price_reason' />
                     <Block type='x_price_calibration' />
                     <Block type='x_price_layout' />

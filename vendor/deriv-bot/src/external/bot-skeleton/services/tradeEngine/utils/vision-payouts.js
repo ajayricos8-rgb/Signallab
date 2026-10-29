@@ -265,4 +265,216 @@ export function payoutSnapshot(options) {
     return { live: table.live, complete: table.complete, ageSeconds: (Date.now() - table.at) / 1000, table };
 }
 
-export default { ensurePayouts, refreshPayouts, peekPayouts, payoutSnapshot, PayoutTable };
+export default {
+    ensurePayouts,
+    refreshPayouts,
+    peekPayouts,
+    payoutSnapshot,
+    PayoutTable,
+    refreshTickPayouts,
+    peekTickPayouts,
+    tickPayoutSnapshot,
+    TickPayoutTable,
+};
+
+/* ------------------------------------------------------------------------- *
+ * High/Low Tick pay-out table — ten quotes, one per (side, selected_tick).
+ *
+ * The digit table above prices ten barriers per direction, so the machinery is
+ * the same; what differs is that a High/Low Tick contract is quoted *per
+ * `selected_tick`*. Deriv's pricing engine prices "the strict high prints at
+ * tick k" as its own contract, and those ten quotes are not equal: the ends of
+ * the window are likelier and pay less, the middle pays more, and a tie-heavy
+ * market (a Step index) shifts the whole ladder. Reading one quote and applying
+ * it to all ten positions — which is what the first version did — misprices
+ * every position but the one it happened to read.
+ *
+ * The table is cached per symbol/currency/amount and refreshed in the
+ * background on a short cadence (tick pay-outs move with volatility, unlike the
+ * digit ladder). The running bot never waits on it: a decision prices with the
+ * table it has, and the fresh one lands when it lands.
+ * ------------------------------------------------------------------------- */
+
+const TICK_STORAGE_KEY = 'signal-lab.vision-tick-payouts.v1';
+const TICK_REFRESH_MS = 90 * 1000;
+const TICK_RETRY_MS = 20 * 1000;
+
+const tickCache = new Map();
+const tickInflight = new Map();
+const tickAttempts = new Map();
+let tickStored = readTickStored();
+
+function readTickStored() {
+    try {
+        const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(TICK_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeTickStored() {
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            localStorage.setItem(TICK_STORAGE_KEY, JSON.stringify(tickStored));
+        }
+    } catch {
+        // Storage failures are not worth stopping a trade for.
+    }
+}
+
+const tickKeyOf = ({ symbol, currency }) => `${symbol || ''}|${currency || ''}`;
+
+export class TickPayoutTable {
+    constructor(key) {
+        this.key = key;
+        this.high = new Array(5).fill(0);
+        this.low = new Array(5).fill(0);
+        this.at = 0;
+        this.live = false;
+    }
+
+    set(side, tick, multiple) {
+        const index = Math.max(0, Math.min(4, Math.round(tick) - 1));
+        if (!(multiple > 0)) return;
+        if (side === 'high') this.high[index] = multiple;
+        else this.low[index] = multiple;
+    }
+
+    has(side, tick) {
+        const index = Math.max(0, Math.min(4, Math.round(tick) - 1));
+        return Boolean((side === 'high' ? this.high : this.low)[index]);
+    }
+
+    /** Every one of the ten outcomes has a live quote. */
+    get complete() {
+        return [...this.high, ...this.low].every(value => value > 0);
+    }
+
+    /** Quote for one outcome, or 0 when this market has not priced it. */
+    get(side, tick) {
+        const index = Math.max(0, Math.min(4, Math.round(tick) - 1));
+        return (side === 'high' ? this.high : this.low)[index] || 0;
+    }
+
+    /** The ten multiples in decision order: [H1..H5, L1..L5]. */
+    get vector() {
+        return [...this.high, ...this.low];
+    }
+
+    toJSON() {
+        return { key: this.key, high: this.high, low: this.low, live: this.live, at: this.at || Date.now() };
+    }
+
+    static fromJSON(data) {
+        const table = new TickPayoutTable(data?.key);
+        if (Array.isArray(data?.high)) table.high = data.high.slice(0, 5);
+        if (Array.isArray(data?.low)) table.low = data.low.slice(0, 5);
+        table.live = Boolean(data?.live);
+        table.at = Number(data?.at) || Date.now();
+        return table;
+    }
+}
+
+async function fetchTickTable(key, options) {
+    const { symbol, currency, amount } = options;
+    const table = tickCache.get(key) || TickPayoutTable.fromJSON({ ...(tickStored[key] || {}), key });
+    const fresh = table.at && Date.now() - table.at < TICK_REFRESH_MS;
+    const jobs = [];
+    for (let tick = 1; tick <= 5; tick++) {
+        for (const side of ['high', 'low']) {
+            if (table.has(side, tick) && fresh) continue;
+            jobs.push({ side, tick });
+        }
+    }
+    if (!jobs.length) {
+        table.live = table.complete;
+        return table;
+    }
+
+    let sawLive = false;
+    for (let i = 0; i < jobs.length; i += BATCH_SIZE) {
+        const batch = jobs.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+            batch.map(async ({ side, tick }) => {
+                try {
+                    const response = await sendProposal({
+                        proposal: 1,
+                        amount: Number(amount) > 0 ? Number(amount) : 1,
+                        basis: 'stake',
+                        contract_type: side === 'high' ? 'TICKHIGH' : 'TICKLOW',
+                        currency: currency || 'USD',
+                        duration: 5,
+                        duration_unit: 't',
+                        selected_tick: tick,
+                        underlying_symbol: symbol,
+                    });
+                    const proposal = response?.proposal;
+                    const payout = Number(proposal?.payout);
+                    const stake = Number(proposal?.ask_price) || Number(amount) || 1;
+                    if (payout > 0 && stake > 0) {
+                        table.set(side, tick, payout / stake - 1);
+                        sawLive = true;
+                    }
+                } catch {
+                    // A single failed slot keeps its previous (or no) value.
+                }
+            })
+        );
+        if (i + BATCH_SIZE < jobs.length) await sleep(BATCH_GAP_MS);
+    }
+
+    if (sawLive) {
+        table.live = true;
+        table.at = Date.now();
+        tickCache.set(key, table);
+        tickStored[key] = table.toJSON();
+        writeTickStored();
+    }
+    return table;
+}
+
+/** Refresh the ten High/Low Tick quotes in the background; never blocks. */
+export function refreshTickPayouts(options) {
+    const key = tickKeyOf(options);
+    if (tickInflight.has(key)) return tickInflight.get(key);
+    const promise = fetchTickTable(key, options)
+        .catch(() => tickCache.get(key) || null)
+        .then(table => {
+            tickInflight.delete(key);
+            return table;
+        });
+    tickInflight.set(key, promise);
+    return promise;
+}
+
+/**
+ * The tick table as it stands, without waiting for the network.
+ *
+ * A missing or stale table triggers a background refresh and returns whatever
+ * is cached (or null on a cold start, in which case the decision falls back to
+ * the strategy's own payout figure and ranks by probability).
+ */
+export function peekTickPayouts(options) {
+    const key = tickKeyOf(options);
+    const table = tickCache.get(key) || (tickStored[key] ? TickPayoutTable.fromJSON(tickStored[key]) : null);
+    if (table) tickCache.set(key, table);
+    const stale = !table || !table.complete || Date.now() - table.at > TICK_REFRESH_MS;
+    const budgetSpent = Date.now() - (tickAttempts.get(key) || 0) < TICK_RETRY_MS;
+    if (stale && !budgetSpent) {
+        tickAttempts.set(key, Date.now());
+        refreshTickPayouts(options);
+    }
+    return table;
+}
+
+export function tickPayoutSnapshot(options) {
+    const table = tickCache.get(tickKeyOf(options));
+    if (!table) return null;
+    return {
+        live: table.live,
+        complete: table.complete,
+        ageSeconds: table.at ? (Date.now() - table.at) / 1000 : Infinity,
+        table,
+    };
+}

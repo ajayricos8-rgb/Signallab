@@ -19,7 +19,7 @@ import { localize } from '@deriv-com/translations';
 import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
-import { priceDecision } from '../utils/price-strategies.mjs';
+import { DEFAULT_LATENCY, labelFidelity, marketDna, priceDecision } from '../utils/price-strategies.mjs';
 import { adaptiveStake, priceRiskAllowed, resolvePriceContext } from '../utils/price-risk.mjs';
 import * as memory from '../utils/vision-memory.mjs';
 import {
@@ -33,7 +33,15 @@ import {
     waitingReason,
 } from '../utils/vision-entry.mjs';
 import { createMarketPicker, scoreMarket, VOLATILITY_MARKETS } from '../utils/vision-markets.mjs';
-import { ensurePayouts, peekPayouts, payoutSnapshot, refreshPayouts } from '../utils/vision-payouts.js';
+import {
+    ensurePayouts,
+    peekPayouts,
+    peekTickPayouts,
+    payoutSnapshot,
+    refreshPayouts,
+    refreshTickPayouts,
+    tickPayoutSnapshot,
+} from '../utils/vision-payouts.js';
 
 const PLAN_REUSE_MS = 15_000;
 const DEFAULT_HORIZON = 5;
@@ -82,6 +90,14 @@ const forecastLedger = new Map();
 /** Last measured ticks-per-minute, per market. */
 const measuredTickRate = new Map();
 /**
+ * Measured round trip of the tick service, per market — the best available
+ * stand-in for "how long after the model looked does the order land". It is
+ * the API leg of the latency; the engine's own bookkeeping is added on top.
+ * Nothing here guesses at the market: if it has never been measured the symbol
+ * class default is used, and the decision says so.
+ */
+const measuredLatency = new Map();
+/**
  * One pacer for the whole session: however many strategies and blocks read it,
  * the bot never opens contracts faster than this. Two seconds is the shipped
  * default — "as often as possible" still has to mean "one position at a time".
@@ -101,6 +117,20 @@ const round = (value, digits = 4) => {
 };
 
 const clamp = (value, low, high) => Math.min(Math.max(num(value), low), high);
+
+/**
+ * Seconds per tick from the symbol name, as a fallback only.
+ *
+ * Deriv's 1-second indices print a tick every second and the continuous
+ * indices every two; a market whose rate has been measured is never described
+ * by this table. It exists so the execution clock is populated on the very
+ * first read instead of waiting for `mMeasureSpeed` to be called.
+ */
+const TICK_SECONDS = symbol => {
+    const name = String(symbol || '').toUpperCase();
+    if (name.startsWith('1HZ')) return 1;
+    return 2;
+};
 
 const getVisionInterface = tradeEngine => {
     const symbolOf = () => tradeEngine?.options?.symbol || tradeEngine?.symbol || 'default';
@@ -131,13 +161,72 @@ const getVisionInterface = tradeEngine => {
         };
     };
 
+    /**
+     * The ten High/Low Tick quotes for this market, in decision order
+     * ([H1..H5, L1..L5]), or null before Deriv has quoted them.
+     */
+    const tickPayouts = () => {
+        const table = peekTickPayouts({ symbol: symbolOf(), currency: tradeOptions().currency || 'USD' });
+        if (!table) return null;
+        const vector = table.vector;
+        return vector.some(value => value > 0) ? vector : null;
+    };
+
+    /**
+     * A 0–100 read on how worth trading a High/Low Tick market is: measured
+     * expected value, the engine's own certainty, the DNA readability and the
+     * sample behind the decision. Used by the market scout — it ranks markets,
+     * it does not promise profit.
+     */
+    const scoreTickMarket = (plan, dna) => {
+        if (!plan) return 0;
+        const ev = Number.isFinite(plan.ev) ? clamp(plan.ev, -0.2, 0.2) : 0;
+        const evScore = clamp((ev + 0.05) / 0.15, 0, 1);
+        const certainty = clamp(num(plan.certainty, 0) / 100, 0, 1);
+        const readability = clamp(num(dna?.readability, 0) / 100, 0, 1);
+        const sample = clamp(num(plan.samples, 0) / 600, 0, 1);
+        return Math.round(100 * (0.4 * evScore + 0.25 * certainty + 0.2 * readability + 0.15 * sample) * 10) / 10;
+    };
+
+    /** The DNA of the market as it stands, reusing the decision's own report. */
+    const priceDnaOf = async () => {
+        const cached = lastPrice.get(symbolOf())?.dna;
+        if (cached) return cached;
+        return marketDna(await readTicks(), { horizon: 5 });
+    };
+
     const readTicks = async () => {
+        const started = Date.now();
         try {
             const ticks = await tradeEngine.getTicks();
             return math.toNumbers(ticks);
         } catch {
             return [];
+        } finally {
+            // A round trip that timed out is not evidence of a slow market, but
+            // it is evidence of a slow path: keep the slower of the two so the
+            // clock errs on the side of the bot being late.
+            const elapsed = (Date.now() - started) / 1000;
+            const symbol = symbolOf();
+            if (elapsed > 0 && elapsed < 30) {
+                const previous = measuredLatency.get(symbol);
+                measuredLatency.set(symbol, previous ? previous * 0.7 + elapsed * 0.3 : elapsed);
+            }
         }
+    };
+
+    /**
+     * The execution clock for this market: seconds per tick (measured if the
+     * session has measured it, otherwise the symbol class), the look-to-fill
+     * latency, and therefore whether a five-tick contract can honestly be
+     * aligned to the window the model scored.
+     */
+    const tickClock = () => {
+        const symbol = symbolOf();
+        const rate = num(measuredTickRate.get(symbol), 0);
+        const interval = rate > 0 ? clamp(60 / rate, 0.2, 60) : TICK_SECONDS(symbol);
+        const latency = Math.max(DEFAULT_LATENCY, num(measuredLatency.get(symbol), 0) + 0.05);
+        return { symbol, interval: round(interval, 3), latency: round(latency, 3), ...labelFidelity(interval, latency) };
     };
 
     /**
@@ -175,20 +264,39 @@ const getVisionInterface = tradeEngine => {
     const gradePriceForecasts = (symbol, list) => {
         const prices = math.toNumbers(list);
         const ledger = priceLedger.get(symbol) || [];
-        const calibration = priceCalibration.get(symbol) || { hits: 0, samples: 0 };
+        const calibration = priceCalibration.get(symbol) || { hits: 0, samples: 0, predicted: 0 };
         const pending = [];
         ledger.forEach(entry => {
             const entryIndex = entry.index + 1;
-            const exitIndex = entryIndex + entry.horizon;
+            // A High/Low Tick contract settles on the five quotes after the
+            // decision; a directional one on the quote `horizon` ticks later.
+            const exitIndex = entry.mode === 'tick' ? entryIndex + 4 : entryIndex + entry.horizon;
             if (exitIndex >= prices.length) {
                 pending.push(entry);
                 return;
             }
             if (prices[entry.index] !== entry.lastQuote) return; // history shifted: drop
-            const change = prices[exitIndex] - prices[entryIndex];
-            if (change === 0) return; // a tie is neither a hit nor evidence of skill
+            let win = false;
+            if (entry.mode === 'tick') {
+                const window = prices.slice(entryIndex, entryIndex + 5);
+                if (window.length < 5) {
+                    pending.push(entry);
+                    return;
+                }
+                const target = window[clamp(Math.round(num(entry.tick, 1)), 1, 5) - 1];
+                const extreme = entry.side > 0 ? Math.max(...window) : Math.min(...window);
+                // A shared extreme is not a win: the contract loses, and the
+                // record has to say so or the calibration is flattered.
+                win = target === extreme && window.filter(value => value === extreme).length === 1;
+            } else {
+                const change = prices[exitIndex] - prices[entryIndex];
+                // Equality settles as a loss on both sides, so a tie is graded,
+                // not dropped.
+                win = entry.side > 0 ? change > 0 : change < 0;
+            }
             calibration.samples += 1;
-            if (entry.side > 0 ? change > 0 : change < 0) calibration.hits += 1;
+            calibration.predicted += Math.max(0, Math.min(1, num(entry.winProbability, 0)));
+            if (win) calibration.hits += 1;
         });
         priceLedger.set(symbol, pending.slice(-64));
         priceCalibration.set(symbol, calibration);
@@ -196,6 +304,10 @@ const getVisionInterface = tradeEngine => {
             hits: calibration.hits,
             samples: calibration.samples,
             rate: calibration.samples ? calibration.hits / calibration.samples : 0,
+            // Mean predicted win probability of the graded decisions: the
+            // denominator that turns the record into a reliability ratio
+            // (realised / predicted) instead of a comparison with break-even.
+            mean: calibration.samples ? calibration.predicted / calibration.samples : 0,
         };
     };
 
@@ -211,6 +323,11 @@ const getVisionInterface = tradeEngine => {
                 lastQuote: prices[prices.length - 1],
                 horizon: Math.max(1, Math.round(num(horizon, DEFAULT_HORIZON))),
                 side: result.side,
+                // What settles this decision, and what it claimed, so the record
+                // can be graded on the contract rather than on a direction.
+                mode: result.mode === 'tick' ? 'tick' : 'directional',
+                tick: Math.max(0, Math.min(5, Math.round(num(result.tick, 0)))),
+                winProbability: num(result.winProbability, 0),
             });
             priceLedger.set(symbol, ledger.slice(-64));
         } catch {
@@ -218,7 +335,14 @@ const getVisionInterface = tradeEngine => {
         }
     };
 
-    const calibrationOf = symbol => priceCalibration.get(symbol) || { hits: 0, samples: 0 };
+    const calibrationOf = symbol => {
+        const calibration = priceCalibration.get(symbol) || { hits: 0, samples: 0, predicted: 0 };
+        return {
+            ...calibration,
+            rate: calibration.samples ? calibration.hits / calibration.samples : 0,
+            mean: calibration.samples ? num(calibration.predicted, 0) / calibration.samples : 0,
+        };
+    };
 
     const signatureOf = ticks => `${ticks.length}:${ticks.length ? ticks[ticks.length - 1] : 0}`;
 
@@ -445,6 +569,7 @@ const getVisionInterface = tradeEngine => {
         planCache.delete(symbol);
         picker.markSwitched();
         ensurePayouts(payoutOptions()); // price the new market in the background
+        refreshTickPayouts({ symbol, currency: tradeOptions().currency || 'USD' });
         return symbol;
     };
 
@@ -876,7 +1001,7 @@ const getVisionInterface = tradeEngine => {
          * with `priceDecisionPart`; the first four slots are unchanged so old
          * strategies keep working.
          */
-        priceDecision: async (list, mode, horizon, threshold, maxTie, minAgreement, minEdge, payout, minConfidence, require) => {
+        priceDecision: async (list, mode, horizon, threshold, maxTie, minAgreement, minEdge, payout, minConfidence, require, minEv, slip) => {
             const symbol = symbolOf();
             const options = tradeOptions();
             const context = resolvePriceContext(mode, horizon, options, tradeEngine.options);
@@ -892,6 +1017,21 @@ const getVisionInterface = tradeEngine => {
             const quoted = quotedPayout(priced);
             const assumed = num(payout, DEFAULT_PRICE_PAYOUT);
             const effectivePayout = quoted > 0 ? quoted : assumed;
+            /**
+             * The ten-outcome pay-out ladder, when Deriv has quoted it.
+             *
+             * A single payout number prices the tick shown in Trade options and
+             * nothing else, so a decision on tick 3 was being compared with the
+             * tick-1 quote. When the ladder is known the engine ranks the ten
+             * outcomes by expected value instead of by probability, which is
+             * the only way a mispriced position can be found at all.
+             */
+            const ladder = mode === 'tick' ? tickPayouts() : null;
+            // The execution clock, measured from this session's own tick service
+            // and this market's own rate. It is what turns "five ticks" into a
+            // duration a human can picture, and what stops the bot buying a
+            // window it cannot be filled inside of.
+            const clock = tickClock();
             const result = priceDecision(list, mode === 'tick' ? 'tick' : 'rise', context.horizon, threshold, {
                 maxTie: num(maxTie, 0.2),
                 minAgreement: num(minAgreement, 0),
@@ -901,16 +1041,30 @@ const getVisionInterface = tradeEngine => {
                 // side every readable tick, sized down when the read is thin.
                 requireEdge: String(require) !== 'always',
                 payout: effectivePayout,
+                payouts: ladder || undefined,
+                minEv: num(minEv, 0),
+                // The contract's five ticks start when Deriv processes the buy,
+                // not when the model looked: charge one tick of slip by default.
+                entrySlip: num(slip, 1),
                 // The rule's own graded record, measured on the decisions it
                 // published. This is the one input that is evidence rather
                 // than inference.
                 evidence: calibration,
+                interval: clock.interval,
+                latency: clock.latency,
             });
             // File before the evidence veto is applied: a bot that stopped
             // publishing would also stop grading, and then it could never
             // demonstrate that the estimates had recovered.
-            filePriceForecast(symbol, list, { ...result, ready: result.modelReady }, context.horizon);
-            lastPrice.set(symbol, { ...result, mode, payout: effectivePayout, payoutLive: quoted > 0 });
+            filePriceForecast(symbol, list, { ...result, mode, ready: result.modelReady }, context.horizon);
+            lastPrice.set(symbol, {
+                ...result,
+                mode,
+                payout: effectivePayout,
+                payoutLive: quoted > 0,
+                ladder,
+                dna: mode === 'tick' ? marketDna(list, { horizon: 5 }) : null,
+            });
             return [
                 result.ready ? 1 : 0,
                 result.side,
@@ -936,6 +1090,34 @@ const getVisionInterface = tradeEngine => {
                 // right".
                 Number.isFinite(result.hitRate) ? result.hitRate : 0,
                 num(result.calibration, 1),
+                // 20..26: the v5 layer — what the chosen contract is quoted at,
+                // what it should be quoted at, the tie forecast behind the win
+                // probability, the DNA readability of the market, the blend's
+                // walk-forward skill, whether the rule's own record says stand
+                // down, and how certain the whole thing is.
+                num(result.payoutAt, 0),
+                num(result.fairPayout, 0),
+                num(result.evMargin, 0),
+                num(result.tieForecast, 0),
+                num(result.dnaScore, 0),
+                num(result.skill, 0),
+                num(result.standDown, 0),
+                num(result.certainty, 0),
+                // 28..33: the execution clock. A five-tick contract on a 2 s market
+                // lasts ten seconds, the fill can land a fraction of a tick after
+                // the quote the model scored, and one buy therefore covers a fifth
+                // of the cycle — which is why a High/Low Tick bot always has five
+                // positions in flight, not one.
+                num(result.intervalSeconds, clock.interval),
+                num(result.horizonSeconds, clock.horizon),
+                num(result.expectedLag, clock.expectedLag),
+                num(result.labelFidelity, clock.fidelity),
+                num(result.stakeable, 1),
+                num(result.quoted, 0),
+                // 34: the one-sigma floor the EV gate actually compares with
+                // `ai min ev`. A strategy that prints it is printing the number
+                // that stopped it, not the optimistic one that tempted it.
+                Number.isFinite(result.evLower) ? num(result.evLower, 0) : 0,
             ];
         },
         priceDecisionPart: async (plan, part) => {
@@ -960,6 +1142,21 @@ const getVisionInterface = tradeEngine => {
                 'outcome-agreement': 17,
                 record: 18,
                 evidence: 19,
+                quote: 20,
+                'fair-quote': 21,
+                'ev-margin': 22,
+                'tie-forecast': 23,
+                'dna-score': 24,
+                skill: 25,
+                'stand-down': 26,
+                certainty: 27,
+                interval: 28,
+                'horizon-seconds': 29,
+                slip: 30,
+                fidelity: 31,
+                stakeable: 32,
+                quoted: 33,
+                'ev-lower': 34,
             }[part];
             return Array.isArray(plan) && index !== undefined ? num(plan[index], 0) : 0;
         },
@@ -1052,6 +1249,202 @@ const getVisionInterface = tradeEngine => {
                 minStake: 0.35,
             });
         },
+        /**
+         * MARKET DNA — the market's measured structure, as one journal line.
+         *
+         * This is the reverse-engineering layer: tie rates, the grid ratio (how
+         * many quote increments a typical tick moves), drift significance,
+         * persistence, the chi-square displacement from the fair prior and a
+         * 0–100 readability score. It describes; it does not predict.
+         */
+        priceDna: async () => {
+            const dna = await priceDnaOf();
+            if (!dna || !dna.windows) return String(dna?.verdict || 'no DNA yet — waiting for ticks');
+            return `${dna.summary} · ${dna.verdict}`;
+        },
+        /** One measured field of the DNA report, for a strategy's own gate. */
+        priceDnaPart: async part => {
+            const dna = await priceDnaOf();
+            if (!dna) return 0;
+            const ends = (dna.strictHigh?.[0] || 0) + (dna.strictHigh?.[4] || 0);
+            const middle = dna.strictHigh?.[2] || 0;
+            const map = {
+                score: dna.readability,
+                tie: ((dna.tieHigh || 0) + (dna.tieLow || 0)) / 2,
+                'tie-high': dna.tieHigh,
+                'tie-low': dna.tieLow,
+                grid: dna.gridRatio,
+                drift: dna.driftZ,
+                rho: dna.rho,
+                chi: dna.chi,
+                windows: dna.windows,
+                expansion: dna.expansion,
+                ends,
+                middle,
+                'end-ratio': middle > 0 ? ends / 2 / middle : 0,
+                'tie-high-band': dna.tieBandHigh ? dna.tieBandHigh.high - dna.tieBandHigh.low : 0,
+                'tie-low-band': dna.tieBandLow ? dna.tieBandLow.high - dna.tieBandLow.low : 0,
+                'fair-end': dna.strictHigh?.[0] > 0 ? (1 - dna.strictHigh[0]) / dna.strictHigh[0] : 0,
+                'fair-middle': middle > 0 ? (1 - middle) / middle : 0,
+                // A categorical field, exposed as a number so a strategy can gate
+                // on it without a string comparison: 0 grid, 1 mixed, 2
+                // continuous, -1 not measured yet.
+                phase: dna.phase === 'grid' ? 0 : dna.phase === 'mixed' ? 1 : dna.phase === 'continuous' ? 2 : -1,
+            };
+            return typeof map[part] === 'string' ? map[part] : round(num(map[part], 0), 4);
+        },
+        /**
+         * THE EXECUTION CLOCK, as one line.
+         *
+         * Five ticks is not a duration until you know the market's tick rate.
+         * This prints the rate, the resulting contract length, the measured
+         * look-to-fill slip in ticks, the fidelity of the labels that slip
+         * allows, and how many positions are in flight if the bot keeps one
+         * ticket at a time. It is the difference between "five ticks" and
+         * "ten seconds, one fifth of the cycle per contract".
+         */
+        priceClock: async () => {
+            const clock = tickClock();
+            const plan = lastPrice.get(symbolOf());
+            const horizon = num(plan?.horizonSeconds, clock.horizon);
+            return [
+                `${clock.symbol}`,
+                `${clock.interval.toFixed(clock.interval < 1 ? 2 : 0)}s/tick`,
+                `contract ${horizon ? `${horizon.toFixed(0)}s` : 'unknown'}`,
+                `slip ${clock.expectedLag.toFixed(2)}t`,
+                `label fidelity ${(clock.fidelity * 100).toFixed(0)}%`,
+                `${clock.concurrent} positions in flight`,
+                `one buy covers ${(clock.stakeable * 100).toFixed(0)}% of the cycle`,
+            ].join(' · ');
+        },
+        /** The expert leaderboard: measured skill against the structural anchor. */
+        priceLeague: async () => {
+            const plan = lastPrice.get(symbolOf());
+            if (!plan?.league?.length) return 'no league yet — no decision has been scored';
+            return plan.league
+                .slice(0, 6)
+                .map(
+                    (expert, index) =>
+                        `${index + 1}. ${expert.name} skill ${(num(expert.skill, 0) * 100).toFixed(0)} ` +
+                        `(w ${Math.round(num(expert.weight, 0) * 100)}%, brier ${num(expert.brier, 0).toFixed(3)})`
+                )
+                .join(' · ');
+        },
+        /**
+         * SELF-AUDIT — the bot holding itself to its own numbers.
+         *
+         * Walk-forward skill of the blend, the calibration it applied to the
+         * estimate, the graded record against the break-even it was paid, the
+         * tie forecast against the long-run tie rate, and whether the record
+         * warrants standing down. Every figure here is measured, not modelled.
+         */
+        priceAudit: async () => {
+            const plan = lastPrice.get(symbolOf());
+            if (!plan) return 'no decision yet';
+            const breakEven = num(plan.breakEven, 0.2);
+            const graded = num(plan.hitSamples, 0);
+            const rate = Number.isFinite(plan.hitRate) ? num(plan.hitRate, 0) : NaN;
+            const record = Number.isFinite(rate) && graded
+                ? `${(rate * 100).toFixed(1)}% over ${graded} (${rate >= breakEven ? '+' : ''}${((rate - breakEven) * 100).toFixed(1)}pt vs break-even)`
+                : graded ? `${graded} graded` : 'no graded decisions yet';
+            return [
+                `blend skill ${(num(plan.skill, 0) * 100).toFixed(0)}`,
+                `certainty ${num(plan.certainty, 0).toFixed(0)}`,
+                `calibration ${num(plan.calibration, 1).toFixed(2)}×`,
+                `record ${record}`,
+                `tie ${(num(plan.tieForecast, 0) * 100).toFixed(1)}% vs ${(num(plan.tieRate, 0) * 100).toFixed(1)}% long-run`,
+                `DNA ${num(plan.dnaScore, 0).toFixed(0)}/100`,
+                `quotes ${num(plan.quoted, 0)}/10`,
+                `label fidelity ${(num(plan.labelFidelity, 0) * 100).toFixed(0)}%`,
+                num(plan.standDown, 0) ? 'STAND DOWN — the record is below break-even' : 'clear to trade',
+            ].join(' · ');
+        },
+        /**
+         * The live ten-outcome quote ladder with its fair odds and the measured
+         * expected value of each position — the table the EV scan decides on.
+         */
+        pricePayoutTable: async () => {
+            const plan = lastPrice.get(symbolOf());
+            const rows = plan?.evTable || [];
+            if (!rows.length) return 'no live High/Low Tick ladder yet — using the fallback payout';
+            const quoted = rows.filter(row => row.payout > 0);
+            if (!quoted.length) return 'the ladder has not been quoted yet — the decision is ranked by probability';
+            const best = rows.reduce((winner, row) =>
+                Number.isFinite(row.ev) && (!winner || row.ev > winner.ev) ? row : winner, null);
+            return rows
+                .filter(row => row.payout > 0)
+                .map(row => {
+                    const marker = best && row.outcome === best.outcome ? '*' : '';
+                    return `${row.label}${marker} ${row.payout.toFixed(2)}× (fair ${row.fairPayout.toFixed(2)}×, ` +
+                        `p ${(row.probability * 100).toFixed(1)}%, EV ${(row.ev * 100).toFixed(1)}%)`;
+                })
+                .join(' · ');
+        },
+        /**
+         * The expected value of one named contract at the live quote, or 0 when
+         * that position has not been quoted. A strategy can read this to refuse
+         * a position the bot would otherwise take.
+         */
+        priceContractEv: async (side, tick) => {
+            const plan = lastPrice.get(symbolOf());
+            const s = num(side, 0) >= 0 ? 1 : -1;
+            const k = clamp(Math.round(num(tick, 1)), 1, 5);
+            const outcome = s > 0 ? k - 1 : 5 + k - 1;
+            const row = (plan?.evTable || [])[outcome];
+            return row && row.payout > 0 && Number.isFinite(row.ev) ? round(row.ev * 100, 2) : 0;
+        },
+        /** Fair multiple of one position, from the measured win probability. */
+        priceContractFair: async (side, tick) => {
+            const plan = lastPrice.get(symbolOf());
+            const s = num(side, 0) >= 0 ? 1 : -1;
+            const k = clamp(Math.round(num(tick, 1)), 1, 5);
+            const outcome = s > 0 ? k - 1 : 5 + k - 1;
+            const row = (plan?.evTable || [])[outcome];
+            if (!row) return 0;
+            return round(num(row.fairPayout, 0), 3);
+        },
+        /**
+         * Let the bot choose which volatility index it stands on.
+         *
+         * High/Low Ticks are quoted on every synthetic index, and the markets do
+         * not pay the same: the ladder, the tie rate and the measured edge all
+         * differ. This scores the market the bot is on (expected value, its own
+         * certainty, the DNA readability and the sample) and moves when the
+         * score falls under the floor — with a dwell time so a session cannot
+         * spend its life switching between cold tick streams.
+         */
+        priceAutoMarket: async (mode, minScore, dwell) => {
+            const symbol = symbolOf();
+            const plan = lastPrice.get(symbol);
+            const dna = plan?.dna || (await priceDnaOf());
+            const score = plan ? scoreTickMarket(plan, dna) : 0;
+            picker.recordScore(symbol, score);
+            const ticks = await readTicks();
+            const secondsHere = picker.secondsOnMarket();
+            const stuck = secondsHere > Math.max(90, num(dwell, 90) * 2);
+            if (ticks.length < 300 && !stuck) return symbol;
+            const target = picker.choose({
+                mode: String(mode || 'suitable'),
+                minScore: num(minScore, 0),
+                dwell: num(dwell, 90),
+                current: symbol,
+                score,
+            });
+            if (target === symbol) return symbol;
+            const moved = await switchToMarket(target);
+            if (moved === target) {
+                picker.markSwitched();
+                refreshTickPayouts({ symbol: moved, currency: tradeOptions().currency || 'USD' });
+            }
+            return moved;
+        },
+        /** The score the market scout gives the market the bot is standing on. */
+        priceMarketScore: async () => {
+            const plan = lastPrice.get(symbolOf());
+            const dna = plan?.dna || (await priceDnaOf());
+            return round(plan ? scoreTickMarket(plan, dna) : 0, 1);
+        },
+
         /** Contracts this run has bought, from the engine's own run counter. */
         priceTrades: async () => num(tradeEngine.getTotalRuns?.(), 0),
         priceSessionProfit: async () => num(tradeEngine.sessionProfit, 0),

@@ -75,3 +75,53 @@ capped by "max stake" and the balance percent, and de-risked by the session draw
 the next stake, so there is no martingale state to leak between cycles. `priceRiskAllowed` also floors the
 balance budget at the exchange minimum per leg: a 5 % policy on a 5 USD balance is 0.25, which would
 otherwise reject every entry forever and read as a dead bot.
+
+## High/Low Tick v5: the four things that had to be right before any of it mattered
+
+1. **Ties are missing mass, not a rounding error.** Five ticks on a ±1 grid walk ties 10/32 =
+   31.25 % of windows, and a shared extreme loses on both sides. Each side is therefore normalised
+   over its own five positions and multiplied by `1 − tieForecast`; the prior is the arcsine law
+   blended with the enumerated grid walk ([6,4,2,4,6]/22) at the market's *measured* tie rate, so a
+   Step index is never priced with a Volatility 100 prior. v4's per-side 100 % normalisation
+   overstated a Step-index win probability by 1/(1−0.3125) ≈ 45 %.
+2. **The volatility-expansion feature was wrong by a constant.** It divided a ten-tick absolute-move
+   sum by four while dividing the forty-tick sum by forty, so a market with perfectly constant
+   volatility reported `expansion = 2.5` (and it is printed in the DNA line as 2.50). That fed the
+   regime expert and **divided the tie forecast**, i.e. it made ties look 1.5× rarer than they are —
+   about five probability points of optimism on the exact contract being traded. If
+   `marketDna().expansion` is not ≈1.00 on a stable market, the feature is broken again.
+3. **An EV is a max over ten noisy estimates.** With a fair ladder the argmax EV looks like +5 to
+   +20 % purely from noise; the bot would trade a fair market believing it had an edge. The gate
+   compares `evLower = EV − evZ·(1+m)·√(p(1−p)/n)` with `ai min ev` (evZ defaults to 1 on ticks, 0
+   restores the naive gate). Effect on a fair ±1 walk, pooled over three seeds: 615 entries with
+   the naive gate → 64 with the deflated one at 0.95× fair quotes, and 695 at 1.2× fair.
+4. **Grade the contract, not the direction.** `gradePriceForecasts` used to score every decision by
+   `change > 0`, which is Rise/Fall semantics. A High/Low Tick decision is a (side, tick) bet that
+   loses on a shared extreme, so the ledger now stores `mode`, `tick` and the predicted win
+   probability, grades the strict extreme (a tie is a loss, not a skipped sample), and reports
+   `mean` so the calibration ratio is `realised / predicted` — reliability — rather than
+   `realised / break-even`, which flatters an over-confident model that is still above the bar.
+
+## Five ticks is not a duration
+
+`labelFidelity(interval, latency)` in `price-strategies.mjs` turns the tick rate into the real
+contract length (10 s on R_100, 5 s on a 1HZ index), an expected slip in ticks (latency ÷ interval),
+a label-fidelity ceiling (1 − lag/2), and a `stakeable` fraction (one buy covers 1/5 of the cycle,
+so a High/Low Tick bot always has five positions overlapping). Past 0.75 ticks of slip the engine
+returns `execution — … the five-tick window would start late` and trades nothing: a misaligned
+window is a different contract, not a worse one. `VisionInterface` measures the interval from
+`measuredTickRate` (falling back to the symbol class) and the latency from the tick service's own
+round trip.
+
+## Two writer files, one source of truth
+
+`scripts/presets/gen_presets.py` writes all three presets. `scripts/generate-price-bots.py` is now a
+thin alias that imports it and writes identical bytes — it used to be a second, hand-built writer
+that stayed v4 for months and would have overwritten the shipped v5 bot with a weaker one. Do not
+add a third writer; extend the spec and regenerate.
+
+**Watch out for:** `src/components/dbot-space.tsx` had two stray duplicated string literals inside
+the STRATEGIES object (an `AI_VISION_OVER_UNDER` risk note and an `AI_EVEN_SWITCHER` one), which is
+a syntax error — the whole Bot store page failed to parse. There is no bundler in the sandbox, so
+the quick check is to extract `const STRATEGIES: Strategy[] = [ … ];` and `eval` it with the icon
+identifiers replaced by `null`.
