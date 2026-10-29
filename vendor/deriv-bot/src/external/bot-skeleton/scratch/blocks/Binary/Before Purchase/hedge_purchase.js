@@ -29,6 +29,7 @@ import { excludeOptionFromContextMenu, modifyContextMenu, runIrreversibleEvents 
 const LEG_SETTINGS_BY_TRADETYPE = {
     overunder: { prediction: true, barriers: 0 },
     matchesdiffers: { prediction: true, barriers: 0 },
+    highlowticks: { prediction: true, barriers: 0 },
     higherlower: { prediction: false, barriers: 1 },
     touchnotouch: { prediction: false, barriers: 1 },
     endsinout: { prediction: false, barriers: 2 },
@@ -46,6 +47,7 @@ window.Blockly.Blocks.hedge_purchase = {
         // configuration) are built per trade type by updateLegInputs.
         this.legShape_ = null;
         this.rowInputNames_ = [];
+        this.defaultBarrierTargets_ = {};
         this.updateLegInputs({ prediction: false, barriers: 0 });
 
         // Ensure one of this type per statement-stack (same rule as Purchase)
@@ -104,7 +106,8 @@ window.Blockly.Blocks.hedge_purchase = {
                 event.name === 'TYPE_LIST' ||
                 event.name === 'TRADETYPE_LIST' ||
                 event.name === 'SYMBOL_LIST' ||
-                event.name === 'DURATIONTYPE_LIST'
+                event.name === 'DURATIONTYPE_LIST' ||
+                /^(HEDGE_)?(SECOND)?BARRIEROFFSETTYPE_LIST$/.test(event.name || '')
             ) {
                 this.populatePurchaseList(event);
             }
@@ -129,7 +132,7 @@ window.Blockly.Blocks.hedge_purchase = {
 
             // Rows first: a trade-type change rebuilds them (new dropdown
             // fields), so options must be applied to the rebuilt fields.
-            const rows_rebuilt = this.updateLegInputs(legSettingsFor(trade_type));
+            this.updateLegInputs(legSettingsFor(trade_type));
 
             ['PURCHASE_LIST', 'HEDGE_LIST'].forEach(field_name => {
                 const field = this.getField(field_name);
@@ -151,7 +154,7 @@ window.Blockly.Blocks.hedge_purchase = {
                 if (opposite) this.setFieldValue(opposite[1], 'HEDGE_LIST');
             }
 
-            this.applyDefaultBarriers(trade_definition_block, trade_type, rows_rebuilt);
+            this.applyDefaultBarriers(trade_definition_block, trade_type);
         }
     },
     /**
@@ -162,7 +165,7 @@ window.Blockly.Blocks.hedge_purchase = {
      * be rejected. Only the built-in shadow default is ever written; a
      * value the user typed, or a real block they attached, is left alone.
      */
-    applyDefaultBarriers(trade_definition_block, trade_type, rows_rebuilt) {
+    applyDefaultBarriers(trade_definition_block, trade_type) {
         const settings = legSettingsFor(trade_type);
         if (!settings.barriers) return;
 
@@ -176,38 +179,42 @@ window.Blockly.Blocks.hedge_purchase = {
         const symbol = market_block?.getFieldValue('SYMBOL_LIST');
         if (!symbol) return;
         const duration_unit = options_block?.getFieldValue('DURATIONTYPE_LIST') || 't';
-        const barrier_types = [
-            this.getFieldValue('BARRIEROFFSETTYPE_LIST') || '+',
-            this.getFieldValue('SECONDBARRIEROFFSETTYPE_LIST') || '-',
-        ];
-
-        contracts_for
-            .getBarriers(symbol, trade_type, duration_unit, barrier_types)
-            .then(barriers => {
-                if (!barriers?.values?.length || !this.workspace) return;
-                runIrreversibleEvents(() => {
-                    ['', 'HEDGE_'].forEach(prefix => {
+        // Each leg can have a different sign. Query separately; getBarriers
+        // mutates its argument and a single query would use leg 1's signs
+        // for both legs. Ignore stale async replies after a market change.
+        const generation = (this.barrierLookupGeneration_ || 0) + 1;
+        this.barrierLookupGeneration_ = generation;
+        ['', 'HEDGE_'].forEach(prefix => {
+            const barrier_types = [
+                this.getFieldValue(`${prefix}BARRIEROFFSETTYPE_LIST`) || '+',
+                this.getFieldValue(`${prefix}SECONDBARRIEROFFSETTYPE_LIST`) || '-',
+            ];
+            contracts_for
+                .getBarriers(symbol, trade_type, duration_unit, barrier_types)
+                .then(barriers => {
+                    if (!barriers?.values?.length || !this.workspace || this.barrierLookupGeneration_ !== generation) return;
+                    runIrreversibleEvents(() => {
                         ['BARRIEROFFSET', 'SECONDBARRIEROFFSET'].forEach((base_name, index) => {
                             if (index >= settings.barriers) return;
-                            const value = barriers.values[settings.barriers === 1 ? 0 : index];
+                            const name = `${prefix}${base_name}`;
+                            const value = barriers.values[index];
                             if (value === undefined || value === '' || value === false) return;
-                            const target = this.getInput(`${prefix}${base_name}`)?.connection?.targetBlock();
-                            if (!target?.isShadow()) return;
-                            const current = target.getFieldValue('NUM');
-                            const is_stale_default =
-                                current === '1' || current === this.appliedBarrierDefault_;
-                            if (rows_rebuilt || is_stale_default) {
-                                target.setFieldValue(String(value), 'NUM');
-                                this.appliedBarrierDefault_ = String(value);
-                            }
+                            const target = this.getInput(name)?.connection?.targetBlock();
+                            const tracked = this.defaultBarrierTargets_?.[name];
+                            // Only change the shadow created by this block, and
+                            // only while it still holds our last default. Loaded
+                            // XML and user edits are never overwritten.
+                            if (!target?.isShadow() || !tracked || target !== tracked.block || target.getFieldValue('NUM') !== tracked.value) return;
+                            target.setFieldValue(String(value), 'NUM');
+                            tracked.value = target.getFieldValue('NUM');
                         });
                     });
+                })
+                .catch(() => {
+                    // Contract metadata may be unavailable offline. Keep the
+                    // visible value; Deriv still validates it at purchase.
                 });
-            })
-            .catch(() => {
-                // No contracts data (offline, not authorized yet): keep the
-                // built-in defaults rather than breaking the block.
-            });
+        });
     },
     /**
      * Build the two purchase rows for the current trade-type shape. Rows
@@ -237,6 +244,7 @@ window.Blockly.Blocks.hedge_purchase = {
                 if (this.getInput(name)) this.removeInput(name, true);
             });
             this.rowInputNames_ = [];
+            this.defaultBarrierTargets_ = {};
 
             ['', 'HEDGE_'].forEach(prefix => this.buildLegRow(prefix, settings));
 
@@ -260,7 +268,7 @@ window.Blockly.Blocks.hedge_purchase = {
                 .setCheck('Number')
                 .appendField(row_label)
                 .appendField(new_contract_dropdown(), list_field)
-                .appendField(localize('Prediction:'));
+                .appendField(localize('Prediction (tick 1–5 / digit 0–9):'));
             this.rowInputNames_.push(name);
             this.addNumberShadow(input, '5');
         } else if (barriers > 0) {
@@ -282,6 +290,8 @@ window.Blockly.Blocks.hedge_purchase = {
                 if (index === 1) this.setFieldValue('-', `${name}TYPE_LIST`);
                 this.rowInputNames_.push(name);
                 this.addNumberShadow(input, '1');
+                const shadow = input.connection.targetBlock();
+                if (shadow) this.defaultBarrierTargets_[name] = { block: shadow, value: shadow.getFieldValue('NUM') };
             });
         } else {
             const name = `${prefix}CONTRACT_ROW`;

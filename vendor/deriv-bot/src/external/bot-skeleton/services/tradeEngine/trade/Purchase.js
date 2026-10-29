@@ -2,6 +2,7 @@ import { LogTypes } from '../../../constants/messages';
 import { api_base } from '../../api/api-base';
 import { contractStatus, info, log } from '../utils/broadcast';
 import { doUntilDone, getUUID, recoverFromError, tradeOptionToBuy } from '../utils/helpers';
+import { sanitizeHedgeOptions } from '../utils/hedge-options.mjs';
 import { purchaseSuccessful } from './state/actions';
 import { BEFORE_PURCHASE } from './state/constants';
 
@@ -145,10 +146,9 @@ export default Engine =>
             // and can poison a leg with a value meant for another contract
             // (a leftover digit prediction read as an absolute price
             // barrier, an emptied Trade options offset landing on spot) —
-            // Deriv rejects those buys with "Invalid barrier". Values are
-            // sanitized the same way: predictions become a single digit,
-            // and a zero/unparseable offset (barrier exactly on spot) is
-            // omitted rather than sent.
+            // Deriv rejects those buys with "Invalid barrier". Invalid
+            // predictions and offsets are rejected before either buy, never
+            // silently substituted with values from another block.
             // Sanitizing is contract-aware: a digit contract's barrier is
             // its prediction and it takes no price offsets; a price
             // contract takes offsets and must NEVER inherit a prediction
@@ -157,26 +157,7 @@ export default Engine =>
             // e.g. Prediction rows left over after switching to
             // Higher/Lower — therefore degrades to a clean leg instead of
             // a guaranteed "Invalid barrier".
-            const isDigitContract = type => typeof type === 'string' && type.startsWith('DIGIT');
-            const sanitizeBarrierOptions = (contractType, options) => {
-                const cleaned = {};
-                if (!options) return cleaned;
-                if (isDigitContract(contractType)) {
-                    if (options.prediction != null) {
-                        const digit = Math.round(Number(options.prediction));
-                        if (Number.isFinite(digit)) cleaned.prediction = Math.min(9, Math.max(0, digit));
-                    }
-                    return cleaned;
-                }
-                ['barrierOffset', 'secondBarrierOffset'].forEach(key => {
-                    const raw = options[key];
-                    if (raw == null) return;
-                    const text = String(raw).trim();
-                    const magnitude = Number(text.replace(/^[+-]/, ''));
-                    if (text && Number.isFinite(magnitude) && magnitude !== 0) cleaned[key] = text;
-                });
-                return cleaned;
-            };
+            const sanitizeBarrierOptions = (contractType, options) => sanitizeHedgeOptions(contractType, options);
             const barrierKeys = ['prediction', 'barrierOffset', 'secondBarrierOffset'];
             const hasBlockConfig = (contractType, options) => {
                 const cleaned = sanitizeBarrierOptions(contractType, options);
@@ -197,6 +178,15 @@ export default Engine =>
                 return leg;
             };
 
+            // Construct and validate both legs before either order is sent.
+            const mainTradeOptions = legTradeOptions(contract_type, main_options);
+            const hedgeTradeOptions = legTradeOptions(hedge_contract_type, hedge_options);
+            for (const [type, options] of [[contract_type, mainTradeOptions], [hedge_contract_type, hedgeTradeOptions]]) {
+                if (['TICKHIGH', 'TICKLOW'].includes(type) && options.prediction == null) {
+                    throw new Error('Choose a prediction tick from 1 to 5 for both High/Low Tick legs.');
+                }
+            }
+
             // Select both proposals up front: buying the first leg renews the
             // proposal list, which would discard the second leg's price. A
             // leg with its own prediction/barriers cannot reuse the
@@ -212,10 +202,10 @@ export default Engine =>
 
             const buyMain = mainProposal
                 ? () => api_base.api.send({ buy: mainProposal.id, price: mainProposal.askPrice })
-                : () => api_base.api.send(tradeOptionToBuy(contract_type, legTradeOptions(contract_type, main_options)));
+                : () => api_base.api.send(tradeOptionToBuy(contract_type, mainTradeOptions));
             const buyHedge = hedgeProposal
                 ? () => api_base.api.send({ buy: hedgeProposal.id, price: hedgeProposal.askPrice })
-                : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, legTradeOptions(hedge_contract_type, hedge_options)));
+                : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, hedgeTradeOptions));
 
             this.isSold = false;
             contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
@@ -247,8 +237,10 @@ export default Engine =>
                     // One leg was rejected outright: track the leg that did
                     // open as a normal single position rather than strand it,
                     // and say so loudly in the log.
+                    const failure = main.status === 'rejected' ? main.reason : hedge.reason;
+                    const detail = failure?.error?.message || failure?.message || String(failure);
                     log(LogTypes.ERROR, {
-                        error: `Hedge: only the ${bought[0].type} leg opened; the opposite leg was rejected.`,
+                        error: `Hedge: only the ${bought[0].type} leg opened; the opposite leg was rejected: ${detail}`,
                     });
                 }
 
