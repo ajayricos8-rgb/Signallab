@@ -13,6 +13,22 @@ Numbers marked **[measured]** come from the simulation and enumeration scripts d
 [§12](#12-reproducing-the-numbers); numbers marked **[contract]** come from Deriv's published
 contract description and API; everything else is arithmetic you can redo by hand.
 
+
+> **Important verification and safety notes (29 October 2026).** Deriv's published
+> [contract description][c1] says the selected tick must be the highest or lowest, but does
+> **not** specify how equal extrema settle. The simulations and bot use the conservative
+> assumption that a shared extreme on the selected side loses; this is **not verified as
+> Deriv's settlement rule**. Confirm it with Deriv and demo contract settlement records before
+> relying on the probabilities. A tie for the high does not imply a tie for the low.
+>
+> The engine's scores, confidence, EV floor and latency adjustment are **heuristics**, not
+> statistically validated confidence intervals or guarantees of profit. In particular, replay
+> weights now wait for outcomes to settle, but the replay also uses structural quantities
+> estimated from the full supplied history; it is not a fully point-in-time backtest. Obtain
+> independent, chronological out-of-sample tests with actual quotes and execution records.
+> The synthetic experiments below are illustrative, not proof of predictive edge.
+> Contract availability, limits and payout depend on the account and current proposal.
+
 ---
 
 ## 1. The contract
@@ -27,7 +43,7 @@ contract description and API; everything else is arithmetic you can redo by hand
 | Markets | **Synthetic indices only** | [contract][c3] |
 | Barrier | None. The prediction is a tick index, never a price barrier | [api][c2] |
 | Early close | Deriv's own FAQ says a High/Low Tick contract **cannot** be closed before expiry. The engine still exposes unwinding through `sell` where the API reports the contract as sellable, and treats that path as unverified | [contract][c1] |
-| Win condition | The selected tick is **the** highest (or lowest) of the five. A **tie for the extreme is not a win** | [contract][c1] |
+| Win condition | The selected tick is highest (or lowest) of the five; treatment of equal extremes is **not specified in the cited description** | [contract][c1] |
 | Pay-out | Quoted per `(contract_type, selected_tick)` by `proposal`; never a published constant | [api][c2] |
 | Minimum stake | 0.35 USD on synthetics | [stake][c4] |
 
@@ -35,8 +51,7 @@ Two things follow immediately and shape everything below:
 
 1. **There are ten outcomes, not two.** Five positions × two sides. The ten are mutually
    exclusive *across a side* (one tick holds the strict high) but the high and the low of the same
-   window can be — and usually are — different ticks, and one tick can hold both (a monotone
-   window).
+   window can be — and usually are — different ticks, and one tick can hold both only if all five prices are equal.
 2. **The question is about an order statistic, not a direction.** Rise/Fall asks where the price
    ends; High/Low Ticks asks *where the extreme sits*. Directional intuition (RSI, momentum,
    candles) transfers only weakly: it moves mass toward the end of the window when the tape is
@@ -80,9 +95,9 @@ market parameter for this contract, for reasons explained in §4.
 
 Consequences:
 
-* **The increments are (to the limits of the audit) a martingale.** There is no drift to find, no
-  autocorrelation to exploit, and no "pattern" in the last 300 ticks that changes the next tick's
-  distribution. Every bot that claims otherwise is fitting noise.
+* **Do not assume predictable increments.** A CSPRNG description alone does not establish
+  that every index is a martingale or that every market has identical dynamics. Apparent patterns
+  need independent out-of-sample evidence; past performance is not proof of future predictability.
 * **The only structure that survives is arithmetic.** It is not a property of the *increments*
   but of the *order statistics* of the window (the U-shape of §3) and of the *grid* (ties, §4).
   That structure is real, knowable, and — crucially — **also known to the pricing engine**.
@@ -135,9 +150,10 @@ paths gives **[measured]**:
 | Conditional on a strict extreme | 27.27 % | 18.18 % | **9.09 %** | 18.18 % | 27.27 % | — |
 | Fair multiple `(1−p)/p` (unconditional) | 4.33× | 7.00× | **15.00×** | 7.00× | 4.33× | — |
 
-A tie is a loss on **both** sides. So on a Step Index, 31 % of five-tick windows are
-unwinnable for either leg, and the middle position is *six times rarer* than a uniform guess
-would suggest. Compare that with the continuous arcsine's 14.06 % for the middle — the grid makes
+Under the strict-extreme assumption, a tie for the high makes all high positions lose; a tie
+for the low makes all low positions lose. They need not occur together. In the idealised ±1
+walk, 31.25 % of windows have a shared high, and separately 31.25 % have a shared low.
+The strict middle high occurs 6.25 % of the time, 3.2 times less often than a 20 % uniform guess. Compare that with the continuous arcsine's 14.06 % for the middle — the grid makes
 the middle position dramatically *less* likely, not more.
 
 ### 3.3 The granularity law — one parameter explains the whole table
@@ -169,8 +185,8 @@ Read this table twice, because it is the core of this document:
 * A **Volatility 10** index has a smaller per-tick σ — but its quote grid is finer (3 decimals at
   a higher price), so in practice it also lands in the `r ≫ 5` regime. Measure it, do not assume
   it: the DNA block reports the measured grid ratio for the market you are on.
-* A **Step Index** at `r = 1` is in the tie-heavy regime: 31 % of windows unwinnable, middle
-  position at 6 %.
+* An idealised ±1-step walk at `r = 1` has a shared high in 31.25 % of windows (and a
+  shared low in another 31.25 %); the middle strict high is 6.25 %. The two tie events differ.
 * **A tie is not a probability of zero for the position — it is missing mass.** Any model that
   normalises five positions to 100 % and forgets the tie mass overstates its win probability by a
   factor of `1/(1 − tieRate)`, which on a Step Index is **45 %**. On a 2 % payout margin that
@@ -660,23 +676,14 @@ five ticks, five-tick contract), with the ladder quoted at a multiple of the *fa
 | 1.08 × fair (overpaid) | 427 | 24.4 % | 20.4 % | +20.1 % |
 | 1.20 × fair (badly overpaid) | 695 | 17.8 % | 16.1 % | +29.3 % |
 
-Three things to read out of that table, and one thing not to:
-
-1. **The floor does its job.** Entries rise monotonically with how much the market overpays, from
-   64 to 695 out of ~2 100 opportunities. A tighter floor would trade less; there is no setting
-   that makes a fair ladder profitable.
-2. **The bot trades the *timing*, not the average.** The unconditional strict-extreme rate of this
-   walk is 18.75 %. The entries' realised rate is 24–25 % because the tie forecast steers into
-   windows that print a strict extreme at all — the one mechanism on this contract that is a real
-   forecast rather than a restatement of the prior.
-3. **The believed EV is optimistic, and the bot knows it.** "+17 %" is what the model thinks; the
-   realised rate says the truth is closer to the break-even. That gap is precisely what the
-   reliability calibration (§9.7) shrinks over time, and what the stand-down flag is for.
-
-What the table is *not*: a backtest of Deriv's actual quotes. Those are not in this repository,
-the fixture ladder is synthetic, and the windows overlap (a decision every five ticks on
-overlapping five-tick windows is not 168 independent trials). The claim is narrow — the gates
-behave as designed and the direction of every effect is right — and it is the only claim made.
+These are old exploratory results from a synthetic fixture, not an independently validated
+backtest and not measurements of Deriv's prices. The simulation script and quote construction
+were not retained in the repository, so the numbers are not currently reproducible. They predate
+the delayed-score fix and must not be used as evidence of profitability or predictive skill.
+In particular, a higher hit rate on selected trades does not establish a forecastable edge on an
+independent walk. Each side and position has different quoted odds; hit rate alone cannot establish
+profit. The notional one-sigma floor uses a heuristic effective sample size and does not establish
+coverage under correlated, overlapping observations or model misspecification.
 
 ---
 
