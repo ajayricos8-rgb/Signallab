@@ -3,10 +3,12 @@
 Everything this repository knows about the `TICKHIGH` / `TICKLOW` contract family, the
 mathematics that governs it, the strategies people actually run on it, and what a machine can
 and cannot honestly claim to know about it. It is the reference behind the **High/Low Tick AI
-Sniper v5** in the Bot store and the `x_price_*` blocks in the Vision Lab toolbox: ten experts
-scored walk-forward, a tie-aware structural prior measured from the market itself, the live
-ten-outcome payout ladder as the value test, an execution clock that turns five ticks into
-seconds, a self-audit that grades every published decision, and a market scout that can move the
+Sniper v6 (APEX core)** in the Bot store and the `x_price_*` blocks in the Vision Lab toolbox:
+sixteen experts scored walk-forward under a regime-gated meta-learner, a deep online neural
+brain, a tie-aware structural prior measured from the market itself, the live ten-outcome
+payout ladder as the value test, an execution clock that turns five ticks into seconds, DNA v2
+auto-reverse-engineering with self-derived tuning, per-outcome calibration of the graded
+record, a self-audit that grades every published decision, and a market scout that can move the
 bot when the market it is standing on stops being readable.
 
 Numbers marked **[measured]** come from the simulation and enumeration scripts described in
@@ -767,7 +769,7 @@ anchor and the EV scan, are pinned by `artifacts/deriv-signal-lab/tests/price-st
 ```bash
 cd artifacts/deriv-signal-lab
 
-# the engine, the risk gate, the presets and the wiring (29 tests)
+# the engine, the risk gate, the presets and the wiring (38 tests)
 node --experimental-strip-types --test ./tests/price-strategies.test.mjs
 
 # structural checks on every shipped strategy file
@@ -800,3 +802,316 @@ I/O, no clock, no global state. Everything that touches the account — proposal
 ladder, latency, the graded record, the market switch — lives in
 `Interface/VisionInterface.js`, which is where the runtime's measurements enter and where the
 plan is filed for grading.
+
+---
+
+## 14. Fresh verification pass (29 October 2026)
+
+On top of the standing research above, every externally checkable claim was
+re-verified against Deriv's current published pages, and the community
+strategy landscape was re-surveyed. Findings:
+
+### 14.1 Contract facts, re-confirmed
+
+| Fact | Status | Source |
+| --- | --- | --- |
+| Five-tick window, fixed, not configurable | confirmed | [trade-types][c8] FAQ: "always based on the next 5 price ticks" |
+| No early close on High/Low Ticks | confirmed | [trade-types][c8] FAQ: "cannot close before it expires" |
+| Synthetics only | confirmed | [community][c3] note; [trade-types][c8] |
+| `selected_tick` 1–5 on `TICKHIGH` / `TICKLOW` | confirmed | [api][c2] `proposal` args; [legacy][c3b] trading flow |
+| Quote per `(contract_type, selected_tick)` via `proposal` | confirmed | [api][c2]; [legacy][c3b] flow steps 4–5 |
+| Entry spot = first tick after processing | confirmed | [community][c3] |
+| Equal-extreme settlement rule | **still unspecified** in the cited description | [trade-types][c8] says only "highest/lowest" |
+
+Nothing in the re-verification moves the engine's conservative assumption: a
+shared extreme on the selected side is still treated as a loss until Deriv
+documents otherwise, and demo settlement records remain the way to confirm it.
+
+### 14.2 Generation and fairness, re-confirmed
+
+Deriv's current explanation states the synthetic feed is produced by
+**cryptographically secure RNG**, calibrated to each index's stated
+volatility, **broadcast identically to all clients from one central
+algorithm**, and **audited by independent third parties** [rng][c5]. The
+consequences drawn in §2 stand: apparent stop-hunts are variance plus trader
+behaviour, and no retail model observes anything the pricing engine does not
+already know. Any edge claim must therefore survive the question "what does my
+model see that Deriv's pricing model does not" — and the only answers this
+repository accepts are conditional structure (§3.4, §5.16), quote staleness
+(§5.17), and cross-market quote dispersion (§15.8), all measured, none assumed.
+
+### 14.3 The community landscape, surveyed
+
+The strategies actually being sold and shared for this family fall into a
+small number of buckets, each already priced in §5:
+
+* **Fixed-position snipers** ("always tick 1/5") — §5.2. Win more often than
+  1-in-5, paid exactly for it. Usually bundled with a martingale, which turns
+  a −5 % expectation into a ruin distribution (§5.15, §15.10).
+* **Coverage "hedges"** (all five, both sides, high+low pairs) — §5.3–§5.5.
+  Variance reshaping at a cost of one margin per leg. Anything advertised as
+  "risk-free coverage" is §5.4 with a subscription fee.
+* **Candle/SMA/RSI trend filters with progressions** — §5.8 plus §5.15. The
+  filter contains a real but small tilt; the progression contains the ruin.
+* **Digit and "hot position" filters** — §5.10–§5.11. Sample-size reducers
+  sold as signal.
+* **Quote-driven tick pickers** — the sound idea in the wild: read live Deriv
+  quotes, compute per-tick win value, skip below a minimum edge. That is the
+  EV scan of §9.5 independently re-discovered, and it is what the shipped
+  sniper does with a one-sigma floor instead of the point estimate.
+* **Streak protection, cooldowns, recovery stakes** — session engineering.
+  Streak stops and cooldowns are honest variance control (the shipped
+  cool-off); "payout-sized recovery stakes" are a martingale in formal dress
+  and inherit its arithmetic (§15.10).
+
+No surveyed approach contains structure outside §3–§5 that survives the
+pricing-model question. The catalogue below therefore treats each family at
+full depth instead of chasing novelty.
+
+---
+
+## 15. Strategy breakdowns — the complete field guide
+
+§5 catalogued the families; this section works each one to its arithmetic
+conclusion so no intuition is left unpriced. "Fair" below means the walk of §3
+at the market's own granularity, and the margin illustration is 5 %.
+
+### 15.1 End-bias sniping (ticks 1 and 5)
+
+The thesis is the arcsine/grid structure itself: the extreme sits at an end
+far more often than anywhere else. Exact fair multiples (profit per unit
+staked, `(1−p)/p`):
+
+| Position | Continuous (fine grid) | Pure ±1 grid walk |
+| --- | --- | --- |
+| Tick 1 / 5 | 2.66× | 4.33× |
+| Tick 2 / 4 | 5.40× | 7.00× |
+| Tick 3 | 6.11× | **15.00×** |
+
+At a 5 % margin the quoted ends sit near 2.5× / 4.1×. The win rate feels good
+(27 % / 18.75 %) and the EV is exactly −margin. The only honest use of the
+end bias is as the **anchor every expert must beat** — which is what the
+engine's Brier league does.
+
+### 15.2 Middle-overlay hunting
+
+The rarest position is where a mispricing pays the most *if* it exists: at
+6.25 % unconditional on a step walk, each point of probability is worth
+roughly 2.4 points of EV at a 15× quote. But rarity cuts both ways —
+estimating a 6 % event to ±1 point needs ~2,000 settled windows, and the
+one-sigma EV floor in §9.5 exists precisely because the scan's argmax over ten
+noisy estimates would otherwise "find" middle overlays on every fair ladder.
+Middle overlays are bought only when the *floor* clears `minEv`, never the
+point estimate.
+
+### 15.3 The barbell (ticks 1 + 5), worked
+
+Two legs at ~27 % each (fine grid), ~2.6× quotes, total capture ~55 % of
+windows. Per-unit EV is still −margin, but the *distribution* is the point: a
+55 % hit rate at ~2.6× has roughly a third the per-cycle variance of a 14 %
+position at ~6×, so a session survives long enough to measure whether an edge
+exists at all. The engine's `certainty` gate prefers this region for exactly
+that reason — not because it pays better, but because it teaches faster.
+
+### 15.4 Ladder weighting and why the single best leg dominates
+
+Stake `wᵢ` on outcome `i` with per-unit EV `eᵢ`: portfolio EV per unit is
+`Σwᵢeᵢ/Σwᵢ`, a weighted average that cannot exceed `max(eᵢ)`. Probability
+weighting therefore never beats buying the single best leg — it only smooths
+variance and pays margin on more contracts. The shipped sniper buys one leg;
+ladder weighting remains available as a *variance* tool for operators who need
+smoother equity, priced honestly as costing edge, not creating it.
+
+### 15.5 Trend-timing the extreme, sized
+
+From §3.4: a drift of 0.6 grid steps/tick moves the modal high from 25.5 % to
+30.1 %; a drift of 2.0 moves it to 39.9 %. Against a 5 % margin the first is
+worth about +2 points of EV on the modal leg — real, but only when the drift
+is *measured inside the window*, not inferred from a 5-minute candle two
+hundred ticks away. The engine's `regime`, `volatility`, `microtrend` and
+`hurst` experts encode exactly this tilt, and the walk-forward league decides
+per market whether the tilt earned its weight or is decoration.
+
+### 15.6 Volatility-timing the tie (conditional tie hunting)
+
+Tie probability falls as σ-per-tick rises (§3.3: 70.5 % at r=0.5 → 2.7 % at
+r=25). A model forecasting the *next window's* tie rate from recent tick size
+therefore moves the unconditional win probability of every position — most
+visibly the middle, whose strict probability is tie mass subtracted from a
+small base. The `tieForecast` (EWMA of recent ties, shrunk to the long run,
+divided by expansion) plus the `range` expert's granularity interpolation are
+the implementation. Worth several points on coarse tape, ~1 point on fine
+tape — the most defensible conditional structure in the engine, and still
+usually smaller than the margin.
+
+### 15.7 Quote-staleness sniping
+
+If the ten-quote ladder refreshes slower than volatility moves, an EV scan
+against a stale table systematically "finds" edges. The defence is the
+offence here: refresh the ladder on a short cadence, mark quotes stale and
+widen their edge requirement, and charge entry slip. Any residual overlay the
+scan finds after those guards is the closest thing to a tradeable inefficiency
+a retail bot can reach — small, fleeting, and correctly sized tenth-Kelly.
+
+### 15.8 Cross-market rotation (the scout's thesis)
+
+High/Low Ticks are quoted on every synthetic index, and the ladders, tie rates
+and tick speeds differ. Rotation helps for three boring, real reasons: (1) a
+market whose ladder is kinder to the modal position pays more for the same
+read; (2) a market whose granularity the engine models better (higher DNA
+readability, positive walk-forward skill) wastes less of the estimate; (3) a
+market whose tick rate fits the bot's latency preserves label fidelity. The
+cost is a cold tick stream (~256 windows before the models publish), which is
+why the dwell is fifteen minutes and the floor is low. Rotation is market
+*selection*, not prediction — and the scout score (EV, certainty,
+readability, sample, skill) is a ranking, never a forecast.
+
+### 15.9 Session engineering (streak stops, cooldowns, targets)
+
+A 27 %-probability contract loses three times in four; runs of 8–12 losses
+are routine over 200 contracts. Streak cool-offs, loss limits and profit
+targets do not change the per-contract EV — they change the *stopping
+distribution*: they cut the left tail (ruin) at the cost of cutting the right
+tail (recovery). That is honest risk control and it ships in the sniper. What
+session engineering must never do is resize the *next* stake from the *last*
+result — that is §15.10.
+
+### 15.10 What never works, and the arithmetic of why
+
+* **Digit filters.** The last digit of the entry quote is independent of the
+  window's order statistics on a CSPRNG feed. A filter keeps 1-in-k entries
+  and the same per-entry EV: a sample-size reducer with marketing.
+* **Martingale / recovery stakes.** The recovery event wins at best 27 % per
+  attempt; the 99th-percentile losing run is ~15 contracts, a 32,767× stake at
+  2× steps — before Deriv's stake limits or the account balance ends the
+  sequence early (which converts "recover with certainty" into "lose the
+  ladder with certainty"). Any "payout-sized recovery" inherits this exactly.
+* **Full coverage.** Ten legs, ten margins, zero variance, certain loss of the
+  over-round. §5.3–§5.4 with the numbers attached.
+* **"AI" with no graded record.** A probability without a ledger is a story.
+  The sniper's rule — every published decision filed and graded, calibration
+  from the record, stand-down when the record fails — is the minimum viable
+  honesty for any automated strategy on this family, and most commercial bots
+  fail it.
+
+---
+
+## 16. The v6 APEX engine — how the sniper implements all of this
+
+`vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-strategies.mjs`
+(`PRICE_MODEL_VERSION = 6`), wired through `VisionInterface.js`, the
+`x_price_*` blocks and `scripts/presets/gen_presets.py`.
+
+### 16.1 Sixteen experts, each scored walk-forward
+
+The original ten (§9.2) plus six v6 specialists. Every expert produces a full
+probability vector (ten outcomes in tick mode, two in directional mode) and is
+scored with delayed Brier losses on settled windows only:
+
+| Expert | Reads | Tick behaviour | Directional behaviour |
+| --- | --- | --- | --- |
+| `anchor` | market tie rate | tie-aware arcsine/grid prior | tie-removed 50/50 |
+| `frequency` | all settled windows | long-run histogram | long-run up/down |
+| `transition` | two-change state | Markov row for ↑↑/↑↓/… | same |
+| `recent` | last 250 windows | regime-drift histogram | same |
+| `analog` | kernel over state | replay of similar moments | same |
+| `drift` | drift/vol | abstains (anchor) | N(drift·h, σ√h) |
+| `serial` | AR(1) | extreme-position persistence | change persistence |
+| `neural` | 8 features | deep net (§16.2) | deep net, 2 outputs |
+| `regime` | expansion/stretch | late/early extreme tilt | continuation/reversion |
+| `position` | last window | extreme-position Markov | direction Markov |
+| `volatility` | expansion × slope | expansion-scaled late/early tilt | expansion-scaled continuation |
+| `microtrend` | RSI + slope | continuous pressure lean | z-scored lean |
+| `range` | expansion | grid↔continuous prior interpolation | abstains (anchor) |
+| `entropy` | shape concentration | persists concentrated shapes | persists concentrated direction |
+| `hurst` | R/S exponent | memory tilt (trend/revert) | memory z-score |
+| `cycle` | phase autocorr | extreme-phase persistence | sign-phase persistence |
+
+Abstention is always to the frequency table or the anchor — never to zero —
+so a useless expert dilutes toward the base rate and then loses its vote.
+
+### 16.2 The deep brain
+
+`neural` is an online 8 → 10 (tanh) → softmax network over the state features
+(bias, two change signs, RSI, stretch, expansion, run, history position),
+trained with one backpropagation step per settled window (learning rate 0.05,
+L2 decay 0.0005). The hidden layer learns feature interactions — "stretched
+*and* quiet" — a linear model cannot express; the L2 decay and the Brier
+league keep it from memorising noise. `decision.brain` reports its update
+count, hidden-layer weight norm, learning rate, the live regime, the three
+experts carrying the decision, skill and calibration; `x_price_brain` prints
+it in one journal line.
+
+### 16.3 The regime-gated meta-learner
+
+Beside the global Brier ledger the engine keeps one ledger per regime
+(expansion / reversion / balanced, from §9.2's `tickRegime`). The live mixture
+blends the global weights with the live regime's weights (45 % regime once 25
+windows are scored in it), so trend readers are trusted when a trend is on and
+range readers when it is not. The walk-forward replay scores the *gated*
+blend, so `skill` measures the mixture that actually publishes — the same
+honesty rule as v5, extended to the gate.
+
+### 16.4 DNA v2 and auto-tuning
+
+Beside the v1 fingerprint (§9.6), `marketDna` now measures Hurst memory,
+high/low extreme entropy, jump (spike) rate, extreme-phase autocorrelation,
+tie clustering (Fano factor), range compression and tick sigma — and derives
+`autoTune` from them: grid tape widens the EV bound to 1.5σ, mixed tape to
+1.25σ; spike tape raises anchor trust; compressed tape earns a patience note.
+`x_price_reverse` prints the whole diagnosis. Descriptive, never predictive:
+it says what kind of market the bot stands on and what caution that implies.
+
+### 16.5 Per-outcome calibration
+
+The runtime grades every published decision per outcome (ten lanes for
+High/Low Tick, two for directional) and the engine reliability-adjusts each
+outcome against what *that outcome* claimed — same shrinkage curve as the
+global record (§9.5), applied per lane, renormalised per side. A high-tick-3
+read that keeps missing is shrunk without punishing the reads that earned
+their keep. Inactive below 25 graded samples per lane.
+
+### 16.6 New blocks, knobs and journal cadence
+
+| Surface | Purpose |
+| --- | --- |
+| `x_price_brain` | AI core line: net updates, weight norm, regime, carriers |
+| `x_price_reverse` | reverse-engineering line: DNA v2 + auto-tune |
+| `x_price_forecast` | outcome forecast: top positions by EV with p and quotes |
+| `ai skill floor` | hard gate on walk-forward skill (ships −1 = off) |
+
+Start-up prints DNA, ladder, clock, brain and reverse engineering; every 25th
+settlement prints weights, league, DNA, brain, reverse and clock; every 10th
+the audit; every 5th the ladder and the forecast. The preset test pins all of
+it, and the no-martingale pins (no multiplier, no ladder state, settled
+contracts never resize the stake) still hold.
+
+### 16.7 Scout v2
+
+The market score is now 35 % measured EV, 20 % certainty, 15 % DNA
+readability, 15 % sample and 15 % walk-forward skill — the same ranking idea,
+with the blend's earned record voting on whether a market is worth standing
+on. Dwell and floor unchanged (15 minutes, low): rotation stays rare and
+deliberate.
+
+### 16.8 What v6 does not claim
+
+More experts do not create edge on an audited CSPRNG feed — they create
+*resolution*: a fair market is recognised as fair faster, from more angles,
+with the recognition printed in the journal. The honest summary of §5.18 is
+unchanged: expected value comes only from beating the *quoted* odds, the
+margin is merciless in aggregate, and the bot's job is to price ten contracts,
+buy mispricings, size tenth-Kelly, and say plainly which gate stopped it when
+there is nothing worth buying. v6 does that job with sixteen models, a deep
+brain, a regime gate, a deeper fingerprint and a per-outcome ledger — and the
+same refusal to pretend.
+
+---
+
+## References (added in the October 2026 pass)
+
+- [c8] Deriv, *High/Low ticks* — trade-type page and FAQ (fixed five-tick
+  duration, no early close, synthetics). <https://www2.deriv.me/trade-types/options/digital-options/high-low-ticks/>
+- [c3b] Deriv legacy docs, *Highest/Lowest Tick* — API trading flow
+  (`TICKHIGH`/`TICKLOW`, proposal → buy → monitor).
+  <https://legacy-docs.deriv.com/docs/highestlowest-tick>

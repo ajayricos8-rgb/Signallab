@@ -20,7 +20,7 @@ The presets are ordinary DBot strategies â€” importable, editable, inspectable â
 not opaque binaries. Every decision they make comes from blocks that are also
 in the Vision Lab -> Price strategies toolbox:
 
-  x_price_decision        the ten-expert price ensemble (the brain), now with
+  x_price_decision        the sixteen-expert price ensemble (the brain), now with
                           the ten-outcome EV floor and the entry-slip charge
   x_price_decision_part   reads it: ready, side, tick, probability, tie rate,
                           edge, confidence, agreement, samples, horizon,
@@ -34,6 +34,9 @@ in the Vision Lab -> Price strategies toolbox:
   x_price_payout_table    the quoted payout ladder it prices against
   x_price_league          which expert is currently earning its weight
   x_price_audit           the bot's own record versus break-even
+  x_price_brain           the deep net's training state and the regime call
+  x_price_reverse         the DNA v2 auto-reverse-engineering diagnosis
+  x_price_forecast        the full ten-outcome read in one line
   x_price_auto_market     the scout: leave a market it cannot read
 
 Run `scripts/presets/validate_presets.py src/lib/bot-store/bots/*.xml`

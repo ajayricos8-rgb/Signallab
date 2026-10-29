@@ -284,6 +284,7 @@ def build(spec):
         # High/Low Tick market chooser.
         defaults += [
             ("ai dna floor", spec.get("dna_floor", "0")),
+            ("ai skill floor", spec.get("skill_floor", "-1")),
             ("ai scout floor", spec.get("scout_floor", "15")),
             ("ai scout dwell", spec.get("scout_dwell", "900")),
             ("ai market", ""),
@@ -331,6 +332,12 @@ def build(spec):
         # of a cycle one buy covers, so a ten-second contract on a 2 s market is
         # visible in the journal rather than implied.
         init.append(e.notify("info", e.block("x_price_clock")))
+        if spec.get("apex"):
+            # The v6 brain introduces itself: the deep net's training state and
+            # the regime call, then the deep reverse-engineering diagnosis the
+            # auto-tuning is derived from.
+            init.append(e.notify("info", e.block("x_price_brain")))
+            init.append(e.notify("info", e.block("x_price_reverse")))
 
     # ---- tick analysis: decide, then size the stake the buy will use ------
     tick = []
@@ -403,19 +410,25 @@ def build(spec):
         e.risk(e.get("stake"), legs(), e.get("ai stake percent")),
     )
     if spec["mode"] == "tick":
-        # Two more guards that only make sense on this contract family:
+        # Three more guards that only make sense on this contract family:
         #
         #   the record   — a graded record whose whole interval sits under the
         #                  break-even is a broken estimate, not bad luck;
         #   the DNA      — a market whose structure cannot be measured is not a
-        #                  market to size a position on.
+        #                  market to size a position on;
+        #   the skill    — a blend that cannot beat its own structural anchor
+        #                  walk-forward has not earned an entry (ships off).
         risk_ok = e.logic(
             "AND",
             risk_ok,
             e.logic(
                 "AND",
-                e.compare("EQ", e.part("stand-down", e.get(plan)), e.num("0")),
-                e.compare("GTE", e.part("dna-score", e.get(plan)), e.get("ai dna floor")),
+                e.logic(
+                    "AND",
+                    e.compare("EQ", e.part("stand-down", e.get(plan)), e.num("0")),
+                    e.compare("GTE", e.part("dna-score", e.get(plan)), e.get("ai dna floor")),
+                ),
+                e.compare("GTE", e.part("skill", e.get(plan)), e.get("ai skill floor")),
             ),
         )
     entry_gate = e.logic(
@@ -532,6 +545,26 @@ def build(spec):
             [e.notify("warn", e.text(spec["stopped"]))],
         ),
     ]
+    if spec.get("apex"):
+        # The v6 journal cadence slips in ahead of the session brakes: the AI
+        # core and the reverse engineering every 25 settlements, the outcome
+        # forecast alongside every payout ladder.
+        brakes_if = after.pop()
+        after += [
+            e.if_(
+                e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
+                e.notify("info", e.block("x_price_brain")),
+            ),
+            e.if_(
+                e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
+                e.notify("info", e.block("x_price_reverse")),
+            ),
+            e.if_(
+                e.compare("EQ", e.mod(e.get("ai contracts"), e.num("5")), e.num("0")),
+                e.notify("info", e.block("x_price_forecast")),
+            ),
+            brakes_if,
+        ]
 
     blocks = [
         e.trade_definition(
@@ -567,8 +600,9 @@ RISE_FALL = {
     "tradetype": "callput",
     "ids": {"tick": "rfTick01", "before": "rfBefore01", "after": "rfAfter01"},
     "armed": (
-        "Rise/Fall AI armed — Step Index 100, five ticks. Eight price experts mixed by measured "
-        "skill; an entry needs a positive edge over the payout break-even, side agreement, "
+        "Rise/Fall AI armed — Step Index 100, five ticks. Sixteen price experts mixed by measured "
+        "skill and gated by the live market regime, with a deep online brain learning from settled "
+        "windows; an entry needs a positive edge over the payout break-even, side agreement, "
         "confidence and the risk gate. Skips explain themselves; every fifth entry prints the "
         "realised hit rate."
     ),
@@ -583,15 +617,17 @@ RISE_FALL = {
     "comment": """
 Rise/Fall AI ensemble — Step Index 100, five ticks.
 
-Nine experts answer the same question and are mixed by how well they have actually done:
+Sixteen experts answer the same question and are mixed by how well they have actually done:
 structural anchor, long-run digit-step frequency, the Markov row for the current two-change
 state, the last 250 windows, a kernel replay of states that looked like this one, an
-analytical drift forecast, a serial-dependence fit, an online softmax net, and a regime model
+analytical drift forecast, a serial-dependence fit, a deep online neural net, and a regime model
 that switches between continuation and mean reversion depending on whether volatility is
-expanding or the market is quiet and stretched. Each is scored walk-forward with a Brier loss
-and the weights follow the multiplicative-weights rule, so a model that cannot read this
-market loses its vote on its own. The blend is then shrunk toward the market base rate by its
-effective sample size.
+expanding or the market is quiet and stretched, plus a position Markov chain, an
+expansion-scaled volatility tilt, a microtrend pressure gauge, a granularity-range selector, an
+entropy concentration reader, a Hurst long-memory probe and a phase-cycle reader. Each is scored
+walk-forward with a Brier loss and the weights follow the multiplicative-weights rule, gated by
+the live market regime, so a model that cannot read this market loses its vote on its own. The
+blend is then shrunk toward the market base rate by its effective sample size.
 
 Two calibration layers sit on top of that, and they are the difference between a bot that
 looks clever and one that is measured:
@@ -679,9 +715,11 @@ payout needs. No amount of modelling fixes a shape that cannot settle a winner. 
 the four-tick contract anyway, set "ai duration" to 4 and "ai max tie" to 0.5 — the bot will
 trade it, and the entry line will print the tie rate it is paying.
 
-Nine experts, mixed by their measured walk-forward skill, decide the side; the stake is
+Sixteen experts, mixed by their measured walk-forward skill and gated by the live market
+regime, decide the side, with a deep online brain learning from settled windows; the stake is
 tenth-Kelly on the calibrated probability, and the calibration comes from the rule's own
-graded record, so a run of losses shrinks the stake rather than parking the bot.
+graded record (per outcome, not just overall), so a run of losses shrinks the stake rather
+than parking the bot.
 
 What each part does:
 
@@ -712,6 +750,9 @@ TICK_SNIPER = {
     "symbol": "R_100",
     "tradetype_cat": "highlowticks",
     "tradetype": "highlowticks",
+    # The APEX core (v6): sixteen experts, a deep online brain, regime-gated
+    # mixture, DNA v2 auto-reverse-engineering and per-outcome calibration.
+    "apex": True,
     # The value gate on this family is the expected value of the chosen
     # contract against the live ten-outcome ladder, not an absolute probability
     # (there is no single probability that means anything across five positions)
@@ -728,6 +769,10 @@ TICK_SNIPER = {
     "max_stake": "1",
     "slip": "1",
     "dna_floor": "35",
+    # Walk-forward skill floor on the blend vs the structural anchor. Ships at
+    # -1 (off): the skill still shrinks the estimate through the trust curve,
+    # and raising this knob makes it a hard entry gate instead.
+    "skill_floor": "-1",
     # The scout: High/Low Ticks are quoted on every synthetic index and the
     # markets do not pay the same. A floor this low means the bot only leaves a
     # market it genuinely cannot read, and the 15-minute dwell means it cannot
@@ -738,16 +783,18 @@ TICK_SNIPER = {
     "scout_dwell": "900",
     "ids": {"tick": "hlTick01", "before": "hlBefore01", "after": "hlAfter01"},
     "armed": (
-        "High/Low Tick AI Sniper v5 armed — five-tick contract. Ten experts mixed by measured "
-        "skill, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys "
+        "High/Low Tick AI Sniper v6 armed — five-tick contract. Sixteen experts mixed by measured "
+        "skill and gated by the live market regime, a deep online brain that learns from settled "
+        "windows only, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys "
         "the position with the highest expected value against what Deriv actually quotes, and "
         "refuses when there is none. Every skip names its gate; every tenth settlement prints the "
-        "self-audit, every twenty-fifth the expert league, the market DNA and the execution clock. "
+        "self-audit, every twenty-fifth the expert league, the market DNA, the AI core, the reverse "
+        "engineering and the execution clock, every fifth the payout ladder and the outcome forecast. "
         "Demo first: estimates are not guarantees; confirm equal-extreme settlement with Deriv."
     ),
     "held": (
-        "AI is ready but the entry gate held it — the confidence floor, the DNA floor, the rule's "
-        "own graded record, a losing-streak cool-off, the balance percentage, the loss limit or "
+        "AI is ready but the entry gate held it — the confidence floor, the DNA floor, the skill floor, "
+        "the rule's own graded record, a losing-streak cool-off, the balance percentage, the loss limit or "
         "the profit target blocked this entry."
     ),
     "stopped": (
@@ -755,19 +802,30 @@ TICK_SNIPER = {
         "Open contracts still settle; restart the bot to begin a new session."
     ),
     "comment": """
-High/Low Tick AI Sniper v5 — the five-tick contract Deriv sells for this trade type.
+High/Low Tick AI Sniper v6 (APEX core) — the five-tick contract Deriv sells for this trade type.
 
 WHAT IS BEING BOUGHT
 Of the next five quotes, which position holds the strict high or the strict low? Ten outcomes
 (tick 1-5 high, tick 1-5 low). This model assumes a shared extreme loses on that side; Deriv's
 published description does not specify the tie rule, so confirm it in demo. Under that assumption the
 probability a contract is paid on is the conditional position probability times the chance that
-this window prints a strict extreme at all. Ten experts answer it — tie-aware structural anchor,
+this window prints a strict extreme at all. Sixteen experts answer it — tie-aware structural anchor,
 long-run history, the two-change Markov row, the recent regime, a kernel replay of similar
-moments, a drift forecast, positional persistence, an online softmax net, a volatility-regime
-model and a Markov chain on the last settled window's extreme — each scored using delayed Brier losses on historical windows, so an expert that cannot read this market loses its vote on its own. The blend is
+moments, a drift forecast, positional persistence, a deep online neural net, a volatility-regime
+model, a Markov chain on the last settled window's extreme, an expansion-scaled volatility tilt,
+a microtrend pressure gauge, a granularity-range selector, an entropy concentration reader, a Hurst
+long-memory probe and an extreme-phase cycle reader — each scored using delayed Brier losses on historical windows, so an expert that cannot read this market loses its vote on its own. The blend is
 shrunk toward the structural prior by its effective sample size AND by its measured skill: a
 blend that cannot beat the prior does not get to publish a 60 % probability.
+
+THE INTERNAL BRAIN
+The neural expert is a deep online network (8 market features → 10 tanh hidden units → softmax
+over the ten outcomes), trained walk-forward with backpropagation on settled windows only, with
+L2 decay so thin samples cannot teach it fantasies. A meta-learner keeps a separate Brier
+scoreboard per market regime (expansion, reversion, balanced) and gates the live mixture by the
+regime the tape is in: trend readers are trusted when a trend is on, range readers when it is
+not. The AI core journal line reports the net's update count and weight norm, the live regime,
+whether the regime board is trusted yet, and the three experts carrying the decision.
 
 THE STRUCTURE, AND WHY IT IS NOT THE OBVIOUS ONE
 The continuous random walk prior is the discrete arcsine law: over five ticks, position 1 and
@@ -799,13 +857,24 @@ filled inside of. The clock is printed at start-up and every twenty-fifth settle
 
 SELF-AUDIT AND SELF-DEFENCE
 Every published decision is filed with the tick it was made on and graded when the window
-settles. The record is used, not just printed: a record at or above the break-even sharpens the
-estimate, a record below it pulls the estimate back toward the structural prior, and once forty
-decisions are graded a Wilson bound that still sits under the break-even sets "stand down" and
-the bot stops buying until the record recovers. Every tenth settlement prints the self-audit
-(skill, certainty, calibration, record vs break-even, tie forecast vs long-run, DNA, quotes and
-label fidelity), every twenty-fifth the expert league, the market DNA and the clock, every fifth
-the live payout ladder.
+settles — per outcome, not just overall, so a high-tick-3 read that keeps missing is shrunk
+without punishing the reads that earned their keep. The record is used, not just printed: a record
+at or above the break-even sharpens the estimate, a record below it pulls the estimate back toward
+the structural prior, and once forty decisions are graded a Wilson bound that still sits under the
+break-even sets "stand down" and the bot stops buying until the record recovers. Every tenth
+settlement prints the self-audit (skill, certainty, calibration, record vs break-even, tie forecast
+vs long-run, DNA, quotes and label fidelity), every twenty-fifth the expert league, the market DNA,
+the AI core, the reverse engineering and the clock, every fifth the live payout ladder and the
+outcome forecast.
+
+AUTO-REVERSE-ENGINEERING
+Market DNA v2 fingerprints the tape far beyond ties and grid ratio: Hurst long-memory exponent,
+extreme-shape entropy on both sides, spike (jump) rate, extreme-phase autocorrelation, tie
+clustering, range compression and tick sigma. From those measurements the bot derives its own
+auto-tuning — a wider EV bound on grid tape, heavier anchor trust on spike tape, patience on
+compressed tape — and prints the whole diagnosis in the reverse-engineering journal line. The
+"ai skill floor" knob (ships off at -1) can additionally refuse entries while the blend's
+walk-forward skill is under water.
 
 RISK
 The stake is tenth-Kelly on the calibrated probability and the quoted payout, floored at
@@ -817,10 +886,10 @@ when Deriv processes the buy, not when the model looked.
 
 THE MARKET SCOUT
 High/Low Ticks are quoted on every synthetic index, and they do not pay the same. The scout
-scores the market the bot is standing on (measured EV, certainty, DNA readability, sample) and
-moves when the score falls under "ai scout floor", never more often than "ai scout dwell"
-seconds. A switch costs a cold tick stream, so the dwell is fifteen minutes and the floor is
-low: the bot only leaves a market it cannot read. Set the floor to 0 to keep the scout on
+scores the market the bot is standing on (measured EV, certainty, DNA readability, sample and
+walk-forward skill) and moves when the score falls under "ai scout floor", never more often than
+"ai scout dwell" seconds. A switch costs a cold tick stream, so the dwell is fifteen minutes and
+the floor is low: the bot only leaves a market it cannot read. Set the floor to 0 to keep the scout on
 whatever market you selected.
 
 HONESTY

@@ -1,5 +1,5 @@
 /**
- * Price-path ensemble for the shipped DBot strategies — v5.
+ * Price-path ensemble for the shipped DBot strategies — v6 (APEX core).
  *
  * Two kinds of question are answered here:
  *
@@ -31,20 +31,74 @@
  *               hundred changes, compounded over the horizon. In tick mode it
  *               is the AR(1) fit on the *position* of the running extreme,
  *               which is the only persistence a tick generator can leave there.
- *   neural      an online softmax regression over the same state features,
- *               trained walk-forward on completed windows.
+ *   neural      a deep online network (8 features → 10 tanh units → softmax),
+ *               trained walk-forward on completed windows only, with L2
+ *               regularisation. The internal built-in AI: it never sees the
+ *               future, and it is scored like every other expert, so a
+ *               decorative net loses its vote.
  *   regime      expansion → the extreme prints late; quiet-and-stretched →
  *               the extreme prints early. On a fair stream it loses its vote.
- *   position    v5: a Markov chain on the previous window's strict extreme
+ *   position    a Markov chain on the previous window's strict extreme
  *               (H1…H5, L1…L5, T). Consecutive windows overlap four ticks, so
  *               their outcomes are correlated even when the increments are not.
+ *   volatility  v6: the expansion-adjusted tilt. A rising, expanding tape
+ *               pushes the high late and the low early with a strength that
+ *               scales with the measured expansion instead of a fixed constant.
+ *   microtrend  v6: short-horizon pressure from RSI, slope and stretch fused
+ *               into one continuous lean, per side.
+ *   range       v6: the structure selector. Compressed volatility behaves like
+ *               the grid walk, expanded volatility like the continuous walk;
+ *               this expert interpolates the prior between the two by the
+ *               measured expansion instead of asserting one shape everywhere.
+ *   entropy     v6: concentration reader. When the recent extreme histogram is
+ *               concentrated (low Shannon entropy) it persists the modal shape;
+ *               when it is diffuse it abstains to the frequency table.
+ *   hurst       v6: long-memory probe. An R/S Hurst exponent above ~0.55 tilts
+ *               with the trend, below ~0.45 tilts against the stretched move,
+ *               and near a half it abstains.
+ *   cycle       v6: extreme-phase persistence. The lag-1 autocorrelation of
+ *               the settled extreme positions decides whether the next window
+ *               inherits the last window's phase or reverts to the base rate.
  *
  * The mixture weights are not hand-picked. Each model is scored with a Brier
  * loss over the windows it would have predicted, and the weights follow the
- * multiplicative-weights rule (exponential in relative loss). A model that is
- * useless on this market — a drift model on a fixed-step index, say — loses
- * weight by itself; a model that reads the market keeps it. That is the same
- * adaptive-expert design the digit brain uses, applied to price contracts.
+ * multiplicative-weights rule (exponential in relative loss), gated per market
+ * regime: the engine keeps a separate scoreboard for expansion, reversion and
+ * balanced tape, and blends the global weights with the live regime's
+ * scoreboard, so an expert that reads trends but not ranges is trusted exactly
+ * when a trend is on. A model that is useless on this market — a drift model
+ * on a fixed-step index, say — loses weight by itself; a model that reads the
+ * market keeps it. That is the same adaptive-expert design the digit brain
+ * uses, applied to price contracts.
+ *
+ * What v6 changed, and why
+ * ------------------------
+ *   Six new experts (volatility, microtrend, range, entropy, hurst, cycle),
+ *   each scored walk-forward like the original ten, so the league is now
+ *   sixteen models and the mixture has a specialist for volatility structure,
+ *   short-horizon pressure, granularity selection, concentration, long memory
+ *   and extreme-phase persistence.
+ *
+ *   A deep online brain. The `neural` expert is now a two-layer network
+ *   (8 → 10 tanh → softmax) trained walk-forward with backpropagation and L2
+ *   decay. Its update count, hidden-layer norm and learning rate are reported
+ *   in `decision.brain`, and the `x_price_brain` block prints them.
+ *
+ *   Regime-gated mixture (meta-learner). Brier scoreboards are kept per
+ *   regime, and the live mixture blends the global weights with the live
+ *   regime's weights, so regime specialists are trusted when their regime is
+ *   on. The walk-forward replay scores the gated blend, keeping `skill` honest.
+ *
+ *   Market DNA v2 — the auto-reverse-engineering layer. The fingerprint now
+ *   carries the Hurst exponent, extreme entropy, jump rate, extreme-phase
+ *   autocorrelation, tie clustering, range compression and an `autoTune`
+ *   recommendation (EV caution, slip charge, anchor trust) derived from the
+ *   measured phase. The `x_price_reverse` block prints the whole diagnosis.
+ *
+ *   Per-outcome calibration. When the runtime supplies a per-outcome graded
+ *   record, each outcome's probability is reliability-adjusted against what
+ *   that outcome claimed — a high-tick-3 read that keeps missing is shrunk
+ *   without punishing the reads that earned their keep.
  *
  * What v5 changed, and why
  * ------------------------
@@ -116,10 +170,16 @@ export const PRICE_MODEL_NAMES = [
     'neural',
     'regime',
     'position',
+    'volatility',
+    'microtrend',
+    'range',
+    'entropy',
+    'hurst',
+    'cycle',
 ];
 
 /** Bumped whenever the decision shape or its gates change meaning. */
-export const PRICE_MODEL_VERSION = 5;
+export const PRICE_MODEL_VERSION = 6;
 
 /** Minimum history before any decision is published at all. */
 const MIN_TICKS = 256;
@@ -157,6 +217,19 @@ const TIE_MEMORY = 60;
 const TIE_SHRINK = 80;
 /** Graded decisions needed before the record's Wilson bound may stand a bot down. */
 const STAND_DOWN_SAMPLES = 40;
+/** Hidden units of the online deep net behind the `neural` expert (v6). */
+const NET_HIDDEN = 10;
+/** Learning rate and L2 decay of that net's walk-forward gradient steps. */
+const NET_LEARNING_RATE = 0.05;
+const NET_L2 = 0.0005;
+/** Regime scoreboard samples needed before the meta-learner trusts a regime. */
+const REGIME_MIN_SAMPLES = 25;
+/** Blend between the global mixture and the live regime's mixture. */
+const REGIME_BLEND = 0.45;
+/** Changes read by the Hurst probe (v6 `hurst` expert and DNA v2). */
+const HURST_LOOKBACK = 120;
+/** Recent settled rows read by the concentration and phase experts. */
+const SHAPE_LOOKBACK = 60;
 
 /** The payout the shipped presets assume when the live quote is unavailable. */
 export const DEFAULT_PAYOUT = 0.95;
@@ -349,6 +422,80 @@ export function lagOneCorrelation(series) {
 }
 
 /**
+ * Normalised Shannon entropy of a histogram: 0 when one bin holds everything,
+ * 1 when the mass is spread evenly. Used by the `entropy` expert (concentration
+ * reader) and by market DNA v2.
+ */
+export function entropyOf(histogram) {
+    if (!Array.isArray(histogram) || histogram.length < 2) return 1;
+    const total = histogram.reduce((sum, value) => sum + Math.max(0, safe(value, 0)), 0);
+    if (!(total > 0)) return 1;
+    let entropy = 0;
+    for (const value of histogram) {
+        const p = Math.max(0, safe(value, 0)) / total;
+        if (p > 0) entropy -= p * Math.log2(p);
+    }
+    return clamp(entropy / Math.log2(histogram.length), 0, 1);
+}
+
+/**
+ * Hurst exponent by the rescaled-range (R/S) method on a change series.
+ *
+ * H ≈ 0.5 is an uncorrelated walk, H > 0.55 suggests persistence (trends
+ * continue) and H < 0.45 suggests anti-persistence (moves revert). A single
+ * window over the supplied changes keeps it O(n); the caller decides the
+ * lookback so the walk-forward replay stays blind to the future.
+ */
+export function hurstExponent(changes) {
+    if (!Array.isArray(changes) || changes.length < 32) return 0.5;
+    const series = changes.map(value => safe(value, 0));
+    const n = series.length;
+    const mean = series.reduce((sum, value) => sum + value, 0) / n;
+    let cumulative = 0;
+    let peak = -Infinity;
+    let trough = Infinity;
+    let variance = 0;
+    for (const value of series) {
+        cumulative += value - mean;
+        if (cumulative > peak) peak = cumulative;
+        if (cumulative < trough) trough = cumulative;
+        variance += (value - mean) ** 2;
+    }
+    const deviation = Math.sqrt(variance / n);
+    if (!(deviation > 0) || !(peak > trough)) return 0.5;
+    const rs = (peak - trough) / deviation;
+    if (!(rs > 0)) return 0.5;
+    return clamp(Math.log(rs) / Math.log(n), 0.05, 0.95);
+}
+
+/**
+ * Tilt a five-position tick prior along the tape.
+ *
+ * Positive `lean` pushes the HIGH extreme late (tick 5) and the LOW extreme
+ * early (tick 1) — the shape of a rising drift (§3.4 of the research file);
+ * negative lean mirrors it. Shared by every v6 expert that reads direction so
+ * they all speak the same geometry.
+ */
+function tiltTick(base, lean) {
+    const k = clamp(safe(lean, 0), -1, 1);
+    const high = normalise(
+        base.map((value, pos) => value * Math.exp(k * (pos - 2))),
+        base
+    );
+    const low = normalise(
+        base.map((value, pos) => value * Math.exp(-k * (pos - 2))),
+        base
+    );
+    return [...high, ...low];
+}
+
+/** Directional two-vector from a z-score, carrying the market's tie mass. */
+function upVector(z, tieRate) {
+    const up = clamp(normalCdf(clamp(safe(z, 0), -2.5, 2.5)), 0.02, 0.98);
+    return [up * (1 - tieRate * 0.5), (1 - up) * (1 - tieRate * 0.5)];
+}
+
+/**
  * Break-even win probability for a binary contract paying `payout` profit per
  * unit staked: you win `payout`, you lose 1, so p·payout − (1 − p) = 0 gives
  * p = 1/(1 + payout). With the usual 0.95 quote that is 51.28 %, not 50 % and
@@ -521,6 +668,21 @@ export function strictExtremePrior(h = 5, tieRate = 0) {
  *                  sample size, structure, drift, persistence and tie stability
  *   phase          'grid' | 'mixed' | 'continuous' — which prior applies
  *   verdict        one line for the journal
+ *
+ * v6 (DNA v2) adds the auto-reverse-engineering layer — deeper measurements of
+ * the same ticks, plus the tuning the bot derives from them on its own:
+ *
+ *   hurst          R/S Hurst exponent of the tick changes (0.5 = no memory)
+ *   entropyHigh    normalised Shannon entropy of the high-side extreme shape
+ *   entropyLow     normalised Shannon entropy of the low-side extreme shape
+ *   jumpRate       share of moves larger than 3× the median move (spike tape)
+ *   extremeAutocorr lag-1 autocorrelation of the settled high positions
+ *   tieClustering  Fano factor of tie counts across 20-window blocks (1 = even)
+ *   compression    recent window range / longer-run window range (<1 squeezed)
+ *   tickSigma      σ per tick in price units
+ *   autoTune       { evZ, slip, anchorTrust, note } — the caution the measured
+ *                  phase implies: grid tape gets a wider EV bound, jumpy tape
+ *                  a heavier anchor, compressed tape a patience note
  */
 export function marketDna(values, options = {}) {
     const prices = Array.isArray(values) ? values.map(Number) : [];
@@ -547,6 +709,15 @@ export function marketDna(values, options = {}) {
         readability: 0,
         phase: 'cold',
         horizon,
+        hurst: 0.5,
+        entropyHigh: 1,
+        entropyLow: 1,
+        jumpRate: 0,
+        extremeAutocorr: 0,
+        tieClustering: 1,
+        compression: 1,
+        tickSigma: 0,
+        autoTune: { evZ: 1, slip: 1, anchorTrust: 0.5, note: 'cold — nothing measured yet' },
         verdict: `warming up — ${prices.length}/${MIN_TICKS} usable quotes`,
     };
     if (!usable) return empty;
@@ -555,6 +726,9 @@ export function marketDna(values, options = {}) {
     const first = Math.max(2, prices.length - 1000);
     const highCounts = new Array(horizon).fill(0);
     const lowCounts = new Array(horizon).fill(0);
+    const highPhase = [];
+    const tieHighFlags = [];
+    const windowRanges = [];
     let windows = 0;
     let tieHigh = 0;
     let tieLow = 0;
@@ -565,10 +739,15 @@ export function marketDna(values, options = {}) {
         const highAt = window.indexOf(high);
         const lowAt = window.indexOf(low);
         windows += 1;
-        if (window.filter(value => value === high).length === 1) highCounts[highAt] += 1;
+        const highTied = window.filter(value => value === high).length !== 1;
+        const lowTied = window.filter(value => value === low).length !== 1;
+        if (!highTied) highCounts[highAt] += 1;
         else tieHigh += 1;
-        if (window.filter(value => value === low).length === 1) lowCounts[lowAt] += 1;
+        if (!lowTied) lowCounts[lowAt] += 1;
         else tieLow += 1;
+        highPhase.push(highTied ? 2 : highAt);
+        tieHighFlags.push(highTied ? 1 : 0);
+        windowRanges.push(high - low);
     }
     if (!windows) return { ...empty, verdict: 'no completed windows yet' };
 
@@ -643,6 +822,57 @@ export function marketDna(values, options = {}) {
     const fairOf = histogram => histogram.map(value => (value > 0 ? (1 - value) / value : 0));
 
     const phase = gridRatio <= 2.5 ? 'grid' : gridRatio >= 8 ? 'continuous' : 'mixed';
+
+    // ---- DNA v2: the auto-reverse-engineering layer ------------------------
+    // Everything above describes the market's shape; these fields describe its
+    // memory, its spikes and its rhythm — the measurements the bot uses to tune
+    // its own caution without being told.
+    const hurst = hurstExponent(changes.slice(-HURST_LOOKBACK));
+    const entropyHigh = entropyOf([...strictHigh, rateHigh]);
+    const entropyLow = entropyOf([...strictLow, rateLow]);
+    const orderedMoves = magnitudes.slice().sort((a, b) => a - b);
+    const medianMove = orderedMoves.length ? orderedMoves[Math.floor(orderedMoves.length / 2)] : 0;
+    const jumpRate = changes.length && medianMove > 0
+        ? changes.filter(value => Math.abs(value) > 3 * medianMove).length / changes.length
+        : 0;
+    const extremeAutocorr = highPhase.length >= 20 ? lagOneCorrelation(highPhase) : 0;
+    let tieClustering = 1;
+    {
+        const blocks = [];
+        for (let b = 0; b + 20 <= tieHighFlags.length; b += 20) {
+            blocks.push(tieHighFlags.slice(b, b + 20).reduce((sum, value) => sum + value, 0));
+        }
+        if (blocks.length >= 3) {
+            const mean = blocks.reduce((sum, value) => sum + value, 0) / blocks.length;
+            const variance = blocks.reduce((sum, value) => sum + (value - mean) ** 2, 0) / blocks.length;
+            tieClustering = mean > 0 ? clamp(variance / mean, 0, 5) : 1;
+        }
+    }
+    const recentRange = windowRanges.slice(-10);
+    const longRange = windowRanges.slice(-60);
+    const meanOf = list => (list.length ? list.reduce((sum, value) => sum + value, 0) / list.length : 0);
+    const compression = meanOf(longRange) > 0 ? clamp(meanOf(recentRange) / meanOf(longRange), 0.1, 5) : 1;
+    // The tuning this market's own measurements imply. Grid tape is tie-heavy,
+    // so the EV bound widens; jumpy tape is anchor-heavy, so deviations from
+    // structure are trusted less; compressed tape earns a patience note rather
+    // than a trade. Nothing here is a forecast — it is the bot reading its own
+    // instruments and setting its own caution.
+    const autoTune = {
+        evZ: phase === 'grid' ? 1.5 : phase === 'mixed' ? 1.25 : 1,
+        slip: 1,
+        anchorTrust: clamp(0.5 + ((rateHigh + rateLow) / 2) * 1.2 + jumpRate * 2, 0.5, 1),
+        note:
+            phase === 'grid'
+                ? 'grid tape: widen the EV bound, the middle pays for rarity'
+                : jumpRate > 0.05
+                  ? 'spike tape: trust the anchor, spikes break conditional reads'
+                  : compression < 0.7
+                    ? 'compressed tape: small windows, wait for the release'
+                    : Math.abs(hurst - 0.5) > 0.1
+                      ? `memory ${hurst > 0.5 ? 'trending' : 'reverting'} (H ${hurst.toFixed(2)}): lean with the phase`
+                      : 'clean tape: standard caution',
+    };
+
     const parts = [
         `${windows} windows`,
         `tie ${(rateHigh * 100).toFixed(1)}%`,
@@ -681,6 +911,15 @@ export function marketDna(values, options = {}) {
         readability,
         phase,
         horizon,
+        hurst,
+        entropyHigh,
+        entropyLow,
+        jumpRate,
+        extremeAutocorr,
+        tieClustering,
+        compression,
+        tickSigma: sigma,
+        autoTune,
         summary: parts.join(' · '),
         verdict,
     };
@@ -720,6 +959,10 @@ const emptyDecision = (extra = {}) => ({
     skill: 0,
     dnaScore: 0,
     dna: null,
+    brain: null,
+    meta: null,
+    autoTune: null,
+    forecast: [],
     standDown: 0,
     intervalSeconds: 0,
     latencySeconds: 0,
@@ -921,6 +1164,7 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         : { high: tieRate, low: tieRate };
     const tieLong = isTick ? (tieHistory.high + tieHistory.low) / 2 : tieRate;
     const strictPrior = isTick ? strictExtremePrior(TICK_POSITIONS, tieLong) : null;
+    const arcPrior = isTick ? arcsinePrior(TICK_POSITIONS) : null;
     const anchor = isTick
         ? [...strictPrior, ...strictPrior]
         : new Array(count).fill((1 - tieRate) / 2);
@@ -992,8 +1236,87 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     const positionCounts = new Map();
     const passed = []; // settled rows the models may learn from, with features
     const featureCount = 8; // bias + signs + rsi + stretch + expansion + run + history position
-    const weights = Array.from({ length: count }, () => new Array(featureCount).fill(0));
-    const learningRate = 0.05;
+    // The internal built-in AI: a two-layer online network (features → tanh
+    // hidden → softmax), trained walk-forward on settled windows only. The
+    // hidden layer lets it learn interactions (e.g. "stretched AND quiet")
+    // that a linear model cannot express; L2 decay keeps it honest on thin
+    // samples. Its update count and weight norm are reported in `brain`.
+    const netW1 = Array.from({ length: NET_HIDDEN }, () => new Array(featureCount).fill(0));
+    const netB1 = new Array(NET_HIDDEN).fill(0);
+    const netW2 = Array.from({ length: count }, () => new Array(NET_HIDDEN).fill(0));
+    const netB2 = new Array(count).fill(0);
+    let netUpdates = 0;
+    const netForward = featureRow => {
+        const hidden = netW1.map((row, unit) => {
+            let sum = netB1[unit];
+            for (let i = 0; i < featureCount; i++) sum += row[i] * featureRow[i];
+            return Math.tanh(sum);
+        });
+        const logits = netW2.map((row, k) => {
+            let sum = netB2[k];
+            for (let j = 0; j < NET_HIDDEN; j++) sum += row[j] * hidden[j];
+            return sum;
+        });
+        return { hidden, probs: softmax(logits) };
+    };
+    const netStep = (featureRow, winners) => {
+        const { hidden, probs } = netForward(featureRow);
+        const outputError = probs.map((p, k) => p - (winners.includes(k) ? 1 : 0));
+        // Output layer gradients, with L2 decay toward zero.
+        for (let k = 0; k < count; k++) {
+            netB2[k] -= NET_LEARNING_RATE * outputError[k];
+            for (let j = 0; j < NET_HIDDEN; j++) {
+                netW2[k][j] -= NET_LEARNING_RATE * (outputError[k] * hidden[j] + NET_L2 * netW2[k][j]);
+            }
+        }
+        // Hidden layer gradients through the tanh derivative.
+        for (let j = 0; j < NET_HIDDEN; j++) {
+            let back = 0;
+            for (let k = 0; k < count; k++) back += outputError[k] * netW2[k][j];
+            const delta = back * (1 - hidden[j] * hidden[j]);
+            netB1[j] -= NET_LEARNING_RATE * delta;
+            for (let i = 0; i < featureCount; i++) {
+                netW1[j][i] -= NET_LEARNING_RATE * (delta * featureRow[i] + NET_L2 * netW1[j][i]);
+            }
+        }
+        netUpdates += 1;
+    };
+    const netNorm = () => {
+        let sum = 0;
+        for (const row of netW1) for (const value of row) sum += value * value;
+        for (const row of netW2) for (const value of row) sum += value * value;
+        return Math.sqrt(sum);
+    };
+    // Meta-learner scoreboards: one Brier ledger per market regime, so the
+    // mixture can trust trend-readers when a trend is on and range-readers
+    // when it is not. Accumulated in settleScore (settled rows only), exactly
+    // like the global ledger.
+    const REGIMES = ['expansion', 'reversion', 'balanced'];
+    const regimeBrierSum = {
+        expansion: PRICE_MODEL_NAMES.map(() => 0),
+        reversion: PRICE_MODEL_NAMES.map(() => 0),
+        balanced: PRICE_MODEL_NAMES.map(() => 0),
+    };
+    const regimeBrierCount = {
+        expansion: PRICE_MODEL_NAMES.map(() => 0),
+        reversion: PRICE_MODEL_NAMES.map(() => 0),
+        balanced: PRICE_MODEL_NAMES.map(() => 0),
+    };
+    const regimeOf = moment => tickRegime(moment);
+    /** Global mixture gated by the live regime's own scoreboard. */
+    const mixtureFor = regime => {
+        const global = mixtureWeights(
+            brierSum.map((value, modelIndex) => (brierCount[modelIndex] ? value / brierCount[modelIndex] : 1))
+        );
+        const sums = regimeBrierSum[regime] || regimeBrierSum.balanced;
+        const counts = regimeBrierCount[regime] || regimeBrierCount.balanced;
+        const samples = Math.min(...counts);
+        if (!(samples >= REGIME_MIN_SAMPLES)) return { weights: global, samples, gated: false };
+        const gated = mixtureWeights(sums.map((value, modelIndex) => (counts[modelIndex] ? value / counts[modelIndex] : 1)));
+        const weights = global.map((value, modelIndex) => (1 - REGIME_BLEND) * value + REGIME_BLEND * gated[modelIndex]);
+        const total = weights.reduce((sum, value) => sum + value, 0) || 1;
+        return { weights: weights.map(value => value / total), samples, gated: true };
+    };
 
     const score = (probability, winners) => {
         // Brier over the K outcome indicators. A window with two strict
@@ -1112,9 +1435,7 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
             clamp(moment.run, -6, 6) / 6,
             isTick ? (historyPosition - 2) / 2 : moment.run >= 0 ? 0.5 : -0.5,
         ];
-        const neural = softmax(
-            weights.map(row => row.reduce((sum, value, index) => sum + value * featureRow[index], 0))
-        );
+        const neural = netForward(featureRow).probs;
         // The regime expert asks a different question from every other model
         // here: not "which way is it going" but "what kind of market is this?".
         // A quiet market that has stretched away from its short mean tends to
@@ -1158,6 +1479,92 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         // Position: the Markov row for the last settled window's extreme.
         const bucket = positionCounts.get(historyKey);
         const position = bucket ? fromCounts(bucket.counts, bucket.total, frequency) : frequency.slice();
+        // ---- v6 experts ----------------------------------------------------
+        // Volatility: expansion-scaled trend tilt. A rising, expanding tape
+        // pushes the high late and the low early; the strength scales with the
+        // measured expansion instead of a fixed constant.
+        const volStrength = clamp((safe(moment.expansion, 1) - 1) * 0.7, -0.8, 0.9);
+        const volLean = volStrength * Math.sign(moment.slope || 0);
+        const volatility = isTick
+            ? tiltTick(strictPrior, volLean)
+            : upVector(moment.slope * 2 * clamp(safe(moment.expansion, 1) - 0.6, 0, 1.6), tieRate);
+        // Microtrend: RSI, slope and stretch fused into one continuous lean.
+        const microLean = clamp(0.55 * safe(moment.rsi, 0) + 0.45 * safe(moment.slope, 0), -1, 1) * 0.75;
+        const microtrend = isTick ? tiltTick(strictPrior, microLean) : upVector(microLean * 2.4, tieRate);
+        // Range: the structure selector. Compressed tape behaves like the grid
+        // walk, expanded tape like the continuous walk; the prior is
+        // interpolated between the two by the measured expansion.
+        let range;
+        if (isTick) {
+            const mixWeight = clamp((safe(moment.expansion, 1) - 0.6) / 1.4, 0, 1);
+            const mixed = strictPrior.map((value, pos) => (1 - mixWeight) * value + mixWeight * arcPrior[pos]);
+            range = [...mixed, ...mixed];
+        } else {
+            range = anchor.slice();
+        }
+        // Entropy: the concentration reader. A concentrated recent shape
+        // persists; a diffuse one abstains to the frequency table.
+        let entropy;
+        {
+            const shape = passed.slice(-SHAPE_LOOKBACK);
+            if (shape.length < 20) {
+                entropy = frequency.slice();
+            } else {
+                const shapeCounts = blank();
+                shape.forEach(row => tally(shapeCounts, row.winners));
+                const smoothed = fromCounts(shapeCounts, shape.length, frequency);
+                const concentration = isTick
+                    ? clamp((0.92 - entropyOf(shapeCounts)) * 4, 0, 0.7)
+                    : clamp((1 - entropyOf(shapeCounts)) * 3 - 0.6, 0, 0.7);
+                entropy = smoothed.map((value, index) => concentration * value + (1 - concentration) * frequency[index]);
+            }
+        }
+        // Hurst: the long-memory probe, read from settled changes only.
+        let hurst;
+        {
+            const end = moment.index;
+            const startH = Math.max(1, end - HURST_LOOKBACK);
+            const hChanges = [];
+            for (let index = startH; index <= end; index++) hChanges.push(prices[index] - prices[index - 1]);
+            const memory = hurstExponent(hChanges);
+            const direction = Math.sign(moment.slope || prices[end] - prices[end - 1] || 0);
+            let lean = 0;
+            if (memory > 0.55) lean = clamp((memory - 0.5) * 4, 0, 0.8) * direction;
+            else if (memory < 0.45) lean = -clamp((0.5 - memory) * 4, 0, 0.8) * direction;
+            hurst = isTick ? tiltTick(strictPrior, lean) : upVector(lean * 2, tieRate);
+        }
+        // Cycle: extreme-phase persistence from the settled position series.
+        let cycle;
+        {
+            const phase = passed
+                .slice(-40)
+                .map(row => (row.winners.length ? row.winners[0] % (isTick ? 5 : 2) : null))
+                .filter(value => value !== null);
+            if (phase.length < 20) {
+                cycle = frequency.slice();
+            } else if (!isTick) {
+                const signs = phase.map(value => (value === 0 ? 1 : -1));
+                const rhoPhase = lagOneCorrelation(signs);
+                cycle =
+                    Math.abs(rhoPhase) < 0.1
+                        ? frequency.slice()
+                        : upVector(clamp(rhoPhase * 4, -2, 2) * signs[signs.length - 1], tieRate);
+            } else {
+                const mean = phase.reduce((sum, value) => sum + value, 0) / phase.length;
+                const rhoPhase = lagOneCorrelation(phase);
+                if (Math.abs(rhoPhase) < 0.15) {
+                    cycle = frequency.slice();
+                } else {
+                    const predictedHigh = clamp(mean + rhoPhase * (phase[phase.length - 1] - mean), 0, 4);
+                    const bump = predicted =>
+                        normalise(
+                            strictPrior.map((value, pos) => value * Math.exp(-((pos - predicted) ** 2) / 2.5)),
+                            strictPrior
+                        );
+                    cycle = [...bump(predictedHigh), ...bump(4 - predictedHigh)];
+                }
+            }
+        }
         return {
             anchor,
             frequency,
@@ -1169,6 +1576,12 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
             neural,
             regime: regimeVector,
             position,
+            volatility,
+            microtrend,
+            range,
+            entropy,
+            hurst,
+            cycle,
         };
     };
 
@@ -1195,7 +1608,7 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         positionBucket.total += 1;
         positionCounts.set(row.historyKey, positionBucket);
 
-        // One softmax gradient step on this window's features. The row is
+        // One deep-network gradient step on this window's features. The row is
         // settled, so this is learning from the past, never from the future.
         const [previousSign, latestSign] = row.state.split(',').map(Number);
         const featureRow = [
@@ -1208,16 +1621,7 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
             clamp(row.features.run, -6, 6) / 6,
             isTick ? (row.historyPosition - 2) / 2 : row.historyPosition * 0.5,
         ];
-        const output = softmax(
-            weights.map(weightRow => weightRow.reduce((sum, value, idx) => sum + value * featureRow[idx], 0))
-        );
-        for (let k = 0; k < count; k++) {
-            const target = row.winners.includes(k) ? 1 : 0;
-            const error = output[k] - target;
-            for (let position = 0; position < featureCount; position++) {
-                weights[k][position] -= learningRate * error * featureRow[position];
-            }
-        }
+        netStep(featureRow, row.winners);
         passed.push(row);
     };
 
@@ -1247,13 +1651,20 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
             const liveWeights = mixtureWeights(
                 brierSum.map((value, modelIndex) => (brierCount[modelIndex] ? value / brierCount[modelIndex] : 1))
             );
+            // The gated blend is what the live decision trades, so it is what
+            // the replay scores: `skill` stays an honest measure of the blend
+            // that actually publishes.
+            const rowRegime = regimeOf(row.features);
+            const gatedRow = mixtureFor(rowRegime);
+            const blendWeights = gatedRow.gated ? gatedRow.weights : liveWeights;
             const blendNow = new Array(count).fill(0);
             PRICE_MODEL_NAMES.forEach((name, modelIndex) => {
                 vectors[name].forEach((value, outcome) => {
-                    blendNow[outcome] += liveWeights[modelIndex] * value;
+                    blendNow[outcome] += blendWeights[modelIndex] * value;
                 });
             });
             pendingScores.set(index, {
+                regime: rowRegime,
                 losses: PRICE_MODEL_NAMES.map(name => score(vectors[name], row.winners)),
                 blendLoss: score(blendNow, row.winners),
             });
@@ -1275,7 +1686,10 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     const pendingHistory = historyAt(prices.length - 1);
 
     const brier = brierSum.map((value, index) => (brierCount[index] ? value / brierCount[index] : 1));
-    const mixture = mixtureWeights(brier);
+    // The live mixture: global weights gated by the live regime's scoreboard.
+    const liveRegime = regimeOf(currentFeatures);
+    const gatedLive = mixtureFor(liveRegime);
+    const mixture = gatedLive.weights;
     const anchorBrier = brier[PRICE_MODEL_NAMES.indexOf('anchor')] > 0 ? brier[PRICE_MODEL_NAMES.indexOf('anchor')] : 1;
     const ensembleBrier = blendCount ? blendSum / blendCount : anchorBrier;
     /**
@@ -1391,6 +1805,53 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
             }
             if (isTick) {
                 // Each side is a distribution over its own five positions.
+                [0, TICK_POSITIONS].forEach(offset => {
+                    const mass = probabilities
+                        .slice(offset, offset + TICK_POSITIONS)
+                        .reduce((sum, value) => sum + value, 0);
+                    if (mass > 0) {
+                        for (let k = offset; k < offset + TICK_POSITIONS; k++) probabilities[k] /= mass;
+                    }
+                });
+            } else {
+                const normalised = normalise(probabilities, anchor);
+                for (let index = 0; index < count; index++) probabilities[index] = normalised[index];
+            }
+        }
+    }
+
+    // ---- per-outcome calibration from the graded record --------------------
+    // The global calibration above treats every outcome alike; the runtime's
+    // per-outcome ledger lets each outcome be judged on its own claims. A
+    // high-tick-3 read that keeps missing is shrunk toward the anchor without
+    // punishing the reads that earned their keep. Inactive unless the caller
+    // supplies `evidence.byOutcome` (the Vision runtime does).
+    const byOutcome = Array.isArray(evidence?.byOutcome) ? evidence.byOutcome : null;
+    if (byOutcome && byOutcome.length === count) {
+        let touched = false;
+        for (let index = 0; index < count; index++) {
+            const record = byOutcome[index] || {};
+            const samples = Number(record.samples);
+            const rate = Number.isFinite(Number(record.rate))
+                ? Number(record.rate)
+                : samples > 0
+                  ? Number(record.hits || 0) / samples
+                  : NaN;
+            const mean = Number(record.mean);
+            if (!(samples >= MIN_EVIDENCE_SAMPLES) || !Number.isFinite(rate) || !(mean > 0)) continue;
+            const ratio = rate / mean;
+            const factor = clamp(
+                ratio < 1 ? ratio + (1 - ratio) * 0.15 : 1 + Math.min(0.25, (ratio - 1) * 0.6),
+                0.35,
+                1.25
+            );
+            if (factor !== 1) {
+                probabilities[index] = anchor[index] + factor * (probabilities[index] - anchor[index]);
+                touched = true;
+            }
+        }
+        if (touched) {
+            if (isTick) {
                 [0, TICK_POSITIONS].forEach(offset => {
                     const mass = probabilities
                         .slice(offset, offset + TICK_POSITIONS)
@@ -1590,6 +2051,45 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     });
     const quoted = evTable.filter(entry => entry.payout > 0).length;
 
+    // ---- the AI core report ------------------------------------------------
+    // Everything the internal brain wants the operator to see: the deep net's
+    // training state, the meta-learner's regime call, the experts carrying the
+    // decision, and the auto-tuning the market DNA implies. The `x_price_brain`
+    // and `x_price_reverse` blocks print these; the `forecast` is the full
+    // ten-outcome read for `x_price_forecast`.
+    const brainTop = league.slice(0, 3).map(expert => ({
+        name: expert.name,
+        weight: expert.weight,
+        skill: expert.skill,
+    }));
+    const brain = {
+        version: PRICE_MODEL_VERSION,
+        experts: PRICE_MODEL_NAMES.length,
+        net: { updates: netUpdates, hidden: NET_HIDDEN, norm: netNorm(), lr: NET_LEARNING_RATE },
+        regime: liveRegime,
+        regimeSamples: gatedLive.samples,
+        gated: gatedLive.gated,
+        top: brainTop,
+        skill,
+        calibration,
+        votes,
+    };
+    const meta = {
+        regime: liveRegime,
+        samples: gatedLive.samples,
+        gated: gatedLive.gated,
+        weights: Object.fromEntries(PRICE_MODEL_NAMES.map((name, modelIndex) => [name, mixture[modelIndex]])),
+    };
+    const autoTune = dna?.autoTune || { evZ, slip: entrySlip, anchorTrust: 0.5, note: 'directional contract: standard caution' };
+    const forecast = ladderRows.slice(0, isTick ? 5 : 2).map(row => ({
+        label: row.label,
+        side: row.side,
+        tick: row.tick,
+        probability: row.probability,
+        ev: row.ev,
+        payout: row.payout,
+    }));
+
     const result = {
         ready: false,
         // True when every *model* gate passed, which is what the caller grades
@@ -1627,6 +2127,10 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         skill,
         dnaScore: dna ? dna.readability : 0,
         dna: dna || null,
+        brain,
+        meta,
+        autoTune,
+        forecast,
         standDown,
         // Execution clock: how long the contract's five ticks take, how far the
         // fill can slip past the quote the model saw, and therefore how much of
@@ -1772,6 +2276,73 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     return { ...result, ready: true, reason: summary };
 }
 
+/**
+ * AI CORE — one journal line for the internal brain.
+ *
+ * What the deep net has learned (walk-forward updates, hidden-layer weight
+ * norm), which regime the meta-learner sees, whether the regime scoreboard is
+ * trusted yet, and which experts carry the live decision. Printed by the
+ * `x_price_brain` block.
+ */
+export function aiBrainReport(decision) {
+    const brain = decision?.brain;
+    if (!brain) return 'AI core warming up — no decision has been scored yet';
+    const top = (brain.top || [])
+        .map(expert => `${expert.name} ${Math.round(safe(expert.weight, 0) * 100)}%`)
+        .join(', ');
+    return [
+        `AI core v${brain.version || PRICE_MODEL_VERSION} · ${brain.experts || PRICE_MODEL_NAMES.length} experts`,
+        `deep net ${(brain.net?.updates ?? 0)} updates (hidden ${brain.net?.hidden ?? NET_HIDDEN}, ‖w‖ ${safe(brain.net?.norm, 0).toFixed(2)})`,
+        `regime ${brain.regime || 'balanced'}${brain.gated ? ` (gated, ${brain.regimeSamples || 0} scored)` : ' (global weights)'}`,
+        top ? `carrying: ${top}` : 'carrying: anchor',
+        `skill ${(safe(brain.skill, 0) * 100).toFixed(0)} · calibration ${safe(brain.calibration, 1).toFixed(2)}×`,
+    ].join(' · ');
+}
+
+/**
+ * REVERSE ENGINEERING — one journal line for the DNA v2 diagnosis.
+ *
+ * The market's phase, memory, entropy, spike rate, extreme-phase persistence,
+ * tie clustering and compression, plus the auto-tuning the bot derived from
+ * them. Printed by the `x_price_reverse` block.
+ */
+export function reverseEngineerReport(dna) {
+    if (!dna || !dna.windows) return String(dna?.verdict || 'reverse engineering warming up — waiting for ticks');
+    const tune = dna.autoTune || {};
+    return [
+        `reverse engineering · ${dna.phase} phase`,
+        `H ${safe(dna.hurst, 0.5).toFixed(2)}`,
+        `entropy H/L ${safe(dna.entropyHigh, 1).toFixed(2)}/${safe(dna.entropyLow, 1).toFixed(2)}`,
+        `jumps ${(safe(dna.jumpRate, 0) * 100).toFixed(1)}%`,
+        `extreme ρ ${safe(dna.extremeAutocorr, 0).toFixed(2)}`,
+        `tie clustering ${safe(dna.tieClustering, 1).toFixed(2)}`,
+        `compression ${safe(dna.compression, 1).toFixed(2)}`,
+        `auto-tune: EV bound ${safe(tune.evZ, 1).toFixed(2)}σ · anchor trust ${(safe(tune.anchorTrust, 0.5) * 100).toFixed(0)}%`,
+        String(tune.note || dna.verdict || ''),
+    ].join(' · ');
+}
+
+/**
+ * FORECAST — one journal line for the full outcome read.
+ *
+ * The top outcomes by expected value with their win probabilities and live
+ * quotes. Printed by the `x_price_forecast` block.
+ */
+export function forecastReport(decision) {
+    const rows = Array.isArray(decision?.forecast) ? decision.forecast : [];
+    if (!rows.length) return 'no forecast yet — no decision has been scored';
+    return (
+        'forecast · ' +
+        rows
+            .map(row => {
+                const ev = Number.isFinite(row.ev) ? `, EV ${(row.ev * 100).toFixed(1)}%` : '';
+                const quote = row.payout > 0 ? ` @ ${row.payout.toFixed(2)}×` : '';
+                return `${row.label} ${(safe(row.probability, 0) * 100).toFixed(1)}%${ev}${quote}`;
+            })
+            .join(' · ')
+    );
+}
+
 export default {
     priceDecision,
     marketDna,
@@ -1784,4 +2355,9 @@ export default {
     gridStrictPrior,
     strictExtremePrior,
     lagOneCorrelation,
+    entropyOf,
+    hurstExponent,
+    aiBrainReport,
+    reverseEngineerReport,
+    forecastReport,
 };

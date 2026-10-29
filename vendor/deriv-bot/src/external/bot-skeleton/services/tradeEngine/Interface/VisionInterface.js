@@ -19,7 +19,7 @@ import { localize } from '@deriv-com/translations';
 import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
-import { DEFAULT_LATENCY, labelFidelity, marketDna, priceDecision } from '../utils/price-strategies.mjs';
+import { DEFAULT_LATENCY, aiBrainReport, forecastReport, labelFidelity, marketDna, priceDecision, reverseEngineerReport } from '../utils/price-strategies.mjs';
 import { adaptiveStake, priceRiskAllowed, resolvePriceContext } from '../utils/price-risk.mjs';
 import * as memory from '../utils/vision-memory.mjs';
 import {
@@ -174,9 +174,9 @@ const getVisionInterface = tradeEngine => {
 
     /**
      * A 0–100 read on how worth trading a High/Low Tick market is: measured
-     * expected value, the engine's own certainty, the DNA readability and the
-     * sample behind the decision. Used by the market scout — it ranks markets,
-     * it does not promise profit.
+     * expected value, the engine's own certainty, the DNA readability, the
+     * sample behind the decision and the blend's walk-forward skill. Used by
+     * the market scout — it ranks markets, it does not promise profit.
      */
     const scoreTickMarket = (plan, dna) => {
         if (!plan) return 0;
@@ -185,7 +185,8 @@ const getVisionInterface = tradeEngine => {
         const certainty = clamp(num(plan.certainty, 0) / 100, 0, 1);
         const readability = clamp(num(dna?.readability, 0) / 100, 0, 1);
         const sample = clamp(num(plan.samples, 0) / 600, 0, 1);
-        return Math.round(100 * (0.4 * evScore + 0.25 * certainty + 0.2 * readability + 0.15 * sample) * 10) / 10;
+        const skill = clamp((50 + 200 * num(plan.skill, 0)) / 100, 0, 1);
+        return Math.round(100 * (0.35 * evScore + 0.2 * certainty + 0.15 * readability + 0.15 * sample + 0.15 * skill) * 10) / 10;
     };
 
     /** The DNA of the market as it stands, reusing the decision's own report. */
@@ -265,6 +266,13 @@ const getVisionInterface = tradeEngine => {
         const prices = math.toNumbers(list);
         const ledger = priceLedger.get(symbol) || [];
         const calibration = priceCalibration.get(symbol) || { hits: 0, samples: 0, predicted: 0 };
+        // Per-outcome ledger (v6): each outcome is judged on its own claims, so
+        // a high-tick-3 read that keeps missing is shrunk without punishing the
+        // reads that earned their keep.
+        if (!calibration.byOutcome) {
+            const cell = () => ({ hits: 0, samples: 0, predicted: 0 });
+            calibration.byOutcome = { tick: Array.from({ length: 10 }, cell), dir: [cell(), cell()] };
+        }
         const pending = [];
         ledger.forEach(entry => {
             const entryIndex = entry.index + 1;
@@ -294,12 +302,28 @@ const getVisionInterface = tradeEngine => {
                 // not dropped.
                 win = entry.side > 0 ? change > 0 : change < 0;
             }
+            const predicted = Math.max(0, Math.min(1, num(entry.winProbability, 0)));
             calibration.samples += 1;
-            calibration.predicted += Math.max(0, Math.min(1, num(entry.winProbability, 0)));
+            calibration.predicted += predicted;
             if (win) calibration.hits += 1;
+            const outcome = entry.mode === 'tick'
+                ? (entry.side > 0 ? 0 : 5) + clamp(Math.round(num(entry.tick, 1)), 1, 5) - 1
+                : (entry.side > 0 ? 0 : 1);
+            const lane = entry.mode === 'tick' ? calibration.byOutcome.tick : calibration.byOutcome.dir;
+            if (lane && lane[outcome]) {
+                lane[outcome].samples += 1;
+                lane[outcome].predicted += predicted;
+                if (win) lane[outcome].hits += 1;
+            }
         });
         priceLedger.set(symbol, pending.slice(-64));
         priceCalibration.set(symbol, calibration);
+        const laneReport = lane => lane.map(cell => ({
+            hits: cell.hits,
+            samples: cell.samples,
+            rate: cell.samples ? cell.hits / cell.samples : 0,
+            mean: cell.samples ? cell.predicted / cell.samples : 0,
+        }));
         return {
             hits: calibration.hits,
             samples: calibration.samples,
@@ -308,6 +332,8 @@ const getVisionInterface = tradeEngine => {
             // denominator that turns the record into a reliability ratio
             // (realised / predicted) instead of a comparison with break-even.
             mean: calibration.samples ? calibration.predicted / calibration.samples : 0,
+            byOutcomeTick: laneReport(calibration.byOutcome.tick),
+            byOutcomeDir: laneReport(calibration.byOutcome.dir),
         };
     };
 
@@ -1048,8 +1074,16 @@ const getVisionInterface = tradeEngine => {
                 entrySlip: num(slip, 1),
                 // The rule's own graded record, measured on the decisions it
                 // published. This is the one input that is evidence rather
-                // than inference.
-                evidence: calibration,
+                // than inference — including the per-outcome lane for this
+                // contract family, so each outcome is calibrated on its own
+                // claims.
+                evidence: {
+                    hits: calibration.hits,
+                    samples: calibration.samples,
+                    rate: calibration.rate,
+                    mean: calibration.mean,
+                    byOutcome: mode === 'tick' ? calibration.byOutcomeTick : calibration.byOutcomeDir,
+                },
                 interval: clock.interval,
                 latency: clock.latency,
             });
@@ -1359,6 +1393,31 @@ const getVisionInterface = tradeEngine => {
                 num(plan.standDown, 0) ? 'STAND DOWN — the record is below break-even' : 'clear to trade',
             ].join(' · ');
         },
+        /**
+         * AI CORE — the internal brain, as one journal line.
+         *
+         * The deep net's walk-forward training state, the meta-learner's regime
+         * call and whether the regime scoreboard is trusted yet, and the three
+         * experts carrying the live decision. Everything here is measured on
+         * settled windows, never asserted.
+         */
+        priceBrain: async () => aiBrainReport(lastPrice.get(symbolOf())),
+        /**
+         * REVERSE ENGINEERING — the DNA v2 diagnosis, as one journal line.
+         *
+         * Phase, Hurst memory, extreme entropy, jump rate, extreme-phase
+         * persistence, tie clustering and compression, plus the auto-tuning the
+         * bot derived from them (EV caution, anchor trust). Descriptive, not
+         * predictive: it says what kind of market this is.
+         */
+        priceReverse: async () => reverseEngineerReport(await priceDnaOf()),
+        /**
+         * FORECAST — the full outcome read, as one journal line.
+         *
+         * The top outcomes by expected value with their win probabilities and
+         * live quotes. The whole scan the EV gate decides on, in one line.
+         */
+        priceForecast: async () => forecastReport(lastPrice.get(symbolOf())),
         /**
          * The live ten-outcome quote ladder with its fair odds and the measured
          * expected value of each position — the table the EV scan decides on.
