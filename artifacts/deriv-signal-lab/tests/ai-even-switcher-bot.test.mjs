@@ -46,7 +46,7 @@ test("every cycle scans all markets and stands on the strongest", () => {
   const scanAt = before.indexOf("signal_lab_scan_markets");
   const purchaseAt = before.indexOf('type="purchase"');
   assert.ok(scanAt < purchaseAt, "the scan happens before any purchase can fire");
-  // Floor 0: the scan always finds a market, so the primary strategy never starves.
+  // The scanner still ranks all markets; the entry gate independently requires a measured edge.
   assert.match(before, /<value name="MIN_SCORE"><shadow type="math_number" id="evScanFloor"><field name="NUM">0<\/field>/);
 });
 
@@ -76,13 +76,14 @@ test("the parity score blends Markov with even share, and entries are precision-
   assert.match(before, /id="evBlendRawW"><field name="NUM">0\.65<\/field>/);
   assert.match(before, /id="evBlendSet"><field name="VAR" id="evVar05">ai markov<\/field>/, "the blend is what the gates read");
   // Primary entries are confirmed: no Even into a full-margin Odd read.
-  assert.match(before, /type="logic_compare" id="evPrimaryGate"><field name="OP">GT<\/field>/);
+  assert.match(before, /type="logic_compare" id="evPrimaryGate"><field name="OP">GTE<\/field>/);
   assert.match(before, /id="evPrimaryGateIf"[\s\S]*?id="evBuyPrimary"/, "the primary buy sits inside the confirmation gate");
   // Market roaming happens only in primary mode: recovery keeps its warm
   // 1000-tick history instead of trading it for a cold stream every cycle.
   assert.match(before, /type="logic_operation" id="evSwitchAnd"/);
   assert.match(before, /type="logic_compare" id="evRoamModeCheck"><field name="OP">EQ<\/field>/);
   assert.match(XML, /id="evIn06"><field name="NUM">54<\/field>/, "the threshold ships at 54 for the less noisy blend");
+  assert.match(before, /id="evPrimaryGateThreshold"><field name="VAR" id="evVar06">ai markov threshold<\/field>/, "primary Even requires score >= threshold");
 });
 
 test("mode 0 buys Even; recovery buys whichever parity clears the Markov bar", () => {
@@ -109,7 +110,8 @@ test("a loss switches to recovery; a win back in profit reverts and resets", () 
 });
 
 test("risk is standard issue: capped martingale ladder, TP/SL guards, balance cap", () => {
-  assert.match(after, /id="evStakeGrow"/, "losses multiply the stake");
+  assert.match(after, /id="evStakeGrow"/, "the capped recovery ladder remains available when explicitly configured");
+  assert.match(XML, /id="evIn07"><field name="NUM">1<\/field>/, "flat staking is the default");
   assert.match(after, /id="evLadderCheck"/, "the ladder is checked against its cap");
   assert.match(after, /id="evStakeCapReset"/, "past the cap the ladder restarts");
   assert.equal(count("r_loss_guard"), 2, "loss guard on entries and on trade-again");
