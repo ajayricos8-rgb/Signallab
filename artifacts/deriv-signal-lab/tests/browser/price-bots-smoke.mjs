@@ -77,7 +77,16 @@ async function mockDeriv(page) {
       else if (key === 'transaction') response.transaction = {};
       else if (key === 'forget_all') response.forget_all = [];
       else if (key === 'proposal' && holdProposals) return;
-      else if (key === 'proposal') response.proposal = { id: 'mock', ask_price: 1, payout: 1.9, spot: 100, date_start: now };
+      else if (key === 'proposal') {
+        // A High/Low Tick quote is per selected_tick, and the v5 sniper buys the
+        // position whose quote beats its probability. A realistic ladder is
+        // therefore *deliberately overpaid* here: this is a wiring test (every
+        // buy is rejected by the mock), not a market test, and a fair quote
+        // would — correctly — leave the bot refusing to trade.
+        const selected = Number(request.selected_tick);
+        const payout = selected >= 1 && selected <= 5 ? 21 : 1.9;
+        response.proposal = { id: 'mock', ask_price: 1, payout, spot: 100, date_start: now, selected_tick: selected || undefined };
+      }
       else if (key === 'buy' || key === 'sell') response.error = { code: 'Blocked', message: 'Trading is blocked by the smoke test.' };
       else response[key] = {};
       send(response);

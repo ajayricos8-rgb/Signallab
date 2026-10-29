@@ -127,7 +127,9 @@ class Emitter:
         )
 
     # ---- price blocks ----------------------------------------------------
-    def decision(self, mode, horizon, floor, max_tie, agreement, min_edge, payout, confidence, require):
+    def decision(
+        self, mode, horizon, floor, max_tie, agreement, min_edge, payout, confidence, require, min_ev="0", slip="0"
+    ):
         # The confidence floor is an input of the decision block, not a check
         # bolted on afterwards: the engine grades the decisions it publishes, so
         # a floor applied downstream would grade a different population from the
@@ -145,6 +147,8 @@ class Emitter:
                 "MIN_EDGE": min_edge,
                 "PAYOUT": payout,
                 "MIN_CONFIDENCE": confidence,
+                "MIN_EV": min_ev,
+                "SLIP": slip,
             },
         )
 
@@ -263,6 +267,8 @@ def build(spec):
         ("ai min agreement", spec.get("agreement", "0.55")),
         ("ai min confidence", spec.get("confidence", "55")),
         ("ai payout", spec.get("payout", "0.95")),
+        ("ai min ev", spec.get("min_ev", "0")),
+        ("ai entry slip", spec.get("slip", "1")),
         ("ai loss streak stop", "3"),
         ("ai loss streak", "0"),
         ("ai skip count", "0"),
@@ -272,6 +278,16 @@ def build(spec):
         # restarted mid-run would otherwise see someone else's losses as its own.
         ("baseline profit", "0"),
     ]
+    if spec["mode"] == "tick":
+        # The structural knobs only exist on the High/Low Tick family: there is
+        # no DNA gate to apply on a directional contract, and the scout is a
+        # High/Low Tick market chooser.
+        defaults += [
+            ("ai dna floor", spec.get("dna_floor", "0")),
+            ("ai scout floor", spec.get("scout_floor", "15")),
+            ("ai scout dwell", spec.get("scout_dwell", "900")),
+            ("ai market", ""),
+        ]
     init = []
     for name, value in defaults:
         if name == "stake":
@@ -295,15 +311,45 @@ def build(spec):
                 e.get("ai payout"),
                 e.get("ai min confidence"),
                 spec.get("require", "edge"),
+                e.get("ai min ev"),
+                e.get("ai entry slip"),
             ),
         )
     )
     init.append(e.set_("ai ready", e.part("ready", e.get(plan))))
     init.append(e.set_("ai side", e.part("side", e.get(plan))))
     init.append(e.notify("info", e.text(spec["armed"])))
+    if spec["mode"] == "tick":
+        # The market's structural fingerprint, before a single contract is
+        # bought: tie rate, grid ratio, drift and readability. A bot that starts
+        # by describing where it is standing is a bot whose later silence can be
+        # read.
+        init.append(e.notify("info", e.block("x_price_dna")))
+        init.append(e.notify("info", e.block("x_price_payout_table")))
+        # Five ticks is not a duration until the tick rate is known. The clock
+        # prints the contract length, the measured look-to-fill slip and how much
+        # of a cycle one buy covers, so a ten-second contract on a 2 s market is
+        # visible in the journal rather than implied.
+        init.append(e.notify("info", e.block("x_price_clock")))
 
     # ---- tick analysis: decide, then size the stake the buy will use ------
-    tick = [
+    tick = []
+    if spec.get("scout"):
+        # Exactly one market per strategy is the workspace's rule, so the scout
+        # asks the runtime first. The dwell time is deliberately long: a switch
+        # trades a warm tick stream for a cold one, and the models need 256
+        # completed windows before they will publish anything at all.
+        tick.append(
+            e.set_(
+                "ai market",
+                e.block(
+                    "x_price_auto_market",
+                    fields={"MODE": spec.get("scout_mode", "suitable")},
+                    values={"FLOOR": e.get("ai scout floor"), "DWELL": e.get("ai scout dwell")},
+                ),
+            )
+        )
+    tick += [
         e.set_(
             "baseline profit",
             e.arith("MINUS", e.block("x_session_profit"), e.get("ai baseline")),
@@ -320,6 +366,8 @@ def build(spec):
                 e.get("ai payout"),
                 e.get("ai min confidence"),
                 spec.get("require", "edge"),
+                e.get("ai min ev"),
+                e.get("ai entry slip"),
             ),
         ),
         e.set_("ai ready", e.part("ready", e.get(plan))),
@@ -349,14 +397,31 @@ def build(spec):
         e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop")),
         e.compare("GTE", e.part("confidence", e.get(plan)), e.arith("ADD", e.get("ai min confidence"), e.num("5"))),
     )
+    risk_ok = e.logic(
+        "AND",
+        streak_ok,
+        e.risk(e.get("stake"), legs(), e.get("ai stake percent")),
+    )
+    if spec["mode"] == "tick":
+        # Two more guards that only make sense on this contract family:
+        #
+        #   the record   — a graded record whose whole interval sits under the
+        #                  break-even is a broken estimate, not bad luck;
+        #   the DNA      — a market whose structure cannot be measured is not a
+        #                  market to size a position on.
+        risk_ok = e.logic(
+            "AND",
+            risk_ok,
+            e.logic(
+                "AND",
+                e.compare("EQ", e.part("stand-down", e.get(plan)), e.num("0")),
+                e.compare("GTE", e.part("dna-score", e.get(plan)), e.get("ai dna floor")),
+            ),
+        )
     entry_gate = e.logic(
         "AND",
         e.compare("EQ", e.get("ai ready"), e.num("1")),
-        e.logic(
-            "AND",
-            streak_ok,
-            e.risk(e.get("stake"), legs(), e.get("ai stake percent")),
-        ),
+        risk_ok,
     )
 
     if spec["mode"] == "tick":
@@ -436,6 +501,30 @@ def build(spec):
         e.if_(
             e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
             e.notify("info", e.block("x_price_model_weights")),
+        ),
+        # The self-audit layer. Every line below is measured, not modelled:
+        # what the blend has actually achieved, which expert is carrying it,
+        # what the market's structure looks like now, and what each position is
+        # really paying.
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("10")), e.num("0")),
+            e.notify("info", e.block("x_price_audit")),
+        ),
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
+            e.notify("info", e.block("x_price_league")),
+        ),
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
+            e.notify("info", e.block("x_price_dna")),
+        ),
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
+            e.notify("info", e.block("x_price_clock")),
+        ),
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("5")), e.num("0")),
+            e.notify("info", e.block("x_price_payout_table")),
         ),
         e.if_(
             brakes,
@@ -623,65 +712,121 @@ TICK_SNIPER = {
     "symbol": "R_100",
     "tradetype_cat": "highlowticks",
     "tradetype": "highlowticks",
+    # The value gate on this family is the expected value of the chosen
+    # contract against the live ten-outcome ladder, not an absolute probability
+    # (there is no single probability that means anything across five positions)
+    # and not a scalar break-even (the ten quotes are different contracts).
     "floor": "0",
-    "min_edge": "0.005",
+    "min_edge": "0",
+    "min_ev": "0.01",
     "max_tie": "0.35",
     "agreement": "0.5",
     "confidence": "50",
+    # Fallback only: the live TICKHIGH/TICKLOW ladder prices every position, and
+    # this number is used for the first ticks before the quotes arrive.
     "payout": "3.5",
     "max_stake": "1",
+    "slip": "1",
+    "dna_floor": "35",
+    # The scout: High/Low Ticks are quoted on every synthetic index and the
+    # markets do not pay the same. A floor this low means the bot only leaves a
+    # market it genuinely cannot read, and the 15-minute dwell means it cannot
+    # thrash between cold tick streams.
+    "scout": True,
+    "scout_mode": "suitable",
+    "scout_floor": "15",
+    "scout_dwell": "900",
     "ids": {"tick": "hlTick01", "before": "hlBefore01", "after": "hlAfter01"},
     "armed": (
-        "High/Low Tick AI armed — R_100, five-tick contract. Eight experts and the arcsine "
-        "structure of a random walk vote on which tick prints the strict high or low; the entry "
-        "must clear the payout break-even, the model agreement, the confidence floor, the rule's "
-        "own graded record and the risk gate, and the buy sends the chosen prediction tick."
+        "High/Low Tick AI Sniper v5 armed — five-tick contract. Ten experts mixed by measured "
+        "skill, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys "
+        "the position with the highest expected value against what Deriv actually quotes, and "
+        "refuses when there is none. Every skip names its gate; every tenth settlement prints the "
+        "self-audit, every twenty-fifth the expert league, the market DNA and the execution clock."
     ),
     "held": (
-        "AI is ready but the entry gate held it — the confidence floor, a losing-streak "
-        "cool-off, the balance percentage, the loss limit or the profit target blocked this entry."
+        "AI is ready but the entry gate held it — the confidence floor, the DNA floor, the rule's "
+        "own graded record, a losing-streak cool-off, the balance percentage, the loss limit or "
+        "the profit target blocked this entry."
     ),
     "stopped": (
         "AI session stop — the loss limit, the profit target or the balance rule was reached. "
         "Open contracts still settle; restart the bot to begin a new session."
     ),
     "comment": """
-High/Low Tick AI — R_100, the five-tick contract Deriv sells for this trade type.
+High/Low Tick AI Sniper v5 — the five-tick contract Deriv sells for this trade type.
 
-The question is narrow and exact: of the next five quotes, which position holds a strict high
-or a strict low? Ten outcomes (tick 1-5 high, tick 1-5 low); a window whose extreme is shared
-is discarded rather than guessed. Eight experts answer it — structural anchor, long-run
-outcome histogram, the two-change Markov row, the last 250 windows, a kernel replay of similar
-states, a drift forecast, a serial-dependence fit and an online softmax net — each scored
-walk-forward with a Brier loss so an expert that cannot read this market loses its vote on its
-own. The blend is shrunk toward the anchor by its effective sample size.
+WHAT IS BEING BOUGHT
+Of the next five quotes, which position holds the strict high or the strict low? Ten outcomes
+(tick 1-5 high, tick 1-5 low). A window whose extreme is shared is a loss on both sides, so the
+probability a contract is paid on is the conditional position probability times the chance that
+this window prints a strict extreme at all. Ten experts answer it — tie-aware structural anchor,
+long-run history, the two-change Markov row, the recent regime, a kernel replay of similar
+moments, a drift forecast, positional persistence, an online softmax net, a volatility-regime
+model and a Markov chain on the last settled window's extreme — each scored walk-forward with a
+Brier loss, so an expert that cannot read this market loses its vote on its own. The blend is
+shrunk toward the structural prior by its effective sample size AND by its measured skill: a
+blend that cannot beat the prior does not get to publish a 60 % probability.
 
-The anchor is the interesting part, and it is why this bot trades at all. For a symmetric
-random walk the position of the running maximum follows the discrete arcsine law: over five
-ticks, tick 1 and tick 5 are the likeliest (27 % each) and the middle tick the least likely
-(14 %). The previous preset gated on an absolute 26 % probability while the blended estimate
-was normalised over ten joint outcomes — half the scale the market actually prices — so the
-gate could never open and the bot never bought anything. Two fixes: each side is normalised
-over its own five positions, exactly as the contract is priced, and the anchor carries the
-arcsine structure instead of a flat one-in-five guess.
+THE STRUCTURE, AND WHY IT IS NOT THE OBVIOUS ONE
+The continuous random walk prior is the discrete arcsine law: over five ticks, position 1 and
+position 5 are likeliest (27.3 % each) and the middle the least likely (14.1 %). Real ticks live
+on a quote grid, and a grid walk is not the same animal. Enumerating every five-step +/-1 path
+gives 18.75 / 12.5 / 6.25 / 12.5 / 18.75 with a TIE in 31.25 % of windows. The engine measures
+the market's own tie rate and interpolates between the two structures, so a Step index is never
+priced with a Volatility 100 prior. (v4 normalised each side to 100 % and forgot the tie mass:
+on a Step index that overstated its win probability by 45 %.)
 
-Agreement is measured on the *side* (high vs low), not on the exact tick index: requiring
-nine models to name the same one of five ticks scored a strong consensus as disagreement.
-The payout is read from the live TICKHIGH/TICKLOW proposals, so the edge gate compares the
-estimate with what the contract actually pays; 3.5 is only the fallback before the first
-quotes arrive.
+THE PAYOUT LADDER IS THE GAME
+Deriv quotes TICKHIGH and TICKLOW per selected_tick, and those ten quotes are different
+contracts. The bot reads all ten from live proposals and ranks outcomes by expected value,
+p(m+1) - 1, against the quote it would actually be paid. It buys the position whose quote is
+worse than its probability deserves and refuses everything else — "ai min ev" is that gate, and
+the journal prints the quote, the fair odds and the EV on every entry. The gate compares a
+one-sigma lower bound on that EV, not the point estimate: the bot buys the best of ten noisy
+quotes, and the maximum of ten is biased upward by about its own standard error. A single payout
+number cannot do any of this, which is why the old preset could not see a mispriced position even
+in principle.
 
-The buy sends the chosen prediction tick directly, the stake is tenth-Kelly on the measured
-probability (floored at the exchange minimum, capped by "ai max stake" and the balance
-percent), and the session brakes are the loss limit, the profit target, the drawdown and a
-losing-streak cool-off. Every fifth entry the journal prints the realised hit rate — and once
-twenty-five published decisions have been graded, a hit rate below the break-even stops the
-entries until the record recovers. That gate matters more here than anywhere else: if Deriv
-already prices the arcsine structure into its tick payouts, the record will say so and the
-bot will stand down instead of paying for a discovery it did not make.
+THE EXECUTION CLOCK
+Five ticks is the contract, but it is not a duration until the tick rate is known: on R_100 a tick
+is two seconds, so the contract lasts ten, and one buy covers a fifth of the cycle — which is why
+a High/Low Tick bot always has five positions overlapping, each a one-in-five bet. The look-to-fill
+time is measured from this session's own tick service and charged as entry slip; past three
+quarters of a tick the bot refuses the market outright rather than trading a window it cannot be
+filled inside of. The clock is printed at start-up and every twenty-fifth settlement.
 
-These are historical, conditional estimates, not calibrated odds. A strict extreme can still
-fail on execution delay or an overlapping window. Test on demo first.
+SELF-AUDIT AND SELF-DEFENCE
+Every published decision is filed with the tick it was made on and graded when the window
+settles. The record is used, not just printed: a record at or above the break-even sharpens the
+estimate, a record below it pulls the estimate back toward the structural prior, and once forty
+decisions are graded a Wilson bound that still sits under the break-even sets "stand down" and
+the bot stops buying until the record recovers. Every tenth settlement prints the self-audit
+(skill, certainty, calibration, record vs break-even, tie forecast vs long-run, DNA, quotes and
+label fidelity), every twenty-fifth the expert league, the market DNA and the clock, every fifth
+the live payout ladder.
+
+RISK
+The stake is tenth-Kelly on the calibrated probability and the quoted payout, floored at
+Deriv's 0.35 minimum, capped by "ai max stake" and the balance percent, and divided by the
+session drawdown. There is no martingale: a loss never raises the next stake. The session brakes
+are the loss limit, the profit target, the balance percentage and a losing-streak cool-off. One
+tick of entry slip is charged against the estimate, because the contract's five ticks start
+when Deriv processes the buy, not when the model looked.
+
+THE MARKET SCOUT
+High/Low Ticks are quoted on every synthetic index, and they do not pay the same. The scout
+scores the market the bot is standing on (measured EV, certainty, DNA readability, sample) and
+moves when the score falls under "ai scout floor", never more often than "ai scout dwell"
+seconds. A switch costs a cold tick stream, so the dwell is fifteen minutes and the floor is
+low: the bot only leaves a market it cannot read. Set the floor to 0 to keep the scout on
+whatever market you selected.
+
+HONESTY
+These are historical, conditional estimates. Deriv prices this contract with the same
+mathematics you just read, so a positive expected value means "my conditional read beats their
+model" — a weak claim that is often false. The bot is built to say so: it prints its skill, its
+record and the gate that stopped it. Test on demo first.
 """,
 }
 
