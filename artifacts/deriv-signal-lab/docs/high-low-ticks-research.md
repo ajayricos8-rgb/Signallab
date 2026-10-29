@@ -555,17 +555,19 @@ EV (falling back to the highest probability when fewer than four quotes are know
 the gates in order, naming the one that stops it:
 
 1. `warming up` / `thin history` / `thin state` — not enough evidence to answer.
-2. `tie risk` — the market's tie rate is above `maxTie` (the shape cannot settle reliably).
-3. `below floor` — absolute probability floor, when set.
-4. `no value` — **new in v5**: the *one-sigma lower bound* of the best EV is under `minEv`, printed
+2. `execution` — the fill cannot land inside the first tick of the window (§9.8). A market that is
+   too fast for the bot's own latency is refused, not discounted.
+3. `tie risk` — the market's tie rate is above `maxTie` (the shape cannot settle reliably).
+4. `below floor` — absolute probability floor, when set.
+5. `no value` — **new in v5**: the *one-sigma lower bound* of the best EV is under `minEv`, printed
    with the quote, the fair odds and the floor it failed. The point estimate is not the gate: the
    bot buys the best of ten noisy estimates, and the maximum of ten is biased upward by about its
    own standard error, so `evLower = EV − evZ·(1+m)·√(p(1−p)/n)` is what has to clear the bar
    (`evZ` defaults to 1 on this family; 0 restores the naive comparison).
-5. `no edge` — probability − break-even < `minEdge`.
-6. `agreement` / `confidence` floors.
-7. `own record` — optional veto when the graded record is below break-even.
-8. The strategy's own money gate (`priceRiskAllowed`), and the session brakes.
+6. `no edge` — probability − break-even < `minEdge`.
+7. `agreement` / `confidence` floors.
+8. `own record` — optional veto when the graded record is below break-even.
+9. The strategy's own money gate (`priceRiskAllowed`), and the session brakes.
 
 ### 9.6 Market DNA — the "reverse engineering" layer
 
