@@ -15,9 +15,12 @@
        history has not even arrived yet, because a switch trades a warm history
        for a cold one;
     1. forecasts the ten last digits at the moment the contract expires, with
-       seven models (long-run and recent digit frequency, the digit transition
+       eight models (long-run and recent digit frequency, the digit transition
        table, a kernel replay of similar states, an analytical price forecast, a
-       fair-odds anchor and an online-trained neural net);
+       fair-odds anchor, an online-trained neural net, and a regime model that
+       reverses a stretch on a quiet tape and refuses to extrapolate a burst on
+       an expanding one). Every model is scored walk-forward, so one that cannot
+       read this market loses its vote on its own;
     2. prices every barrier against the payout table it read from Deriv, or the
        conservative modelled table while the live one is in flight — the bot
        never waits on twenty proposals to make a two-second decision;
@@ -33,8 +36,16 @@
     5. paces itself: one position at most every "ai entry gap" seconds (2 by
        default). Each contract settles on the next tick, so on a two-second
        market that is one position per tick and never more;
-    6. learns from the settled digit: every contract scores each model and takes
-       one gradient step, per market, and the brain survives restarts.
+    6. learns from the settled digit: every contract scores each model, moves
+       the mixture weights and takes one gradient step on the net, per market,
+       and the brain survives restarts;
+    7. grades itself. Every settled contract is the bot's own record: once twenty
+       decisions are on it, the probability it trades on is pulled toward the
+       fair anchor by how that record compares with the payout break-even — up
+       to 1.25 when the record has been earned, down to 0.35 when it has not.
+       The factor is "calibration" on the plan, it is printed on every entry line
+       once the record exists, and the twentieth-contract heartbeat prints the
+       plan beside the scorecard so the learning is visible rather than claimed.
 
   Set the knobs in the "Run once at start" block. Open the journal to watch the
   reasoning: every entry prints the market, the contract, the measured lean in
@@ -292,14 +303,18 @@
                                                                               </shadow>
                                                                             </value>
                                                                             <next>
-                                                                              <block type="notify" id="in900">
-                                                                                <field name="NOTIFICATION_TYPE">success</field>
-                                                                                <field name="NOTIFICATION_SOUND">silent</field>
-                                                                                <value name="MESSAGE">
-                                                                                  <block type="text" id="it900">
-                                                                                    <field name="TEXT">AI Vision Over/Under armed — the AI prices all twenty Over/Under contracts against the live payout table and enters only on positive expected value with significance, confidence, agreement, drawdown and losing-streak gates. Staking follows the measured edge and de-risks after a loss (the old loss-doubling ladder is gone); every twentieth skip and every twentieth entry explain themselves in the journal.</field>
+                                                                              <block type="vision_refresh_payouts" id="aiRefresh01">
+                                                                                <next>
+                                                                                  <block type="notify" id="in900">
+                                                                                    <field name="NOTIFICATION_TYPE">success</field>
+                                                                                    <field name="NOTIFICATION_SOUND">silent</field>
+                                                                                    <value name="MESSAGE">
+                                                                                      <block type="text" id="it900">
+                                                                                        <field name="TEXT">AI Vision Over/Under armed — the AI prices all twenty Over/Under contracts against the live payout table and enters only on positive expected value with significance, confidence, agreement, drawdown and losing-streak gates. Staking follows the measured edge and de-risks after a loss (the old loss-doubling ladder is gone); every twentieth skip and every twentieth entry explain themselves in the journal.</field>
+                                                                                      </block>
+                                                                                    </value>
                                                                                   </block>
-                                                                                </value>
+                                                                                </next>
                                                                               </block>
                                                                             </next>
                                                                           </block>
@@ -685,6 +700,15 @@
                 <value name="MESSAGE">
                   <block type="vision_brain_stats" id="aiHeartbeatStats"></block>
                 </value>
+                <next>
+                  <block type="notify" id="aiHeartbeatRecord">
+                    <field name="NOTIFICATION_TYPE">info</field>
+                    <field name="NOTIFICATION_SOUND">silent</field>
+                    <value name="MESSAGE">
+                      <block type="vision_summary" id="aiHeartbeatPlan"></block>
+                    </value>
+                  </block>
+                </next>
               </block>
             </statement>
             <next>

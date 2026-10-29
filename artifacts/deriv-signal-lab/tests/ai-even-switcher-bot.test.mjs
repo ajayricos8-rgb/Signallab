@@ -56,7 +56,7 @@ test("the Markov read measures the even transition chance at the settling tick",
   assert.equal(count("m_transition"), 5, "one transition per even digit");
   for (const digit of [0, 2, 4, 6, 8])
     assert.match(before, new RegExp(`id="evT${digit}To"><field name="NUM">${digit}<\\/field>`));
-  assert.equal(count("ticks"), 6, "each transition (and the share read) uses the real tick list");
+  assert.equal(count("ticks"), 7, "each transition, the share read and the sample count use the real tick list");
   assert.equal(count("last_digit"), 5, "each transition starts from the current digit");
   // A buy's entry tick is the tick AFTER the purchase, so every transition
   // looks duration+1 ticks out: the tick that settles the contract.
@@ -86,6 +86,41 @@ test("the parity score blends Markov with even share, and entries are precision-
   assert.match(before, /type="logic_compare" id="evRoamModeCheck"><field name="OP">EQ<\/field>/);
   assert.match(XML, /id="evIn06"><field name="NUM">54<\/field>/, "the threshold ships at 54 for the less noisy blend");
   assert.match(before, /id="evPrimaryGateThreshold"><field name="VAR" id="evVar06">ai markov threshold<\/field>/, "primary Even requires score >= threshold");
+});
+
+test("the parity read is shrunk by its own sample size before anything gates on it", () => {
+  // Ten-bin transition rows on a cold stream are mostly noise, so the blend is
+  // pulled toward a fair 50% by n / (n + 64): a deep history keeps almost all
+  // of its deviation, a thin one keeps under half of it.
+  assert.match(before, /type="lists_length" id="evTickCountLen"/, "the read counts the ticks it learned from");
+  assert.match(before, /id="evTickCountSet">\s*<field name="VAR" id="evVar22">ai tick count<\/field>/);
+  assert.match(before, /id="evShrinkSet">\s*<field name="VAR" id="evVar05">ai markov<\/field>/, "the blend itself is what gets shrunk");
+  assert.match(before, /id="evShrinkPriorN"><field name="NUM">64<\/field>/, "the prior is 64 ticks");
+  assert.match(before, /id="evShrinkCentre"><field name="NUM">50<\/field>/, "shrinkage is toward a fair 50%");
+  // Order matters: the shrink has to happen before the side probability is read.
+  const shrinkAt = before.indexOf('id="evShrinkSet"');
+  const sideAt = before.indexOf('id="evSideProbSet"');
+  assert.ok(shrinkAt > 0 && shrinkAt < sideAt, "the shrunk score is what the side probability and the gates read");
+});
+
+test("the bot grades itself and calibrates the side probability by its own record", () => {
+  assert.match(XML, /id="evInitGraded">\s*<field name="VAR" id="evVar24">ai graded<\/field>/, "the record is initialised");
+  assert.match(XML, /id="evInitCal">\s*<field name="VAR" id="evVar25">ai calibration<\/field>/);
+  assert.match(XML, /id="evInitCalN"><field name="NUM">1<\/field>/, "an empty record calibrates to 1");
+  // Every settlement is graded, and a win is counted.
+  assert.match(after, /id="evGradedSet"/);
+  assert.match(after, /id="evWinsIf"[\s\S]{0,400}?CHECK_RESULT">win</);
+  assert.match(after, /id="evRecCmp">[\s\S]{0,400}?<field name="NUM">20<\/field>/, "twenty decisions before the record counts");
+  // calibration = (wins / graded) x payout; earned record scales up (capped at
+  // 1.25), unearned scales down (floored at 0.35).
+  assert.match(after, /id="evCalRaw"><field name="OP">MULTIPLY<\/field>/);
+  assert.match(after, /id="evCapSet"[\s\S]{0,200}?<field name="NUM">1.25<\/field>/);
+  assert.match(after, /id="evFloorSet"[\s\S]{0,200}?<field name="NUM">0.35<\/field>/);
+  // And the calibrated value is what the expected value is computed from.
+  const calAt = before.indexOf('id="evSideCalSetE"');
+  const evAt = before.indexOf('id="evEvSet"');
+  assert.ok(calAt > 0 && calAt < evAt, "the side probability is calibrated before EV");
+  assert.match(before, /id="evSideCalFactorE">[\s\S]{0,120}?ai calibration/, "the calibration factor is the multiplier");
 });
 
 test("mode 0 buys Even; recovery buys whichever parity clears the Markov bar", () => {

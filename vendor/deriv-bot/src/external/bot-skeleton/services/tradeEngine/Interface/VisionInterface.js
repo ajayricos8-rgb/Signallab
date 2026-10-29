@@ -572,6 +572,21 @@ const getVisionInterface = tradeEngine => {
             return round((plan.distribution[index] || 0) * 100, 3);
         },
 
+        /**
+         * The rule's own graded record: the share of the decisions it published
+         * that went on to win, over the contracts that settled. Shadow samples
+         * never count here — they were never paid.
+         */
+        visionRecord: async () => round(((await getPlan())?.hitRate ?? 0) * 100, 2),
+        /** How many settled decisions that record is measured on. */
+        visionRecordSamples: async () => (await getPlan())?.hitSamples ?? 0,
+        /**
+         * The calibration factor the record is applying to the estimate: 1 with
+         * no record or a record at break-even, above 1 when the record has been
+         * earned (up to 1.25), below 1 when it has not (down to 0.35).
+         */
+        visionCalibration: async () => round((await getPlan())?.calibration ?? 1, 3),
+
         visionRegime: async () => {
             const plan = await getPlan();
             if (!plan) return 'unknown';
@@ -915,6 +930,12 @@ const getVisionInterface = tradeEngine => {
                 calibration.samples,
                 result.z,
                 result.outcomeAgreement,
+                // 18, 19: the rule's measured record and the calibration it
+                // applied to this estimate — the two numbers that make the
+                // difference between "the model says" and "the model has been
+                // right".
+                Number.isFinite(result.hitRate) ? result.hitRate : 0,
+                num(result.calibration, 1),
             ];
         },
         priceDecisionPart: async (plan, part) => {
@@ -937,6 +958,8 @@ const getVisionInterface = tradeEngine => {
                 hits: 15,
                 z: 16,
                 'outcome-agreement': 17,
+                record: 18,
+                evidence: 19,
             }[part];
             return Array.isArray(plan) && index !== undefined ? num(plan[index], 0) : 0;
         },

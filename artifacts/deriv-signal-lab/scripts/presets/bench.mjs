@@ -142,9 +142,16 @@ function evaluate(prices, mode, options, horizon = options.horizon || 5) {
 }
 
 const presets = {
-  'rise/fall preset': ['rise', { threshold: 0, maxTie: 0.2, minAgreement: 0.55, minEdge: 0.004, payout: 0.95, minConfidence: 55 }],
+  // Shipped rise/fall: five ticks (odd, tie-free), best read available.
+  'rise/fall preset': ['rise', { threshold: 0, maxTie: 0.2, minAgreement: 0, minEdge: 0, payout: 0.95, minConfidence: 0, requireEdge: false, horizon: 5 }],
+  // The opportunistic variant the same preset had before: kept here so the
+  // cost of the cadence is a number, not an opinion.
+  'rise/fall strict': ['rise', { threshold: 0, maxTie: 0.2, minAgreement: 0.55, minEdge: 0.004, payout: 0.95, minConfidence: 55, horizon: 5 }],
   // Shipped hedge: four ticks, best read available, tie cost printed.
-  'hedge preset': ['step-hedge', { threshold: 0, maxTie: 0.5, minAgreement: 0, minEdge: 0, payout: 0.95, minConfidence: 0, requireEdge: false, horizon: 4 }],
+  // Shipped hedge: five ticks (odd, tie-free), best read available.
+  'hedge preset': ['step-hedge', { threshold: 0, maxTie: 0.2, minAgreement: 0, minEdge: 0, payout: 0.95, minConfidence: 0, requireEdge: false, horizon: 5 }],
+  // What the four-tick contract would have measured — the tie, priced.
+  'hedge 4 ticks': ['step-hedge', { threshold: 0, maxTie: 0.5, minAgreement: 0, minEdge: 0, payout: 0.95, minConfidence: 0, requireEdge: false, horizon: 4 }],
   'tick preset': ['tick', { threshold: 0, maxTie: 0.35, minAgreement: 0.5, minEdge: 0.005, payout: 3.5, minConfidence: 50 }],
 };
 

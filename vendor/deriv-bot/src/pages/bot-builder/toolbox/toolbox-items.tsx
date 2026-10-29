@@ -615,6 +615,9 @@ export const ToolboxItems = () =>
                     <Block type='vision_model_vote' />
                     <Block type='vision_model_weight' />
                     <Block type='vision_regime' />
+                    <Block type='vision_record' />
+                    <Block type='vision_record_samples' />
+                    <Block type='vision_calibration' />
                     <Block type='vision_learn'>
                         <Value name='DIGIT'>
                             <Shadow type='math_number'>

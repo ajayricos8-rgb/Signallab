@@ -304,8 +304,10 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
     assert.doesNotMatch(xml, /rStakeStep/, 'no ladder step block');
   }
 
-  // The horizon is the contract's duration, and each preset ships the one it
-  // is meant to trade: five ticks for the tie-free shapes, four for the hedge.
+  // The horizon is the contract's duration, and every preset ships the
+  // tie-free one: five ticks. A four-tick window on a fixed-step index returns
+  // to its entry price 37.5% of the time, and a returning window loses both
+  // Rise and Fall — measured at about -16 points against the break-even.
   const shippedDuration = xml => {
     const at = xml.indexOf('id="vai_duration">ai duration</field>');
     assert.ok(at > 0, 'ai duration is a declared knob');
@@ -313,17 +315,23 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   };
   assert.equal(shippedDuration(tick), '5', 'High/Low Tick is a five-tick contract');
   assert.equal(shippedDuration(rise), '5', 'Rise/Fall stays on the odd, tie-free horizon');
-  assert.equal(shippedDuration(hedge), '4', 'the hedge trades the four-tick contract');
-  // Four ticks on a fixed-step index ties 37.5 % of the time, so the preset has
-  // to allow that rate to be measured rather than refused — and the tie gate is
-  // still there for anyone who would rather have accuracy than cadence.
-  assert.match(hedge, /<field name="VAR" id="vai_max_tie">ai max tie<\/field>[\s\S]*?<field name="NUM">0\.5<\/field>/);
+  assert.equal(shippedDuration(hedge), '5', 'the hedge ships the odd, tie-free horizon too');
+  // Five ticks ties about one window in a hundred on a measured stream, so the
+  // tie gate ships tight: it refuses a shape rather than paying for one. Anyone
+  // who wants the four-tick contract can set the duration to 4 and the cap to
+  // 0.5, and the entry line will print the tie rate they are paying.
+  assert.match(hedge, /<field name="VAR" id="vai_max_tie">ai max tie<\/field>[\s\S]*?<field name="NUM">0\.2<\/field>/);
 
-  // The hedge keeps a cadence: it publishes the best read on every tick it can
-  // read, and the session brakes — not the edge estimate — are what stop it.
+  // The two Step Index presets keep a cadence: they publish the best read on
+  // every tick they can read, and the session brakes — not the edge estimate —
+  // are what stop them. The estimate still decides the side, and Kelly still
+  // sizes the stake down to the exchange minimum when the edge is thin.
   assert.match(hedge, /<field name="REQUIRE">always<\/field>/, 'the hedge trades on the best read available');
-  assert.match(rise, /<field name="REQUIRE">edge<\/field>/, 'the Rise/Fall preset still waits for a measured edge');
+  assert.match(rise, /<field name="REQUIRE">always<\/field>/, 'the Rise/Fall preset trades on the best read available');
+  // High/Low Tick has a structural edge to wait for, so it keeps the edge gate.
   assert.match(tick, /<field name="REQUIRE">edge<\/field>/);
+  // Every preset journals which expert is carrying the decision.
+  for (const xml of [tick, rise, hedge]) assert.match(xml, /x_price_model_weights/);
 
   assert.match(tick, /type="x_tick_decision_purchase"/);
   assert.match(tick, /<field name="MODE">tick<\/field>/);
@@ -387,23 +395,44 @@ test('each High/Low Tick side is normalised over its own five positions', () => 
   assert.ok(ends / picks.length > 0.5, `ends chosen ${ends}/${picks.length}`);
 });
 
-test('a rule whose own graded record is under the break-even stops trading', () => {
+test("a rule whose own record is under the break-even is calibrated, not parked", () => {
   const ready = priceDecision(trend, 'tick', 5, 0.3);
   assert.equal(ready.ready, true, 'the trend case is tradeable with no record yet');
+  assert.equal(ready.calibration, 1, 'no record means no adjustment');
 
-  // Fewer than 25 graded decisions proves nothing, so the gate stays open.
-  assert.equal(priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 2, samples: 10 } }).ready, true);
+  // Fewer than 25 graded decisions proves nothing, so nothing is adjusted.
+  const thin = priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 2, samples: 10 } });
+  assert.equal(thin.calibration, 1);
 
+  // A record under the break-even means the estimates are running hot: the
+  // vector is pulled back toward the structural anchor by the ratio, which
+  // shrinks the edge (and therefore Kelly's stake) without stopping the bot.
   const hot = priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 5, samples: 40 } });
-  assert.equal(hot.ready, false, 'a 12.5 % record against a 20 % break-even must not trade');
-  assert.match(hot.reason, /own record/);
-  // It is a veto, not a blindfold: the models were ready and the caller still
-  // grades what they said, so the record can recover.
-  assert.equal(hot.modelReady, true);
+  const clean = priceDecision(trend, 'tick', 5, 0.3);
+  assert.ok(hot.calibration < 1, `calibration ${hot.calibration}`);
   assert.equal(hot.hitSamples, 40);
+  assert.ok(hot.hitRate < 0.2, `record ${hot.hitRate}`);
+  assert.ok(
+    Math.abs(hot.probability - 0.2) < Math.abs(clean.probability - 0.2),
+    'a hot record is pulled toward the anchor',
+  );
 
-  const recovered = priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 38, samples: 40 } });
-  assert.equal(recovered.ready, true, 'a record above the break-even trades again');
+  // A record at or above the break-even sharpens the estimate instead.
+  const earned = priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 36, samples: 40 } });
+  assert.ok(earned.calibration > 1, `calibration ${earned.calibration}`);
+  assert.ok(
+    Math.abs(earned.probability - 0.2) >= Math.abs(clean.probability - 0.2),
+    'an earned record sharpens the estimate',
+  );
+
+  // Strictness is opt-in rather than the default, because a bot that parks
+  // itself is indistinguishable from a broken one.
+  const strict = priceDecision(trend, 'tick', 5, 0.3, {
+    evidence: { hits: 5, samples: 40 },
+    evidenceVeto: true,
+  });
+  assert.equal(strict.ready, false);
+  assert.match(strict.reason, /own record/);
 });
 
 test('the confidence floor is applied inside the engine, so grading matches trading', () => {

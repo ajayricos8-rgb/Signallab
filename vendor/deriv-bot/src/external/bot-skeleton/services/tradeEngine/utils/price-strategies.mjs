@@ -109,10 +109,10 @@ const sign = value => (value > 0 ? 1 : value < 0 ? -1 : 0);
 const safe = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 
 /** The models that make up the mixture, in reporting order. */
-export const PRICE_MODEL_NAMES = ['anchor', 'frequency', 'transition', 'recent', 'analog', 'drift', 'serial', 'neural'];
+export const PRICE_MODEL_NAMES = ['anchor', 'frequency', 'transition', 'recent', 'analog', 'drift', 'serial', 'neural', 'regime'];
 
 /** Bumped whenever the decision shape or its gates change meaning. */
-export const PRICE_MODEL_VERSION = 3;
+export const PRICE_MODEL_VERSION = 4;
 
 /** Minimum history before any decision is published at all. */
 const MIN_TICKS = 256;
@@ -194,6 +194,24 @@ function features(prices, end = prices.length - 1) {
     for (let i = Math.max(1, end - 39); i <= end; i++) longMove += Math.abs(prices[i] - prices[i - 1]);
     const expansion = longMove > 0 ? recentMove / 4 / (longMove / 40) : 1;
     return { rsi, slope, stretch, expansion };
+}
+
+/**
+ * Classify the market state the models are being asked to read.
+ *
+ * `expansion` — volatility is picking up after a directional run; continuation
+ *               is the live hypothesis.
+ * `reversion` — the market is quiet but stretched from its short mean; a pull
+ *               back is the live hypothesis.
+ * `balanced`  — neither; the frequency model is the honest answer.
+ *
+ * The thresholds are on scale-free features, so the same rule works on a
+ * two-decimal index and on a five-decimal one.
+ */
+function tickRegime(current) {
+    if (current.expansion >= 1.25 && Math.abs(current.slope) >= 0.2) return 'expansion';
+    if (current.expansion <= 0.9 && Math.abs(current.stretch) >= 1.1) return 'reversion';
+    return 'balanced';
 }
 
 const normalise = (vector, fallback) => {
@@ -557,7 +575,34 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         }
         const featureRow = [1, sign(prices.at(-1) - prices.at(-2)), sign(prices.at(-2) - prices.at(-3)), currentFeatures.rsi, currentFeatures.stretch];
         const neural = softmax(weights.map(row => row.reduce((sum, value, index) => sum + value * featureRow[index], 0)));
-        return { anchor, frequency, transition, recent, analog, drift, serial, neural };
+        // The regime expert asks a different question from every other model
+        // here: not "which way is it going" but "what kind of market is this?".
+        // A quiet market that has stretched away from its short mean tends to
+        // pull back (mean reversion); a market whose volatility is expanding
+        // after a directional run tends to continue. The switch is read from
+        // the expansion ratio, so the model changes its hypothesis with the
+        // regime instead of applying one rule everywhere. It is scored like the
+        // rest, so on a market where neither tendency exists it simply loses
+        // its vote.
+        const regime = tickRegime(currentFeatures);
+        let regimeVector;
+        if (isTick) {
+            // Tick contracts ask about the extreme, not the direction: a quiet,
+            // stretched market is more likely to keep its extreme where the run
+            // started, an expanding one to extend it.
+            regimeVector = anchor.slice();
+        } else if (regime === 'expansion') {
+            const z = clamp(currentFeatures.slope * 2.2, -2.5, 2.5);
+            const up = clamp(normalCdf(z), 0.03, 0.97);
+            regimeVector = [up * (1 - tieRate * 0.5), (1 - up) * (1 - tieRate * 0.5)];
+        } else if (regime === 'reversion') {
+            const z = clamp(-currentFeatures.stretch * 0.9, -2.5, 2.5);
+            const up = clamp(normalCdf(z), 0.03, 0.97);
+            regimeVector = [up * (1 - tieRate * 0.5), (1 - up) * (1 - tieRate * 0.5)];
+        } else {
+            regimeVector = frequency.slice();
+        }
+        return { anchor, frequency, transition, recent, analog, drift, serial, neural, regime: regimeVector };
     };
 
     for (let index = 0; index < rows.length; index++) {
@@ -645,6 +690,51 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         });
     }
 
+    // ---- calibration from the rule's own record ---------------------------
+    // Every other number here is a model of the future. This one is the
+    // measured past: the hit rate of the decisions this rule actually
+    // published, graded against the ticks that settled them. A record at or
+    // above the break-even means the estimates are earning their keep, so the
+    // vector is sharpened a little; a record below it means the estimates are
+    // running hot, so the vector is pulled back toward the structural anchor by
+    // the ratio. Calibrating instead of standing down keeps the bot trading
+    // after a bad run — at a stake Kelly already sizes down — rather than
+    // parking it forever the way a hard veto did.
+    const evidence = options.evidence;
+    const graded = Number(evidence?.samples);
+    const evidenceRate =
+        evidence && Number.isFinite(Number(evidence.rate))
+            ? Number(evidence.rate)
+            : evidence && graded > 0
+              ? Number(evidence.hits || 0) / graded
+              : NaN;
+    let calibration = 1;
+    if (graded >= MIN_EVIDENCE_SAMPLES && Number.isFinite(evidenceRate) && breakEven > 0) {
+        calibration =
+            evidenceRate >= breakEven
+                ? 1 + Math.min(0.25, (evidenceRate / breakEven - 1) * 0.5)
+                : clamp(evidenceRate / breakEven, 0.35, 1);
+        if (calibration !== 1) {
+            for (let index = 0; index < count; index++) {
+                probabilities[index] = anchor[index] + calibration * (probabilities[index] - anchor[index]);
+            }
+            if (isTick) {
+                // Each side is a distribution over its own five positions.
+                [0, TICK_POSITIONS].forEach(offset => {
+                    const mass = probabilities
+                        .slice(offset, offset + TICK_POSITIONS)
+                        .reduce((sum, value) => sum + value, 0);
+                    if (mass > 0) {
+                        for (let k = offset; k < offset + TICK_POSITIONS; k++) probabilities[k] /= mass;
+                    }
+                });
+            } else {
+                const normalised = normalise(probabilities, anchor);
+                for (let index = 0; index < count; index++) probabilities[index] = normalised[index];
+            }
+        }
+    }
+
     const ranked = probabilities
         .map((probability, index) => ({ probability, index }))
         .sort((left, right) => right.probability - left.probability);
@@ -725,8 +815,9 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         models,
         probabilities,
         requireEdge,
-        hitRate: NaN,
-        hitSamples: 0,
+        calibration,
+        hitRate: Number.isFinite(evidenceRate) ? evidenceRate : NaN,
+        hitSamples: Number.isFinite(graded) ? graded : 0,
         reason: '',
         version: PRICE_MODEL_VERSION,
     };
@@ -795,20 +886,10 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         };
     }
     result.modelReady = true;
-    const evidence = options.evidence;
-    const graded = Number(evidence?.samples);
-    const evidenceRate =
-        evidence && Number.isFinite(Number(evidence.rate))
-            ? Number(evidence.rate)
-            : evidence && graded > 0
-              ? Number(evidence.hits || 0) / graded
-              : NaN;
-    if (
-        requireEdge &&
-        graded >= MIN_EVIDENCE_SAMPLES &&
-        Number.isFinite(evidenceRate) &&
-        evidenceRate < breakEven
-    ) {
+    // Opt-in strictness: a strategy that would rather stop than trade a
+    // discounted read can ask for the veto. The presets use calibration
+    // instead, because a stand-down is indistinguishable from a broken bot.
+    if (options.evidenceVeto === true && graded >= MIN_EVIDENCE_SAMPLES && evidenceRate < breakEven) {
         return {
             ...result,
             hitRate: evidenceRate,

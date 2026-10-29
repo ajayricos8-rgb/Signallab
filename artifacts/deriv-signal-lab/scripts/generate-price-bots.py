@@ -245,7 +245,7 @@ def produce(filename, kind):
     ]
     sets.append(setvar('baseline profit', block('x_session_profit')))
     armed = (
-        'Price AI armed — seven experts mixed by measured skill, stake sized from the measured edge. '
+        'Price AI armed — nine experts mixed by measured skill, stake sized from the measured edge. '
         'Entries need probability, confidence, agreement and risk to clear together, and every skip is explained in the journal.'
     )
     sets.append(setvar('skip count', num(0)))
