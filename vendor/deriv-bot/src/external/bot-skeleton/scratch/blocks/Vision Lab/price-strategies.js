@@ -5,14 +5,15 @@ import { visionColours } from './colour';
 const colour = visionColours().analysis;
 const category = window.Blockly.Categories.Vision_Analysis;
 defineValueBlock({
-    type: 'x_price_decision', message: localize('Price-path AI ensemble %1 ticks %2 horizon %3 minimum probability %4 max tie rate %5 min model agreement %6'),
+    type: 'x_price_decision', message: localize('Price-path AI ensemble %1 ticks %2 horizon %3 probability floor %4 max tie rate %5 min model agreement %6 min edge over break-even %7 payout %8 min confidence %9'),
     args: [dropdown('MODE', [[localize('High/Low Tick'), 'tick'], [localize('Rise/Fall'), 'rise'], [localize('Step hedge (odd ticks)'), 'step-hedge']]),
-        { type: 'input_value', name: 'LIST', check: 'Array', default: '[]' }, numberInput('HORIZON', '5'), numberInput('THRESHOLD', '0.56'),
-        numberInput('MAX_TIE', '0.2'), numberInput('MIN_AGREEMENT', '0')],
+        { type: 'input_value', name: 'LIST', check: 'Array', default: '[]' }, numberInput('HORIZON', '5'), numberInput('THRESHOLD', '0'),
+        numberInput('MAX_TIE', '0.2'), numberInput('MIN_AGREEMENT', '0'), numberInput('MIN_EDGE', '0'), numberInput('PAYOUT', '0.95'),
+        numberInput('MIN_CONFIDENCE', '0')],
     output: 'Array', colour, category, inputsInline: false,
-    tooltip: localize('Seven experts (anchor, frequency, Markov transition, recent, kernel analog, drift and an online softmax net) mixed by their measured Brier loss. A tie rate above the limit blocks the entry: on a fixed-step market an even horizon ties far too often to trade. Historical estimates do not guarantee an edge.'),
-    display_name: localize('Price-path AI ensemble'), description: localize('Scores every expert walk-forward, blends them by measured skill, shrinks the result by its sample size and returns one decision with its tie rate, edge, confidence and agreement. The horizon is the contract duration.'),
-    call: (input, field) => `Bot.priceDecision(${input.LIST}, ${field.MODE}, ${input.HORIZON}, ${input.THRESHOLD}, ${input.MAX_TIE}, ${input.MIN_AGREEMENT})`,
+    tooltip: localize('Eight experts (anchor, frequency, Markov transition, recent, kernel analog, drift, serial dependence and an online softmax net) mixed by their measured Brier loss. The entry needs a positive edge over the break-even implied by the live payout (1/(1+payout)), not an unreachable absolute probability. A tie rate above the limit blocks the entry: on a fixed-step market an even horizon ties far too often to trade. The confidence floor, when set, is applied inside the engine so the decisions it grades are the decisions the bot would have taken. Historical estimates do not guarantee an edge.'),
+    display_name: localize('Price-path AI ensemble'), description: localize('Scores every expert walk-forward, blends them by measured skill, shrinks the result by its sample size and returns one decision with its tie rate, edge over break-even, expected value, confidence and agreement. The horizon is the contract duration; the payout is read from the live proposal and this value is only the fallback.'),
+    call: (input, field) => `Bot.priceDecision(${input.LIST}, ${field.MODE}, ${input.HORIZON}, ${input.THRESHOLD}, ${input.MAX_TIE}, ${input.MIN_AGREEMENT}, ${input.MIN_EDGE}, ${input.PAYOUT}, ${input.MIN_CONFIDENCE})`,
 });
 defineValueBlock({
     type: 'x_price_decision_part', message: localize('Decision %1 from %2'),
@@ -72,4 +73,17 @@ defineValueBlock({
     tooltip: localize('Contracts this run has bought, read from the trade engine.'),
     display_name: localize('Session contracts'), description: localize('The engine\'s own run counter — the number of purchases this run, hedge legs included.'),
     call: () => 'Bot.priceTrades()',
+});
+
+defineValueBlock({
+    type: 'x_price_calibration', message: localize('AI scorecard'), args: [], output: 'String', colour, category,
+    tooltip: localize('The realised hit rate of every decision this bot published, against the break-even the payout requires. The only measured figure in these strategies: a bot whose hit rate sits below break-even is not trading an edge, whatever its model says.'),
+    display_name: localize('AI scorecard'), description: localize('Measured, not modelled: how often the published decisions actually won, over how many graded entries, and the gap to break-even. Print it every few entries so the journal holds the bot to its own record.'),
+    call: () => 'Bot.priceScorecard()',
+});
+defineValueBlock({
+    type: 'x_price_layout', message: localize('Decision layout'), args: [], output: 'String', colour, category,
+    tooltip: localize('The trade shape the models are pricing: market, duration, stake, payout and the horizon the ensemble replays. Put it in the journal when a bot will not trade, to prove it is reading the contract you think it is.'),
+    display_name: localize('Decision layout'), description: localize('One line describing the contract the decision refers to.'),
+    call: () => 'Bot.priceLayout()',
 });

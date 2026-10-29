@@ -10,7 +10,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const XML_PATH = new URL("../src/lib/bot-store/bots/ai-even-switcher.xml", import.meta.url);
-const XML = await readFile(XML_PATH, "utf8");
+// Normalise the serialised formatting: these assertions are about wiring,
+// not about whether an attribute sits on the same line as its tag.
+const XML = (await readFile(XML_PATH, 'utf8')).replace(/>\s+</g, '><');
 
 const types = [...XML.matchAll(/<block type="([^"]+)"/g)].map((match) => match[1]);
 const has = (type) => types.includes(type);

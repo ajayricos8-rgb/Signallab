@@ -11,7 +11,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const XML_PATH = new URL('../src/lib/bot-store/bots/ai-vision-over-under.xml', import.meta.url);
-const XML = await readFile(XML_PATH, 'utf8');
+// Normalise the serialised formatting: these assertions are about wiring,
+// not about whether an attribute sits on the same line as its tag.
+const XML = (await readFile(XML_PATH, 'utf8')).replace(/>\s+</g, '><');
 
 /** Every <block type="..."> in the file, with the field/value names under it. */
 function blocks(xml) {
@@ -89,7 +91,16 @@ test('the shipped tuning is evidence-gated and skips weak or negative-edge setup
         const input = variable.replace('aiVar', 'in');
         assert.ok(XML.includes(`id="${input}"><field name="NUM">${value}</field>`), `${name} default is ${value}`);
     }
-    assert.match(XML, /ai multiplier<\/field>[\s\S]*?id="in16"><field name="NUM">1<\/field>/, 'flat staking is the default');
+    // Staking is flat by default: the risk throttle starts at 1 (full stake)
+    // and can only shrink it, never double it.
+    assert.match(
+        XML,
+        /id="aiVar16">ai risk throttle<\/field>[\s\S]*?id="in16"><field name="NUM">1<\/field>/,
+        'flat staking is the default',
+    );
+    assert.match(XML, /id="aiMartTwo01"><field name="NUM">0\.5<\/field>/, 'a loss halves the throttle');
+    assert.match(XML, /id="aiMartCapN01"><field name="NUM">0\.5<\/field>/, 'the throttle never falls below half');
+    assert.ok(!/ai multiplier<\/field>/.test(XML), 'no doubling ladder is shipped');
     assert.match(XML, /weak signals are skipped/);
     assert.ok(XML.includes('id="in07"><field name="NUM">0.2</field>'), 'fractional risk is conservative by default');
 });

@@ -42,12 +42,27 @@ const DEFAULT_MIN_CONFIDENCE = 0;
 const DEFAULT_MIN_LEAN = 0; // the block default: trade the strongest measured lean
 const DEFAULT_RISK = 0.6;
 const DEFAULT_TARGET_EDGE = 0.04;
+/** Payout a price strategy falls back to before Deriv has quoted this market. */
+const DEFAULT_PRICE_PAYOUT = 0.95;
 
 const planCache = new Map();
 /** The last decision each market produced, so a thin tick can still be priced. */
 const lastPlan = new Map();
 /** The last price-path decision, with its reason, per market. */
 const lastPrice = new Map();
+/**
+ * Published price decisions waiting for their expiry tick, per market, and
+ * their scorecard.
+ *
+ * The probability the ensemble reports is a *model* number. Whether the rule
+ * that publishes it actually wins is an empirical question, so every decision
+ * that reaches "ready" is filed here with the quote it was made on and graded
+ * against the tick that settled it. `hit rate` is the only figure in these
+ * strategies that is measured rather than inferred, which is why the presets
+ * print it in the journal.
+ */
+const priceLedger = new Map();
+const priceCalibration = new Map();
 /**
  * The decision that was open when the current position was bought, per
  * market. Learning must score *that* forecast against the outcome — the
@@ -124,6 +139,86 @@ const getVisionInterface = tradeEngine => {
             return [];
         }
     };
+
+    /**
+     * What a win actually pays on this market, from the proposals Deriv has
+     * already sent for the running trade options: `payout / ask − 1`.
+     *
+     * Proposals belong to a purchase reference; a leftover quote from before a
+     * market, duration or stake change must not price the next decision, so
+     * anything carrying a different reference is ignored and the caller falls
+     * back to its own figure.
+     */
+    const quotedPayout = contractTypes => {
+        const proposals = tradeEngine?.data?.proposals || [];
+        const reference =
+            typeof tradeEngine?.getPurchaseReference === 'function' ? tradeEngine.getPurchaseReference() : null;
+        let best = 0;
+        proposals.forEach(proposal => {
+            if (!proposal || proposal.error) return;
+            if (!contractTypes.includes(proposal.contract_type)) return;
+            if (reference && proposal.purchase_reference && proposal.purchase_reference !== reference) return;
+            const ask = num(proposal.ask_price, 0);
+            const payout = num(proposal.payout, 0);
+            if (ask > 0 && payout > ask) best = Math.max(best, payout / ask - 1);
+        });
+        return best;
+    };
+
+    /**
+     * Grade every published decision whose expiry tick has now printed.
+     *
+     * The quote guard is what makes a rolling or restarted tick list harmless:
+     * if the remembered index no longer holds the quote the decision was made
+     * on, the sample is dropped instead of being scored against another tick.
+     */
+    const gradePriceForecasts = (symbol, list) => {
+        const prices = math.toNumbers(list);
+        const ledger = priceLedger.get(symbol) || [];
+        const calibration = priceCalibration.get(symbol) || { hits: 0, samples: 0 };
+        const pending = [];
+        ledger.forEach(entry => {
+            const entryIndex = entry.index + 1;
+            const exitIndex = entryIndex + entry.horizon;
+            if (exitIndex >= prices.length) {
+                pending.push(entry);
+                return;
+            }
+            if (prices[entry.index] !== entry.lastQuote) return; // history shifted: drop
+            const change = prices[exitIndex] - prices[entryIndex];
+            if (change === 0) return; // a tie is neither a hit nor evidence of skill
+            calibration.samples += 1;
+            if (entry.side > 0 ? change > 0 : change < 0) calibration.hits += 1;
+        });
+        priceLedger.set(symbol, pending.slice(-64));
+        priceCalibration.set(symbol, calibration);
+        return {
+            hits: calibration.hits,
+            samples: calibration.samples,
+            rate: calibration.samples ? calibration.hits / calibration.samples : 0,
+        };
+    };
+
+    /** Remember a decision that reached "ready" so it can be graded later. */
+    const filePriceForecast = (symbol, list, result, horizon) => {
+        try {
+            if (!result?.ready) return;
+            const prices = math.toNumbers(list);
+            if (!prices.length) return;
+            const ledger = priceLedger.get(symbol) || [];
+            ledger.push({
+                index: prices.length - 1,
+                lastQuote: prices[prices.length - 1],
+                horizon: Math.max(1, Math.round(num(horizon, DEFAULT_HORIZON))),
+                side: result.side,
+            });
+            priceLedger.set(symbol, ledger.slice(-64));
+        } catch {
+            // Calibration must never be able to break a trading tick.
+        }
+    };
+
+    const calibrationOf = symbol => priceCalibration.get(symbol) || { hits: 0, samples: 0 };
 
     const signatureOf = ticks => `${ticks.length}:${ticks.length ? ticks[ticks.length - 1] : 0}`;
 
@@ -754,23 +849,50 @@ const getVisionInterface = tradeEngine => {
          * which `Bot.priceReason()` prints into the journal instead of leaving
          * the operator staring at a bot that "does nothing".
          *
+         * The payout comes from the proposals Deriv has already quoted for this
+         * market, not from a number typed into a block: `payout / ask − 1` is
+         * what a win actually pays, and `1/(1+payout)` is the real break-even
+         * the decision has to clear. A strategy's own `payout` figure is only
+         * the fallback for the first tick, before the quotes arrive.
+         *
          * The plan is [ready, side, tick, probability, tieRate, edge,
-         * confidence, agreement, samples, horizon, separation, stderr]. Read it
+         * confidence, agreement, samples, horizon, separation, stderr,
+         * breakEven, ev, hitRate, hitSamples, z, outcomeAgreement]. Read it
          * with `priceDecisionPart`; the first four slots are unchanged so old
          * strategies keep working.
          */
-        priceDecision: async (list, mode, horizon, threshold, maxTie, minAgreement) => {
+        priceDecision: async (list, mode, horizon, threshold, maxTie, minAgreement, minEdge, payout, minConfidence) => {
+            const symbol = symbolOf();
             const options = tradeOptions();
             const context = resolvePriceContext(mode, horizon, options, tradeEngine.options);
+            const calibration = gradePriceForecasts(symbol, list);
             if (!context.ok) {
-                lastPrice.set(symbolOf(), { ready: false, reason: `cannot price this trade: ${context.reason}` });
-                return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                lastPrice.set(symbol, { ready: false, reason: `cannot price this trade: ${context.reason}` });
+                return new Array(18).fill(0);
             }
+            // High/Low Tick quotes are per contract type, exactly like the two
+            // directional ones, so the live payout is read here too instead of
+            // trusting the number typed into the block.
+            const priced = mode === 'tick' ? ['TICKHIGH', 'TICKLOW'] : ['CALL', 'PUT'];
+            const quoted = quotedPayout(priced);
+            const assumed = num(payout, DEFAULT_PRICE_PAYOUT);
+            const effectivePayout = quoted > 0 ? quoted : assumed;
             const result = priceDecision(list, mode === 'tick' ? 'tick' : 'rise', context.horizon, threshold, {
                 maxTie: num(maxTie, 0.2),
                 minAgreement: num(minAgreement, 0),
+                minEdge: num(minEdge, 0),
+                minConfidence: num(minConfidence, 0),
+                payout: effectivePayout,
+                // The rule's own graded record, measured on the decisions it
+                // published. This is the one input that is evidence rather
+                // than inference.
+                evidence: calibration,
             });
-            lastPrice.set(symbolOf(), { ...result, mode });
+            // File before the evidence veto is applied: a bot that stopped
+            // publishing would also stop grading, and then it could never
+            // demonstrate that the estimates had recovered.
+            filePriceForecast(symbol, list, { ...result, ready: result.modelReady }, context.horizon);
+            lastPrice.set(symbol, { ...result, mode, payout: effectivePayout, payoutLive: quoted > 0 });
             return [
                 result.ready ? 1 : 0,
                 result.side,
@@ -784,6 +906,12 @@ const getVisionInterface = tradeEngine => {
                 result.horizon,
                 result.separation,
                 result.stderr,
+                result.breakEven,
+                result.ev,
+                calibration.rate,
+                calibration.samples,
+                result.z,
+                result.outcomeAgreement,
             ];
         },
         priceDecisionPart: async (plan, part) => {
@@ -800,6 +928,12 @@ const getVisionInterface = tradeEngine => {
                 horizon: 9,
                 separation: 10,
                 stderr: 11,
+                'break-even': 12,
+                ev: 13,
+                hitrate: 14,
+                hits: 15,
+                z: 16,
+                'outcome-agreement': 17,
             }[part];
             return Array.isArray(plan) && index !== undefined ? num(plan[index], 0) : 0;
         },
@@ -811,6 +945,51 @@ const getVisionInterface = tradeEngine => {
         priceConfidence: async () => round(num(lastPrice.get(symbolOf())?.confidence, 0), 1),
         /** Measured tie rate of the contract horizon, as a percentage. */
         priceTieRate: async () => round(num(lastPrice.get(symbolOf())?.tieRate, 0) * 100, 1),
+        /** Payout ratio behind the last decision's break-even (0.95 = +95 %). */
+        pricePayout: async () => round(num(lastPrice.get(symbolOf())?.payout, 0), 3),
+        /**
+         * The trade shape the models are pricing, as one line. When a bot will
+         * not trade, this proves which contract it thinks it is reading —
+         * wrong unit, wrong market or wrong duration is visible here instead of
+         * being guessed at.
+         */
+        priceLayout: async () => {
+            const options = tradeOptions();
+            const plan = lastPrice.get(symbolOf());
+            const unit = String(options.duration_unit || 't');
+            return [
+                `${symbolOf()}`,
+                `${num(options.duration, 0)}${unit}`,
+                `stake ${num(options.amount, 0)}`,
+                plan?.payoutLive ? `payout ${(num(plan.payout, 0) * 100).toFixed(1)}% (live)` : `payout ${(num(plan?.payout, 0) * 100).toFixed(1)}% (assumed)`,
+                `break-even ${(num(plan?.breakEven, 0.5) * 100).toFixed(1)}%`,
+                plan ? `horizon ${num(plan.horizon, 0)}` : 'no decision yet',
+            ].join(' · ');
+        },
+        /** Realised hit rate of the published decisions, as a percentage. */
+        priceHitRate: async () => {
+            const calibration = calibrationOf(symbolOf());
+            return calibration.samples ? round((calibration.hits / calibration.samples) * 100, 1) : 0;
+        },
+        /** How many published decisions have been graded so far. */
+        priceHitSamples: async () => calibrationOf(symbolOf()).samples,
+        /**
+         * The scorecard, as one line for the journal: what the rule actually
+         * achieved against what the payout needs. This is the only line in the
+         * presets that is measured rather than modelled.
+         */
+        priceScorecard: async () => {
+            const symbol = symbolOf();
+            const calibration = calibrationOf(symbol);
+            const plan = lastPrice.get(symbol);
+            const breakEven = num(plan?.breakEven, 0.5);
+            if (!calibration.samples) {
+                return `no graded entries yet · break-even ${(breakEven * 100).toFixed(1)}%`;
+            }
+            const rate = calibration.hits / calibration.samples;
+            const edge = (rate - breakEven) * 100;
+            return `${(rate * 100).toFixed(1)}% hit over ${calibration.samples} graded · break-even ${(breakEven * 100).toFixed(1)}% · ${edge >= 0 ? '+' : ''}${edge.toFixed(1)}pt`;
+        },
         /** Per-model mixture weights, for the journal ("which model is talking"). */
         priceModelWeights: async () => {
             const plan = lastPrice.get(symbolOf());

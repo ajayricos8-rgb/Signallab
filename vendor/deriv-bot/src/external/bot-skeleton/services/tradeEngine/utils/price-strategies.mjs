@@ -1,5 +1,5 @@
 /**
- * Price-path ensemble for the shipped DBot strategies.
+ * Price-path ensemble for the shipped DBot strategies — v3.
  *
  * Two kinds of question are answered here:
  *
@@ -14,7 +14,11 @@
  * produces a full probability vector:
  *
  *   anchor      the structural prior. Directional: the market's own tie rate
- *               removed and the remainder split evenly. Tick: 1/10 per tick.
+ *               removed and the remainder split evenly. Tick: the discrete
+ *               arcsine law over the five positions (27 %, 16 %, 14 %, 16 %,
+ *               27 %) — the running maximum of a random walk favours the ends,
+ *               and that structure is the one bet on this instrument that does
+ *               not require a model to be clever.
  *   frequency   the long-run outcome histogram of completed windows.
  *   transition  the Markov row for the current two-change state (↑↑, ↑↓, …).
  *   recent      the histogram of the last 250 windows (regime drift).
@@ -23,6 +27,11 @@
  *   drift       the analytical directional forecast from measured drift and
  *               volatility — N(drift·h, σ√h) above zero. Directional only; in
  *               tick mode it abstains and the mixture learns to ignore it.
+ *   serial      the serial-dependence forecast: an AR(1) fit on the last few
+ *               hundred changes, compounded over the horizon. This is the only
+ *               structure a tick generator can actually leave behind (momentum
+ *               or mean reversion); on an independent stream it collapses to
+ *               the anchor by itself.
  *   neural      an online softmax regression over the same state features,
  *               trained walk-forward on completed windows.
  *
@@ -33,23 +42,66 @@
  * weight by itself; a model that reads the market keeps it. That is the same
  * adaptive-expert design the digit brain uses, applied to price contracts.
  *
- * Two honesty rules the previous single-blend version did not have:
+ * What v3 changed, and why
+ * ------------------------
+ *   Payout-aware edge. The gate used to be an absolute probability (56 %).
+ *   For a Rise/Fall contract paying 0.95, break-even is 51.3 %, but the
+ *   probability a *shrunk* ensemble can honestly claim on a near-fair Step
+ *   Index sits around 51–53 %. A 56 % bar is therefore not a quality filter,
+ *   it is an off switch: the bot waited forever on exactly the market both
+ *   presets ship. The gate is now `probability − break-even ≥ minEdge`, where
+ *   break-even is derived from the payout actually quoted for the contract
+ *   (1/(1+payout)) — the standard positive-expectation rule. `threshold`
+ *   still works as an absolute floor for anyone who wants one.
+ *
+ *   Side-level agreement. Agreement used to count the model weight whose
+ *   *argmax was the winning outcome index*. In High/Low Tick mode that asks
+ *   seven models to name the same tick out of five; even a strong consensus
+ *   scored under the old 60 % floor. Agreement is now measured on the traded
+ *   side (high vs low, rise vs fall) — what the strategy actually needs —
+ *   and the outcome-level figure is still reported separately.
+ *
+ *   Serial expert + honest evidence. A drift model cannot read a fixed-step
+ *   index; serial dependence is the structure that *can* exist there. It is
+ *   added as a scored expert, so it either earns its vote or decays.
+ *
+ * Two honesty rules carry over from v2:
  *
  *   Ties. On a fixed-step market (Step Index moves in ±0.1 steps) an *even*
- *   tick horizon ties about 36% of the time and every tie is a loss, so the
- *   win probability of a 4-tick Rise/Fall there tops out near 32%. A fixed
- *   56% gate could never fire: both the Rise/Fall and the hedge preset were
- *   silently unable to trade. The tie rate is now measured, returned and
- *   gated (`maxTie`), and the presets use an odd horizon where no tie exists.
+ *   tick horizon ties about 36 % of the time and every tie is a loss, so the
+ *   win probability of a 4-tick Rise/Fall there tops out near 32 %. The tie
+ *   rate is measured, returned and gated (`maxTie`), and the presets use an
+ *   odd horizon where no tie exists.
  *
  *   Evidence. The estimate is shrunk toward the anchor by its effective sample
  *   size, and the decision carries the model agreement, the separation from
- *   the runner-up and a confidence figure — so a strategy can require more
- *   than "the number is above the bar" before it risks money.
+ *   the runner-up, a standard error and a confidence figure — so a strategy
+ *   can require more than "the number is above the bar" before it risks money.
+
+ * What the shipped v3 presets then do with it
+ * -------------------------------------------
+ *   The confidence floor, the payout-aware edge and the model agreement are
+ *   inputs of the decision, not checks bolted on afterwards, because the
+ *   runtime grades the decisions the engine publishes: a floor applied
+ *   downstream would grade a different population from the one the bot trades.
+ *
+ *   The last gate is the caller's own ledger (`evidence: { hits, samples }`).
+ *   Once twenty-five published decisions have been graded, a hit rate under
+ *   the break-even stops entries until the record recovers — a model whose
+ *   estimates run hot is a losing bot with good explanations, and this is the
+ *   gate that notices. `modelReady` stays true through that veto so the
+ *   caller keeps grading and the pause can end by itself.
+ *
+ *   High/Low Tick probabilities are normalised per side (five positions), not
+ *   over the ten joint outcomes, and its structural break-even is 1/5 when no
+ *   payout is quoted. Normalising over ten outcomes halved every probability
+ *   and made a payout-aware gate unreachable — which, together with an
+ *   absolute 26 % floor, is why the tick preset used to buy nothing at all.
  *
  * Everything here is historical and conditional: these are estimates, not
- * calibrated odds, and they do not know the payout. None of it is a promise of
- * profit.
+ * calibrated odds. The realised hit rate of the published decisions belongs to
+ * the runtime (see VisionInterface's price calibration), not to this pure
+ * function. None of it is a promise of profit.
  */
 
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -57,7 +109,10 @@ const sign = value => (value > 0 ? 1 : value < 0 ? -1 : 0);
 const safe = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 
 /** The models that make up the mixture, in reporting order. */
-export const PRICE_MODEL_NAMES = ['anchor', 'frequency', 'transition', 'recent', 'analog', 'drift', 'neural'];
+export const PRICE_MODEL_NAMES = ['anchor', 'frequency', 'transition', 'recent', 'analog', 'drift', 'serial', 'neural'];
+
+/** Bumped whenever the decision shape or its gates change meaning. */
+export const PRICE_MODEL_VERSION = 3;
 
 /** Minimum history before any decision is published at all. */
 const MIN_TICKS = 256;
@@ -73,8 +128,32 @@ const PRIOR = 40;
 const SHRINK = 120;
 /** Sharpness of the multiplicative-weights step. */
 const ETA = 18;
-/** Standard-error multiplier for the lower confidence bound. */
+/** Standard-error multiplier for the reported interval. */
 const Z = 1.0;
+/** Changes read by the serial expert. */
+const SERIAL_LOOKBACK = 260;
+/**
+ * Positions a High/Low Tick contract lets you name. The count is fixed by the
+ * instrument, not by the caller's horizon, so it is its own constant.
+ */
+const TICK_POSITIONS = 5;
+
+/** The payout the shipped presets assume when the live quote is unavailable. */
+export const DEFAULT_PAYOUT = 0.95;
+/**
+ * A `threshold` at or below this is treated as "no absolute floor": the
+ * payout-derived edge gate becomes the only value test. It lets a strategy say
+ * "trade the edge, whatever the raw probability is" instead of hard-coding a
+ * number that cannot be reached on its market.
+ */
+const ABSOLUTE_FLOOR_OFF = 0.02;
+
+/**
+ * Graded decisions needed before the rule's own record is allowed to veto a
+ * trade. Below this the sample is too small to say anything; above it a hit
+ * rate under the break-even is not bad luck, it is a broken estimate.
+ */
+const MIN_EVIDENCE_SAMPLES = 25;
 
 const stateAt = (prices, index) =>
     `${sign(prices[index - 1] - prices[index - 2])},${sign(prices[index] - prices[index - 1])}`;
@@ -150,6 +229,55 @@ function mixtureWeights(brier) {
     return raw.map(value => value / total);
 }
 
+/**
+ * Serial-dependence forecast as a z-score of the cumulative move.
+ *
+ * An AR(1) coefficient is fitted to the last few hundred changes. If changes
+ * persist (ρ > 0) the last change is projected forward and compounded; if they
+ * alternate (ρ < 0) the projection flips sign. Compounding over the horizon is
+ * Σ ρⁱ, so a small ρ is not extrapolated into a fantasy: it decays. The
+ * forecast is returned in units of the horizon's own standard deviation, which
+ * makes it comparable across markets with different step sizes.
+ */
+export function serialLean(prices, horizon = 5) {
+    const start = Math.max(2, prices.length - SERIAL_LOOKBACK);
+    const changes = [];
+    for (let i = start; i < prices.length; i++) changes.push(prices[i] - prices[i - 1]);
+    if (changes.length < 30) return 0;
+
+    const mean = changes.reduce((sum, value) => sum + value, 0) / changes.length;
+    const variance = changes.reduce((sum, value) => sum + (value - mean) ** 2, 0) / changes.length;
+    const deviation = Math.sqrt(variance);
+    if (!(deviation > 0)) return 0;
+
+    let covariance = 0;
+    for (let i = 1; i < changes.length; i++) covariance += (changes[i] - mean) * (changes[i - 1] - mean);
+    covariance /= changes.length - 1;
+    const rho = clamp(covariance / (deviation * deviation), -0.6, 0.6);
+
+    let decay = 0;
+    let factor = 1;
+    for (let step = 1; step <= horizon; step++) {
+        factor *= rho;
+        decay += factor;
+    }
+    const expected = (changes[changes.length - 1] - mean) * decay;
+    const scale = deviation * Math.sqrt(Math.max(1, horizon));
+    return scale > 0 ? clamp(expected / scale, -2.5, 2.5) : 0;
+}
+
+/**
+ * Break-even win probability for a binary contract paying `payout` profit per
+ * unit staked: you win `payout`, you lose 1, so p·payout − (1 − p) = 0 gives
+ * p = 1/(1 + payout). With the usual 0.95 quote that is 51.28 %, not 50 % and
+ * certainly not 56 %.
+ */
+export function breakEvenProbability(payout, fallback = 0.5) {
+    const value = Number(payout);
+    if (!Number.isFinite(value) || value <= 0) return fallback;
+    return 1 / (1 + value);
+}
+
 const emptyDecision = (extra = {}) => ({
     ready: false,
     side: 0,
@@ -160,24 +288,57 @@ const emptyDecision = (extra = {}) => ({
     horizon: 0,
     tieRate: 0,
     edge: 0,
+    ev: 0,
+    breakEven: 0.5,
+    payout: 0,
+    z: 0,
     confidence: 0,
     agreement: 0,
+    outcomeAgreement: 0,
     separation: 0,
     stderr: 0,
     decisive: 0,
     models: [],
     probabilities: [],
     reason: '',
-    version: 2,
+    version: PRICE_MODEL_VERSION,
     ...extra,
 });
+
+/**
+ * Discrete arcsine law: the probability that tick k holds the strict maximum of
+ * a symmetric random walk of `h` steps, normalised over the positions.
+ *
+ * P(position k) ∝ C(2k-2, k-1) · C(2h-2k, h-k) — the classical result that a
+ * random walk's maximum is most likely to sit at one of the ends. Exported for
+ * the tests, which pin it to the enumerated 5-tick distribution.
+ */
+export function arcsinePrior(h = 5) {
+    const steps = Math.min(10, Math.max(1, Math.round(h)));
+    const choose = (n, r) => {
+        if (r < 0 || r > n) return 0;
+        let value = 1;
+        for (let i = 1; i <= r; i++) value = (value * (n - r + i)) / i;
+        return value;
+    };
+    const weights = [];
+    for (let k = 1; k <= steps; k++) {
+        weights.push(choose(2 * k - 2, k - 1) * choose(2 * steps - 2 * k, steps - k));
+    }
+    const total = weights.reduce((sum, value) => sum + value, 0) || 1;
+    return weights.map(value => value / total);
+}
 
 /**
  * @param values    the tick list (numbers or numeric strings)
  * @param mode      'tick' | 'rise' | 'step-hedge'
  * @param horizon   contract horizon in ticks (tick mode always uses 5)
- * @param threshold minimum win probability the chosen side must reach
- * @param options   { maxTie, minAgreement, payout }
+ * @param threshold absolute probability floor; ≤ 0.02 (or absent) turns it off
+ *                  and leaves the payout-derived edge gate in charge
+ * @param options   { maxTie, minAgreement, minEdge, payout, minProbability,
+ *                    minConfidence,
+ *                    evidence } — `evidence` is { hits, samples } from the
+ *                  caller's own ledger of graded decisions.
  */
 export function priceDecision(values, mode = 'rise', horizon = 5, threshold, options = {}) {
     const prices = Array.isArray(values) ? values.map(Number) : [];
@@ -191,11 +352,31 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         return emptyDecision({ reason: `unsupported horizon ${horizon}` });
     }
     const count = isTick ? 10 : 2;
-    const anchorSide = 1 / count;
-    const min = Number.isFinite(Number(threshold)) ? clamp(Number(threshold), 0, 1) : isTick ? 0.3 : 0.56;
     const maxTie = clamp(safe(options.maxTie, 0.2), 0, 1);
     const minAgreement = clamp(safe(options.minAgreement, 0), 0, 1);
+    const minEdge = safe(options.minEdge, 0);
     const payout = Number(options.payout);
+    const payoutKnown = Number.isFinite(payout) && payout > 0;
+
+    // The absolute floor is only applied when the strategy asked for one.
+    const requestedFloor = Number.isFinite(Number(threshold)) ? Number(threshold) : NaN;
+    const explicitFloor = Number.isFinite(requestedFloor) ? clamp(requestedFloor, 0, 1) : 0;
+    const minProbability = clamp(
+        safe(options.minProbability, explicitFloor > ABSOLUTE_FLOOR_OFF ? explicitFloor : 0),
+        0,
+        1
+    );
+
+    // Break-even from the payout actually quoted for this contract. In tick
+    // mode the payout is a multiple, not a 0.95-style ratio, so a caller that
+    // does not supply one gets the structural 1/5 — one chance in five
+    // positions, which is the scale each side is normalised to — instead of a
+    // made-up figure.
+    const breakEven = payoutKnown
+        ? breakEvenProbability(payout, 1 / count)
+        : isTick
+          ? 1 / TICK_POSITIONS
+          : 0.5;
 
     // ---- completed windows -------------------------------------------------
     // A window starts at i and is decided by prices[i + h + 1] vs prices[i + 1]
@@ -220,9 +401,24 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     }
 
     const n = rows.length;
-    const recentN = rows.filter((_, index) => index >= rows.length - RECENT_WINDOWS).length;
     if (!rows.length || n < 200) {
-        return emptyDecision({ samples: n, horizon: isTick ? 5 : h, reason: `thin history — ${n} completed windows` });
+        return emptyDecision({
+            samples: n,
+            horizon: isTick ? 5 : h,
+            breakEven,
+            payout: payoutKnown ? payout : 0,
+            reason: `thin history — ${n}/200 completed windows`,
+        });
+    }
+    const recentN = rows.filter((_, index) => index >= rows.length - RECENT_WINDOWS).length;
+    if (recentN < 50) {
+        return emptyDecision({
+            samples: n,
+            horizon: isTick ? 5 : h,
+            breakEven,
+            payout: payoutKnown ? payout : 0,
+            reason: `thin recent window — ${recentN}/50`,
+        });
     }
 
     const currentState = stateAt(prices, prices.length - 1);
@@ -231,7 +427,18 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     const ties = rows.filter(row => row.winners.length === 0).length;
     const tieRate = isTick ? 0 : ties / n;
 
-    const anchor = isTick ? uniform(count) : new Array(count).fill((1 - tieRate) / 2);
+    // High/Low Tick has a structural prior, and it is not the uniform one. For
+    // a symmetric random walk the chance that a given tick holds the running
+    // maximum follows the discrete arcsine law: the extreme positions are the
+    // likeliest (27 % at tick 1 or 5 over five ticks) and the middle is the
+    // least likely (14 %). Deriv quotes one payout for the contract, so buying
+    // an end position is the one bet on this instrument that does not depend on
+    // a model being clever. Anchoring the mixture there means a thin sample
+    // falls back to that structure instead of to a flat 1-in-5 guess, and the
+    // live evidence gate decides whether the market has already priced it.
+    const anchor = isTick
+        ? [...arcsinePrior(TICK_POSITIONS), ...arcsinePrior(TICK_POSITIONS)]
+        : new Array(count).fill((1 - tieRate) / 2);
 
     /** Counts → probability vector, damped toward `parent` by PRIOR pseudo-windows. */
     const fromCounts = (counts, total, parent) => {
@@ -322,9 +529,18 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
                 drift = [up * (1 - tieRate * 0.5), (1 - up) * (1 - tieRate * 0.5)];
             }
         }
+        // Serial dependence: abstains on tick mode (it has no directional
+        // question to answer) and falls back to the anchor when there is no
+        // measurable persistence.
+        let serial = anchor.slice();
+        if (!isTick) {
+            const z = serialLean(prices, h);
+            const up = clamp(normalCdf(z), 0.02, 0.98);
+            serial = [up * (1 - tieRate * 0.5), (1 - up) * (1 - tieRate * 0.5)];
+        }
         const featureRow = [1, sign(prices.at(-1) - prices.at(-2)), sign(prices.at(-2) - prices.at(-3)), currentFeatures.rsi, currentFeatures.stretch];
         const neural = softmax(weights.map(row => row.reduce((sum, value, index) => sum + value * featureRow[index], 0)));
-        return { anchor, frequency, transition, recent, analog, drift, neural };
+        return { anchor, frequency, transition, recent, analog, drift, serial, neural };
     };
 
     for (let index = 0; index < rows.length; index++) {
@@ -396,6 +612,22 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         anchor
     );
 
+    // High/Low Tick is two separate bets: "the strict high prints at tick k"
+    // and "the strict low prints at tick k". The market prices each of them as
+    // a probability over the five positions, so each side must sum to one.
+    // The joint ten-outcome vector sums to two, and reading half of it as a win
+    // probability is what made a payout-aware tick gate unreachable — a model
+    // that was right about the likely tick still reported half the payout
+    // break-even. Normalising per side fixes the scale, not the ranking.
+    if (isTick) {
+        [0, 5].forEach(offset => {
+            const mass = probabilities.slice(offset, offset + 5).reduce((sum, value) => sum + value, 0);
+            if (mass > 0) {
+                for (let k = offset; k < offset + 5; k++) probabilities[k] /= mass;
+            }
+        });
+    }
+
     const ranked = probabilities
         .map((probability, index) => ({ probability, index }))
         .sort((left, right) => right.probability - left.probability);
@@ -404,23 +636,41 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     const side = isTick ? (best.index < 5 ? 1 : -1) : best.index === 0 ? 1 : -1;
     const tick = isTick ? (best.index % 5) + 1 : 0;
 
-    // Agreement: the mixture weight that backs the winning side.
-    const agreeWeight = PRICE_MODEL_NAMES.reduce((sum, name, modelIndex) => {
+    // Agreement is measured on the side the strategy trades. In tick mode the
+    // exact winning outcome index is a five-way detail; two models that both
+    // say "high, different tick" still agree about the buy.
+    const sideOf = outcome => (isTick ? (outcome < 5 ? 1 : -1) : outcome === 0 ? 1 : -1);
+    let agreeWeight = 0;
+    let outcomeAgreeWeight = 0;
+    PRICE_MODEL_NAMES.forEach((name, modelIndex) => {
         const vector = experts[name];
-        const top = vector.indexOf(Math.max(...vector));
-        return sum + (top === best.index ? mixture[modelIndex] : 0);
-    }, 0);
+        let topIndex = 0;
+        for (let index = 1; index < vector.length; index++) if (vector[index] > vector[topIndex]) topIndex = index;
+        if (sideOf(topIndex) === side) agreeWeight += mixture[modelIndex];
+        if (topIndex === best.index) outcomeAgreeWeight += mixture[modelIndex];
+    });
 
     const separation = best.probability - runnerUp.probability;
     const votes = effective + SHRINK;
     const stderr = Math.sqrt((best.probability * (1 - best.probability)) / Math.max(1, votes));
+    // Separation is scored on its own scale: five points of separation is a
+    // mountain when the pick is one of ten tick positions and a rounding error
+    // when it is one of two directions. Scoring both against 0.1 held the tick
+    // strategy at a confidence it could never reach.
+    const separationScale = isTick ? 0.04 : 0.1;
     const confidence = clamp(
-        100 * (0.4 * agreeWeight + 0.3 * clamp(effective / 400, 0, 1) + 0.3 * clamp(separation / 0.1, 0, 1)),
+        100 *
+            (0.4 * agreeWeight +
+                0.3 * clamp(effective / 400, 0, 1) +
+                0.3 * clamp(separation / separationScale, 0, 1)),
         0,
         100
     );
-    const breakEven = Number.isFinite(payout) && payout > 0 ? 1 / (1 + payout) : anchorSide;
+    // Edge and expected value are payout-aware. A "56 % probability" means
+    // nothing until it is compared with what the contract pays.
     const edge = best.probability - breakEven;
+    const ev = payoutKnown ? best.probability * (1 + payout) - 1 : edge;
+    const z = stderr > 0 ? edge / stderr : 0;
     const decisive = isTick ? best.probability : tieRate < 1 ? best.probability / (1 - tieRate) : 0;
 
     const models = PRICE_MODEL_NAMES.map((name, modelIndex) => ({
@@ -432,6 +682,11 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
 
     const result = {
         ready: false,
+        // True when every *model* gate passed, which is what the caller grades
+        // against the tick that settles. The evidence gate can still veto the
+        // entry — and the grading must continue while it does, or a bot that
+        // paused once could never prove itself again.
+        modelReady: false,
         side,
         tick,
         probability: best.probability,
@@ -440,21 +695,28 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         horizon: isTick ? 5 : h,
         tieRate,
         edge,
+        ev,
+        breakEven,
+        payout: payoutKnown ? payout : 0,
+        z,
         confidence,
         agreement: agreeWeight,
+        outcomeAgreement: outcomeAgreeWeight,
         separation,
         stderr,
         decisive,
         models,
         probabilities,
         reason: '',
-        version: 2,
+        version: PRICE_MODEL_VERSION,
     };
 
     // ---- gates -------------------------------------------------------------
+    // Ordered from "not enough history to answer" to "the answer is not worth
+    // money". Each one names itself, because an idle bot that cannot explain
+    // why it is idle is indistinguishable from a broken one.
     if (n < 200) return { ...result, reason: `thin history — ${n}/200 completed windows` };
     if (matched < 20) return { ...result, reason: `thin state — ${matched}/20 matches for ${currentState}` };
-    if (recentN < 50) return { ...result, reason: `thin recent window — ${recentN}/50` };
     if (tieRate > maxTie) {
         return {
             ...result,
@@ -466,30 +728,77 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
     // ambiguity (in a clean trend both are tradeable), so only the directional
     // model enforces separation.
     if (!isTick && !(separation > 0)) return { ...result, reason: 'no side leads' };
-    if (best.probability < min) {
+    if (minProbability > 0 && best.probability < minProbability) {
         return {
             ...result,
-            reason: `below threshold — ${(best.probability * 100).toFixed(1)}% < ${(min * 100).toFixed(1)}%`,
+            reason: `below floor — ${(best.probability * 100).toFixed(1)}% < ${(minProbability * 100).toFixed(1)}%`,
         };
     }
-    if (best.probability - Z * stderr < min - 0.02) {
+    // The value gate: the estimate must clear the break-even implied by the
+    // payout, by at least `minEdge`. Without a quoted payout the break-even is
+    // the structural one, so this reduces to "trade only a positive lean".
+    //
+    // High/Low Tick prices every tick position differently (the middle ticks
+    // are the likeliest, so they pay least), so one scalar payout cannot
+    // describe the ten outcomes. The gate is therefore directional by default
+    // and a tick strategy opts in only by asking for an edge *and* supplying
+    // the payout of the tick it buys.
+    const valueGate = !isTick || minEdge > 0;
+    if (valueGate && edge < minEdge) {
+        const need = (breakEven + minEdge) * 100;
         return {
             ...result,
-            reason: `evidence too thin — ${(best.probability * 100).toFixed(1)}% ±${(Z * stderr * 100).toFixed(1)}pt`,
+            reason: `no edge — ${(best.probability * 100).toFixed(1)}% vs break-even ${(breakEven * 100).toFixed(1)}% (needs ${need.toFixed(1)}%)`,
         };
     }
     if (agreeWeight < minAgreement) {
         return {
             ...result,
-            reason: `only ${(agreeWeight * 100).toFixed(0)}% of the model weight agrees, floor ${(minAgreement * 100).toFixed(0)}%`,
+            reason: `only ${(agreeWeight * 100).toFixed(0)}% of the model weight is on this side, floor ${(minAgreement * 100).toFixed(0)}%`,
+        };
+    }
+    // The evidence gate. Every other gate is a claim about the future; this one
+    // is the rule's own record. Once enough published decisions have been
+    // graded, a hit rate below the break-even means the estimates are running
+    // hot — an over-confident expert, a regime the models cannot read, or a
+    // market whose payout moved against the strategy. Trading on through that
+    // is how a "profitable" model becomes a losing bot, so entries stop until
+    // the record recovers. Grading never stops, so it can recover.
+    // The confidence floor belongs here, not only in the block, because the
+    // engine grades the decisions it publishes: a floor applied downstream
+    // would grade a different population from the one the strategy trades.
+    const minConfidence = clamp(safe(options.minConfidence, 0), 0, 100);
+    if (minConfidence > 0 && confidence < minConfidence) {
+        return {
+            ...result,
+            reason: `confidence ${confidence.toFixed(0)} below the ${minConfidence.toFixed(0)} floor`,
+        };
+    }
+    result.modelReady = true;
+    const evidence = options.evidence;
+    const graded = Number(evidence?.samples);
+    const evidenceRate =
+        evidence && Number.isFinite(Number(evidence.rate))
+            ? Number(evidence.rate)
+            : evidence && graded > 0
+              ? Number(evidence.hits || 0) / graded
+              : NaN;
+    if (graded >= MIN_EVIDENCE_SAMPLES && Number.isFinite(evidenceRate) && evidenceRate < breakEven) {
+        return {
+            ...result,
+            hitRate: evidenceRate,
+            hitSamples: graded,
+            reason:
+                `the rule's own record is ${(evidenceRate * 100).toFixed(1)}% over ` +
+                `${graded} graded decisions — below the ${(breakEven * 100).toFixed(1)}% break-even`,
         };
     }
 
     const summary = isTick
-        ? `${side > 0 ? 'HIGH' : 'LOW'} tick ${tick} · p ${(best.probability * 100).toFixed(1)}% · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · 5 ticks`
-        : `${side > 0 ? 'RISE' : 'FALL'} · p ${(best.probability * 100).toFixed(1)}% · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · tie ${(tieRate * 100).toFixed(1)}% · ${h} ticks`;
+        ? `${side > 0 ? 'HIGH' : 'LOW'} tick ${tick} · p ${(best.probability * 100).toFixed(1)}% · EV ${(ev * 100).toFixed(1)}% · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · 5 ticks`
+        : `${side > 0 ? 'RISE' : 'FALL'} · p ${(best.probability * 100).toFixed(1)}% · break-even ${(breakEven * 100).toFixed(1)}% · edge ${(edge * 100).toFixed(1)}pt · conf ${confidence.toFixed(0)} · agree ${(agreeWeight * 100).toFixed(0)}% · ${h} ticks`;
 
     return { ...result, ready: true, reason: summary };
 }
 
-export default { priceDecision, PRICE_MODEL_NAMES };
+export default { priceDecision, PRICE_MODEL_NAMES, PRICE_MODEL_VERSION, breakEvenProbability, serialLean };

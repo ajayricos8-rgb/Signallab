@@ -50,6 +50,16 @@ window.Blockly.Blocks.hedge_purchase = {
         this.defaultBarrierTargets_ = {};
         this.updateLegInputs({ prediction: false, barriers: 0 });
 
+        // How much of the model's side the opposite leg covers. Two equal
+        // legs are a guaranteed loss of the spread — one wins, the other
+        // loses, every cycle — so the second leg is sized as a fraction of
+        // the Trade options amount. 1 means the old both-sides behaviour.
+        const ratio_input = this.appendValueInput('HEDGE_STAKE')
+            .setCheck('Number')
+            .appendField(localize('Hedge stake as a fraction of the stake (0–1):'));
+        this.addNumberShadow(ratio_input, '1');
+        this.ratioInputName_ = 'HEDGE_STAKE';
+
         // Ensure one of this type per statement-stack (same rule as Purchase)
         this.setNextStatement(false);
     },
@@ -220,7 +230,8 @@ window.Blockly.Blocks.hedge_purchase = {
      * Build the two purchase rows for the current trade-type shape. Rows
      * are only rebuilt when the shape actually changes (a trade-type
      * switch), so blocks the user attached are never disturbed by routine
-     * dropdown refreshes. Dropdown values survive a rebuild.
+     * dropdown refreshes. Dropdown values survive a rebuild. The hedge-ratio
+     * input is top-level (not a row) and is therefore never rebuilt.
      */
     updateLegInputs(settings) {
         const signature = shapeSignature(settings);
@@ -372,5 +383,13 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.hedge_purchase = block =>
         return `{ ${parts.join(', ')} }`;
     };
 
-    return `Bot.purchaseHedge('${purchaseList}', '${hedgeList}', ${legOptions('')}, ${legOptions('HEDGE_')});\n`;
+    const ratio = block.getInput('HEDGE_STAKE')
+        ? generator.valueToCode(block, 'HEDGE_STAKE', generator.ORDER_ATOMIC)
+        : '';
+    const hedgeOptions = legOptions('HEDGE_');
+    const withRatio = ratio
+        ? hedgeOptions.replace(/\{\s*/, `{ ratio: ${ratio}, `)
+        : hedgeOptions;
+
+    return `Bot.purchaseHedge('${purchaseList}', '${hedgeList}', ${legOptions('')}, ${withRatio});\n`;
 };
