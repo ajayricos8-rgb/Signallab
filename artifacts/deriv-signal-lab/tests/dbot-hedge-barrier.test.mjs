@@ -61,7 +61,7 @@ test("a digit prediction can never be sent as a price barrier", () => {
   );
   // The hedge sanitize is contract-aware at the leg level too.
   assert.match(purchase, /const sanitizeBarrierOptions = \(contractType, options\)/);
-  assert.match(purchase, /type\.startsWith\('DIGIT'\)/, "digit legs keep predictions, price legs cannot inherit one");
+  assert.match(purchase, /sanitizeHedgeOptions\(contractType, options\)/, "leg settings use contract-aware validation");
   assert.match(purchase, /legTradeOptions\(contract_type, main_options\)/);
   assert.match(purchase, /legTradeOptions\(hedge_contract_type, hedge_options\)/);
 });

@@ -50,7 +50,7 @@ export default class ContractsFor {
         const barrier_props = ['high_barrier', 'low_barrier'];
         const contracts_for_category = await this.getContractsByTradeType(symbol, trade_type);
         const durations = await this.getDurations(symbol, trade_type, false);
-        const offset_regexp = /^[-|+]([0-9]+.[0-9]+)$/;
+        const offset_regexp = /^[+-]([0-9]+(?:\.[0-9]+)?)$/;
         const isOffset = input => input && offset_regexp.test(input.toString());
 
         let has_absolute_default_value = true;

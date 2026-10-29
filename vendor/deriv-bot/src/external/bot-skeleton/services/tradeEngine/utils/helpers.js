@@ -14,7 +14,7 @@ import { error as logError } from './broadcast';
  * `selected_tick` (that is their prediction) but never a barrier.
  */
 const PREDICTION_CONTRACT_TYPES = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'];
-const SELECTED_TICK_CONTRACT_TYPES = [...PREDICTION_CONTRACT_TYPES, 'TICKHIGH', 'TICKLOW'];
+const SELECTED_TICK_CONTRACT_TYPES = ['TICKHIGH', 'TICKLOW'];
 
 /**
  * Deriv does not offer barrier price contracts (Higher/Lower, Touch/No
@@ -35,6 +35,8 @@ const PRICE_BARRIER_CONTRACT_TYPES = [
     'EXPIRYMISS',
     'RANGE',
     'UPORDOWN',
+    'CALLSPREAD',
+    'PUTSPREAD',
 ];
 
 export const barrierDurationFloor = (contract_type, trade_option) => {
@@ -71,10 +73,10 @@ export const tradeOptionToProposal = (trade_option, purchase_reference) =>
         }
         if (PREDICTION_CONTRACT_TYPES.includes(type) && trade_option.prediction != null) {
             proposal.barrier = trade_option.prediction;
-        } else if (trade_option.barrierOffset != null) {
+        } else if (PRICE_BARRIER_CONTRACT_TYPES.includes(type) && trade_option.barrierOffset != null) {
             proposal.barrier = trade_option.barrierOffset;
         }
-        if (trade_option.secondBarrierOffset != null) {
+        if (PRICE_BARRIER_CONTRACT_TYPES.includes(type) && trade_option.secondBarrierOffset != null) {
             proposal.barrier2 = trade_option.secondBarrierOffset;
         }
         if (['MULTUP', 'MULTDOWN'].includes(type)) {
@@ -107,10 +109,10 @@ export const tradeOptionToBuy = (contract_type, trade_option) => {
     }
     if (PREDICTION_CONTRACT_TYPES.includes(contract_type) && trade_option.prediction != null) {
         buy.parameters.barrier = trade_option.prediction;
-    } else if (trade_option.barrierOffset != null) {
+    } else if (PRICE_BARRIER_CONTRACT_TYPES.includes(contract_type) && trade_option.barrierOffset != null) {
         buy.parameters.barrier = trade_option.barrierOffset;
     }
-    if (trade_option.secondBarrierOffset != null) {
+    if (PRICE_BARRIER_CONTRACT_TYPES.includes(contract_type) && trade_option.secondBarrierOffset != null) {
         buy.parameters.barrier2 = trade_option.secondBarrierOffset;
     }
     if (!isEmptyObject(trade_option.app_markup_percentage)) {
