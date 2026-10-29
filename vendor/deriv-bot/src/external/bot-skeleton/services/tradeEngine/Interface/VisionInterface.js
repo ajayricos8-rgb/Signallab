@@ -44,6 +44,22 @@ const DEFAULT_TARGET_EDGE = 0.04;
 const planCache = new Map();
 /** The last decision each market produced, so a thin tick can still be priced. */
 const lastPlan = new Map();
+/**
+ * The decision that was open when the current position was bought, per
+ * market. Learning must score *that* forecast against the outcome — the
+ * plan cache has moved on several ticks by settlement, and grading the
+ * latest plan instead teaches the experts from forecasts they never made
+ * for that expiry.
+ */
+const entrySnapshot = new Map();
+/**
+ * Forecasts awaiting their expiry tick, per market. Every forecast the AI
+ * makes is scored against the digit that actually prints at its horizon —
+ * not just the ones behind a bought contract — so the brain learns from
+ * the whole tick stream, on unbiased samples, an order of magnitude
+ * faster than trade-only learning ever could.
+ */
+const forecastLedger = new Map();
 /** Last measured ticks-per-minute, per market. */
 const measuredTickRate = new Map();
 /**
@@ -149,8 +165,15 @@ const getVisionInterface = tradeEngine => {
         const payouts = peekPayouts(payoutOptions());
         const previous = cached?.plan || null;
         const brain = memory.loadBrain(symbol);
+        // Horizons arrive expressed as contract durations ("analyse my
+        // 5-tick trade"), but a buy's entry tick is the NEXT tick after
+        // the purchase — so the expiry digit sits duration+1 ticks past
+        // the last tick in hand, not duration. Forecasting the nearer
+        // tick grades every h-step expert (Markov pairs, analog replays)
+        // against the wrong expiry; analyse for the tick that settles.
+        const forecastHorizon = Math.max(1, Math.round(num(overrides.horizon ?? horizonTicks(), DEFAULT_HORIZON))) + 1;
         const plan = ai.planTrade(ticks, {
-            horizon: overrides.horizon ?? horizonTicks(),
+            horizon: forecastHorizon,
             minEdge: overrides.minEdge ?? DEFAULT_MIN_EDGE,
             minLean: overrides.minLean ?? DEFAULT_MIN_LEAN,
             minConfidence: overrides.minConfidence ?? DEFAULT_MIN_CONFIDENCE,
@@ -171,7 +194,58 @@ const getVisionInterface = tradeEngine => {
             symbol,
         });
         if (plan?.best) lastPlan.set(symbol, plan);
+        trackForecast(symbol, ticks, plan);
         return applyOverrides(plan, overrides);
+    };
+
+    /**
+     * Shadow learning bookkeeping: file this forecast away, then grade
+     * every earlier forecast whose expiry tick has now printed. The quote
+     * guard makes a trimmed or restarted tick history harmless — if the
+     * tick at the remembered index is not the tick the forecast was made
+     * on, the sample is dropped rather than misgraded.
+     */
+    const trackForecast = (symbol, ticks, plan) => {
+        try {
+            if (!plan?.experts || !Array.isArray(plan.digits)) return;
+            const ledger = forecastLedger.get(symbol) || [];
+            let brain = null;
+            const pending = [];
+            ledger.forEach(entry => {
+                const target = entry.index + entry.horizon;
+                if (target >= plan.digits.length) {
+                    pending.push(entry);
+                    return;
+                }
+                if (ticks[entry.index] !== entry.lastQuote) return; // history shifted: drop
+                brain = ai.learn(brain || memory.loadBrain(symbol), {
+                    digit: plan.digits[target],
+                    features: entry.features,
+                    expertDistributions: entry.experts,
+                    shadow: true,
+                });
+            });
+            if (brain) memory.saveBrain(symbol, brain);
+            pending.push({
+                index: ticks.length - 1,
+                lastQuote: ticks[ticks.length - 1],
+                horizon: plan.horizon,
+                features: plan.features || null,
+                experts: Object.entries(plan.experts).map(([name, expert]) => ({
+                    name,
+                    distribution: expert.distribution,
+                })),
+            });
+            forecastLedger.set(symbol, pending.slice(-64));
+        } catch {
+            // Learning must never be able to break a trading tick.
+        }
+    };
+
+    /** Remember the decision about to be bought, for honest grading later. */
+    const snapshotEntryPlan = () => {
+        const cached = planCache.get(symbolOf());
+        if (cached?.plan?.best) entrySnapshot.set(symbolOf(), cached.plan);
     };
 
     /**
@@ -353,6 +427,7 @@ const getVisionInterface = tradeEngine => {
         /** Record that a position was just opened. */
         visionMarkEntry: async () => {
             pacer.mark();
+            snapshotEntryPlan();
             return true;
         },
 
@@ -481,23 +556,32 @@ const getVisionInterface = tradeEngine => {
             const actual = Number.isFinite(outcome) && outcome >= 0 ? Math.round(outcome) : lastDigitFromContract();
             if (actual < 0) return memory.brainSize(symbol).trained;
 
+            // Grade the forecast that opened this contract (snapshotted at
+            // entry), not whatever the plan cache holds by settlement —
+            // the cache forecasts a later expiry by then, and grading it
+            // would move the expert weights on evidence about a different
+            // tick. Fall back to the cache only when no entry was marked.
+            const opening = entrySnapshot.get(symbol) || null;
+            if (opening) entrySnapshot.delete(symbol);
+            const graded = opening || cached?.plan || null;
+
             const brain = memory.loadBrain(symbol);
-            const expertDistributions = Object.entries(cached?.plan?.experts || {}).map(([name, expert]) => ({
+            const expertDistributions = Object.entries(graded?.experts || {}).map(([name, expert]) => ({
                 name,
                 distribution: expert.distribution,
             }));
-            const probability = cached?.plan?.probability ?? null;
+            const probability = graded?.probability ?? null;
             const won = contract.sell_price != null
                 ? Number(contract.sell_price) > Number(contract.buy_price)
                 : typeof probability === 'number'
-                    ? cached.plan.best
-                        ? (cached.plan.best.direction === 'over' ? actual > cached.plan.best.barrier : actual < cached.plan.best.barrier)
+                    ? graded.best
+                        ? (graded.best.direction === 'over' ? actual > graded.best.barrier : actual < graded.best.barrier)
                         : false
                     : false;
 
             const next = ai.learn(brain, {
                 digit: actual,
-                features: cached?.plan?.features || null,
+                features: graded?.features || null,
                 expertDistributions,
                 won,
             });
@@ -721,7 +805,9 @@ const getVisionInterface = tradeEngine => {
 
         xAiShouldBuy: async minEdge => {
             const plan = await getPlan({ minEdge: minEdge ?? undefined });
-            return entryDecision({ plan, last: lastPlan.get(symbolOf()), forceEntry: true }).go;
+            const go = entryDecision({ plan, last: lastPlan.get(symbolOf()), forceEntry: true }).go;
+            if (go) snapshotEntryPlan();
+            return go;
         },
 
         xAiStake: async (baseStake, risk) => {

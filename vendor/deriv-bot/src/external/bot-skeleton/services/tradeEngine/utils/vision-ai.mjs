@@ -150,7 +150,7 @@ export function buildFeatureSpace(values, window = 40, longWindow = 240) {
 /** Standardise a feature matrix column-wise so distances are comparable. */
 function standardise(rows) {
     const n = rows.length;
-    if (!n) return { rows, scales: [1, 1, 1, 1, 1] };
+    if (!n) return { rows, scales: [1, 1, 1, 1, 1], means: [0, 0, 0, 0, 0] };
     const dims = rows[0].length;
     const means = new Array(dims).fill(0);
     const stds = new Array(dims).fill(0);
@@ -160,7 +160,7 @@ function standardise(rows) {
         stds[d] = stdDev(column) || 1;
     }
     const scaled = rows.map(row => row.map((value, d) => (value - means[d]) / stds[d]));
-    return { rows: scaled, scales: stds };
+    return { rows: scaled, scales: stds, means };
 }
 
 /**
@@ -228,8 +228,14 @@ export function analogDistribution(values, horizon, options = {}) {
 
     const rows = [];
     for (let i = window; i + h < n; i++) rows.push(featureVector(space, digits, i));
-    const { rows: scaled } = standardise(rows);
-    const current = standardise([featureVector(space, digits, n - 1)]).rows[0];
+    const { rows: scaled, means, scales } = standardise(rows);
+    // The current state must be scaled with the SAME column statistics as
+    // the history. Standardising it on its own subtracted its own mean,
+    // which zeroed the vector: every distance was then measured to the
+    // *average* historical state instead of to now, and the "analog"
+    // expert was replaying near-average states whatever the market was
+    // actually doing.
+    const current = featureVector(space, digits, n - 1).map((value, d) => (value - means[d]) / scales[d]);
     const dims = current.length;
 
     const counts = new Array(10).fill(0);
@@ -725,8 +731,14 @@ export function learn(brain, record = {}) {
     }
 
     next.trained = safe(next.trained) + 1;
-    if (record.won) next.wins = safe(next.wins) + 1;
-    else next.losses = safe(next.losses) + 1;
+    // Shadow samples (forecasts scored against the tick stream itself,
+    // with no contract behind them) train the experts and the net exactly
+    // like real ones, but they are not trades: counting them would
+    // corrupt the win/loss record the session statistics are read from.
+    if (!record.shadow) {
+        if (record.won) next.wins = safe(next.wins) + 1;
+        else next.losses = safe(next.losses) + 1;
+    }
     next.lastOutcomeAt = Date.now();
     return next;
 }

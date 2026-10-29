@@ -149,12 +149,24 @@ export default Engine =>
             // sanitized the same way: predictions become a single digit,
             // and a zero/unparseable offset (barrier exactly on spot) is
             // omitted rather than sent.
-            const sanitizeBarrierOptions = options => {
+            // Sanitizing is contract-aware: a digit contract's barrier is
+            // its prediction and it takes no price offsets; a price
+            // contract takes offsets and must NEVER inherit a prediction
+            // (a digit would be read as an absolute price barrier). A
+            // block whose rows are stale for the workspace trade type —
+            // e.g. Prediction rows left over after switching to
+            // Higher/Lower — therefore degrades to a clean leg instead of
+            // a guaranteed "Invalid barrier".
+            const isDigitContract = type => typeof type === 'string' && type.startsWith('DIGIT');
+            const sanitizeBarrierOptions = (contractType, options) => {
                 const cleaned = {};
                 if (!options) return cleaned;
-                if (options.prediction != null) {
-                    const digit = Math.round(Number(options.prediction));
-                    if (Number.isFinite(digit)) cleaned.prediction = Math.min(9, Math.max(0, digit));
+                if (isDigitContract(contractType)) {
+                    if (options.prediction != null) {
+                        const digit = Math.round(Number(options.prediction));
+                        if (Number.isFinite(digit)) cleaned.prediction = Math.min(9, Math.max(0, digit));
+                    }
+                    return cleaned;
                 }
                 ['barrierOffset', 'secondBarrierOffset'].forEach(key => {
                     const raw = options[key];
@@ -166,17 +178,22 @@ export default Engine =>
                 return cleaned;
             };
             const barrierKeys = ['prediction', 'barrierOffset', 'secondBarrierOffset'];
-            const hasBlockConfig = options => {
-                const cleaned = sanitizeBarrierOptions(options);
+            const hasBlockConfig = (contractType, options) => {
+                const cleaned = sanitizeBarrierOptions(contractType, options);
                 return barrierKeys.some(key => cleaned[key] !== undefined);
             };
-            const legTradeOptions = options => {
+            const legTradeOptions = (contractType, options) => {
                 const leg = { ...this.tradeOptions };
                 barrierKeys.forEach(key => delete leg[key]);
                 // Block config wins outright; only a leg the block left
                 // bare falls back to the (sanitized) Trade options values,
                 // trading exactly like a standard Purchase.
-                Object.assign(leg, hasBlockConfig(options) ? sanitizeBarrierOptions(options) : sanitizeBarrierOptions(this.tradeOptions));
+                Object.assign(
+                    leg,
+                    hasBlockConfig(contractType, options)
+                        ? sanitizeBarrierOptions(contractType, options)
+                        : sanitizeBarrierOptions(contractType, this.tradeOptions)
+                );
                 return leg;
             };
 
@@ -186,16 +203,19 @@ export default Engine =>
             // subscribed proposal (those are priced from the trade options),
             // so that leg buys directly with its merged parameters instead.
             const useProposals = this.is_proposal_subscription_required;
-            const mainProposal = useProposals && !hasBlockConfig(main_options) ? this.selectProposal(contract_type) : null;
+            const mainProposal =
+                useProposals && !hasBlockConfig(contract_type, main_options) ? this.selectProposal(contract_type) : null;
             const hedgeProposal =
-                useProposals && !hasBlockConfig(hedge_options) ? this.selectProposal(hedge_contract_type) : null;
+                useProposals && !hasBlockConfig(hedge_contract_type, hedge_options)
+                    ? this.selectProposal(hedge_contract_type)
+                    : null;
 
             const buyMain = mainProposal
                 ? () => api_base.api.send({ buy: mainProposal.id, price: mainProposal.askPrice })
-                : () => api_base.api.send(tradeOptionToBuy(contract_type, legTradeOptions(main_options)));
+                : () => api_base.api.send(tradeOptionToBuy(contract_type, legTradeOptions(contract_type, main_options)));
             const buyHedge = hedgeProposal
                 ? () => api_base.api.send({ buy: hedgeProposal.id, price: hedgeProposal.askPrice })
-                : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, legTradeOptions(hedge_options)));
+                : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, legTradeOptions(hedge_contract_type, hedge_options)));
 
             this.isSold = false;
             contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });

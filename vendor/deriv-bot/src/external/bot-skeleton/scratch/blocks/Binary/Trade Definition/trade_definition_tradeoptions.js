@@ -97,7 +97,23 @@ window.Blockly.Blocks.trade_definition_tradeoptions = {
                 });
         }
 
-        if (!this.workspace || this.workspace.isDragging() || window.Blockly.derivWorkspace.isFlyoutVisible) {
+        if (!this.workspace) {
+            return;
+        }
+
+        // Hedge-only shape sync runs BEFORE the flyout/drag guard: a
+        // strategy load (or a hedge block dropped from the open toolbox)
+        // must shed these inputs even while the flyout is visible,
+        // otherwise a loaded hedge bot keeps a third barrier/prediction
+        // configuration that its buys never use.
+        if (
+            event.type === window.Blockly.Events.BLOCK_CREATE ||
+            event.type === window.Blockly.Events.BLOCK_DELETE
+        ) {
+            this.syncHedgeOnlyShape();
+        }
+
+        if (this.workspace.isDragging() || window.Blockly.derivWorkspace.isFlyoutVisible) {
             return;
         }
 
@@ -124,31 +140,6 @@ window.Blockly.Blocks.trade_definition_tradeoptions = {
             this.getFieldValue('BARRIEROFFSETTYPE_LIST') || config().BARRIER_TYPES[0][1],
             this.getFieldValue('SECONDBARRIEROFFSETTYPE_LIST') || config().BARRIER_TYPES[1][1],
         ];
-
-        // When the workspace buys ONLY through the Purchase hedge block, the
-        // barrier/prediction configuration lives on that block's Purchase 1 /
-        // Purchase 2 rows — Trade options must not carry a third one. Keep
-        // this block's shape in sync as hedge/purchase blocks come and go
-        // (workspace loads included: a load fires BLOCK_CREATE for every
-        // block, so a loaded hedge strategy sheds these inputs immediately).
-        if (
-            event.type === window.Blockly.Events.BLOCK_CREATE ||
-            event.type === window.Blockly.Events.BLOCK_DELETE
-        ) {
-            const hedge_only = this.isHedgeOnlyWorkspace();
-            if (hedge_only !== this.hedge_only_shape) {
-                const was_hedge_only = this.hedge_only_shape === true;
-                this.hedge_only_shape = hedge_only;
-                if (hedge_only) {
-                    this.removeHedgeManagedInputs();
-                } else if (was_hedge_only) {
-                    // The hedge block (or the last hedge-only shape) just
-                    // went away: bring the standard inputs back.
-                    this.updateBarrierInputs(false, false);
-                    this.updatePredictionInput(false);
-                }
-            }
-        }
 
         if (
             (event.type === window.Blockly.Events.BLOCK_CREATE && event.ids.includes(this.id)) ||
@@ -240,6 +231,36 @@ window.Blockly.Blocks.trade_definition_tradeoptions = {
             this.removeInput('PREDICTION_LABEL', true);
             this.removeInput('PREDICTION', true);
         });
+    },
+    syncHedgeOnlyShape() {
+        const hedge_only = this.isHedgeOnlyWorkspace();
+        if (hedge_only === this.hedge_only_shape) return;
+        const was_hedge_only = this.hedge_only_shape === true;
+        this.hedge_only_shape = hedge_only;
+        if (hedge_only) {
+            this.removeHedgeManagedInputs();
+        } else if (was_hedge_only) {
+            // The hedge-only shape just went away: bring the standard
+            // inputs back. This can run ahead of the change handler's
+            // own bookkeeping, so resolve the selections it needs here.
+            const trade_definition_block = this.workspace
+                .getAllBlocks(true)
+                .find(block => block.type === 'trade_definition');
+            const market_block = trade_definition_block?.getChildByType('trade_definition_market');
+            const trade_type_block = trade_definition_block?.getChildByType('trade_definition_tradetype');
+            if (!market_block || !trade_type_block) return;
+            this.selected_symbol = market_block.getFieldValue('SYMBOL_LIST');
+            this.selected_market = market_block.getFieldValue('MARKET_LIST');
+            this.selected_trade_type_category = trade_type_block.getFieldValue('TRADETYPECAT_LIST');
+            this.selected_trade_type = trade_type_block.getFieldValue('TRADETYPE_LIST');
+            this.selected_duration = this.getFieldValue('DURATIONTYPE_LIST');
+            this.selected_barrier_types = [
+                this.getFieldValue('BARRIEROFFSETTYPE_LIST') || config().BARRIER_TYPES[0][1],
+                this.getFieldValue('SECONDBARRIEROFFSETTYPE_LIST') || config().BARRIER_TYPES[1][1],
+            ];
+            this.updateBarrierInputs(false, false);
+            this.updatePredictionInput(false);
+        }
     },
     createPredictionInput(prediction_range) {
         runIrreversibleEvents(() => {

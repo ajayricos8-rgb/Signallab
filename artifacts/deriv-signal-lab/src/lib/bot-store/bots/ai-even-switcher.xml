@@ -9,17 +9,28 @@
   volatility market Signal Lab is streaming, scores each one for Even/Odd,
   moves to the strongest market and buys Even there. The scan floor ships at
   0, so the bot always finds a market to stand on; it never sits idle for
-  want of a signal.
+  want of a signal. The entry itself is confirmed against the blended
+  parity score below: on a tick where that score says Odd is likelier by
+  the full threshold margin, the bot simply waits for the next tick rather
+  than buying Even into a contrary measurement.
+
+  The parity score ("ai markov") blends two measurements of the market the
+  bot is standing on: 65% Markov transition (from the last 1000 ticks, the
+  chance the current last digit becomes an EVEN digit at the expiry tick —
+  the five "digit transition" blocks summed into "ai markov raw", each
+  looking duration+1 ticks ahead because a buy's entry tick is the tick
+  after the purchase) and 35% plain even-digit share of the same history.
+  The blend keeps the Markov table's conditioning on the current digit
+  while damping the noise of its thinner rows.
 
   Recovery strategy (mode 1 — "Markov + AI"): the first loss switches the
-  bot into recovery. Entries now have to pass a Markov transition gate as
-  well as the scan: the bot measures, from the last 1000 ticks of the market
-  it is standing on, the chance that the current last digit becomes an EVEN
-  digit by expiry (the five "digit transition" blocks summed into
-  "ai markov"). It buys Even while that measured chance clears
-  "ai markov threshold", and Odd while the same measurement says Odd is the
-  likelier side by the same margin — so recovery trades whichever parity
-  the transition table actually favours, on whichever market the scan picks.
+  bot into recovery. Entries now have to pass the parity gate as well as
+  the scan: Even while the blended score clears "ai markov threshold", Odd
+  while it falls the same margin below — so recovery trades whichever
+  parity the measurement actually favours. The bot also STOPS switching
+  markets in recovery: every switch trades a warm 1000-tick history for a
+  cold one, and a recovery decided by transition rows needs its history
+  deep, not fresh. Market roaming resumes when the mode reverts.
 
   Switching back: recovery ends the moment a win returns the session profit
   to zero or better. The mode reverts to AI Even, the stake resets to
@@ -74,6 +85,8 @@
     <variable type="" id="evVar11">ai profit target</variable>
     <variable type="" id="evVar12">ai stake percent</variable>
     <variable type="" id="evVar13">ai contracts</variable>
+    <variable type="" id="evVar14">ai markov raw</variable>
+    <variable type="" id="evVar15">ai even share</variable>
   </variables>
   <block type="trade_definition" id="evTrade01" x="0" y="0">
     <statement name="TRADE_OPTIONS">
@@ -110,7 +123,7 @@
       </block>
     </statement>
     <statement name="INITIALIZATION">
-      <block type="variables_set" id="evIs01"><field name="VAR" id="evVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="evIn01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs02"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><shadow type="math_number" id="evIn02"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs03"><field name="VAR" id="evVar03">ai duration</field><value name="VALUE"><shadow type="math_number" id="evIn03"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs04"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evIn04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs05"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><shadow type="math_number" id="evIn05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs06"><field name="VAR" id="evVar06">ai markov threshold</field><value name="VALUE"><shadow type="math_number" id="evIn06"><field name="NUM">53</field></shadow></value><next><block type="variables_set" id="evIs07"><field name="VAR" id="evVar07">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="evIn07"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs08"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evIn08"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs09"><field name="VAR" id="evVar09">ai max steps</field><value name="VALUE"><shadow type="math_number" id="evIn09"><field name="NUM">5</field></shadow></value><next><block type="variables_set" id="evIs10"><field name="VAR" id="evVar10">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="evIn10"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="evIs11"><field name="VAR" id="evVar11">ai profit target</field><value name="VALUE"><shadow type="math_number" id="evIn11"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="evIs12"><field name="VAR" id="evVar12">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="evIn12"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs13"><field name="VAR" id="evVar13">ai contracts</field><value name="VALUE"><shadow type="math_number" id="evIn13"><field name="NUM">0</field></shadow></value><next><block type="notify" id="evNotifyBoot"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evBootText"><field name="TEXT">AI Even Switcher armed — scanning every market for Even; a loss switches to Markov + AI recovery, recovery reverts in profit.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
+      <block type="variables_set" id="evIs01"><field name="VAR" id="evVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="evIn01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs02"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><shadow type="math_number" id="evIn02"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs03"><field name="VAR" id="evVar03">ai duration</field><value name="VALUE"><shadow type="math_number" id="evIn03"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs04"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evIn04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs05"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><shadow type="math_number" id="evIn05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs06"><field name="VAR" id="evVar06">ai markov threshold</field><value name="VALUE"><shadow type="math_number" id="evIn06"><field name="NUM">54</field></shadow></value><next><block type="variables_set" id="evIs07"><field name="VAR" id="evVar07">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="evIn07"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs08"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evIn08"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs09"><field name="VAR" id="evVar09">ai max steps</field><value name="VALUE"><shadow type="math_number" id="evIn09"><field name="NUM">5</field></shadow></value><next><block type="variables_set" id="evIs10"><field name="VAR" id="evVar10">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="evIn10"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="evIs11"><field name="VAR" id="evVar11">ai profit target</field><value name="VALUE"><shadow type="math_number" id="evIn11"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="evIs12"><field name="VAR" id="evVar12">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="evIn12"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs13"><field name="VAR" id="evVar13">ai contracts</field><value name="VALUE"><shadow type="math_number" id="evIn13"><field name="NUM">0</field></shadow></value><next><block type="notify" id="evNotifyBoot"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evBootText"><field name="TEXT">AI Even Switcher armed — scanning every market for Even; a loss switches to Markov + AI recovery, recovery reverts in profit.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
     </statement>
     <statement name="SUBMARKET">
       <block type="trade_definition_tradeoptions" id="evOptions01">
@@ -136,24 +149,24 @@
         <value name="MIN_SCORE"><shadow type="math_number" id="evScanFloor"><field name="NUM">0</field></shadow></value>
         <next>
           <block type="controls_if" id="evSwitchIf">
-            <value name="IF0"><block type="signal_lab_scan_tradeable" id="evSwitchCheck"></block></value>
+            <value name="IF0"><block type="logic_operation" id="evSwitchAnd"><field name="OP">AND</field><value name="A"><block type="signal_lab_scan_tradeable" id="evSwitchCheck"></block></value><value name="B"><block type="logic_compare" id="evRoamModeCheck"><field name="OP">EQ</field><value name="A"><block type="variables_get" id="evRoamModeGet"><field name="VAR" id="evVar04">ai mode</field></block></value><value name="B"><shadow type="math_number" id="evRoamModeZero"><field name="NUM">0</field></shadow></value></block></value></block></value>
             <statement name="DO0"><block type="signal_lab_switch_to_best" id="evSwitchBest"></block></statement>
             <next>
               <block type="variables_set" id="evMarkovSet">
-                <field name="VAR" id="evVar05">ai markov</field>
+                <field name="VAR" id="evVar14">ai markov raw</field>
                 <value name="VALUE">
                   <block type="math_arithmetic" id="evSum0"><field name="OP">ADD</field>
-                    <value name="A"><block type="m_transition" id="evT0"><value name="FROM"><block type="last_digit" id="evT0From"></block></value><value name="TO"><shadow type="math_number" id="evT0To"><field name="NUM">0</field></shadow></value><value name="HORIZON"><block type="variables_get" id="evT0Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="LIST"><block type="ticks" id="evT0Ticks"></block></value></block></value>
+                    <value name="A"><block type="m_transition" id="evT0"><value name="FROM"><block type="last_digit" id="evT0From"></block></value><value name="TO"><shadow type="math_number" id="evT0To"><field name="NUM">0</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz0"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT0Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz0One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT0Ticks"></block></value></block></value>
                     <value name="B">
                       <block type="math_arithmetic" id="evSum2"><field name="OP">ADD</field>
-                        <value name="A"><block type="m_transition" id="evT2"><value name="FROM"><block type="last_digit" id="evT2From"></block></value><value name="TO"><shadow type="math_number" id="evT2To"><field name="NUM">2</field></shadow></value><value name="HORIZON"><block type="variables_get" id="evT2Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="LIST"><block type="ticks" id="evT2Ticks"></block></value></block></value>
+                        <value name="A"><block type="m_transition" id="evT2"><value name="FROM"><block type="last_digit" id="evT2From"></block></value><value name="TO"><shadow type="math_number" id="evT2To"><field name="NUM">2</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz2"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT2Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz2One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT2Ticks"></block></value></block></value>
                         <value name="B">
                           <block type="math_arithmetic" id="evSum4"><field name="OP">ADD</field>
-                            <value name="A"><block type="m_transition" id="evT4"><value name="FROM"><block type="last_digit" id="evT4From"></block></value><value name="TO"><shadow type="math_number" id="evT4To"><field name="NUM">4</field></shadow></value><value name="HORIZON"><block type="variables_get" id="evT4Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="LIST"><block type="ticks" id="evT4Ticks"></block></value></block></value>
+                            <value name="A"><block type="m_transition" id="evT4"><value name="FROM"><block type="last_digit" id="evT4From"></block></value><value name="TO"><shadow type="math_number" id="evT4To"><field name="NUM">4</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz4"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT4Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz4One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT4Ticks"></block></value></block></value>
                             <value name="B">
                               <block type="math_arithmetic" id="evSum6"><field name="OP">ADD</field>
-                                <value name="A"><block type="m_transition" id="evT6"><value name="FROM"><block type="last_digit" id="evT6From"></block></value><value name="TO"><shadow type="math_number" id="evT6To"><field name="NUM">6</field></shadow></value><value name="HORIZON"><block type="variables_get" id="evT6Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="LIST"><block type="ticks" id="evT6Ticks"></block></value></block></value>
-                                <value name="B"><block type="m_transition" id="evT8"><value name="FROM"><block type="last_digit" id="evT8From"></block></value><value name="TO"><shadow type="math_number" id="evT8To"><field name="NUM">8</field></shadow></value><value name="HORIZON"><block type="variables_get" id="evT8Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="LIST"><block type="ticks" id="evT8Ticks"></block></value></block></value>
+                                <value name="A"><block type="m_transition" id="evT6"><value name="FROM"><block type="last_digit" id="evT6From"></block></value><value name="TO"><shadow type="math_number" id="evT6To"><field name="NUM">6</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz6"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT6Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz6One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT6Ticks"></block></value></block></value>
+                                <value name="B"><block type="m_transition" id="evT8"><value name="FROM"><block type="last_digit" id="evT8From"></block></value><value name="TO"><shadow type="math_number" id="evT8To"><field name="NUM">8</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz8"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT8Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz8One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT8Ticks"></block></value></block></value>
                               </block>
                             </value>
                           </block>
@@ -163,7 +176,11 @@
                   </block>
                 </value>
                 <next>
-                  <block type="controls_if" id="evEntryIf">
+                  <block type="variables_set" id="evShareSet"><field name="VAR" id="evVar15">ai even share</field><value name="VALUE"><block type="m_even_share" id="evShareBlock"><value name="LIST"><block type="ticks" id="evShareTicks"></block></value></block></value>
+                    <next>
+                      <block type="variables_set" id="evBlendSet"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><block type="math_arithmetic" id="evBlendAdd"><field name="OP">ADD</field><value name="A"><block type="math_arithmetic" id="evBlendRaw"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evBlendRawGet"><field name="VAR" id="evVar14">ai markov raw</field></block></value><value name="B"><shadow type="math_number" id="evBlendRawW"><field name="NUM">0.65</field></shadow></value></block></value><value name="B"><block type="math_arithmetic" id="evBlendShare"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evBlendShareGet"><field name="VAR" id="evVar15">ai even share</field></block></value><value name="B"><shadow type="math_number" id="evBlendShareW"><field name="NUM">0.35</field></shadow></value></block></value></block></value>
+                        <next>
+                          <block type="controls_if" id="evEntryIf">
                     <value name="IF0">
                       <block type="logic_operation" id="evGateAnd1"><field name="OP">AND</field>
                         <value name="A"><block type="logic_operation" id="evGateAnd2"><field name="OP">AND</field>
@@ -180,7 +197,7 @@
                           <block type="controls_if" id="evModeBranch">
                             <mutation elseif="2"></mutation>
                             <value name="IF0"><block type="logic_compare" id="evModeCheck"><field name="OP">EQ</field><value name="A"><block type="variables_get" id="evModeGet"><field name="VAR" id="evVar04">ai mode</field></block></value><value name="B"><shadow type="math_number" id="evModeZero"><field name="NUM">0</field></shadow></value></block></value>
-                            <statement name="DO0"><block type="purchase" id="evBuyPrimary"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement>
+                            <statement name="DO0"><block type="controls_if" id="evPrimaryGateIf"><value name="IF0"><block type="logic_compare" id="evPrimaryGate"><field name="OP">GT</field><value name="A"><block type="variables_get" id="evPrimaryGateGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="math_arithmetic" id="evPrimaryGateBar"><field name="OP">MINUS</field><value name="A"><shadow type="math_number" id="evPrimaryGate100"><field name="NUM">100</field></shadow></value><value name="B"><block type="variables_get" id="evPrimaryGateThresh"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value></block></value><statement name="DO0"><block type="purchase" id="evBuyPrimary"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement></block></statement>
                             <value name="IF1"><block type="logic_compare" id="evMarkovEvenCheck"><field name="OP">GTE</field><value name="A"><block type="variables_get" id="evMarkovEvenGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="variables_get" id="evThreshGet"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value>
                             <statement name="DO1"><block type="purchase" id="evBuyRecoveryEven"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement>
                             <value name="IF2"><block type="logic_compare" id="evMarkovOddCheck"><field name="OP">LTE</field><value name="A"><block type="variables_get" id="evMarkovOddGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="math_arithmetic" id="evOddBar"><field name="OP">MINUS</field><value name="A"><shadow type="math_number" id="evOddHundred"><field name="NUM">100</field></shadow></value><value name="B"><block type="variables_get" id="evOddThreshGet"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value></block></value>
@@ -189,6 +206,10 @@
                         </next>
                       </block>
                     </statement>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
                   </block>
                 </next>
               </block>

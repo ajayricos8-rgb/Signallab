@@ -6,19 +6,41 @@ import { observer as globalObserver } from '../../../utils/observer';
 import { error as logError } from './broadcast';
 
 /**
- * Deriv does not offer Higher/Lower (CALL/PUT carrying a barrier) below 5
- * ticks: a 1–4 tick request with a barrier is rejected with "Invalid
- * barrier" even though the barrier value itself is fine — it is the
- * contract shape that is not offered (SmartTrader states Higher/Lower
- * "only offers 5 ticks", and Deriv's own example strategies use 5). Raise
- * such requests to the 5-tick floor instead of sending a shape Deriv
- * cannot price. Barrier-less Rise/Fall and digit contracts (whose
- * "barrier" is a digit prediction) are untouched.
+ * Contracts whose barrier is a last-digit Prediction. For every other
+ * contract type a `prediction` value is a category error (typically a
+ * digit left behind after a trade-type switch): mapping it onto
+ * `barrier` would send a bare digit as a price barrier — a guaranteed
+ * "Invalid barrier" — so it is dropped instead. TICKHIGH/TICKLOW keep
+ * `selected_tick` (that is their prediction) but never a barrier.
  */
+const PREDICTION_CONTRACT_TYPES = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'];
+const SELECTED_TICK_CONTRACT_TYPES = [...PREDICTION_CONTRACT_TYPES, 'TICKHIGH', 'TICKLOW'];
+
+/**
+ * Deriv does not offer barrier price contracts (Higher/Lower, Touch/No
+ * Touch, In/Out) below 5 ticks: a 1–4 tick request with a barrier offset
+ * is rejected with "Invalid barrier" even though the barrier value itself
+ * is fine — it is the contract shape that is not offered (SmartTrader
+ * states Higher/Lower "only offers 5 ticks", and Deriv's own example
+ * strategies use 5). Raise such requests to the 5-tick floor instead of
+ * sending a shape Deriv cannot price. Barrier-less Rise/Fall and digit
+ * contracts (whose "barrier" is a digit prediction) are untouched.
+ */
+const PRICE_BARRIER_CONTRACT_TYPES = [
+    'CALL',
+    'PUT',
+    'ONETOUCH',
+    'NOTOUCH',
+    'EXPIRYRANGE',
+    'EXPIRYMISS',
+    'RANGE',
+    'UPORDOWN',
+];
+
 export const barrierDurationFloor = (contract_type, trade_option) => {
     if (
-        ['CALL', 'PUT'].includes(contract_type) &&
-        trade_option.barrierOffset != null &&
+        PRICE_BARRIER_CONTRACT_TYPES.includes(contract_type) &&
+        (trade_option.barrierOffset != null || trade_option.secondBarrierOffset != null) &&
         trade_option.duration_unit === 't' &&
         Number(trade_option.duration) < 5
     ) {
@@ -44,10 +66,10 @@ export const tradeOptionToProposal = (trade_option, purchase_reference) =>
             proposal: 1,
             underlying_symbol: trade_option.symbol,
         };
-        if (trade_option.prediction != null) {
+        if (trade_option.prediction != null && SELECTED_TICK_CONTRACT_TYPES.includes(type)) {
             proposal.selected_tick = trade_option.prediction;
         }
-        if (!['TICKLOW', 'TICKHIGH'].includes(type) && trade_option.prediction != null) {
+        if (PREDICTION_CONTRACT_TYPES.includes(type) && trade_option.prediction != null) {
             proposal.barrier = trade_option.prediction;
         } else if (trade_option.barrierOffset != null) {
             proposal.barrier = trade_option.barrierOffset;
@@ -80,10 +102,10 @@ export const tradeOptionToBuy = (contract_type, trade_option) => {
             underlying_symbol: trade_option.symbol,
         },
     };
-    if (trade_option.prediction != null) {
+    if (trade_option.prediction != null && SELECTED_TICK_CONTRACT_TYPES.includes(contract_type)) {
         buy.parameters.selected_tick = trade_option.prediction;
     }
-    if (!['TICKLOW', 'TICKHIGH'].includes(contract_type) && trade_option.prediction != null) {
+    if (PREDICTION_CONTRACT_TYPES.includes(contract_type) && trade_option.prediction != null) {
         buy.parameters.barrier = trade_option.prediction;
     } else if (trade_option.barrierOffset != null) {
         buy.parameters.barrier = trade_option.barrierOffset;
