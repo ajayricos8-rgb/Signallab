@@ -103,7 +103,10 @@ export function priceRiskAllowed({
         hedgeIncomplete ||
         ![amount, count, start, maxLoss, profitTarget, maxPercent, bank, pnl].every(Number.isFinite) ||
         amount <= 0 ||
-        ![1, 2].includes(count) ||
+        // Legs is the exposure multiplier: 1 for a single contract, 2 for a
+        // pair of equal stakes, and a fraction in between for the partial
+        // hedge the Step Index preset buys.
+        !(count > 0 && count <= 2) ||
         maxLoss <= 0 ||
         profitTarget <= 0 ||
         maxPercent <= 0 ||

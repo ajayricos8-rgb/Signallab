@@ -1015,7 +1015,7 @@ export const ToolboxItems = () =>
                         </Value>
                         <Value name='THRESHOLD'>
                             <Shadow type='math_number'>
-                                <Field name='NUM'>0.56</Field>
+                                <Field name='NUM'>0</Field>
                             </Shadow>
                         </Value>
                         <Value name='MAX_TIE'>
@@ -1028,9 +1028,26 @@ export const ToolboxItems = () =>
                                 <Field name='NUM'>0</Field>
                             </Shadow>
                         </Value>
+                        <Value name='MIN_EDGE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PAYOUT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.95</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_CONFIDENCE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
                     </Block>
                     <Block type='x_price_decision_part' />
                     <Block type='x_price_reason' />
+                    <Block type='x_price_calibration' />
+                    <Block type='x_price_layout' />
                     <Block type='x_price_model_weights' />
                     <Block type='x_price_stake' />
                     <Block type='x_price_trades' />
