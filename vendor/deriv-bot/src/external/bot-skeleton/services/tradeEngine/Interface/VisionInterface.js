@@ -19,6 +19,8 @@ import { localize } from '@deriv-com/translations';
 import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
+import { priceDecision } from '../utils/price-strategies.mjs';
+import { priceContextAllowed, priceRiskAllowed } from '../utils/price-risk.mjs';
 import * as memory from '../utils/vision-memory.mjs';
 import {
     createEntryPacer,
@@ -740,6 +742,24 @@ const getVisionInterface = tradeEngine => {
 
         /* ---------------- risk and money ---------------- */
 
+        priceDecision: async (list, mode, horizon, threshold) => {
+            const options = tradeEngine.tradeOptions || {};
+            const expected = mode === 'tick' ? 5 : mode === 'step-hedge' ? 4 : Number(horizon);
+            if (!priceContextAllowed(mode, horizon, options, tradeEngine.options)) return [0, 0, 0, 0];
+            const result = priceDecision(list, mode === 'tick' ? 'tick' : 'rise', expected, threshold);
+            return [result.ready ? 1 : 0, result.side, result.tick, result.probability];
+        },
+        priceDecisionPart: async (plan, part) => {
+            const index = { ready: 0, side: 1, tick: 2, probability: 3 }[part];
+            return Array.isArray(plan) && index !== undefined ? num(plan[index], 0) : 0;
+        },
+        priceSessionProfit: async () => num(tradeEngine.sessionProfit, 0),
+        priceRisk: async (stake, legs, baseline, loss, target, percent) => {
+            let balance;
+            try { balance = await tradeEngine.getBalance('NUM'); } catch { return false; }
+            return priceRiskAllowed({ stake, legs, baseline, loss, target, percent, balance,
+                sessionProfit: tradeEngine.sessionProfit, hedgeIncomplete: tradeEngine.hedgeIncomplete });
+        },
         rKelly: async (probability, payout) => round(math.kellyFraction(pct(probability) / 100, num(payout, 2)) * 100, 3),
         rStakeStep: async (current, multiplier, maxStake, baseStake, won) => {
             const base = num(baseStake, 0) || num(current, 1);

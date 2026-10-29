@@ -179,6 +179,11 @@ const Interpreter = () => {
         );
         js_interpreter.setProperty(
             pseudo_bot_interface,
+            'purchaseTickDecision',
+            createAsync(js_interpreter, bot_interface.purchaseTickDecision, false)
+        );
+        js_interpreter.setProperty(
+            pseudo_bot_interface,
             'purchaseHedge',
             createAsync(js_interpreter, bot_interface.purchaseHedge, false)
         );

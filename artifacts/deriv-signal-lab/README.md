@@ -234,3 +234,17 @@ reported as advice on the run — they never hide the ranked signal and never tu
 - `pnpm run docs:engines` — regenerate the 300-entry reference from the UI registry.
 
 No confidence score or backtest guarantees profitable live results.
+
+### Price-path bot-store strategies
+
+The Bot store includes three editable DBot strategies:
+
+- **High/Low Tick Sniper** picks both side and tick position (1–5) from a five-tick price-path ensemble. High/Low Tick contracts have a fixed five-tick duration and the API uses `selected_tick`, not a price barrier. See [Deriv's contract description](https://www2.deriv.me/trade-types/options/digital-options/high-low-ticks/) and [API proposal parameters](https://deriv-com.github.io/deriv-api/).
+- **Rise/Fall AI Ensemble** trades CALL or PUT using historical entry-to-expiry paths for its configured tick duration.
+- **Step Index Rise/Fall Hedge** gates a pair of CALL and PUT trades on four-tick Step Index history and refuses to enter if the market, trade type, unit or duration no longer matches. The two API buys are not atomic and can be filled at different times or only partially.
+
+The price ensemble blends historical frequencies, a two-change Markov state, recent outcomes and a small online-trained logistic learner; Rise/Fall also uses RSI and normalized momentum. It requires at least 256 ticks and 20 matching states. Estimated probabilities are **not calibrated** and are not compared with live payouts: overlapping windows, selection bias, ties and a changing market can all undermine the estimate. The bot may remain idle when data or signals are insufficient. These models do not guarantee entries, accuracy or profits.
+
+The first two bots have a configurable capped martingale. All three have session profit/loss and total-exposure guards, with settings in **Run once at start**. A stop loss is checked before opening new positions and cannot cap the loss of positions already open; a hedge risks both stakes. A martingale increases risk. Always test on a demo account and check the actual quoted contract and payout. Equal-stake Rise/Fall pairs often lose overall because of payout margin and can lose both legs on a tie or different entry ticks.
+
+For barrier-based hedges, the engine now requests prices for both exact legs before buying. This avoids opening a leg when the other leg's quote is rejected, but cannot guarantee that both buys will succeed or that a given barrier is offered. On an invalid barrier, check the journal's market, duration, barrier and Deriv's error; adjust those settings rather than relying on an automatic substitution. If only one leg opens or a buy response is ambiguous, inspect the account before restarting.

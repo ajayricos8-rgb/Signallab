@@ -135,3 +135,75 @@ test('hedge block exposes tick predictions and updates only untouched defaults f
   await Promise.resolve();
   assert.equal(first.value, '1');
 });
+
+test('price barrier hedges quote both exact legs before buying and stop on rejected quotes', async () => {
+  let source = await readFile(new URL('services/tradeEngine/trade/Purchase.js', vendor), 'utf8');
+  source = source.replace(/^import .*;\s*$/gm, '').replace('export default Engine =>', 'this.Purchase = Engine =>');
+  const sends = [];
+  let rejectQuote = true;
+  const ctx = {
+    sanitizeHedgeOptions, BEFORE_PURCHASE: 'before',
+    api_base: { api: { send: async request => {
+      sends.push(request);
+      if (request.proposal) {
+        if (rejectQuote && request.contract_type === 'PUT') throw { error: { message: 'Invalid barrier' } };
+        return { proposal: { id: `quote-${request.contract_type}`, ask_price: 1 } };
+      }
+      return { buy: { contract_id: sends.length, transaction_id: sends.length, buy_price: 1 } };
+    } } },
+    tradeOptionToProposal: options => [{ proposal: 1, contract_type: options.contractTypes[0], barrier: options.barrierOffset, duration: options.duration, duration_unit: options.duration_unit }],
+    tradeOptionToBuy: (type, options) => ({ type, options }),
+    doUntilDone: fn => fn(), contractStatus: () => {}, info: () => {}, log: () => {},
+    LogTypes: { PURCHASE: 'purchase', ERROR: 'error' }, purchaseSuccessful: () => ({}),
+  };
+  vm.runInNewContext(source, ctx);
+  const engine = new (ctx.Purchase(class {}))();
+  engine.store = { getState: () => ({ scope: 'before' }), dispatch: () => {} };
+  engine.tradeOptions = { amount: 1, symbol: 'R_100', duration: 5, duration_unit: 't' };
+  engine.accountInfo = { loginid: 'demo' }; engine.updateAndReturnTotalRuns = () => 1;
+  await assert.rejects(engine.purchaseHedge('CALL', 'PUT', { barrierOffset: '+1' }, { barrierOffset: '-2' }), /Invalid barrier.*neither leg was bought/);
+  assert.equal(sends.length, 2);
+  assert.equal(sends[0].barrier, '+1'); assert.equal(sends[1].barrier, '-2');
+  assert.equal(sends.filter(request => request.buy).length, 0);
+  rejectQuote = false;
+  await engine.purchaseHedge('CALL', 'PUT', { barrierOffset: '+1' }, { barrierOffset: '-2' });
+  assert.deepEqual(sends.filter(request => request.buy).map(request => request.buy), ['quote-CALL', 'quote-PUT']);
+});
+
+test('partial hedge stops further pairs while retaining the accepted contract', async () => {
+  let source = await readFile(new URL('services/tradeEngine/trade/Purchase.js', vendor), 'utf8');
+  source = source.replace(/^import .*;\s*$/gm, '').replace('export default Engine =>', 'this.Purchase = Engine =>');
+  const ctx = { sanitizeHedgeOptions, BEFORE_PURCHASE: 'before',
+    api_base: { api: { send: async request => {
+      if (request.type === 'PUT') throw new Error('mock rejection');
+      return { buy: { contract_id: 10, transaction_id: 11, buy_price: 1 } };
+    } } },
+    tradeOptionToBuy: type => ({ type }), doUntilDone: fn => fn(), contractStatus: () => {}, info: () => {}, log: () => {},
+    LogTypes: { PURCHASE: 'purchase', ERROR: 'error' }, purchaseSuccessful: () => ({}) };
+  vm.runInNewContext(source, ctx);
+  const engine = new (ctx.Purchase(class {}))();
+  engine.store = { getState: () => ({ scope: 'before' }), dispatch: () => {} };
+  engine.tradeOptions = { amount: 1 }; engine.accountInfo = { loginid: 'demo' }; engine.updateAndReturnTotalRuns = () => 1;
+  await engine.purchaseHedge('CALL', 'PUT');
+  assert.equal(engine.contractId, 10); assert.equal(engine.hedgeIncomplete, true);
+  assert.throws(() => engine.purchaseHedge('CALL', 'PUT'), /previously opened only one leg/);
+});
+
+test('selected tick purchase overrides the stale trade option and is not retried', async () => {
+  let source = await readFile(new URL('services/tradeEngine/trade/Purchase.js', vendor), 'utf8');
+  source = source.replace(/^import .*;\s*$/gm, '').replace('export default Engine =>', 'this.Purchase = Engine =>');
+  const sends = [];
+  const ctx = { sanitizeHedgeOptions, BEFORE_PURCHASE: 'before',
+    api_base: { api: { send: async request => { sends.push(request); throw new Error('disconnected'); } } },
+    tradeOptionToBuy: (type, options) => ({ type, options }),
+    doUntilDone: () => { throw new Error('must not retry selected tick'); },
+    contractStatus: () => {}, info: () => {}, log: () => {}, purchaseSuccessful: () => ({}) };
+  vm.runInNewContext(source, ctx);
+  const engine = new (ctx.Purchase(class {}))();
+  engine.store = { getState: () => ({ scope: 'before' }), dispatch: () => {} };
+  engine.tradeOptions = { amount: 1, prediction: 1 }; engine.options = { timeMachineEnabled: false };
+  await assert.rejects(engine.purchase('TICKHIGH', 4), /disconnected/);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].options.prediction, 4);
+  assert.throws(() => engine.purchase('TICKLOW', 6), /1 to 5/);
+});

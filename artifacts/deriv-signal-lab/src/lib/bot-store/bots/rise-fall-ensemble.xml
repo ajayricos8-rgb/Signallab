@@ -1,0 +1,495 @@
+<?xml version='1.0' encoding='utf-8'?>
+<xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">
+  <variables>
+    <variable type="" id="vbase_stake">base stake</variable>
+    <variable type="" id="vstake">stake</variable>
+    <variable type="" id="vloss_limit">loss limit</variable>
+    <variable type="" id="vprofit_target">profit target</variable>
+    <variable type="" id="vbalance_percent">balance percent</variable>
+    <variable type="" id="vduration">duration</variable>
+    <variable type="" id="vthreshold">threshold</variable>
+    <variable type="" id="vloss_count">loss count</variable>
+    <variable type="" id="vmax_steps">max steps</variable>
+    <variable type="" id="vmultiplier">multiplier</variable>
+    <variable type="" id="vmax_stake">max stake</variable>
+    <variable type="" id="vbaseline_profit">baseline profit</variable>
+    <variable type="" id="vdecision">decision</variable>
+  </variables>
+  <block type="trade_definition" id="evTrade01" x="0" y="0">
+    <statement name="TRADE_OPTIONS">
+      <block type="trade_definition_market" id="evMarket01" deletable="false" movable="false">
+        <field name="MARKET_LIST">volidx</field>
+        <field name="SUBMARKET_LIST">random_index</field>
+        <field name="SYMBOL_LIST">R_100</field>
+        <next>
+          <block type="trade_definition_tradetype" id="evType01" deletable="false" movable="false">
+            <field name="TRADETYPECAT_LIST">callput</field>
+            <field name="TRADETYPE_LIST">callput</field>
+            <next>
+              <block type="trade_definition_contracttype" id="evContract01" deletable="false" movable="false">
+                <field name="TYPE_LIST">both</field>
+                <next>
+                  <block type="trade_definition_candleinterval" id="evCandle01" deletable="false" movable="false">
+                    <field name="CANDLEINTERVAL_LIST">60</field>
+                    <next>
+                      <block type="trade_definition_restartbuysell" id="evRestart01" deletable="false" movable="false">
+                        <field name="TIME_MACHINE_ENABLED">FALSE</field>
+                        <next>
+                          <block type="trade_definition_restartonerror" id="evError01" deletable="false" movable="false">
+                            <field name="RESTARTONERROR">FALSE</field>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <statement name="INITIALIZATION">
+      <block type="variables_set" id="price0002">
+        <field name="VAR" id="vbase_stake">base stake</field>
+        <value name="VALUE">
+          <block type="math_number" id="price0001">
+            <field name="NUM">0.35</field>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="price0004">
+            <field name="VAR" id="vstake">stake</field>
+            <value name="VALUE">
+              <block type="variables_get" id="price0003">
+                <field name="VAR" id="vbase_stake">base stake</field>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="price0006">
+                <field name="VAR" id="vloss_limit">loss limit</field>
+                <value name="VALUE">
+                  <block type="math_number" id="price0005">
+                    <field name="NUM">10</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="price0008">
+                    <field name="VAR" id="vprofit_target">profit target</field>
+                    <value name="VALUE">
+                      <block type="math_number" id="price0007">
+                        <field name="NUM">10</field>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="price0010">
+                        <field name="VAR" id="vbalance_percent">balance percent</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="price0009">
+                            <field name="NUM">5</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="price0012">
+                            <field name="VAR" id="vduration">duration</field>
+                            <value name="VALUE">
+                              <block type="math_number" id="price0011">
+                                <field name="NUM">4</field>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="price0014">
+                                <field name="VAR" id="vthreshold">threshold</field>
+                                <value name="VALUE">
+                                  <block type="math_number" id="price0013">
+                                    <field name="NUM">0.56</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="price0016">
+                                    <field name="VAR" id="vloss_count">loss count</field>
+                                    <value name="VALUE">
+                                      <block type="math_number" id="price0015">
+                                        <field name="NUM">0</field>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="variables_set" id="price0018">
+                                        <field name="VAR" id="vmax_steps">max steps</field>
+                                        <value name="VALUE">
+                                          <block type="math_number" id="price0017">
+                                            <field name="NUM">3</field>
+                                          </block>
+                                        </value>
+                                        <next>
+                                          <block type="variables_set" id="price0020">
+                                            <field name="VAR" id="vmultiplier">multiplier</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="price0019">
+                                                <field name="NUM">2</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="price0022">
+                                                <field name="VAR" id="vmax_stake">max stake</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="price0021">
+                                                    <field name="NUM">2.8</field>
+                                                  </block>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="price0024">
+                                                    <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                    <value name="VALUE">
+                                                      <block type="x_session_profit" id="price0023" />
+                                                    </value>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </next>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <statement name="SUBMARKET">
+      <block type="trade_definition_tradeoptions" id="price0025">
+        <mutation has_first_barrier="false" has_second_barrier="false" has_prediction="false" />
+        <field name="DURATIONTYPE_LIST">t</field>
+        <field name="CURRENCY_LIST">USD</field>
+        <value name="DURATION">
+          <block type="variables_get" id="price0026">
+            <field name="VAR" id="vduration">duration</field>
+          </block>
+        </value>
+        <value name="AMOUNT">
+          <block type="variables_get" id="price0027">
+            <field name="VAR" id="vstake">stake</field>
+          </block>
+        </value>
+        <field name="AMOUNT_LIMITS" />
+      </block>
+    </statement>
+  </block>
+  <block type="before_purchase" id="price0028" x="0" y="760">
+    <statement name="BEFOREPURCHASE_STACK">
+      <block type="variables_set" id="price0033">
+        <field name="VAR" id="vdecision">decision</field>
+        <value name="VALUE">
+          <block type="x_price_decision" id="price0029">
+            <field name="MODE">rise</field>
+            <value name="LIST">
+              <block type="ticks" id="price0030" />
+            </value>
+            <value name="HORIZON">
+              <block type="variables_get" id="price0031">
+                <field name="VAR" id="vduration">duration</field>
+              </block>
+            </value>
+            <value name="THRESHOLD">
+              <block type="variables_get" id="price0032">
+                <field name="VAR" id="vthreshold">threshold</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="controls_if" id="price0053">
+            <value name="IF0">
+              <block type="logic_operation" id="price0041">
+                <field name="OP">AND</field>
+                <value name="A">
+                  <block type="logic_compare" id="price0045">
+                    <field name="OP">EQ</field>
+                    <value name="A">
+                      <block type="x_price_decision_part" id="price0042">
+                        <field name="PART">ready</field>
+                        <value name="PLAN">
+                          <block type="variables_get" id="price0043">
+                            <field name="VAR" id="vdecision">decision</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_number" id="price0044">
+                        <field name="NUM">1</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="x_price_risk" id="price0046">
+                    <value name="STAKE">
+                      <block type="variables_get" id="price0047">
+                        <field name="VAR" id="vstake">stake</field>
+                      </block>
+                    </value>
+                    <value name="LEGS">
+                      <block type="math_number" id="price0048">
+                        <field name="NUM">1</field>
+                      </block>
+                    </value>
+                    <value name="BASELINE">
+                      <block type="variables_get" id="price0049">
+                        <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                      </block>
+                    </value>
+                    <value name="LOSS">
+                      <block type="variables_get" id="price0050">
+                        <field name="VAR" id="vloss_limit">loss limit</field>
+                      </block>
+                    </value>
+                    <value name="TARGET">
+                      <block type="variables_get" id="price0051">
+                        <field name="VAR" id="vprofit_target">profit target</field>
+                      </block>
+                    </value>
+                    <value name="PERCENT">
+                      <block type="variables_get" id="price0052">
+                        <field name="VAR" id="vbalance_percent">balance percent</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="controls_if" id="price0040">
+                <mutation else="1" />
+                <value name="IF0">
+                  <block type="logic_compare" id="price0039">
+                    <field name="OP">EQ</field>
+                    <value name="A">
+                      <block type="x_price_decision_part" id="price0036">
+                        <field name="PART">side</field>
+                        <value name="PLAN">
+                          <block type="variables_get" id="price0037">
+                            <field name="VAR" id="vdecision">decision</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_number" id="price0038">
+                        <field name="NUM">1</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <statement name="DO0">
+                  <block type="purchase" id="price0034">
+                    <field name="PURCHASE_LIST">CALL</field>
+                  </block>
+                </statement>
+                <statement name="ELSE">
+                  <block type="purchase" id="price0035">
+                    <field name="PURCHASE_LIST">PUT</field>
+                  </block>
+                </statement>
+              </block>
+            </statement>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+  <block type="after_purchase" id="price0054" x="0" y="1150">
+    <statement name="AFTERPURCHASE_STACK">
+      <block type="controls_if" id="price0091">
+        <mutation else="1" />
+        <value name="IF0">
+          <block type="contract_check_result" id="price0090">
+            <field name="CHECK_RESULT">win</field>
+          </block>
+        </value>
+        <statement name="DO0">
+          <block type="variables_set" id="price0065">
+            <field name="VAR" id="vstake">stake</field>
+            <value name="VALUE">
+              <block type="variables_get" id="price0064">
+                <field name="VAR" id="vbase_stake">base stake</field>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="price0067">
+                <field name="VAR" id="vloss_count">loss count</field>
+                <value name="VALUE">
+                  <block type="math_number" id="price0066">
+                    <field name="NUM">0</field>
+                  </block>
+                </value>
+              </block>
+            </next>
+          </block>
+        </statement>
+        <statement name="ELSE">
+          <block type="variables_set" id="price0071">
+            <field name="VAR" id="vloss_count">loss count</field>
+            <value name="VALUE">
+              <block type="math_arithmetic" id="price0070">
+                <field name="OP">ADD</field>
+                <value name="A">
+                  <block type="variables_get" id="price0068">
+                    <field name="VAR" id="vloss_count">loss count</field>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="math_number" id="price0069">
+                    <field name="NUM">1</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <next>
+              <block type="controls_if" id="price0089">
+                <mutation else="1" />
+                <value name="IF0">
+                  <block type="logic_operation" id="price0075">
+                    <field name="OP">AND</field>
+                    <value name="A">
+                      <block type="logic_compare" id="price0078">
+                        <field name="OP">LTE</field>
+                        <value name="A">
+                          <block type="variables_get" id="price0076">
+                            <field name="VAR" id="vloss_count">loss count</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="price0077">
+                            <field name="VAR" id="vmax_steps">max steps</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="logic_compare" id="price0080">
+                        <field name="OP">LTE</field>
+                        <value name="A">
+                          <block type="math_arithmetic" id="price0074">
+                            <field name="OP">MULTIPLY</field>
+                            <value name="A">
+                              <block type="variables_get" id="price0072">
+                                <field name="VAR" id="vstake">stake</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="variables_get" id="price0073">
+                                <field name="VAR" id="vmultiplier">multiplier</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="price0079">
+                            <field name="VAR" id="vmax_stake">max stake</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <statement name="DO0">
+                  <block type="variables_set" id="price0084">
+                    <field name="VAR" id="vstake">stake</field>
+                    <value name="VALUE">
+                      <block type="math_arithmetic" id="price0083">
+                        <field name="OP">MULTIPLY</field>
+                        <value name="A">
+                          <block type="variables_get" id="price0081">
+                            <field name="VAR" id="vstake">stake</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="price0082">
+                            <field name="VAR" id="vmultiplier">multiplier</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                  </block>
+                </statement>
+                <statement name="ELSE">
+                  <block type="variables_set" id="price0086">
+                    <field name="VAR" id="vstake">stake</field>
+                    <value name="VALUE">
+                      <block type="variables_get" id="price0085">
+                        <field name="VAR" id="vbase_stake">base stake</field>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="price0088">
+                        <field name="VAR" id="vloss_count">loss count</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="price0087">
+                            <field name="NUM">0</field>
+                          </block>
+                        </value>
+                      </block>
+                    </next>
+                  </block>
+                </statement>
+              </block>
+            </next>
+          </block>
+        </statement>
+        <next>
+          <block type="controls_if" id="price0063">
+            <value name="IF0">
+              <block type="x_price_risk" id="price0055">
+                <value name="STAKE">
+                  <block type="variables_get" id="price0056">
+                    <field name="VAR" id="vstake">stake</field>
+                  </block>
+                </value>
+                <value name="LEGS">
+                  <block type="math_number" id="price0057">
+                    <field name="NUM">1</field>
+                  </block>
+                </value>
+                <value name="BASELINE">
+                  <block type="variables_get" id="price0058">
+                    <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                  </block>
+                </value>
+                <value name="LOSS">
+                  <block type="variables_get" id="price0059">
+                    <field name="VAR" id="vloss_limit">loss limit</field>
+                  </block>
+                </value>
+                <value name="TARGET">
+                  <block type="variables_get" id="price0060">
+                    <field name="VAR" id="vprofit_target">profit target</field>
+                  </block>
+                </value>
+                <value name="PERCENT">
+                  <block type="variables_get" id="price0061">
+                    <field name="VAR" id="vbalance_percent">balance percent</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="trade_again" id="price0062" />
+            </statement>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+</xml>

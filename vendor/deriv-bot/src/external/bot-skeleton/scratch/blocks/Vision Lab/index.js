@@ -9,3 +9,5 @@ import './quant';
 import './analysis';
 import './risk';
 import './shortcuts';
+
+import './price-strategies';
