@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { PRICE_MODEL_NAMES, priceDecision } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-strategies.mjs';
+import { PRICE_MODEL_NAMES, arcsinePrior, priceDecision } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-strategies.mjs';
 import {
   adaptiveStake,
   priceContextAllowed,
@@ -289,17 +289,22 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
       /<value name="PROBABILITY">[\s\S]{0,120}?<block type="x_price_decision_part"[\s\S]{0,120}?<field name="PART">probability<\/field>/,
       'the stake is sized from the decision probability'
     );
-    assert.match(xml, /<field name="VAR" id="vpayout">payout<\/field>/, 'payout drives the break-even');
-    assert.match(xml, /<field name="VAR" id="vkelly_fraction">kelly fraction<\/field>/, 'the Kelly fraction is a knob');
-    assert.match(xml, /<field name="VAR" id="vmax_stake">max stake<\/field>/, 'max stake caps the size');
-    // No martingale: a loss never raises the next stake, so there is no ladder
-    // state, no step block and no profit-chasing multiplier.
-    assert.doesNotMatch(xml, /contract_check_result/, 'no win/loss branch that multiplies a stake');
+    assert.match(xml, /<field name="VAR" id="vai_payout">ai payout<\/field>/, 'payout drives the break-even');
+    assert.match(xml, /<field name="VAR" id="vai_kelly_fraction">ai kelly fraction<\/field>/, 'the Kelly fraction is a knob');
+    assert.match(xml, /<field name="VAR" id="vai_max_stake">ai max stake<\/field>/, 'max stake caps the size');
+    // No martingale: the settled result may feed the cool-off counter, but it
+    // may never resize the stake — every size comes from the next measurement,
+    // which is why there is no ladder state and no profit-chasing multiplier.
+    const after = xml.slice(xml.indexOf('<block type="after_purchase"'));
+    const settled = after.slice(0, after.indexOf('</statement>'));
+    assert.match(settled, /contract_check_result/, 'the cool-off counter follows the settled contract');
+    assert.doesNotMatch(settled, /id="vstake">stake</, 'a settled contract never resizes the stake');
     assert.doesNotMatch(xml, /multiplier/, 'no multiplier knob');
     assert.doesNotMatch(xml, /loss count/, 'no ladder state');
+    assert.doesNotMatch(xml, /rStakeStep/, 'no ladder step block');
     // Every horizon is five ticks: odd, tie-free on Step Index, and the
     // shortest tick contract High/Low Tick is sold in.
-    assert.match(xml, /<field name="VAR" id="vduration">duration<\/field>[\s\S]*?<field name="NUM">5<\/field>/, 'duration 5');
+    assert.match(xml, /<field name="VAR" id="vai_duration">ai duration<\/field>[\s\S]*?<field name="NUM">5<\/field>/, 'duration 5');
   }
 
   assert.match(tick, /type="x_tick_decision_purchase"/);
@@ -316,10 +321,86 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   assert.match(hedge, /<field name="MODE">step-hedge<\/field>/);
   assert.match(hedge, /<field name="PURCHASE_LIST">CALL<\/field>/);
   assert.match(hedge, /<field name="HEDGE_LIST">PUT<\/field>/);
-  assert.match(hedge, /<value name="LEGS">[\s\S]{0,200}?<field name="NUM">2<\/field>/, 'the pair risk-checks both legs');
+  // The hedge is partial, so the risk gate takes the pair's exposure multiplier
+  // (main leg + "ai hedge ratio" of it) rather than a hard-coded 2.
+  assert.match(hedge, /<value name="LEGS">[\s\S]{0,160}?id="vai_legs">ai legs<\/field>/, 'the pair risk-checks both legs');
+  assert.match(hedge, /id="vai_legs">ai legs<\/field>[\s\S]{0,200}?<field name="NUM">1\.25<\/field>/, 'both legs are inside the exposure multiplier');
+  assert.match(hedge, /<value name="HEDGE_STAKE">[\s\S]{0,160}?id="vai_hedge_ratio">ai hedge ratio<\/field>/, 'the hedge leg is ratio-sized, not equal-staked');
 
   // The shipped shapes must pass the context gate the bots rely on.
   assert.equal(priceContextAllowed('rise', 5, { symbol: 'stpRNG', duration: 5, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), true);
   assert.equal(priceContextAllowed('step-hedge', 5, { symbol: 'stpRNG', duration: 5, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), true);
   assert.equal(priceContextAllowed('tick', 5, { symbol: 'R_100', duration: 5, duration_unit: 't' }, { contractTypes: ['TICKHIGH', 'TICKLOW'] }), true);
+});
+
+// ---------------------------------------------------------------------------
+// The High/Low Tick scale, the arcsine anchor and the evidence gate
+// ---------------------------------------------------------------------------
+
+test('the arcsine prior is the enumerated five-tick distribution, not a flat guess', () => {
+  const prior = arcsinePrior(5);
+  assert.equal(prior.length, 5);
+  assert.equal(Math.round(prior.reduce((sum, value) => sum + value, 0) * 1e6) / 1e6, 1);
+  // Enumerating the 32 five-tick paths: tick 1 and tick 5 hold a strict extreme
+  // in 6 of them, the middle tick in 2, and 10 windows share an extreme.
+  assert.deepEqual(prior.map(value => Math.round(value * 1e3) / 1e3), [0.273, 0.156, 0.141, 0.156, 0.273]);
+});
+
+test('each High/Low Tick side is normalised over its own five positions', () => {
+  // The contract is priced as "which position holds the high", one bet of five
+  // outcomes. Normalising over ten joint outcomes halved every probability and
+  // made a payout-aware gate unreachable; that is the bug this pins.
+  const decision = priceDecision(stepStream(1200, 0.5, 5), 'tick', 5, 0, { maxTie: 0.35 });
+  assert.equal(decision.horizon, 5);
+  const high = decision.probabilities.slice(0, 5).reduce((sum, value) => sum + value, 0);
+  const low = decision.probabilities.slice(5).reduce((sum, value) => sum + value, 0);
+  assert.ok(Math.abs(high - 1) < 1e-9, `high side sums to ${high}`);
+  assert.ok(Math.abs(low - 1) < 1e-9, `low side sums to ${low}`);
+  // A random walk leaves the ends likeliest, so the pick sits on an end tick
+  // far more often than not.
+  const picks = [];
+  const prices = stepStream(1400, 0.5, 9);
+  for (let i = 900; i < prices.length - 8; i += 20) {
+    const read = priceDecision(prices.slice(i - 899, i + 1), 'tick', 5, 0, { maxTie: 0.35 });
+    if (read.ready) picks.push(read.tick);
+  }
+  assert.ok(picks.length > 10, 'the tick read publishes decisions');
+  const ends = picks.filter(tick => tick === 1 || tick === 5).length;
+  assert.ok(ends / picks.length > 0.5, `ends chosen ${ends}/${picks.length}`);
+});
+
+test('a rule whose own graded record is under the break-even stops trading', () => {
+  const ready = priceDecision(trend, 'tick', 5, 0.3);
+  assert.equal(ready.ready, true, 'the trend case is tradeable with no record yet');
+
+  // Fewer than 25 graded decisions proves nothing, so the gate stays open.
+  assert.equal(priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 2, samples: 10 } }).ready, true);
+
+  const hot = priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 5, samples: 40 } });
+  assert.equal(hot.ready, false, 'a 12.5 % record against a 20 % break-even must not trade');
+  assert.match(hot.reason, /own record/);
+  // It is a veto, not a blindfold: the models were ready and the caller still
+  // grades what they said, so the record can recover.
+  assert.equal(hot.modelReady, true);
+  assert.equal(hot.hitSamples, 40);
+
+  const recovered = priceDecision(trend, 'tick', 5, 0.3, { evidence: { hits: 38, samples: 40 } });
+  assert.equal(recovered.ready, true, 'a record above the break-even trades again');
+});
+
+test('the confidence floor is applied inside the engine, so grading matches trading', () => {
+  const decision = priceDecision(trend, 'tick', 5, 0.3, { minConfidence: 100 });
+  assert.equal(decision.ready, false);
+  assert.match(decision.reason, /confidence .* floor/);
+  // Nothing is graded for a decision the engine never published.
+  assert.equal(decision.modelReady, false);
+});
+
+test('the tick break-even is one chance in five when no payout is quoted', () => {
+  const decision = priceDecision(trend, 'tick', 5, 0.3);
+  assert.equal(Math.round(decision.breakEven * 1e6) / 1e6, 0.2);
+  // With a live payout of 3.5 the break-even is 1/(1+payout), the same rule the
+  // directional strategies use.
+  const priced = priceDecision(trend, 'tick', 5, 0.3, { payout: 3.5 });
+  assert.equal(Math.round(priced.breakEven * 1e6) / 1e6, Math.round((1 / 4.5) * 1e6) / 1e6);
 });
