@@ -1,6 +1,6 @@
 import { LogTypes } from '../../../constants/messages';
 import { api_base } from '../../api/api-base';
-import { contractStatus, info, log } from '../utils/broadcast';
+import { contractStatus, info, log, notify } from '../utils/broadcast';
 import { doUntilDone, getUUID, recoverFromError, tradeOptionToBuy, tradeOptionToProposal } from '../utils/helpers';
 import { sanitizeHedgeOptions } from '../utils/hedge-options.mjs';
 import { purchaseSuccessful } from './state/actions';
@@ -192,10 +192,39 @@ export default Engine =>
             // Construct and validate both legs before either order is sent.
             const mainTradeOptions = legTradeOptions(contract_type, main_options);
             const hedgeTradeOptions = legTradeOptions(hedge_contract_type, hedge_options);
+
+            // ---- hedge ratio -------------------------------------------------
+            // Two equal legs are a guaranteed loss of the spread: one wins
+            // (+payout·S) while the other loses (−S), so every cycle costs
+            // about 5 % of the stake whatever happens. A *partial* hedge —
+            // the model's side at full size, the opposite side at a fraction
+            // of it — keeps most of a measured edge while it caps the swing,
+            // which is what a hedge is actually for. `ratio` is 0–1 of the
+            // trade-options amount; absent means the original both-sides
+            // behaviour, so existing strategies are unchanged.
+            const ratio = hedge_options?.ratio;
+            const partial = Number.isFinite(Number(ratio)) && Number(ratio) >= 0 && Number(ratio) < 1;
+            const minLegStake = 0.35;
+            const roundLegStake = value => Math.round(value * 100) / 100;
+            let hedgeOnlyLeg = partial ? roundLegStake(Number(this.tradeOptions.amount) * Number(ratio)) : null;
+            if (partial && hedgeOnlyLeg > 0 && hedgeOnlyLeg < minLegStake) hedgeOnlyLeg = null;
+            if (hedgeOnlyLeg != null) hedgeTradeOptions.amount = hedgeOnlyLeg;
+
             for (const [type, options] of [[contract_type, mainTradeOptions], [hedge_contract_type, hedgeTradeOptions]]) {
                 if (['TICKHIGH', 'TICKLOW'].includes(type) && options.prediction == null) {
                     throw new Error('Choose a prediction tick from 1 to 5 for both High/Low Tick legs.');
                 }
+            }
+
+            if (partial && hedgeOnlyLeg == null) {
+                // A ratio that rounds below Deriv's minimum stake is not a
+                // hedge, it is a rejection. Buy the model's side outright and
+                // say so, rather than opening a leg the exchange refuses.
+                notify(
+                    'info',
+                    `Hedge leg skipped: ${Number(ratio)} × ${this.tradeOptions.amount} is below the ${minLegStake} minimum, so only ${contract_type} was bought.`
+                );
+                return this.purchase(contract_type);
             }
 
             // Select both proposals up front: buying the first leg renews the
@@ -203,10 +232,11 @@ export default Engine =>
             // leg with its own prediction/barriers cannot reuse the
             // subscribed proposal (those are priced from the trade options),
             // so that leg buys directly with its merged parameters instead.
+            // A partial hedge is priced per leg for the same reason.
             const priceBarrier = [mainTradeOptions, hedgeTradeOptions].some(options =>
                 options.barrierOffset != null || options.secondBarrierOffset != null
             );
-            const useProposals = this.is_proposal_subscription_required && !priceBarrier;
+            const useProposals = this.is_proposal_subscription_required && !priceBarrier && !partial;
             const mainProposal =
                 useProposals && !hasBlockConfig(contract_type, main_options) ? this.selectProposal(contract_type) : null;
             const hedgeProposal =
@@ -255,7 +285,6 @@ export default Engine =>
                     ? () => api_base.api.send({ buy: second.id, price: second.askPrice })
                     : () => api_base.api.send(tradeOptionToBuy(hedge_contract_type, hedgeTradeOptions));
                 this.isSold = false;
-                contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
                 contractStatus({ id: 'contract.purchase_sent', data: this.tradeOptions.amount });
                 // Do not automatically retry a buy on a lost response: the
                 // broker may have filled it even though the reply was lost.

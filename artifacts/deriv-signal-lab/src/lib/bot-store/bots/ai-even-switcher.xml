@@ -21,6 +21,16 @@
   The blend keeps the Markov table's conditioning on the current digit
   while damping the noise of its thinner rows.
 
+  Value gate (both modes). A parity score is not a trade: Even/Odd pays a
+  little under double, so an entry has to clear its own break-even. After the
+  parity blend the bot computes the probability of the side it is about to
+  buy ("ai side prob" = max(markov, 100 − markov)/100) and multiplies it by
+  the multiple Deriv actually pays ("ai payout multiple", 1.95 for a
+  one-tick Even/Odd; check the proposal and adjust it if your account or
+  currency differs). "ai ev" is that expected value per unit staked, and no
+  purchase happens unless it clears "ai min edge". This is what stops a
+  high parity share on a payout that does not cover it.
+
   Recovery strategy (mode 1 — "Markov + AI"): the first loss switches the
   bot into recovery. Entries now have to pass the parity gate as well as
   the scan: Even while the blended score clears "ai markov threshold", Odd
@@ -36,7 +46,9 @@
   session below zero keeps the bot in recovery at the current stake — it
   does not declare victory early.
 
-  Staking: the default multiplier is 1 (flat stake). If configured above 1,
+  Staking: the default multiplier is 1 (flat stake, and flat is what the
+  preset ships — a recovery ladder on a near-fair parity stream only makes
+  the drawdown steeper). If you configure the multiplier above 1,
   the stake multiplies after a loss up to
   "ai max steps" multiplications in a row; past the cap the ladder restarts
   at the base stake instead of growing without bound. Every stake also
@@ -100,6 +112,10 @@
     <variable type="" id="evVar15">ai even share</variable>
     <variable type="" id="evVar16">ai max drawdown</variable>
     <variable type="" id="evVar17">ai loss streak stop</variable>
+    <variable type="" id="evVar18">ai payout multiple</variable>
+    <variable type="" id="evVar19">ai min edge</variable>
+    <variable type="" id="evVar20">ai side prob</variable>
+    <variable type="" id="evVar21">ai ev</variable>
   </variables>
   <block type="trade_definition" id="evTrade01" x="0" y="0">
     <statement name="TRADE_OPTIONS">
@@ -136,18 +152,217 @@
       </block>
     </statement>
     <statement name="INITIALIZATION">
-      <block type="variables_set" id="evIs01"><field name="VAR" id="evVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="evIn01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs02"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><shadow type="math_number" id="evIn02"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs03"><field name="VAR" id="evVar03">ai duration</field><value name="VALUE"><shadow type="math_number" id="evIn03"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs04"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evIn04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs05"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><shadow type="math_number" id="evIn05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs06"><field name="VAR" id="evVar06">ai markov threshold</field><value name="VALUE"><shadow type="math_number" id="evIn06"><field name="NUM">54</field></shadow></value><next><block type="variables_set" id="evIs07"><field name="VAR" id="evVar07">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="evIn07"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs08"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evIn08"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs09"><field name="VAR" id="evVar09">ai max steps</field><value name="VALUE"><shadow type="math_number" id="evIn09"><field name="NUM">5</field></shadow></value><next><block type="variables_set" id="evIs10"><field name="VAR" id="evVar10">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="evIn10"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="evIs11"><field name="VAR" id="evVar11">ai profit target</field><value name="VALUE"><shadow type="math_number" id="evIn11"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="evIs12"><field name="VAR" id="evVar12">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="evIn12"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs13"><field name="VAR" id="evVar13">ai contracts</field><value name="VALUE"><shadow type="math_number" id="evIn13"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs14"><field name="VAR" id="evVar16">ai max drawdown</field><value name="VALUE"><shadow type="math_number" id="evIn14"><field name="NUM">15</field></shadow></value><next><block type="variables_set" id="evIs15"><field name="VAR" id="evVar17">ai loss streak stop</field><value name="VALUE"><shadow type="math_number" id="evIn15"><field name="NUM">4</field></shadow></value><next><block type="notify" id="evNotifyBoot"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evBootText"><field name="TEXT">AI Even Switcher armed — scanning every market for Even; a loss switches to Markov + AI recovery, recovery reverts in profit. Session brakes: loss limit, profit target, drawdown floor and losing-streak stop.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
+      <block type="variables_set" id="evIs01">
+        <field name="VAR" id="evVar01">ai base stake</field>
+        <value name="VALUE">
+          <shadow type="math_number" id="evIn01">
+            <field name="NUM">0.35</field>
+          </shadow>
+        </value>
+        <next>
+          <block type="variables_set" id="evIs02">
+            <field name="VAR" id="evVar02">ai stake</field>
+            <value name="VALUE">
+              <shadow type="math_number" id="evIn02">
+                <field name="NUM">0.35</field>
+              </shadow>
+            </value>
+            <next>
+              <block type="variables_set" id="evIs03">
+                <field name="VAR" id="evVar03">ai duration</field>
+                <value name="VALUE">
+                  <shadow type="math_number" id="evIn03">
+                    <field name="NUM">1</field>
+                  </shadow>
+                </value>
+                <next>
+                  <block type="variables_set" id="evIs04">
+                    <field name="VAR" id="evVar04">ai mode</field>
+                    <value name="VALUE">
+                      <shadow type="math_number" id="evIn04">
+                        <field name="NUM">0</field>
+                      </shadow>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="evIs05">
+                        <field name="VAR" id="evVar05">ai markov</field>
+                        <value name="VALUE">
+                          <shadow type="math_number" id="evIn05">
+                            <field name="NUM">0</field>
+                          </shadow>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="evIs06">
+                            <field name="VAR" id="evVar06">ai markov threshold</field>
+                            <value name="VALUE">
+                              <shadow type="math_number" id="evIn06">
+                                <field name="NUM">54</field>
+                              </shadow>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="evIs07">
+                                <field name="VAR" id="evVar07">ai multiplier</field>
+                                <value name="VALUE">
+                                  <shadow type="math_number" id="evIn07">
+                                    <field name="NUM">1</field>
+                                  </shadow>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="evIs08">
+                                    <field name="VAR" id="evVar08">ai loss count</field>
+                                    <value name="VALUE">
+                                      <shadow type="math_number" id="evIn08">
+                                        <field name="NUM">0</field>
+                                      </shadow>
+                                    </value>
+                                    <next>
+                                      <block type="variables_set" id="evIs09">
+                                        <field name="VAR" id="evVar09">ai max steps</field>
+                                        <value name="VALUE">
+                                          <shadow type="math_number" id="evIn09">
+                                            <field name="NUM">5</field>
+                                          </shadow>
+                                        </value>
+                                        <next>
+                                          <block type="variables_set" id="evIs10">
+                                            <field name="VAR" id="evVar10">ai loss limit</field>
+                                            <value name="VALUE">
+                                              <shadow type="math_number" id="evIn10">
+                                                <field name="NUM">30</field>
+                                              </shadow>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="evIs11">
+                                                <field name="VAR" id="evVar11">ai profit target</field>
+                                                <value name="VALUE">
+                                                  <shadow type="math_number" id="evIn11">
+                                                    <field name="NUM">50</field>
+                                                  </shadow>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="evIs12">
+                                                    <field name="VAR" id="evVar12">ai stake percent</field>
+                                                    <value name="VALUE">
+                                                      <shadow type="math_number" id="evIn12">
+                                                        <field name="NUM">2</field>
+                                                      </shadow>
+                                                    </value>
+                                                    <next>
+                                                      <block type="variables_set" id="evIs13">
+                                                        <field name="VAR" id="evVar13">ai contracts</field>
+                                                        <value name="VALUE">
+                                                          <shadow type="math_number" id="evIn13">
+                                                            <field name="NUM">0</field>
+                                                          </shadow>
+                                                        </value>
+                                                        <next>
+                                                          <block type="variables_set" id="evIs14">
+                                                            <field name="VAR" id="evVar16">ai max drawdown</field>
+                                                            <value name="VALUE">
+                                                              <shadow type="math_number" id="evIn14">
+                                                                <field name="NUM">15</field>
+                                                              </shadow>
+                                                            </value>
+                                                            <next>
+                                                              <block type="variables_set" id="evIs15">
+                                                                <field name="VAR" id="evVar17">ai loss streak stop</field>
+                                                                <value name="VALUE">
+                                                                  <shadow type="math_number" id="evIn15">
+                                                                    <field name="NUM">4</field>
+                                                                  </shadow>
+                                                                </value>
+                                                                <next>
+                                                                  <block type="variables_set" id="evIs18">
+                                                                    <field name="VAR" id="evVar18">ai payout multiple</field>
+                                                                    <value name="VALUE">
+                                                                      <shadow type="math_number" id="evIn18">
+                                                                        <field name="NUM">1.95</field>
+                                                                      </shadow>
+                                                                    </value>
+                                                                    <next>
+                                                                      <block type="variables_set" id="evIs19">
+                                                                        <field name="VAR" id="evVar19">ai min edge</field>
+                                                                        <value name="VALUE">
+                                                                          <shadow type="math_number" id="evIn19">
+                                                                            <field name="NUM">0.005</field>
+                                                                          </shadow>
+                                                                        </value>
+                                                                        <next>
+                                                                          <block type="variables_set" id="evIs20">
+                                                                            <field name="VAR" id="evVar20">ai side prob</field>
+                                                                            <value name="VALUE">
+                                                                              <shadow type="math_number" id="evIn20">
+                                                                                <field name="NUM">0</field>
+                                                                              </shadow>
+                                                                            </value>
+                                                                            <next>
+                                                                              <block type="variables_set" id="evIs21">
+                                                                                <field name="VAR" id="evVar21">ai ev</field>
+                                                                                <value name="VALUE">
+                                                                                  <shadow type="math_number" id="evIn21">
+                                                                                    <field name="NUM">0</field>
+                                                                                  </shadow>
+                                                                                </value>
+                                                                              </block>
+                                                                            </next>
+                                                                          </block>
+                                                                        </next>
+                                                                      </block>
+                                                                    </next>
+                                                                  </block>
+                                                                </next>
+                                                              </block>
+                                                            </next>
+                                                          </block>
+                                                        </next>
+                                                      </block>
+                                                    </next>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </next>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
     </statement>
     <statement name="SUBMARKET">
       <block type="trade_definition_tradeoptions" id="evOptions01">
         <mutation has_first_barrier="false" has_second_barrier="false" has_prediction="false"></mutation>
         <field name="DURATIONTYPE_LIST">t</field>
         <field name="CURRENCY_LIST">USD</field>
-        <value name="DURATION"><block type="variables_get" id="evDurGet"><field name="VAR" id="evVar03">ai duration</field></block></value>
+        <value name="DURATION">
+          <block type="variables_get" id="evDurGet">
+            <field name="VAR" id="evVar03">ai duration</field>
+          </block>
+        </value>
         <value name="AMOUNT">
           <block type="r_safe_stake" id="evSafe01">
-            <value name="STAKE"><block type="variables_get" id="evStakeGet"><field name="VAR" id="evVar02">ai stake</field></block></value>
-            <value name="PERCENT"><block type="variables_get" id="evPctGet"><field name="VAR" id="evVar12">ai stake percent</field></block></value>
+            <value name="STAKE">
+              <block type="variables_get" id="evStakeGet">
+                <field name="VAR" id="evVar02">ai stake</field>
+              </block>
+            </value>
+            <value name="PERCENT">
+              <block type="variables_get" id="evPctGet">
+                <field name="VAR" id="evVar12">ai stake percent</field>
+              </block>
+            </value>
           </block>
         </value>
         <field name="AMOUNT_LIMITS"></field>
@@ -158,28 +373,209 @@
     <statement name="BEFOREPURCHASE_STACK">
       <block type="signal_lab_scan_markets" id="evScan01">
         <field name="FAMILY">even-odd</field>
-        <value name="DURATION"><shadow type="math_number" id="evScanDur"><field name="NUM">20</field></shadow></value>
-        <value name="MIN_SCORE"><shadow type="math_number" id="evScanFloor"><field name="NUM">0</field></shadow></value>
+        <value name="DURATION">
+          <shadow type="math_number" id="evScanDur">
+            <field name="NUM">20</field>
+          </shadow>
+        </value>
+        <value name="MIN_SCORE">
+          <shadow type="math_number" id="evScanFloor">
+            <field name="NUM">0</field>
+          </shadow>
+        </value>
         <next>
           <block type="controls_if" id="evSwitchIf">
-            <value name="IF0"><block type="logic_operation" id="evSwitchAnd"><field name="OP">AND</field><value name="A"><block type="signal_lab_scan_tradeable" id="evSwitchCheck"></block></value><value name="B"><block type="logic_compare" id="evRoamModeCheck"><field name="OP">EQ</field><value name="A"><block type="variables_get" id="evRoamModeGet"><field name="VAR" id="evVar04">ai mode</field></block></value><value name="B"><shadow type="math_number" id="evRoamModeZero"><field name="NUM">0</field></shadow></value></block></value></block></value>
-            <statement name="DO0"><block type="signal_lab_switch_to_best" id="evSwitchBest"></block></statement>
+            <value name="IF0">
+              <block type="logic_operation" id="evSwitchAnd">
+                <field name="OP">AND</field>
+                <value name="A">
+                  <block type="signal_lab_scan_tradeable" id="evSwitchCheck"></block>
+                </value>
+                <value name="B">
+                  <block type="logic_compare" id="evRoamModeCheck">
+                    <field name="OP">EQ</field>
+                    <value name="A">
+                      <block type="variables_get" id="evRoamModeGet">
+                        <field name="VAR" id="evVar04">ai mode</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <shadow type="math_number" id="evRoamModeZero">
+                        <field name="NUM">0</field>
+                      </shadow>
+                    </value>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="signal_lab_switch_to_best" id="evSwitchBest"></block>
+            </statement>
             <next>
               <block type="variables_set" id="evMarkovSet">
                 <field name="VAR" id="evVar14">ai markov raw</field>
                 <value name="VALUE">
-                  <block type="math_arithmetic" id="evSum0"><field name="OP">ADD</field>
-                    <value name="A"><block type="m_transition" id="evT0"><value name="FROM"><block type="last_digit" id="evT0From"></block></value><value name="TO"><shadow type="math_number" id="evT0To"><field name="NUM">0</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz0"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT0Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz0One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT0Ticks"></block></value></block></value>
-                    <value name="B">
-                      <block type="math_arithmetic" id="evSum2"><field name="OP">ADD</field>
-                        <value name="A"><block type="m_transition" id="evT2"><value name="FROM"><block type="last_digit" id="evT2From"></block></value><value name="TO"><shadow type="math_number" id="evT2To"><field name="NUM">2</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz2"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT2Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz2One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT2Ticks"></block></value></block></value>
-                        <value name="B">
-                          <block type="math_arithmetic" id="evSum4"><field name="OP">ADD</field>
-                            <value name="A"><block type="m_transition" id="evT4"><value name="FROM"><block type="last_digit" id="evT4From"></block></value><value name="TO"><shadow type="math_number" id="evT4To"><field name="NUM">4</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz4"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT4Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz4One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT4Ticks"></block></value></block></value>
+                  <block type="math_arithmetic" id="evSum0">
+                    <field name="OP">ADD</field>
+                    <value name="A">
+                      <block type="m_transition" id="evT0">
+                        <value name="FROM">
+                          <block type="last_digit" id="evT0From"></block>
+                        </value>
+                        <value name="TO">
+                          <shadow type="math_number" id="evT0To">
+                            <field name="NUM">0</field>
+                          </shadow>
+                        </value>
+                        <value name="HORIZON">
+                          <block type="math_arithmetic" id="evHz0">
+                            <field name="OP">ADD</field>
+                            <value name="A">
+                              <block type="variables_get" id="evT0Hor">
+                                <field name="VAR" id="evVar03">ai duration</field>
+                              </block>
+                            </value>
                             <value name="B">
-                              <block type="math_arithmetic" id="evSum6"><field name="OP">ADD</field>
-                                <value name="A"><block type="m_transition" id="evT6"><value name="FROM"><block type="last_digit" id="evT6From"></block></value><value name="TO"><shadow type="math_number" id="evT6To"><field name="NUM">6</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz6"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT6Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz6One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT6Ticks"></block></value></block></value>
-                                <value name="B"><block type="m_transition" id="evT8"><value name="FROM"><block type="last_digit" id="evT8From"></block></value><value name="TO"><shadow type="math_number" id="evT8To"><field name="NUM">8</field></shadow></value><value name="HORIZON"><block type="math_arithmetic" id="evHz8"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT8Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz8One"><field name="NUM">1</field></shadow></value></block></value><value name="LIST"><block type="ticks" id="evT8Ticks"></block></value></block></value>
+                              <shadow type="math_number" id="evHz0One">
+                                <field name="NUM">1</field>
+                              </shadow>
+                            </value>
+                          </block>
+                        </value>
+                        <value name="LIST">
+                          <block type="ticks" id="evT0Ticks"></block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_arithmetic" id="evSum2">
+                        <field name="OP">ADD</field>
+                        <value name="A">
+                          <block type="m_transition" id="evT2">
+                            <value name="FROM">
+                              <block type="last_digit" id="evT2From"></block>
+                            </value>
+                            <value name="TO">
+                              <shadow type="math_number" id="evT2To">
+                                <field name="NUM">2</field>
+                              </shadow>
+                            </value>
+                            <value name="HORIZON">
+                              <block type="math_arithmetic" id="evHz2">
+                                <field name="OP">ADD</field>
+                                <value name="A">
+                                  <block type="variables_get" id="evT2Hor">
+                                    <field name="VAR" id="evVar03">ai duration</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <shadow type="math_number" id="evHz2One">
+                                    <field name="NUM">1</field>
+                                  </shadow>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="LIST">
+                              <block type="ticks" id="evT2Ticks"></block>
+                            </value>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_arithmetic" id="evSum4">
+                            <field name="OP">ADD</field>
+                            <value name="A">
+                              <block type="m_transition" id="evT4">
+                                <value name="FROM">
+                                  <block type="last_digit" id="evT4From"></block>
+                                </value>
+                                <value name="TO">
+                                  <shadow type="math_number" id="evT4To">
+                                    <field name="NUM">4</field>
+                                  </shadow>
+                                </value>
+                                <value name="HORIZON">
+                                  <block type="math_arithmetic" id="evHz4">
+                                    <field name="OP">ADD</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="evT4Hor">
+                                        <field name="VAR" id="evVar03">ai duration</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <shadow type="math_number" id="evHz4One">
+                                        <field name="NUM">1</field>
+                                      </shadow>
+                                    </value>
+                                  </block>
+                                </value>
+                                <value name="LIST">
+                                  <block type="ticks" id="evT4Ticks"></block>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_arithmetic" id="evSum6">
+                                <field name="OP">ADD</field>
+                                <value name="A">
+                                  <block type="m_transition" id="evT6">
+                                    <value name="FROM">
+                                      <block type="last_digit" id="evT6From"></block>
+                                    </value>
+                                    <value name="TO">
+                                      <shadow type="math_number" id="evT6To">
+                                        <field name="NUM">6</field>
+                                      </shadow>
+                                    </value>
+                                    <value name="HORIZON">
+                                      <block type="math_arithmetic" id="evHz6">
+                                        <field name="OP">ADD</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="evT6Hor">
+                                            <field name="VAR" id="evVar03">ai duration</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <shadow type="math_number" id="evHz6One">
+                                            <field name="NUM">1</field>
+                                          </shadow>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <value name="LIST">
+                                      <block type="ticks" id="evT6Ticks"></block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="m_transition" id="evT8">
+                                    <value name="FROM">
+                                      <block type="last_digit" id="evT8From"></block>
+                                    </value>
+                                    <value name="TO">
+                                      <shadow type="math_number" id="evT8To">
+                                        <field name="NUM">8</field>
+                                      </shadow>
+                                    </value>
+                                    <value name="HORIZON">
+                                      <block type="math_arithmetic" id="evHz8">
+                                        <field name="OP">ADD</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="evT8Hor">
+                                            <field name="VAR" id="evVar03">ai duration</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <shadow type="math_number" id="evHz8One">
+                                            <field name="NUM">1</field>
+                                          </shadow>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <value name="LIST">
+                                      <block type="ticks" id="evT8Ticks"></block>
+                                    </value>
+                                  </block>
+                                </value>
                               </block>
                             </value>
                           </block>
@@ -189,42 +585,385 @@
                   </block>
                 </value>
                 <next>
-                  <block type="variables_set" id="evShareSet"><field name="VAR" id="evVar15">ai even share</field><value name="VALUE"><block type="m_even_share" id="evShareBlock"><value name="LIST"><block type="ticks" id="evShareTicks"></block></value></block></value>
-                    <next>
-                      <block type="variables_set" id="evBlendSet"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><block type="math_arithmetic" id="evBlendAdd"><field name="OP">ADD</field><value name="A"><block type="math_arithmetic" id="evBlendRaw"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evBlendRawGet"><field name="VAR" id="evVar14">ai markov raw</field></block></value><value name="B"><shadow type="math_number" id="evBlendRawW"><field name="NUM">0.65</field></shadow></value></block></value><value name="B"><block type="math_arithmetic" id="evBlendShare"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evBlendShareGet"><field name="VAR" id="evVar15">ai even share</field></block></value><value name="B"><shadow type="math_number" id="evBlendShareW"><field name="NUM">0.35</field></shadow></value></block></value></block></value>
-                        <next>
-                          <block type="controls_if" id="evEntryIf">
-                    <value name="IF0">
-                      <block type="logic_operation" id="evGateAnd1"><field name="OP">AND</field>
-                        <value name="A"><block type="logic_operation" id="evGateAnd3"><field name="OP">AND</field>
-                        <value name="A"><block type="logic_operation" id="evGateAnd2"><field name="OP">AND</field>
-                          <value name="A"><block type="signal_lab_scan_tradeable" id="evGateScan"></block></value>
-                          <value name="B"><block type="logic_compare" id="evGateLoss"><field name="OP">GT</field><value name="A"><block type="x_session_profit" id="evGateLossNow"></block></value><value name="B"><block type="math_arithmetic" id="evGateLossFloor"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evGateLossGet"><field name="VAR" id="evVar10">ai loss limit</field></block></value><shadow type="math_number" id="evGateLossSign"><field name="NUM">-1</field></shadow></block></value></block></value>
-                        </block></value>
-                        <value name="B"><block type="logic_operation" id="evBrakeAnd"><field name="OP">AND</field>
-                          <value name="A"><block type="logic_compare" id="evGateDrawdown"><field name="OP">GTE</field><value name="A"><block type="total_profit" id="evGateProfitNow"></block></value><value name="B"><block type="math_arithmetic" id="evGateDrawdownFloor"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evGateDrawdownGet"><field name="VAR" id="evVar16">ai max drawdown</field></block></value><shadow type="math_number" id="evGateDrawdownSign"><field name="NUM">-1</field></shadow></block></value></block></value>
-                          <value name="B"><block type="logic_compare" id="evGateStreak"><field name="OP">LT</field><value name="A"><block type="variables_get" id="evGateStreakGet"><field name="VAR" id="evVar08">ai loss count</field></block></value><value name="B"><block type="variables_get" id="evGateStreakStop"><field name="VAR" id="evVar17">ai loss streak stop</field></block></value></block></value>
-                        </block></value>
-                        </block></value>
-                        <value name="B"><block type="logic_compare" id="evGateProfit"><field name="OP">LT</field><value name="A"><block type="x_session_profit" id="evGateProfitNow"></block></value><value name="B"><block type="variables_get" id="evGateProfitGet"><field name="VAR" id="evVar11">ai profit target</field></block></value></block></value>
+                  <block type="variables_set" id="evShareSet">
+                    <field name="VAR" id="evVar15">ai even share</field>
+                    <value name="VALUE">
+                      <block type="m_even_share" id="evShareBlock">
+                        <value name="LIST">
+                          <block type="ticks" id="evShareTicks"></block>
+                        </value>
                       </block>
                     </value>
-                    <statement name="DO0">
-                      <block type="variables_set" id="evCountSet"><field name="VAR" id="evVar13">ai contracts</field>
-                        <value name="VALUE"><block type="math_arithmetic" id="evCountAdd"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evCountGet"><field name="VAR" id="evVar13">ai contracts</field></block></value><value name="B"><shadow type="math_number" id="evCountOne"><field name="NUM">1</field></shadow></value></block></value>
-                        <next>
-                          <block type="controls_if" id="evModeBranch">
-                            <mutation elseif="2"></mutation>
-                            <value name="IF0"><block type="logic_compare" id="evModeCheck"><field name="OP">EQ</field><value name="A"><block type="variables_get" id="evModeGet"><field name="VAR" id="evVar04">ai mode</field></block></value><value name="B"><shadow type="math_number" id="evModeZero"><field name="NUM">0</field></shadow></value></block></value>
-                            <statement name="DO0"><block type="controls_if" id="evPrimaryGateIf"><value name="IF0"><block type="logic_compare" id="evPrimaryGate"><field name="OP">GTE</field><value name="A"><block type="variables_get" id="evPrimaryGateGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="variables_get" id="evPrimaryGateThreshold"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value><statement name="DO0"><block type="purchase" id="evBuyPrimary"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement></block></statement>
-                            <value name="IF1"><block type="logic_compare" id="evMarkovEvenCheck"><field name="OP">GTE</field><value name="A"><block type="variables_get" id="evMarkovEvenGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="variables_get" id="evThreshGet"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value>
-                            <statement name="DO1"><block type="purchase" id="evBuyRecoveryEven"><field name="PURCHASE_LIST">DIGITEVEN</field></block></statement>
-                            <value name="IF2"><block type="logic_compare" id="evMarkovOddCheck"><field name="OP">LTE</field><value name="A"><block type="variables_get" id="evMarkovOddGet"><field name="VAR" id="evVar05">ai markov</field></block></value><value name="B"><block type="math_arithmetic" id="evOddBar"><field name="OP">MINUS</field><value name="A"><shadow type="math_number" id="evOddHundred"><field name="NUM">100</field></shadow></value><value name="B"><block type="variables_get" id="evOddThreshGet"><field name="VAR" id="evVar06">ai markov threshold</field></block></value></block></value></block></value>
-                            <statement name="DO2"><block type="purchase" id="evBuyRecoveryOdd"><field name="PURCHASE_LIST">DIGITODD</field></block></statement>
+                    <next>
+                      <block type="variables_set" id="evBlendSet">
+                        <field name="VAR" id="evVar05">ai markov</field>
+                        <value name="VALUE">
+                          <block type="math_arithmetic" id="evBlendAdd">
+                            <field name="OP">ADD</field>
+                            <value name="A">
+                              <block type="math_arithmetic" id="evBlendRaw">
+                                <field name="OP">MULTIPLY</field>
+                                <value name="A">
+                                  <block type="variables_get" id="evBlendRawGet">
+                                    <field name="VAR" id="evVar14">ai markov raw</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <shadow type="math_number" id="evBlendRawW">
+                                    <field name="NUM">0.65</field>
+                                  </shadow>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_arithmetic" id="evBlendShare">
+                                <field name="OP">MULTIPLY</field>
+                                <value name="A">
+                                  <block type="variables_get" id="evBlendShareGet">
+                                    <field name="VAR" id="evVar15">ai even share</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <shadow type="math_number" id="evBlendShareW">
+                                    <field name="NUM">0.35</field>
+                                  </shadow>
+                                </value>
+                              </block>
+                            </value>
                           </block>
-                        </next>
-                      </block>
-                    </statement>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="evSideProbSet">
+                            <field name="VAR" id="evVar20">ai side prob</field>
+                            <value name="VALUE">
+                              <block type="math_arithmetic" id="evSideProbDiv">
+                                <field name="OP">DIVIDE</field>
+                                <value name="A">
+                                  <block type="variables_get" id="evSideProbGet">
+                                    <field name="VAR" id="evVar05">ai markov</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <shadow type="math_number" id="evSideProbHundred">
+                                    <field name="NUM">100</field>
+                                  </shadow>
+                                </value>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="controls_if" id="evSideOddIf">
+                                <value name="IF0">
+                                  <block type="logic_compare" id="evSideOddCmp">
+                                    <field name="OP">LT</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="evSideOddGet">
+                                        <field name="VAR" id="evVar05">ai markov</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <shadow type="math_number" id="evSideOddFifty">
+                                        <field name="NUM">50</field>
+                                      </shadow>
+                                    </value>
+                                  </block>
+                                </value>
+                                <statement name="DO0">
+                                  <block type="variables_set" id="evSideOddSet">
+                                    <field name="VAR" id="evVar20">ai side prob</field>
+                                    <value name="VALUE">
+                                      <block type="math_arithmetic" id="evSideOddDiv">
+                                        <field name="OP">DIVIDE</field>
+                                        <value name="A">
+                                          <block type="math_arithmetic" id="evSideOddMinus">
+                                            <field name="OP">MINUS</field>
+                                            <value name="A">
+                                              <shadow type="math_number" id="evSideOddHundred">
+                                                <field name="NUM">100</field>
+                                              </shadow>
+                                            </value>
+                                            <value name="B">
+                                              <block type="variables_get" id="evSideOddGet2">
+                                                <field name="VAR" id="evVar05">ai markov</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <shadow type="math_number" id="evSideOddHundred2">
+                                            <field name="NUM">100</field>
+                                          </shadow>
+                                        </value>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </statement>
+                                <next>
+                                  <block type="variables_set" id="evEvSet">
+                                    <field name="VAR" id="evVar21">ai ev</field>
+                                    <value name="VALUE">
+                                      <block type="math_arithmetic" id="evEvMinus">
+                                        <field name="OP">MINUS</field>
+                                        <value name="A">
+                                          <block type="math_arithmetic" id="evEvMul">
+                                            <field name="OP">MULTIPLY</field>
+                                            <value name="A">
+                                              <block type="variables_get" id="evEvProbGet">
+                                                <field name="VAR" id="evVar20">ai side prob</field>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <shadow type="math_number" id="evEvPayout">
+                                                <field name="NUM">1.95</field>
+                                              </shadow>
+                                            </value>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <shadow type="math_number" id="evEvOne">
+                                            <field name="NUM">1</field>
+                                          </shadow>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="controls_if" id="evEntryIf">
+                                        <value name="IF0">
+                                          <block type="logic_operation" id="evEvGateAnd">
+                                            <field name="OP">AND</field>
+                                            <value name="A">
+                                              <block type="logic_operation" id="evGateAnd1">
+                                                <field name="OP">AND</field>
+                                                <value name="A">
+                                                  <block type="logic_operation" id="evGateAnd3">
+                                                    <field name="OP">AND</field>
+                                                    <value name="A">
+                                                      <block type="logic_operation" id="evGateAnd2">
+                                                        <field name="OP">AND</field>
+                                                        <value name="A">
+                                                          <block type="signal_lab_scan_tradeable" id="evGateScan"></block>
+                                                        </value>
+                                                        <value name="B">
+                                                          <block type="logic_compare" id="evGateLoss">
+                                                            <field name="OP">GT</field>
+                                                            <value name="A">
+                                                              <block type="x_session_profit" id="evGateLossNow"></block>
+                                                            </value>
+                                                            <value name="B">
+                                                              <block type="math_arithmetic" id="evGateLossFloor">
+                                                                <field name="OP">MULTIPLY</field>
+                                                                <value name="A">
+                                                                  <block type="variables_get" id="evGateLossGet">
+                                                                    <field name="VAR" id="evVar10">ai loss limit</field>
+                                                                  </block>
+                                                                </value>
+                                                                <value name="B">
+                                                                  <shadow type="math_number" id="evGateLossSign">
+                                                                    <field name="NUM">-1</field>
+                                                                  </shadow>
+                                                                </value>
+                                                              </block>
+                                                            </value>
+                                                          </block>
+                                                        </value>
+                                                      </block>
+                                                    </value>
+                                                    <value name="B">
+                                                      <block type="logic_operation" id="evBrakeAnd">
+                                                        <field name="OP">AND</field>
+                                                        <value name="A">
+                                                          <block type="logic_compare" id="evGateDrawdown">
+                                                            <field name="OP">GTE</field>
+                                                            <value name="A">
+                                                              <block type="total_profit" id="evGateProfitNow"></block>
+                                                            </value>
+                                                            <value name="B">
+                                                              <block type="math_arithmetic" id="evGateDrawdownFloor">
+                                                                <field name="OP">MULTIPLY</field>
+                                                                <value name="A">
+                                                                  <block type="variables_get" id="evGateDrawdownGet">
+                                                                    <field name="VAR" id="evVar16">ai max drawdown</field>
+                                                                  </block>
+                                                                </value>
+                                                                <value name="B">
+                                                                  <shadow type="math_number" id="evGateDrawdownSign">
+                                                                    <field name="NUM">-1</field>
+                                                                  </shadow>
+                                                                </value>
+                                                              </block>
+                                                            </value>
+                                                          </block>
+                                                        </value>
+                                                        <value name="B">
+                                                          <block type="logic_compare" id="evGateStreak">
+                                                            <field name="OP">LT</field>
+                                                            <value name="A">
+                                                              <block type="variables_get" id="evGateStreakGet">
+                                                                <field name="VAR" id="evVar08">ai loss count</field>
+                                                              </block>
+                                                            </value>
+                                                            <value name="B">
+                                                              <block type="variables_get" id="evGateStreakStop">
+                                                                <field name="VAR" id="evVar17">ai loss streak stop</field>
+                                                              </block>
+                                                            </value>
+                                                          </block>
+                                                        </value>
+                                                      </block>
+                                                    </value>
+                                                  </block>
+                                                </value>
+                                                <value name="B">
+                                                  <block type="logic_compare" id="evGateProfit">
+                                                    <field name="OP">LT</field>
+                                                    <value name="A">
+                                                      <block type="x_session_profit" id="evAgainProfitNow"></block>
+                                                    </value>
+                                                    <value name="B">
+                                                      <block type="variables_get" id="evGateProfitGet">
+                                                        <field name="VAR" id="evVar11">ai profit target</field>
+                                                      </block>
+                                                    </value>
+                                                  </block>
+                                                </value>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="logic_compare" id="evEvGateCmp">
+                                                <field name="OP">GTE</field>
+                                                <value name="A">
+                                                  <block type="variables_get" id="evEvGateGet">
+                                                    <field name="VAR" id="evVar21">ai ev</field>
+                                                  </block>
+                                                </value>
+                                                <value name="B">
+                                                  <shadow type="math_number" id="evEvGateMin">
+                                                    <field name="NUM">0.005</field>
+                                                  </shadow>
+                                                </value>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                        <statement name="DO0">
+                                          <block type="variables_set" id="evCountSet">
+                                            <field name="VAR" id="evVar13">ai contracts</field>
+                                            <value name="VALUE">
+                                              <block type="math_arithmetic" id="evCountAdd">
+                                                <field name="OP">ADD</field>
+                                                <value name="A">
+                                                  <block type="variables_get" id="evCountGet">
+                                                    <field name="VAR" id="evVar13">ai contracts</field>
+                                                  </block>
+                                                </value>
+                                                <value name="B">
+                                                  <shadow type="math_number" id="evCountOne">
+                                                    <field name="NUM">1</field>
+                                                  </shadow>
+                                                </value>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="controls_if" id="evModeBranch">
+                                                <mutation elseif="2"></mutation>
+                                                <value name="IF0">
+                                                  <block type="logic_compare" id="evModeCheck">
+                                                    <field name="OP">EQ</field>
+                                                    <value name="A">
+                                                      <block type="variables_get" id="evModeGet">
+                                                        <field name="VAR" id="evVar04">ai mode</field>
+                                                      </block>
+                                                    </value>
+                                                    <value name="B">
+                                                      <shadow type="math_number" id="evModeZero">
+                                                        <field name="NUM">0</field>
+                                                      </shadow>
+                                                    </value>
+                                                  </block>
+                                                </value>
+                                                <statement name="DO0">
+                                                  <block type="controls_if" id="evPrimaryGateIf">
+                                                    <value name="IF0">
+                                                      <block type="logic_compare" id="evPrimaryGate">
+                                                        <field name="OP">GTE</field>
+                                                        <value name="A">
+                                                          <block type="variables_get" id="evPrimaryGateGet">
+                                                            <field name="VAR" id="evVar05">ai markov</field>
+                                                          </block>
+                                                        </value>
+                                                        <value name="B">
+                                                          <block type="variables_get" id="evPrimaryGateThreshold">
+                                                            <field name="VAR" id="evVar06">ai markov threshold</field>
+                                                          </block>
+                                                        </value>
+                                                      </block>
+                                                    </value>
+                                                    <statement name="DO0">
+                                                      <block type="purchase" id="evBuyPrimary">
+                                                        <field name="PURCHASE_LIST">DIGITEVEN</field>
+                                                      </block>
+                                                    </statement>
+                                                  </block>
+                                                </statement>
+                                                <value name="IF1">
+                                                  <block type="logic_compare" id="evMarkovEvenCheck">
+                                                    <field name="OP">GTE</field>
+                                                    <value name="A">
+                                                      <block type="variables_get" id="evMarkovEvenGet">
+                                                        <field name="VAR" id="evVar05">ai markov</field>
+                                                      </block>
+                                                    </value>
+                                                    <value name="B">
+                                                      <block type="variables_get" id="evThreshGet">
+                                                        <field name="VAR" id="evVar06">ai markov threshold</field>
+                                                      </block>
+                                                    </value>
+                                                  </block>
+                                                </value>
+                                                <statement name="DO1">
+                                                  <block type="purchase" id="evBuyRecoveryEven">
+                                                    <field name="PURCHASE_LIST">DIGITEVEN</field>
+                                                  </block>
+                                                </statement>
+                                                <value name="IF2">
+                                                  <block type="logic_compare" id="evMarkovOddCheck">
+                                                    <field name="OP">LTE</field>
+                                                    <value name="A">
+                                                      <block type="variables_get" id="evMarkovOddGet">
+                                                        <field name="VAR" id="evVar05">ai markov</field>
+                                                      </block>
+                                                    </value>
+                                                    <value name="B">
+                                                      <block type="math_arithmetic" id="evOddBar">
+                                                        <field name="OP">MINUS</field>
+                                                        <value name="A">
+                                                          <shadow type="math_number" id="evOddHundred">
+                                                            <field name="NUM">100</field>
+                                                          </shadow>
+                                                        </value>
+                                                        <value name="B">
+                                                          <block type="variables_get" id="evOddThreshGet">
+                                                            <field name="VAR" id="evVar06">ai markov threshold</field>
+                                                          </block>
+                                                        </value>
+                                                      </block>
+                                                    </value>
+                                                  </block>
+                                                </value>
+                                                <statement name="DO2">
+                                                  <block type="purchase" id="evBuyRecoveryOdd">
+                                                    <field name="PURCHASE_LIST">DIGITODD</field>
+                                                  </block>
+                                                </statement>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </statement>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
                           </block>
                         </next>
                       </block>
@@ -242,20 +981,79 @@
     <statement name="AFTERPURCHASE_STACK">
       <block type="controls_if" id="evResultIf">
         <mutation else="1"></mutation>
-        <value name="IF0"><block type="contract_check_result" id="evResultWin"><field name="CHECK_RESULT">win</field></block></value>
+        <value name="IF0">
+          <block type="contract_check_result" id="evResultWin">
+            <field name="CHECK_RESULT">win</field>
+          </block>
+        </value>
         <statement name="DO0">
           <block type="controls_if" id="evRecoveredIf">
-            <value name="IF0"><block type="logic_compare" id="evRecoveredCheck"><field name="OP">GTE</field><value name="A"><block type="total_profit" id="evRecoveredProfit"></block></value><value name="B"><shadow type="math_number" id="evRecoveredZero"><field name="NUM">0</field></shadow></value></block></value>
+            <value name="IF0">
+              <block type="logic_compare" id="evRecoveredCheck">
+                <field name="OP">GTE</field>
+                <value name="A">
+                  <block type="total_profit" id="evRecoveredProfit"></block>
+                </value>
+                <value name="B">
+                  <shadow type="math_number" id="evRecoveredZero">
+                    <field name="NUM">0</field>
+                  </shadow>
+                </value>
+              </block>
+            </value>
             <statement name="DO0">
               <block type="controls_if" id="evRevertNotifyIf">
-                <value name="IF0"><block type="logic_compare" id="evRevertModeCheck"><field name="OP">EQ</field><value name="A"><block type="variables_get" id="evRevertModeGet"><field name="VAR" id="evVar04">ai mode</field></block></value><value name="B"><shadow type="math_number" id="evRevertModeOne"><field name="NUM">1</field></shadow></value></block></value>
-                <statement name="DO0"><block type="notify" id="evNotifyRevert"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evRevertText"><field name="TEXT">Recovered — session back in profit. Reverting to the AI Even primary strategy and resetting the stake.</field></block></value></block></statement>
+                <value name="IF0">
+                  <block type="logic_compare" id="evRevertModeCheck">
+                    <field name="OP">EQ</field>
+                    <value name="A">
+                      <block type="variables_get" id="evRevertModeGet">
+                        <field name="VAR" id="evVar04">ai mode</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <shadow type="math_number" id="evRevertModeOne">
+                        <field name="NUM">1</field>
+                      </shadow>
+                    </value>
+                  </block>
+                </value>
+                <statement name="DO0">
+                  <block type="notify" id="evNotifyRevert">
+                    <field name="NOTIFICATION_TYPE">success</field>
+                    <field name="NOTIFICATION_SOUND">silent</field>
+                    <value name="MESSAGE">
+                      <block type="text" id="evRevertText">
+                        <field name="TEXT">Recovered — session back in profit. Reverting to the AI Even primary strategy and resetting the stake.</field>
+                      </block>
+                    </value>
+                  </block>
+                </statement>
                 <next>
-                  <block type="variables_set" id="evModeRevert"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evModeRevertN"><field name="NUM">0</field></shadow></value>
+                  <block type="variables_set" id="evModeRevert">
+                    <field name="VAR" id="evVar04">ai mode</field>
+                    <value name="VALUE">
+                      <shadow type="math_number" id="evModeRevertN">
+                        <field name="NUM">0</field>
+                      </shadow>
+                    </value>
                     <next>
-                      <block type="variables_set" id="evStakeReset"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><block type="variables_get" id="evStakeResetGet"><field name="VAR" id="evVar01">ai base stake</field></block></value>
+                      <block type="variables_set" id="evStakeReset">
+                        <field name="VAR" id="evVar02">ai stake</field>
+                        <value name="VALUE">
+                          <block type="variables_get" id="evStakeResetGet">
+                            <field name="VAR" id="evVar01">ai base stake</field>
+                          </block>
+                        </value>
                         <next>
-                          <block type="variables_set" id="evLossReset"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evLossResetN"><field name="NUM">0</field></shadow></value></block>
+                          <block type="variables_set" id="evLossReset">
+                            <field name="VAR" id="evVar08">ai loss count</field>
+                            <value name="VALUE">
+                              <shadow type="math_number" id="evLossResetN">
+                                <field name="NUM">0</field>
+                              </shadow>
+                            </value>
+                          </block>
                         </next>
                       </block>
                     </next>
@@ -267,25 +1065,122 @@
         </statement>
         <statement name="ELSE">
           <block type="controls_if" id="evSwitchNotifyIf">
-            <value name="IF0"><block type="logic_compare" id="evSwitchModeCheck"><field name="OP">EQ</field><value name="A"><block type="variables_get" id="evSwitchModeGet"><field name="VAR" id="evVar04">ai mode</field></block></value><value name="B"><shadow type="math_number" id="evSwitchModeZero"><field name="NUM">0</field></shadow></value></block></value>
-            <statement name="DO0"><block type="notify" id="evNotifySwitch"><field name="NOTIFICATION_TYPE">warn</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evSwitchText"><field name="TEXT">Loss — switching strategy: Markov + AI recovery is live until the session is back in profit.</field></block></value></block></statement>
+            <value name="IF0">
+              <block type="logic_compare" id="evSwitchModeCheck">
+                <field name="OP">EQ</field>
+                <value name="A">
+                  <block type="variables_get" id="evSwitchModeGet">
+                    <field name="VAR" id="evVar04">ai mode</field>
+                  </block>
+                </value>
+                <value name="B">
+                  <shadow type="math_number" id="evSwitchModeZero">
+                    <field name="NUM">0</field>
+                  </shadow>
+                </value>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="notify" id="evNotifySwitch">
+                <field name="NOTIFICATION_TYPE">warn</field>
+                <field name="NOTIFICATION_SOUND">silent</field>
+                <value name="MESSAGE">
+                  <block type="text" id="evSwitchText">
+                    <field name="TEXT">Loss — switching strategy: Markov + AI recovery is live until the session is back in profit.</field>
+                  </block>
+                </value>
+              </block>
+            </statement>
             <next>
-              <block type="variables_set" id="evModeSwitch"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evModeSwitchN"><field name="NUM">1</field></shadow></value>
+              <block type="variables_set" id="evModeSwitch">
+                <field name="VAR" id="evVar04">ai mode</field>
+                <value name="VALUE">
+                  <shadow type="math_number" id="evModeSwitchN">
+                    <field name="NUM">1</field>
+                  </shadow>
+                </value>
                 <next>
-                  <block type="variables_set" id="evLossCountSet"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><block type="math_arithmetic" id="evLossCountAdd"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evLossCountGet"><field name="VAR" id="evVar08">ai loss count</field></block></value><value name="B"><shadow type="math_number" id="evLossCountOne"><field name="NUM">1</field></shadow></value></block></value>
+                  <block type="variables_set" id="evLossCountSet">
+                    <field name="VAR" id="evVar08">ai loss count</field>
+                    <value name="VALUE">
+                      <block type="math_arithmetic" id="evLossCountAdd">
+                        <field name="OP">ADD</field>
+                        <value name="A">
+                          <block type="variables_get" id="evLossCountGet">
+                            <field name="VAR" id="evVar08">ai loss count</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <shadow type="math_number" id="evLossCountOne">
+                            <field name="NUM">1</field>
+                          </shadow>
+                        </value>
+                      </block>
+                    </value>
                     <next>
                       <block type="controls_if" id="evLadderIf">
                         <mutation else="1"></mutation>
-                        <value name="IF0"><block type="logic_compare" id="evLadderCheck"><field name="OP">LTE</field><value name="A"><block type="variables_get" id="evLadderGet"><field name="VAR" id="evVar08">ai loss count</field></block></value><value name="B"><block type="variables_get" id="evLadderMaxGet"><field name="VAR" id="evVar09">ai max steps</field></block></value></block></value>
+                        <value name="IF0">
+                          <block type="logic_compare" id="evLadderCheck">
+                            <field name="OP">LTE</field>
+                            <value name="A">
+                              <block type="variables_get" id="evLadderGet">
+                                <field name="VAR" id="evVar08">ai loss count</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="variables_get" id="evLadderMaxGet">
+                                <field name="VAR" id="evVar09">ai max steps</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
                         <statement name="DO0">
-                          <block type="variables_set" id="evStakeGrow"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><block type="math_arithmetic" id="evStakeMul"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evStakeMulGet"><field name="VAR" id="evVar02">ai stake</field></block></value><value name="B"><block type="variables_get" id="evMulGet"><field name="VAR" id="evVar07">ai multiplier</field></block></value></block></value></block>
+                          <block type="variables_set" id="evStakeGrow">
+                            <field name="VAR" id="evVar02">ai stake</field>
+                            <value name="VALUE">
+                              <block type="math_arithmetic" id="evStakeMul">
+                                <field name="OP">MULTIPLY</field>
+                                <value name="A">
+                                  <block type="variables_get" id="evStakeMulGet">
+                                    <field name="VAR" id="evVar02">ai stake</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="evMulGet">
+                                    <field name="VAR" id="evVar07">ai multiplier</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                          </block>
                         </statement>
                         <statement name="ELSE">
-                          <block type="notify" id="evNotifyCap"><field name="NOTIFICATION_TYPE">warn</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evCapText"><field name="TEXT">Recovery ladder reached its cap — stake reset to base. Still in Markov + AI recovery mode.</field></block></value>
+                          <block type="notify" id="evNotifyCap">
+                            <field name="NOTIFICATION_TYPE">warn</field>
+                            <field name="NOTIFICATION_SOUND">silent</field>
+                            <value name="MESSAGE">
+                              <block type="text" id="evCapText">
+                                <field name="TEXT">Recovery ladder reached its cap — stake reset to base. Still in Markov + AI recovery mode.</field>
+                              </block>
+                            </value>
                             <next>
-                              <block type="variables_set" id="evStakeCapReset"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><block type="variables_get" id="evStakeCapGet"><field name="VAR" id="evVar01">ai base stake</field></block></value>
+                              <block type="variables_set" id="evStakeCapReset">
+                                <field name="VAR" id="evVar02">ai stake</field>
+                                <value name="VALUE">
+                                  <block type="variables_get" id="evStakeCapGet">
+                                    <field name="VAR" id="evVar01">ai base stake</field>
+                                  </block>
+                                </value>
                                 <next>
-                                  <block type="variables_set" id="evLossCapReset"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evLossCapN"><field name="NUM">0</field></shadow></value></block>
+                                  <block type="variables_set" id="evLossCapReset">
+                                    <field name="VAR" id="evVar08">ai loss count</field>
+                                    <value name="VALUE">
+                                      <shadow type="math_number" id="evLossCapN">
+                                        <field name="NUM">0</field>
+                                      </shadow>
+                                    </value>
+                                  </block>
                                 </next>
                               </block>
                             </next>
@@ -303,13 +1198,60 @@
           <block type="controls_if" id="evAgainIf">
             <mutation else="1"></mutation>
             <value name="IF0">
-              <block type="logic_operation" id="evAgainAnd"><field name="OP">AND</field>
-                <value name="A"><block type="logic_compare" id="evAgainLoss"><field name="OP">GT</field><value name="A"><block type="x_session_profit" id="evAgainLossNow"></block></value><value name="B"><block type="math_arithmetic" id="evAgainLossFloor"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evAgainLossGet"><field name="VAR" id="evVar10">ai loss limit</field></block></value><shadow type="math_number" id="evAgainLossSign"><field name="NUM">-1</field></shadow></block></value></block></value>
-                <value name="B"><block type="logic_compare" id="evAgainProfit"><field name="OP">LT</field><value name="A"><block type="x_session_profit" id="evAgainProfitNow"></block></value><value name="B"><block type="variables_get" id="evAgainProfitGet"><field name="VAR" id="evVar11">ai profit target</field></block></value></block></value>
+              <block type="logic_operation" id="evAgainAnd">
+                <field name="OP">AND</field>
+                <value name="A">
+                  <block type="logic_compare" id="evAgainLoss">
+                    <field name="OP">GT</field>
+                    <value name="A">
+                      <block type="x_session_profit" id="evAgainLossNow"></block>
+                    </value>
+                    <value name="B">
+                      <block type="math_arithmetic" id="evAgainLossFloor">
+                        <field name="OP">MULTIPLY</field>
+                        <value name="A">
+                          <block type="variables_get" id="evAgainLossGet">
+                            <field name="VAR" id="evVar10">ai loss limit</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <shadow type="math_number" id="evAgainLossSign">
+                            <field name="NUM">-1</field>
+                          </shadow>
+                        </value>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="logic_compare" id="evAgainProfit">
+                    <field name="OP">LT</field>
+                    <value name="A">
+                      <block type="x_session_profit" id="evAgainProfitNow_dup1"></block>
+                    </value>
+                    <value name="B">
+                      <block type="variables_get" id="evAgainProfitGet">
+                        <field name="VAR" id="evVar11">ai profit target</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
               </block>
             </value>
-            <statement name="DO0"><block type="trade_again" id="evTradeAgain"></block></statement>
-            <statement name="ELSE"><block type="notify" id="evNotifyLimit"><field name="NOTIFICATION_TYPE">error</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evLimitText"><field name="TEXT">Session limit reached (loss limit or profit target) — the bot stops here. Adjust the limits in Run once at start and run it again if you want another session.</field></block></value></block></statement>
+            <statement name="DO0">
+              <block type="trade_again" id="evTradeAgain"></block>
+            </statement>
+            <statement name="ELSE">
+              <block type="notify" id="evNotifyLimit">
+                <field name="NOTIFICATION_TYPE">error</field>
+                <field name="NOTIFICATION_SOUND">silent</field>
+                <value name="MESSAGE">
+                  <block type="text" id="evLimitText">
+                    <field name="TEXT">Session limit reached (loss limit or profit target) — the bot stops here. Adjust the limits in Run once at start and run it again if you want another session.</field>
+                  </block>
+                </value>
+              </block>
+            </statement>
           </block>
         </next>
       </block>
