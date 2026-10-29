@@ -40,9 +40,19 @@
   the stake multiplies after a loss up to
   "ai max steps" multiplications in a row; past the cap the ladder restarts
   at the base stake instead of growing without bound. Every stake also
-  passes the balance cap ("ai stake percent"), and the loss/profit guards
-  stop new entries at "ai loss limit" / "ai profit target". The journal
-  announces every switch, so you can watch the mode change as it happens.
+  passes the balance cap ("ai stake percent"), and the session limits stop
+  new entries at "ai loss limit" / "ai profit target".
+
+  Session brakes. The loss limit and profit target now read the trade
+  engine's own session profit, which moves on every settled contract. They
+  used to read the vision brain's session memory — and this bot never feeds
+  that memory, because it learns through the digit transition blocks rather
+  than the brain, so both guards were permanently true and the documented
+  stops could never fire. Two more brakes sit in the same gate: no new
+  entries once session profit is below minus "ai max drawdown", and none
+  while the recovery ladder has taken "ai loss streak stop" losses in a
+  row. The journal announces every switch, so you can watch the mode change
+  as it happens, and why an entry was held.
 
   Why the recovery is Markov and not Rise/Fall: one DBot workspace has a
   single Trade options trade type, and this workspace trades Even/Odd — a
@@ -67,6 +77,8 @@
     ai max steps         5     stake multiplications before the ladder restarts
     ai loss limit        30    stop entering after this much session loss
     ai profit target     50    stop entering after this much session profit
+    ai max drawdown      15    stop entering below this session drawdown
+    ai loss streak stop  4     stop entering after this many losses in a row
     ai stake percent     2     never stake more than this % of the balance
 -->
 <xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">
@@ -86,6 +98,8 @@
     <variable type="" id="evVar13">ai contracts</variable>
     <variable type="" id="evVar14">ai markov raw</variable>
     <variable type="" id="evVar15">ai even share</variable>
+    <variable type="" id="evVar16">ai max drawdown</variable>
+    <variable type="" id="evVar17">ai loss streak stop</variable>
   </variables>
   <block type="trade_definition" id="evTrade01" x="0" y="0">
     <statement name="TRADE_OPTIONS">
@@ -122,7 +136,7 @@
       </block>
     </statement>
     <statement name="INITIALIZATION">
-      <block type="variables_set" id="evIs01"><field name="VAR" id="evVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="evIn01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs02"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><shadow type="math_number" id="evIn02"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs03"><field name="VAR" id="evVar03">ai duration</field><value name="VALUE"><shadow type="math_number" id="evIn03"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs04"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evIn04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs05"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><shadow type="math_number" id="evIn05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs06"><field name="VAR" id="evVar06">ai markov threshold</field><value name="VALUE"><shadow type="math_number" id="evIn06"><field name="NUM">54</field></shadow></value><next><block type="variables_set" id="evIs07"><field name="VAR" id="evVar07">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="evIn07"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs08"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evIn08"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs09"><field name="VAR" id="evVar09">ai max steps</field><value name="VALUE"><shadow type="math_number" id="evIn09"><field name="NUM">5</field></shadow></value><next><block type="variables_set" id="evIs10"><field name="VAR" id="evVar10">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="evIn10"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="evIs11"><field name="VAR" id="evVar11">ai profit target</field><value name="VALUE"><shadow type="math_number" id="evIn11"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="evIs12"><field name="VAR" id="evVar12">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="evIn12"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs13"><field name="VAR" id="evVar13">ai contracts</field><value name="VALUE"><shadow type="math_number" id="evIn13"><field name="NUM">0</field></shadow></value><next><block type="notify" id="evNotifyBoot"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evBootText"><field name="TEXT">AI Even Switcher armed — scanning every market for Even; a loss switches to Markov + AI recovery, recovery reverts in profit.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
+      <block type="variables_set" id="evIs01"><field name="VAR" id="evVar01">ai base stake</field><value name="VALUE"><shadow type="math_number" id="evIn01"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs02"><field name="VAR" id="evVar02">ai stake</field><value name="VALUE"><shadow type="math_number" id="evIn02"><field name="NUM">0.35</field></shadow></value><next><block type="variables_set" id="evIs03"><field name="VAR" id="evVar03">ai duration</field><value name="VALUE"><shadow type="math_number" id="evIn03"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs04"><field name="VAR" id="evVar04">ai mode</field><value name="VALUE"><shadow type="math_number" id="evIn04"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs05"><field name="VAR" id="evVar05">ai markov</field><value name="VALUE"><shadow type="math_number" id="evIn05"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs06"><field name="VAR" id="evVar06">ai markov threshold</field><value name="VALUE"><shadow type="math_number" id="evIn06"><field name="NUM">54</field></shadow></value><next><block type="variables_set" id="evIs07"><field name="VAR" id="evVar07">ai multiplier</field><value name="VALUE"><shadow type="math_number" id="evIn07"><field name="NUM">1</field></shadow></value><next><block type="variables_set" id="evIs08"><field name="VAR" id="evVar08">ai loss count</field><value name="VALUE"><shadow type="math_number" id="evIn08"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs09"><field name="VAR" id="evVar09">ai max steps</field><value name="VALUE"><shadow type="math_number" id="evIn09"><field name="NUM">5</field></shadow></value><next><block type="variables_set" id="evIs10"><field name="VAR" id="evVar10">ai loss limit</field><value name="VALUE"><shadow type="math_number" id="evIn10"><field name="NUM">30</field></shadow></value><next><block type="variables_set" id="evIs11"><field name="VAR" id="evVar11">ai profit target</field><value name="VALUE"><shadow type="math_number" id="evIn11"><field name="NUM">50</field></shadow></value><next><block type="variables_set" id="evIs12"><field name="VAR" id="evVar12">ai stake percent</field><value name="VALUE"><shadow type="math_number" id="evIn12"><field name="NUM">2</field></shadow></value><next><block type="variables_set" id="evIs13"><field name="VAR" id="evVar13">ai contracts</field><value name="VALUE"><shadow type="math_number" id="evIn13"><field name="NUM">0</field></shadow></value><next><block type="variables_set" id="evIs14"><field name="VAR" id="evVar16">ai max drawdown</field><value name="VALUE"><shadow type="math_number" id="evIn14"><field name="NUM">15</field></shadow></value><next><block type="variables_set" id="evIs15"><field name="VAR" id="evVar17">ai loss streak stop</field><value name="VALUE"><shadow type="math_number" id="evIn15"><field name="NUM">4</field></shadow></value><next><block type="notify" id="evNotifyBoot"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="evBootText"><field name="TEXT">AI Even Switcher armed — scanning every market for Even; a loss switches to Markov + AI recovery, recovery reverts in profit. Session brakes: loss limit, profit target, drawdown floor and losing-streak stop.</field></block></value></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block></next></block>
     </statement>
     <statement name="SUBMARKET">
       <block type="trade_definition_tradeoptions" id="evOptions01">
@@ -182,11 +196,17 @@
                           <block type="controls_if" id="evEntryIf">
                     <value name="IF0">
                       <block type="logic_operation" id="evGateAnd1"><field name="OP">AND</field>
+                        <value name="A"><block type="logic_operation" id="evGateAnd3"><field name="OP">AND</field>
                         <value name="A"><block type="logic_operation" id="evGateAnd2"><field name="OP">AND</field>
                           <value name="A"><block type="signal_lab_scan_tradeable" id="evGateScan"></block></value>
-                          <value name="B"><block type="r_loss_guard" id="evGateLoss"><value name="LIMIT"><block type="variables_get" id="evGateLossGet"><field name="VAR" id="evVar10">ai loss limit</field></block></value></block></value>
+                          <value name="B"><block type="logic_compare" id="evGateLoss"><field name="OP">GT</field><value name="A"><block type="x_session_profit" id="evGateLossNow"></block></value><value name="B"><block type="math_arithmetic" id="evGateLossFloor"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evGateLossGet"><field name="VAR" id="evVar10">ai loss limit</field></block></value><shadow type="math_number" id="evGateLossSign"><field name="NUM">-1</field></shadow></block></value></block></value>
                         </block></value>
-                        <value name="B"><block type="r_profit_guard" id="evGateProfit"><value name="TARGET"><block type="variables_get" id="evGateProfitGet"><field name="VAR" id="evVar11">ai profit target</field></block></value></block></value>
+                        <value name="B"><block type="logic_operation" id="evBrakeAnd"><field name="OP">AND</field>
+                          <value name="A"><block type="logic_compare" id="evGateDrawdown"><field name="OP">GTE</field><value name="A"><block type="total_profit" id="evGateProfitNow"></block></value><value name="B"><block type="math_arithmetic" id="evGateDrawdownFloor"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evGateDrawdownGet"><field name="VAR" id="evVar16">ai max drawdown</field></block></value><shadow type="math_number" id="evGateDrawdownSign"><field name="NUM">-1</field></shadow></block></value></block></value>
+                          <value name="B"><block type="logic_compare" id="evGateStreak"><field name="OP">LT</field><value name="A"><block type="variables_get" id="evGateStreakGet"><field name="VAR" id="evVar08">ai loss count</field></block></value><value name="B"><block type="variables_get" id="evGateStreakStop"><field name="VAR" id="evVar17">ai loss streak stop</field></block></value></block></value>
+                        </block></value>
+                        </block></value>
+                        <value name="B"><block type="logic_compare" id="evGateProfit"><field name="OP">LT</field><value name="A"><block type="x_session_profit" id="evGateProfitNow"></block></value><value name="B"><block type="variables_get" id="evGateProfitGet"><field name="VAR" id="evVar11">ai profit target</field></block></value></block></value>
                       </block>
                     </value>
                     <statement name="DO0">
@@ -284,8 +304,8 @@
             <mutation else="1"></mutation>
             <value name="IF0">
               <block type="logic_operation" id="evAgainAnd"><field name="OP">AND</field>
-                <value name="A"><block type="r_loss_guard" id="evAgainLoss"><value name="LIMIT"><block type="variables_get" id="evAgainLossGet"><field name="VAR" id="evVar10">ai loss limit</field></block></value></block></value>
-                <value name="B"><block type="r_profit_guard" id="evAgainProfit"><value name="TARGET"><block type="variables_get" id="evAgainProfitGet"><field name="VAR" id="evVar11">ai profit target</field></block></value></block></value>
+                <value name="A"><block type="logic_compare" id="evAgainLoss"><field name="OP">GT</field><value name="A"><block type="x_session_profit" id="evAgainLossNow"></block></value><value name="B"><block type="math_arithmetic" id="evAgainLossFloor"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="evAgainLossGet"><field name="VAR" id="evVar10">ai loss limit</field></block></value><shadow type="math_number" id="evAgainLossSign"><field name="NUM">-1</field></shadow></block></value></block></value>
+                <value name="B"><block type="logic_compare" id="evAgainProfit"><field name="OP">LT</field><value name="A"><block type="x_session_profit" id="evAgainProfitNow"></block></value><value name="B"><block type="variables_get" id="evAgainProfitGet"><field name="VAR" id="evVar11">ai profit target</field></block></value></block></value>
               </block>
             </value>
             <statement name="DO0"><block type="trade_again" id="evTradeAgain"></block></statement>
