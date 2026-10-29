@@ -38,3 +38,40 @@ two sides drifting.
 **How to apply:** add a bridge field in `dbot-bridge.ts` + `signallab-feed.ts` and cover both with
 `tests/dbot-bridge.test.mjs` / `tests/dbot-bridge-frame.test.mjs`; never post an account message before
 `grantRef.current` matches the session account, and never let the frame read a token.
+
+## Price presets: why they opened nothing on Step indices, and what was measured
+
+Diagnosis, in the order the gates bite:
+
+1. **The model horizon was read from a different block than the contract.** `resolvePriceContext`
+   used to demand `duration === horizon` (4), while the presets wrote the duration in Trade options.
+   Any edit to Trade options parked the bot before purchase with no purchase and no error. The
+   contract now wins: `resolvePriceContext` returns the traded duration as the horizon, and the
+   models replay the shape that actually settles.
+2. **An even horizon on a fixed ±0.1 step market ties.** A four-tick window on `stpRNG` ties 36.4 %
+   of the time, which caps the achievable probability near 32 % — below every gate. Five ticks is
+   odd, so a walk that starts and ends on a step grid can never tie (0 %). Every preset trades five
+   ticks, and `MAX_TIE` (0.2) refuses a market that ties more.
+3. **A good decision still has to survive the money gate.** `priceRiskAllowed` needs
+   `stake × legs ≤ bank·percent/100`, `≤ maxLoss + sessionProfit` and a finite balance. With the
+   shipped tenth-Kelly `adaptiveStake` (fraction 0.1) a 10 000 demo balance sizes ~42 USD at p = 0.534,
+   which the 10 USD loss limit then rejects on *every* cycle: zero trades, no error. A strategy stake
+   must never be sized above the operator's own loss budget — cap it with `max stake`, and gate the
+   budget before the entry, not after.
+
+Simulated with the real modules (module-level, no browser needed): on a 55/45 leaning step stream the
+preset wiring (flat 0.35 stake, ladder cap 2.8, loss 10, target 10, percent 5, confidence ≥ 60,
+agreement ≥ 0.60) reaches a purchase after ~55 ticks and keeps trading; on a fair 50/50 stream it
+reads ready ~12× less often. `tests/price-strategies.test.mjs` pins both directions, so a future
+"fix for no trades" cannot quietly start trading noise instead.
+
+**How to apply:** when a preset appears dead, print `x_price_reason` on skips first (it names the gate:
+warming up, thin state, tie risk, below threshold, thin evidence, model disagreement), then check the
+risk gate inputs — a stake above the loss budget and an unreadable balance both fail closed, by design.
+
+Staking in the price presets is no longer a ladder. Every cycle `x_price_stake` recomputes the stake from
+the decision's own probability and the configured payout (tenth-Kelly), floored at Deriv's 0.35 minimum,
+capped by "max stake" and the balance percent, and de-risked by the session drawdown. A loss never raises
+the next stake, so there is no martingale state to leak between cycles. `priceRiskAllowed` also floors the
+balance budget at the exchange minimum per leg: a 5 % policy on a 5 USD balance is 0.25, which would
+otherwise reject every entry forever and read as a dead bot.

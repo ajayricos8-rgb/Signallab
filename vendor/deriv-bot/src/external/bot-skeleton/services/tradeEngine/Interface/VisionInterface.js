@@ -20,7 +20,7 @@ import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
 import { priceDecision } from '../utils/price-strategies.mjs';
-import { priceContextAllowed, priceRiskAllowed } from '../utils/price-risk.mjs';
+import { adaptiveStake, priceRiskAllowed, resolvePriceContext } from '../utils/price-risk.mjs';
 import * as memory from '../utils/vision-memory.mjs';
 import {
     createEntryPacer,
@@ -46,6 +46,8 @@ const DEFAULT_TARGET_EDGE = 0.04;
 const planCache = new Map();
 /** The last decision each market produced, so a thin tick can still be priced. */
 const lastPlan = new Map();
+/** The last price-path decision, with its reason, per market. */
+const lastPrice = new Map();
 /**
  * The decision that was open when the current position was bought, per
  * market. Learning must score *that* forecast against the outcome — the
@@ -742,17 +744,111 @@ const getVisionInterface = tradeEngine => {
 
         /* ---------------- risk and money ---------------- */
 
-        priceDecision: async (list, mode, horizon, threshold) => {
-            const options = tradeEngine.tradeOptions || {};
-            const expected = mode === 'tick' ? 5 : mode === 'step-hedge' ? 4 : Number(horizon);
-            if (!priceContextAllowed(mode, horizon, options, tradeEngine.options)) return [0, 0, 0, 0];
-            const result = priceDecision(list, mode === 'tick' ? 'tick' : 'rise', expected, threshold);
-            return [result.ready ? 1 : 0, result.side, result.tick, result.probability];
+        /**
+         * The price-path ensemble.
+         *
+         * The horizon is the *contract's* duration — resolved from Trade options
+         * — so what the models replay is what will actually settle. A strategy
+         * that cannot be priced (wrong unit, wrong family, tie-prone market the
+         * strategy asked for) returns an all-zero plan and records the reason,
+         * which `Bot.priceReason()` prints into the journal instead of leaving
+         * the operator staring at a bot that "does nothing".
+         *
+         * The plan is [ready, side, tick, probability, tieRate, edge,
+         * confidence, agreement, samples, horizon, separation, stderr]. Read it
+         * with `priceDecisionPart`; the first four slots are unchanged so old
+         * strategies keep working.
+         */
+        priceDecision: async (list, mode, horizon, threshold, maxTie, minAgreement) => {
+            const options = tradeOptions();
+            const context = resolvePriceContext(mode, horizon, options, tradeEngine.options);
+            if (!context.ok) {
+                lastPrice.set(symbolOf(), { ready: false, reason: `cannot price this trade: ${context.reason}` });
+                return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            }
+            const result = priceDecision(list, mode === 'tick' ? 'tick' : 'rise', context.horizon, threshold, {
+                maxTie: num(maxTie, 0.2),
+                minAgreement: num(minAgreement, 0),
+            });
+            lastPrice.set(symbolOf(), { ...result, mode });
+            return [
+                result.ready ? 1 : 0,
+                result.side,
+                result.tick,
+                result.probability,
+                result.tieRate,
+                result.edge,
+                result.confidence,
+                result.agreement,
+                result.samples,
+                result.horizon,
+                result.separation,
+                result.stderr,
+            ];
         },
         priceDecisionPart: async (plan, part) => {
-            const index = { ready: 0, side: 1, tick: 2, probability: 3 }[part];
+            const index = {
+                ready: 0,
+                side: 1,
+                tick: 2,
+                probability: 3,
+                tie: 4,
+                edge: 5,
+                confidence: 6,
+                agreement: 7,
+                samples: 8,
+                horizon: 9,
+                separation: 10,
+                stderr: 11,
+            }[part];
             return Array.isArray(plan) && index !== undefined ? num(plan[index], 0) : 0;
         },
+        /** Why the last decision did (or did not) reach an entry, as one line. */
+        priceReason: async () => String(lastPrice.get(symbolOf())?.reason || 'no decision yet'),
+        /** Percent win probability the last decision measured (0-100). */
+        priceProbability: async () => round(num(lastPrice.get(symbolOf())?.probability, 0) * 100, 1),
+        /** Confidence 0-100: model agreement, evidence and separation combined. */
+        priceConfidence: async () => round(num(lastPrice.get(symbolOf())?.confidence, 0), 1),
+        /** Measured tie rate of the contract horizon, as a percentage. */
+        priceTieRate: async () => round(num(lastPrice.get(symbolOf())?.tieRate, 0) * 100, 1),
+        /** Per-model mixture weights, for the journal ("which model is talking"). */
+        priceModelWeights: async () => {
+            const plan = lastPrice.get(symbolOf());
+            return (plan?.models || [])
+                .slice()
+                .sort((left, right) => right.weight - left.weight)
+                .map(model => `${model.name} ${Math.round(model.weight * 100)}%`)
+                .join(' · ');
+        },
+        /**
+         * Edge-following stake. Kelly-sized from the measured probability and
+         * the payout, tenth-scaled by default, capped by the operator's balance
+         * percent and by `max stake`, floored at Deriv's minimum, and reduced
+         * while the session is losing. A loss never raises the next stake —
+         * the size always comes from the next measurement.
+         */
+        priceStake: async (probability, payout, base, fraction, percent, maxStake) => {
+            let balance = 0;
+            try {
+                balance = num(await tradeEngine.getBalance('NUM'), 0);
+            } catch {
+                balance = 0; // An unreadable balance must not stop the bot.
+            }
+            const drawdown = Math.max(0, -num(tradeEngine.sessionProfit, 0));
+            return adaptiveStake({
+                probability: Number.isFinite(Number(probability)) ? num(probability, 0) : num(lastPrice.get(symbolOf())?.probability, 0),
+                payout: num(payout, 0.95),
+                base: num(base, 0.35),
+                fraction: num(fraction, 0.1),
+                balance,
+                maxPercent: num(percent, 5),
+                maxStake: num(maxStake, 0),
+                drawdown,
+                minStake: 0.35,
+            });
+        },
+        /** Contracts this run has bought, from the engine's own run counter. */
+        priceTrades: async () => num(tradeEngine.getTotalRuns?.(), 0),
         priceSessionProfit: async () => num(tradeEngine.sessionProfit, 0),
         priceRisk: async (stake, legs, baseline, loss, target, percent) => {
             let balance;

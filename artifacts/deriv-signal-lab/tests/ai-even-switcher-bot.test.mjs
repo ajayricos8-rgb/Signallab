@@ -114,14 +114,36 @@ test("risk is standard issue: capped martingale ladder, TP/SL guards, balance ca
   assert.match(XML, /id="evIn07"><field name="NUM">1<\/field>/, "flat staking is the default");
   assert.match(after, /id="evLadderCheck"/, "the ladder is checked against its cap");
   assert.match(after, /id="evStakeCapReset"/, "past the cap the ladder restarts");
-  assert.equal(count("r_loss_guard"), 2, "loss guard on entries and on trade-again");
-  assert.equal(count("r_profit_guard"), 2, "profit guard on entries and on trade-again");
+  // The limits must read a number that actually moves. `r_loss_guard` and
+  // `r_profit_guard` read the vision brain's session memory, which only
+  // `vision_learn` updates — and this bot learns through `m_transition`, never
+  // through the brain. Pinned to those blocks the loss limit and the profit
+  // target were permanently true, so the documented stops could never fire.
+  // They now compare the trade engine's own session profit, which moves on
+  // every settled contract.
+  assert.equal(count("r_loss_guard"), 0, "the dead memory guards are gone");
+  assert.equal(count("r_profit_guard"), 0, "the dead memory guards are gone");
+  assert.equal(count("x_session_profit"), 4, "loss and profit limits read the engine session profit, on entries and on trade-again");
+  assert.match(before, /id="evGateLoss"[\s\S]{0,200}?<field name="OP">GT<\/field>/);
+  assert.match(before, /id="evGateLossFloor"[\s\S]{0,260}?<field name="NUM">-1<\/field>/, "loss limit is compared against minus the limit");
+  assert.match(before, /id="evGateProfit"[\s\S]{0,200}?<field name="OP">LT<\/field>/);
+  // Session brakes beside them: drawdown floor and losing-streak stop.
+  assert.match(before, /id="evGateDrawdown"[\s\S]{0,600}?ai max drawdown/);
+  assert.match(before, /id="evGateStreak"[\s\S]{0,600}?ai loss streak stop/);
   assert.ok(has("r_safe_stake"), "the stake is capped by balance share");
   // The bot only stops at its limits (or manually): trade_again is gated by
   // the guards, never skipped silently.
   assert.match(after, /id="evAgainIf"/);
   assert.match(after, /id="evTradeAgain"/);
   assert.match(after, /id="evNotifyLimit"/);
+});
+
+test("session brakes are shipped and initialised", () => {
+  for (const [name, value] of [["ai max drawdown", "15"], ["ai loss streak stop", "4"]]) {
+    assert.ok(XML.includes(name), `${name} is declared`);
+  }
+  assert.match(XML, /id="evIs14"[\s\S]{0,160}?ai max drawdown[\s\S]{0,160}?<field name="NUM">15<\/field>/);
+  assert.match(XML, /id="evIs15"[\s\S]{0,160}?ai loss streak stop[\s\S]{0,160}?<field name="NUM">4<\/field>/);
 });
 
 test("the knobs live in Run once at start, all variables declared", () => {

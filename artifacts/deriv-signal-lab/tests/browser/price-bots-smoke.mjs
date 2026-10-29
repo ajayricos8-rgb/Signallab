@@ -67,7 +67,7 @@ async function mockDeriv(page) {
         response.pip_size = 2;
         response.subscription = { id: `sub-${request.req_id}` };
         if (request.subscribe) timers.push(setInterval(() => {
-          quote += .01;
+          quote += .05;
           try { send({ msg_type: 'tick', tick: { symbol: 'R_100', quote: Number(quote.toFixed(2)), epoch: Math.floor(Date.now() / 1000), pip_size: 2 }, subscription: { id: `sub-${request.req_id}` } }); } catch { /* closed test socket */ }
         }, 1000));
       } else if (key === 'balance' && isAuth) response.balance = { balance: 10000, currency: 'USD', loginid: account };
@@ -142,7 +142,11 @@ try {
     // without allowing any order to reach Deriv.
     const beforeBuys = requests.filter(request => request.buy).length;
     await bot.locator('#db-animation__run-button:visible').last().click();
-    const until = Date.now() + 18000;
+    // The models need 256 quotes plus a measured lean before they will buy, and
+    // they now explain every skip instead of forcing a trade. The mocked market
+    // is a deterministic cycle, so a stronger instant trend plus a longer
+    // ceiling keeps this a wiring test rather than a market test.
+    const until = Date.now() + 45000;
     while (requests.filter(request => request.buy).length === beforeBuys && Date.now() < until) await page.waitForTimeout(250);
     const buys = requests.filter(request => request.buy).slice(beforeBuys);
     assert.ok(buys.length > 0, `${id}: expected a mocked buy attempt`);
@@ -153,7 +157,9 @@ try {
       assert.equal(params.duration, 5);
     } else {
       assert.ok(['CALL','PUT'].includes(params.contract_type));
-      assert.equal(params.duration, 4);
+      // Five ticks: odd, so a fixed-step market cannot tie, and the same
+      // horizon the models replay.
+      assert.equal(params.duration, 5);
     }
     if (mode === 'step-hedge') assert.deepEqual(new Set(buys.map(b => b.parameters.contract_type)), new Set(['CALL','PUT']));
     await page.close();

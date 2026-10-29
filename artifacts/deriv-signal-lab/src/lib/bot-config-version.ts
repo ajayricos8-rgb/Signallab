@@ -9,7 +9,13 @@
 // marker is missing or older than the code's, that bot's config is rebuilt from
 // the current defaults exactly once. Nothing else is touched, no trade log is
 // lost, and the operator's next edit is kept again under the new version.
-export const BOT_CONFIG_VERSION = 2;
+// 2 -> 3: the price presets were reissued twice after 2 (the Rise/Fall and Step
+// hedge defaults moved from an even four-tick horizon, which ties 36% of the
+// time on a fixed-step market, to five ticks), and both AI presets gained the
+// session brakes (drawdown floor, losing-streak stop) that gate entries. A
+// browser still holding a version-2 config would keep the horizon that cannot
+// clear its own probability gate.
+export const BOT_CONFIG_VERSION = 3;
 
 const MARKER_SUFFIX = '-version';
 

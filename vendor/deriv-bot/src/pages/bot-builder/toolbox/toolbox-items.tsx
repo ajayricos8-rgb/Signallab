@@ -999,6 +999,47 @@ export const ToolboxItems = () =>
                     <Block type='r_session_seconds' />
                 </Category>
 
+                <Category id='vision_price' name={localize('Price strategies')}>
+                    {/* The brain behind the shipped Rise/Fall, High/Low Tick and
+                        Step hedge presets. The horizon is the contract
+                        duration, so the models replay the shape that will
+                        actually settle. */}
+                    <Block type='x_price_decision'>
+                        <Value name='LIST'>
+                            <Block type='ticks' />
+                        </Value>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='THRESHOLD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.56</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MAX_TIE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.2</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_AGREEMENT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_price_decision_part' />
+                    <Block type='x_price_reason' />
+                    <Block type='x_price_model_weights' />
+                    <Block type='x_price_stake' />
+                    <Block type='x_price_trades' />
+                    <Block type='x_session_profit' />
+                    <Block type='x_price_risk' />
+                    <Block type='x_tick_decision_purchase' />
+                    <Block type='hedge_purchase' />
+                </Category>
+
                 <Category id='vision_shortcut' name={localize('Shortcuts')}>
                     <Block type='x_speed' />
                     <Block type='x_speed_index' />
