@@ -1221,25 +1221,29 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
         passed.push(row);
     };
 
+    // Queue scores until their window has settled. Overlapping windows must
+    // not influence the expert weights before their outcomes are available.
+    const pendingScores = new Map();
+    const settleScore = index => {
+        const pending = pendingScores.get(index);
+        if (!pending) return;
+        pending.losses.forEach((loss, modelIndex) => {
+            brierSum[modelIndex] += loss;
+            brierCount[modelIndex] += 1;
+        });
+        blendSum += pending.blendLoss;
+        blendCount += 1;
+        pendingScores.delete(index);
+    };
     for (let index = 0; index < rows.length; index++) {
         if (index >= start) {
-            // Score every expert on a prediction that could have been made on
-            // this row's decision tick, then let the *settled* window after it
-            // train the ensemble.
             const row = rows[index];
             const vectors = expertVectors(
                 { ...row.features, state: row.state, index: row.index },
                 row.historyKey,
                 row.historyPosition
             );
-            PRICE_MODEL_NAMES.forEach((name, modelIndex) => {
-                brierSum[modelIndex] += score(vectors[name], row.winners);
-                brierCount[modelIndex] += 1;
-            });
-            // Score the *blend* the same way, with the weights that were earned
-            // up to this window. A weighted average of experts can be worse than
-            // its best member; measuring it is what makes `skill` an honest
-            // statement about the thing that actually trades.
+            // Form the blend before scoring this row, using settled scores only.
             const liveWeights = mixtureWeights(
                 brierSum.map((value, modelIndex) => (brierCount[modelIndex] ? value / brierCount[modelIndex] : 1))
             );
@@ -1249,15 +1253,22 @@ export function priceDecision(values, mode = 'rise', horizon = 5, threshold, opt
                     blendNow[outcome] += liveWeights[modelIndex] * value;
                 });
             });
-            blendSum += score(blendNow, row.winners);
-            blendCount += 1;
+            pendingScores.set(index, {
+                losses: PRICE_MODEL_NAMES.map(name => score(vectors[name], row.winners)),
+                blendLoss: score(blendNow, row.winners),
+            });
         }
         const settled = index - LAG;
-        if (settled >= 0) advance(rows[settled]);
+        if (settled >= 0) {
+            settleScore(settled);
+            advance(rows[settled]);
+        }
     }
-    // Every remaining row is settled by the time the pending decision is made,
-    // so the live question is asked with the whole sample behind it.
-    for (let index = Math.max(0, rows.length - LAG); index < rows.length; index++) advance(rows[index]);
+    // All historical windows are settled by the pending live decision.
+    for (let index = Math.max(0, rows.length - LAG); index < rows.length; index++) {
+        settleScore(index);
+        advance(rows[index]);
+    }
 
     // The moment the pending decision is being asked about: the last quote, its
     // features, and the state of the last settled window.

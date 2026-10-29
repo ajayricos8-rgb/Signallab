@@ -961,3 +961,18 @@ test('the EV gate is a lower bound, not the best of ten noisy bets', () => {
   // zero is not stakeable even when the point estimate is positive.
   assert.ok(cautious.evTable.some(row => row.ev > 0 && row.stakeable === false));
 });
+
+test('overlapping replay scores are queued until settlement before changing mixture weights', async () => {
+  // This is a structural regression test: predictions for overlapping windows
+  // must not feed the league until the corresponding outcome has settled.
+  const source = await readFile(new URL('../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-strategies.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('    const pendingScores = new Map();');
+  const end = source.indexOf('    // The moment the pending decision', start);
+  assert.ok(start >= 0 && end > start);
+  const replay = source.slice(start, end);
+  const loop = replay.slice(replay.indexOf('    for (let index = 0; index < rows.length; index++)'));
+  assert.ok(loop.indexOf('const liveWeights = mixtureWeights(') < loop.indexOf('pendingScores.set(index,'));
+  assert.match(loop, /const settled = index - LAG;\s*if \(settled >= 0\) \{\s*settleScore\(settled\);/);
+  assert.match(loop, /settleScore\(index\);\s*advance\(rows\[index\]\);/);
+  assert.doesNotMatch(loop, /brierSum\[modelIndex\]\s*\+=/);
+});

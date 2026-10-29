@@ -4,13 +4,13 @@
 
   WHAT IS BEING BOUGHT
   Of the next five quotes, which position holds the strict high or the strict low? Ten outcomes
-  (tick 1-5 high, tick 1-5 low). A window whose extreme is shared is a loss on both sides, so the
+  (tick 1-5 high, tick 1-5 low). This model assumes a shared extreme loses on that side; Deriv's
+  published description does not specify the tie rule, so confirm it in demo. Under that assumption the
   probability a contract is paid on is the conditional position probability times the chance that
   this window prints a strict extreme at all. Ten experts answer it — tie-aware structural anchor,
   long-run history, the two-change Markov row, the recent regime, a kernel replay of similar
   moments, a drift forecast, positional persistence, an online softmax net, a volatility-regime
-  model and a Markov chain on the last settled window's extreme — each scored walk-forward with a
-  Brier loss, so an expert that cannot read this market loses its vote on its own. The blend is
+  model and a Markov chain on the last settled window's extreme — each scored using delayed Brier losses on historical windows, so an expert that cannot read this market loses its vote on its own. The blend is
   shrunk toward the structural prior by its effective sample size AND by its measured skill: a
   blend that cannot beat the prior does not get to publish a 60 % probability.
 
@@ -407,7 +407,7 @@
                                                                                                                           <field name="NOTIFICATION_SOUND">silent</field>
                                                                                                                           <value name="MESSAGE">
                                                                                                                             <block type="text" id="b0071">
-                                                                                                                              <field name="TEXT">High/Low Tick AI Sniper v5 armed — five-tick contract. Ten experts mixed by measured skill, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys the position with the highest expected value against what Deriv actually quotes, and refuses when there is none. Every skip names its gate; every tenth settlement prints the self-audit, every twenty-fifth the expert league, the market DNA and the execution clock.</field>
+                                                                                                                              <field name="TEXT">High/Low Tick AI Sniper v5 armed — five-tick contract. Ten experts mixed by measured skill, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys the position with the highest expected value against what Deriv actually quotes, and refuses when there is none. Every skip names its gate; every tenth settlement prints the self-audit, every twenty-fifth the expert league, the market DNA and the execution clock. Demo first: estimates are not guarantees; confirm equal-extreme settlement with Deriv.</field>
                                                                                                                             </block>
                                                                                                                           </value>
                                                                                                                           <next>
