@@ -4,11 +4,16 @@ import { readFile } from 'node:fs/promises';
 import {
   PRICE_MODEL_NAMES,
   PRICE_MODEL_VERSION,
+  aiBrainReport,
   arcsinePrior,
+  entropyOf,
+  forecastReport,
   gridStrictPrior,
+  hurstExponent,
   labelFidelity,
   marketDna,
   priceDecision,
+  reverseEngineerReport,
   strictExtremePrior,
 } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-strategies.mjs';
 import {
@@ -390,6 +395,14 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   // until the tick rate is known, and the bot says so at start-up.
   assert.match(tick, /type="x_price_clock"/, 'the clock is reported');
   assert.equal((tick.match(/type="x_price_clock"/g) || []).length >= 2, true, 'start-up and every 25 settlements');
+  // The v6 APEX layer ships with the sniper: the AI core, the deep
+  // reverse-engineering diagnosis, the outcome forecast and the skill floor.
+  assert.match(tick, /type="x_price_brain"/, 'the AI core is reported');
+  assert.match(tick, /type="x_price_reverse"/, 'the reverse engineering is reported');
+  assert.match(tick, /type="x_price_forecast"/, 'the outcome forecast is reported');
+  assert.match(tick, /<field name="VAR" id="vai_skill_floor">ai skill floor<\/field>/, 'the skill floor is a knob');
+  assert.match(tick, /<field name="PART">skill<\/field>/, 'the blend skill gates the entry');
+  assert.match(tick, /High\/Low Tick AI Sniper v6/, 'the sniper reports its version');
   // The other two presets keep the EV gate off (their quotes are a single
   // multiple) but still declare the slip, and neither gains the tick-only knobs.
   for (const xml of [rise, hedge]) {
@@ -756,9 +769,10 @@ test('entry slip is charged against the estimate, and a bad record can stand a b
   assert.equal(priceDecision(trend, 'tick', 5, 0, { evidence: { hits: 1, samples: 20 } }).standDown, 0);
 });
 
-test('the expert league is scored against the structural anchor, and the version moved to v5', () => {
-  assert.equal(PRICE_MODEL_VERSION, 5);
-  assert.deepEqual(PRICE_MODEL_NAMES.slice(-1), ['position']);
+test('the expert league is scored against the structural anchor, and the version moved to v6', () => {
+  assert.equal(PRICE_MODEL_VERSION, 6);
+  assert.equal(PRICE_MODEL_NAMES.length, 16);
+  assert.deepEqual(PRICE_MODEL_NAMES.slice(-6), ['volatility', 'microtrend', 'range', 'entropy', 'hurst', 'cycle']);
   const decision = priceDecision(stepStream(1600, 0.5, 23), 'tick', 5, 0, { maxTie: 0.5 });
   assert.equal(decision.league.length, PRICE_MODEL_NAMES.length);
   // Sorted by measured skill, best first, and the anchor is always scored so
@@ -895,6 +909,9 @@ test('the runtime wires the clock, the ladder and the v5 report fields', async (
     ['x_price_clock', 'Bot.priceClock()'],
     ['x_price_contract_ev', 'Bot.priceContractEv('],
     ['x_price_contract_fair', 'Bot.priceContractFair('],
+    ['x_price_brain', 'Bot.priceBrain()'],
+    ['x_price_reverse', 'Bot.priceReverse()'],
+    ['x_price_forecast', 'Bot.priceForecast()'],
   ]) {
     assert.match(blocks, new RegExp(`type: '${name}'`), name);
     assert.match(blocks, new RegExp(call.replace(/[().]/g, '\\$&')), `${name} calls ${call}`);
@@ -910,6 +927,9 @@ test('the runtime wires the clock, the ladder and the v5 report fields', async (
     'x_price_payout_table',
     'x_price_league',
     'x_price_audit',
+    'x_price_brain',
+    'x_price_reverse',
+    'x_price_forecast',
     'x_price_market_score',
     'x_price_auto_market',
     'x_price_clock',
@@ -975,4 +995,121 @@ test('overlapping replay scores are queued until settlement before changing mixt
   assert.match(loop, /const settled = index - LAG;\s*if \(settled >= 0\) \{\s*settleScore\(settled\);/);
   assert.match(loop, /settleScore\(index\);\s*advance\(rows\[index\]\);/);
   assert.doesNotMatch(loop, /brierSum\[modelIndex\]\s*\+=/);
+});
+
+// ---------------------------------------------------------------------------
+// v6 (APEX core) — the deep brain, regime gating, DNA v2 and per-outcome
+// calibration
+// ---------------------------------------------------------------------------
+
+test('the v6 ensemble fields all sixteen experts and gates the mixture by regime', () => {
+  const decision = priceDecision(stepStream(1600, 0.5, 23), 'tick', 5, 0, { maxTie: 0.5 });
+  assert.equal(decision.models.length, 16);
+  assert.equal(decision.league.length, 16);
+  const total = decision.models.reduce((sum, model) => sum + model.weight, 0);
+  assert.ok(Math.abs(total - 1) < 1e-9, `weights sum to ${total}`);
+  // Every expert is scored against the anchor and the league stays sorted.
+  for (let i = 1; i < decision.league.length; i += 1) {
+    assert.ok(decision.league[i - 1].skill >= decision.league[i].skill);
+  }
+  assert.ok(decision.models.every(model => Number.isFinite(model.brier) && Number.isFinite(model.skill)));
+  // The meta-learner names its regime and says whether the regime board voted.
+  assert.ok(['expansion', 'reversion', 'balanced'].includes(decision.meta.regime));
+  assert.equal(typeof decision.meta.gated, 'boolean');
+  assert.ok(decision.meta.samples >= 0);
+  assert.equal(Object.keys(decision.meta.weights).length, 16);
+});
+
+test('the deep brain reports its training state and the regime call', () => {
+  const decision = priceDecision(stepStream(1600, 0.5, 23), 'tick', 5, 0, { maxTie: 0.5 });
+  const brain = decision.brain;
+  assert.equal(brain.version, 6);
+  assert.equal(brain.experts, 16);
+  assert.ok(brain.net.updates > 100, `the net trained on settled windows (${brain.net.updates})`);
+  assert.equal(brain.net.hidden, 10);
+  assert.ok(Number.isFinite(brain.net.norm) && brain.net.norm >= 0);
+  assert.equal(brain.top.length, 3);
+  assert.ok(brain.top.every(expert => PRICE_MODEL_NAMES.includes(expert.name)));
+  const line = aiBrainReport(decision);
+  assert.match(line, /AI core v6/);
+  assert.match(line, /regime (expansion|reversion|balanced)/);
+  assert.match(line, /updates/);
+  assert.match(aiBrainReport(null), /warming up/);
+});
+
+test('market DNA v2 measures memory, entropy, spikes, phase and compression', () => {
+  const dna = marketDna(stepStream(1600, 0.5, 3));
+  assert.equal(dna.phase, 'grid');
+  assert.ok(dna.hurst > 0 && dna.hurst < 1, `hurst ${dna.hurst}`);
+  assert.ok(dna.entropyHigh >= 0 && dna.entropyHigh <= 1);
+  assert.ok(dna.entropyLow >= 0 && dna.entropyLow <= 1);
+  assert.ok(dna.jumpRate >= 0 && dna.jumpRate <= 1);
+  assert.ok(Math.abs(dna.extremeAutocorr) <= 1);
+  assert.ok(dna.tieClustering >= 0 && dna.tieClustering <= 5);
+  assert.ok(dna.compression > 0);
+  assert.ok(dna.tickSigma > 0);
+  // The auto-tuning a grid market implies: a wider EV bound and heavy anchor.
+  assert.equal(dna.autoTune.evZ, 1.5);
+  assert.ok(dna.autoTune.anchorTrust >= 0.5 && dna.autoTune.anchorTrust <= 1);
+  assert.ok(dna.autoTune.note.length > 0);
+  const line = reverseEngineerReport(dna);
+  assert.match(line, /reverse engineering/);
+  assert.match(line, /auto-tune/);
+  assert.match(reverseEngineerReport(marketDna([1, 2, 3])), /warming up/);
+});
+
+test('a trending walk reads as memory and a calm walk does not', () => {
+  // Persistent changes (clumped signs) must score a higher Hurst exponent than
+  // an anti-persistent one — the probe has to see memory to be worth its vote.
+  const clumped = [];
+  let sign = 1;
+  let state = 11;
+  const random = () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+  for (let i = 0; i < 200; i++) {
+    if (random() > 0.7) sign = -sign;
+    clumped.push(sign * 0.1);
+  }
+  const alternating = [];
+  for (let i = 0; i < 200; i++) alternating.push((i % 2 === 0 ? 1 : -1) * 0.1);
+  assert.ok(hurstExponent(clumped) > hurstExponent(alternating), 'persistence outranks alternation');
+  assert.ok(entropyOf([10, 0, 0, 0, 0, 0, 0, 0, 0, 0]) < entropyOf([1, 1, 1, 1, 1, 1, 1, 1, 1, 1]));
+});
+
+test('per-outcome calibration shrinks the outcomes that miss and spares the rest', () => {
+  const prices = stepStream(1600, 0.5, 23);
+  const lane = (hits, samples, mean) => ({ hits, samples, rate: hits / samples, mean });
+  // Outcome 0 (high tick 1) claims 25% and realises 8%: over-confident.
+  // Outcome 4 (high tick 5) claims 25% and realises 25%: honest.
+  const byOutcome = Array.from({ length: 10 }, () => lane(10, 40, 0.25));
+  byOutcome[0] = lane(3, 40, 0.25);
+  byOutcome[4] = lane(10, 40, 0.25);
+  const plain = priceDecision(prices, 'tick', 5, 0, { maxTie: 0.5 });
+  const calibrated = priceDecision(prices, 'tick', 5, 0, {
+    maxTie: 0.5,
+    evidence: { hits: 20, samples: 80, rate: 0.25, mean: 0.25, byOutcome },
+  });
+  const anchor0 = strictExtremePrior(5, calibrated.tieRate)[0];
+  assert.ok(
+    Math.abs(calibrated.probabilities[0] - anchor0) < Math.abs(plain.probabilities[0] - anchor0) + 1e-9,
+    'the missing outcome is pulled toward the anchor'
+  );
+  // Both sides are still distributions over their own five positions.
+  for (const offset of [0, 5]) {
+    const mass = calibrated.probabilities.slice(offset, offset + 5).reduce((sum, value) => sum + value, 0);
+    assert.ok(Math.abs(mass - 1) < 1e-9, `side mass ${mass}`);
+  }
+});
+
+test('the outcome forecast lists the scan head with probabilities and quotes', () => {
+  const payouts = [4, 8, 20, 8, 4, 4, 8, 20, 8, 4];
+  const decision = priceDecision(stepStream(1800, 0.5, 41), 'tick', 5, 0, { payouts, maxTie: 0.5 });
+  assert.ok(decision.forecast.length >= 2 && decision.forecast.length <= 5);
+  assert.ok(decision.forecast.every(row => row.label && Number.isFinite(row.probability)));
+  const line = forecastReport(decision);
+  assert.match(line, /forecast/);
+  assert.match(line, /H3|L3/);
+  assert.match(forecastReport(null), /no forecast/);
 });

@@ -2,15 +2,17 @@
 <!--
   Rise/Fall AI ensemble — Step Index 100, five ticks.
 
-  Nine experts answer the same question and are mixed by how well they have actually done:
+  Sixteen experts answer the same question and are mixed by how well they have actually done:
   structural anchor, long-run digit-step frequency, the Markov row for the current two-change
   state, the last 250 windows, a kernel replay of states that looked like this one, an
-  analytical drift forecast, a serial-dependence fit, an online softmax net, and a regime model
+  analytical drift forecast, a serial-dependence fit, a deep online neural net, and a regime model
   that switches between continuation and mean reversion depending on whether volatility is
-  expanding or the market is quiet and stretched. Each is scored walk-forward with a Brier loss
-  and the weights follow the multiplicative-weights rule, so a model that cannot read this
-  market loses its vote on its own. The blend is then shrunk toward the market base rate by its
-  effective sample size.
+  expanding or the market is quiet and stretched, plus a position Markov chain, an
+  expansion-scaled volatility tilt, a microtrend pressure gauge, a granularity-range selector, an
+  entropy concentration reader, a Hurst long-memory probe and a phase-cycle reader. Each is scored
+  walk-forward with a Brier loss and the weights follow the multiplicative-weights rule, gated by
+  the live market regime, so a model that cannot read this market loses its vote on its own. The
+  blend is then shrunk toward the market base rate by its effective sample size.
 
   Two calibration layers sit on top of that, and they are the difference between a bot that
   looks clever and one that is measured:
@@ -337,7 +339,7 @@
                                                                                                           <field name="NOTIFICATION_SOUND">silent</field>
                                                                                                           <value name="MESSAGE">
                                                                                                             <block type="text" id="b0063">
-                                                                                                              <field name="TEXT">Rise/Fall AI armed — Step Index 100, five ticks. Eight price experts mixed by measured skill; an entry needs a positive edge over the payout break-even, side agreement, confidence and the risk gate. Skips explain themselves; every fifth entry prints the realised hit rate.</field>
+                                                                                                              <field name="TEXT">Rise/Fall AI armed — Step Index 100, five ticks. Sixteen price experts mixed by measured skill and gated by the live market regime, with a deep online brain learning from settled windows; an entry needs a positive edge over the payout break-even, side agreement, confidence and the risk gate. Skips explain themselves; every fifth entry prints the realised hit rate.</field>
                                                                                                             </block>
                                                                                                           </value>
                                                                                                         </block>

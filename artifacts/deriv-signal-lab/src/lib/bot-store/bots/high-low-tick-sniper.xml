@@ -1,18 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  High/Low Tick AI Sniper v5 — the five-tick contract Deriv sells for this trade type.
+  High/Low Tick AI Sniper v6 (APEX core) — the five-tick contract Deriv sells for this trade type.
 
   WHAT IS BEING BOUGHT
   Of the next five quotes, which position holds the strict high or the strict low? Ten outcomes
   (tick 1-5 high, tick 1-5 low). This model assumes a shared extreme loses on that side; Deriv's
   published description does not specify the tie rule, so confirm it in demo. Under that assumption the
   probability a contract is paid on is the conditional position probability times the chance that
-  this window prints a strict extreme at all. Ten experts answer it — tie-aware structural anchor,
+  this window prints a strict extreme at all. Sixteen experts answer it — tie-aware structural anchor,
   long-run history, the two-change Markov row, the recent regime, a kernel replay of similar
-  moments, a drift forecast, positional persistence, an online softmax net, a volatility-regime
-  model and a Markov chain on the last settled window's extreme — each scored using delayed Brier losses on historical windows, so an expert that cannot read this market loses its vote on its own. The blend is
+  moments, a drift forecast, positional persistence, a deep online neural net, a volatility-regime
+  model, a Markov chain on the last settled window's extreme, an expansion-scaled volatility tilt,
+  a microtrend pressure gauge, a granularity-range selector, an entropy concentration reader, a Hurst
+  long-memory probe and an extreme-phase cycle reader — each scored using delayed Brier losses on historical windows, so an expert that cannot read this market loses its vote on its own. The blend is
   shrunk toward the structural prior by its effective sample size AND by its measured skill: a
   blend that cannot beat the prior does not get to publish a 60 % probability.
+
+  THE INTERNAL BRAIN
+  The neural expert is a deep online network (8 market features → 10 tanh hidden units → softmax
+  over the ten outcomes), trained walk-forward with backpropagation on settled windows only, with
+  L2 decay so thin samples cannot teach it fantasies. A meta-learner keeps a separate Brier
+  scoreboard per market regime (expansion, reversion, balanced) and gates the live mixture by the
+  regime the tape is in: trend readers are trusted when a trend is on, range readers when it is
+  not. The AI core journal line reports the net's update count and weight norm, the live regime,
+  whether the regime board is trusted yet, and the three experts carrying the decision.
 
   THE STRUCTURE, AND WHY IT IS NOT THE OBVIOUS ONE
   The continuous random walk prior is the discrete arcsine law: over five ticks, position 1 and
@@ -44,13 +55,24 @@
 
   SELF-AUDIT AND SELF-DEFENCE
   Every published decision is filed with the tick it was made on and graded when the window
-  settles. The record is used, not just printed: a record at or above the break-even sharpens the
-  estimate, a record below it pulls the estimate back toward the structural prior, and once forty
-  decisions are graded a Wilson bound that still sits under the break-even sets "stand down" and
-  the bot stops buying until the record recovers. Every tenth settlement prints the self-audit
-  (skill, certainty, calibration, record vs break-even, tie forecast vs long-run, DNA, quotes and
-  label fidelity), every twenty-fifth the expert league, the market DNA and the clock, every fifth
-  the live payout ladder.
+  settles — per outcome, not just overall, so a high-tick-3 read that keeps missing is shrunk
+  without punishing the reads that earned their keep. The record is used, not just printed: a record
+  at or above the break-even sharpens the estimate, a record below it pulls the estimate back toward
+  the structural prior, and once forty decisions are graded a Wilson bound that still sits under the
+  break-even sets "stand down" and the bot stops buying until the record recovers. Every tenth
+  settlement prints the self-audit (skill, certainty, calibration, record vs break-even, tie forecast
+  vs long-run, DNA, quotes and label fidelity), every twenty-fifth the expert league, the market DNA,
+  the AI core, the reverse engineering and the clock, every fifth the live payout ladder and the
+  outcome forecast.
+
+  AUTO-REVERSE-ENGINEERING
+  Market DNA v2 fingerprints the tape far beyond ties and grid ratio: Hurst long-memory exponent,
+  extreme-shape entropy on both sides, spike (jump) rate, extreme-phase autocorrelation, tie
+  clustering, range compression and tick sigma. From those measurements the bot derives its own
+  auto-tuning — a wider EV bound on grid tape, heavier anchor trust on spike tape, patience on
+  compressed tape — and prints the whole diagnosis in the reverse-engineering journal line. The
+  "ai skill floor" knob (ships off at -1) can additionally refuse entries while the blend's
+  walk-forward skill is under water.
 
   RISK
   The stake is tenth-Kelly on the calibrated probability and the quoted payout, floored at
@@ -62,10 +84,10 @@
 
   THE MARKET SCOUT
   High/Low Ticks are quoted on every synthetic index, and they do not pay the same. The scout
-  scores the market the bot is standing on (measured EV, certainty, DNA readability, sample) and
-  moves when the score falls under "ai scout floor", never more often than "ai scout dwell"
-  seconds. A switch costs a cold tick stream, so the dwell is fifteen minutes and the floor is
-  low: the bot only leaves a market it cannot read. Set the floor to 0 to keep the scout on
+  scores the market the bot is standing on (measured EV, certainty, DNA readability, sample and
+  walk-forward skill) and moves when the score falls under "ai scout floor", never more often than
+  "ai scout dwell" seconds. A switch costs a cold tick stream, so the dwell is fifteen minutes and
+  the floor is low: the bot only leaves a market it cannot read. Set the floor to 0 to keep the scout on
   whatever market you selected.
 
   HONESTY
@@ -98,6 +120,7 @@
     <variable type="" id="vai_contracts">ai contracts</variable>
     <variable type="" id="vbaseline_profit">baseline profit</variable>
     <variable type="" id="vai_dna_floor">ai dna floor</variable>
+    <variable type="" id="vai_skill_floor">ai skill floor</variable>
     <variable type="" id="vai_scout_floor">ai scout floor</variable>
     <variable type="" id="vai_scout_dwell">ai scout dwell</variable>
     <variable type="" id="vai_market">ai market</variable>
@@ -106,9 +129,9 @@
     <variable type="" id="vai_ready">ai ready</variable>
     <variable type="" id="vai_side">ai side</variable>
   </variables>
-<block type="trade_definition" id="trade0281" x="0" y="0">
+<block type="trade_definition" id="trade0316" x="0" y="0">
   <statement name="TRADE_OPTIONS">
-    <block type="trade_definition_market" id="td0279"><field name="MARKET_LIST">volidx</field><field name="SUBMARKET_LIST">random_index</field><field name="SYMBOL_LIST">R_100</field><next><block type="trade_definition_tradetype" id="td0278"><field name="TRADETYPECAT_LIST">highlowticks</field><field name="TRADETYPE_LIST">highlowticks</field><next><block type="trade_definition_contracttype" id="td0277"><field name="TYPE_LIST">both</field><next><block type="trade_definition_candleinterval" id="td0276"><field name="CANDLEINTERVAL_LIST">60</field><next><block type="trade_definition_restartbuysell" id="td0275"><field name="TIME_MACHINE_ENABLED">FALSE</field><next><block type="trade_definition_restartonerror" id="td0274"><field name="RESTARTONERROR">FALSE</field></block></next></block></next></block></next></block></next></block></next></block>
+    <block type="trade_definition_market" id="td0314"><field name="MARKET_LIST">volidx</field><field name="SUBMARKET_LIST">random_index</field><field name="SYMBOL_LIST">R_100</field><next><block type="trade_definition_tradetype" id="td0313"><field name="TRADETYPECAT_LIST">highlowticks</field><field name="TRADETYPE_LIST">highlowticks</field><next><block type="trade_definition_contracttype" id="td0312"><field name="TYPE_LIST">both</field><next><block type="trade_definition_candleinterval" id="td0311"><field name="CANDLEINTERVAL_LIST">60</field><next><block type="trade_definition_restartbuysell" id="td0310"><field name="TIME_MACHINE_ENABLED">FALSE</field><next><block type="trade_definition_restartonerror" id="td0309"><field name="RESTARTONERROR">FALSE</field></block></next></block></next></block></next></block></next></block></next></block>
   </statement>
   <statement name="INITIALIZATION">
     <block type="variables_set" id="b0002">
@@ -288,126 +311,125 @@
                                                                                           </value>
                                                                                           <next>
                                                                                             <block type="variables_set" id="b0046">
-                                                                                              <field name="VAR" id="vai_scout_floor">ai scout floor</field>
+                                                                                              <field name="VAR" id="vai_skill_floor">ai skill floor</field>
                                                                                               <value name="VALUE">
                                                                                                 <block type="math_number" id="b0045">
-                                                                                                  <field name="NUM">15</field>
+                                                                                                  <field name="NUM">-1</field>
                                                                                                 </block>
                                                                                               </value>
                                                                                               <next>
                                                                                                 <block type="variables_set" id="b0048">
-                                                                                                  <field name="VAR" id="vai_scout_dwell">ai scout dwell</field>
+                                                                                                  <field name="VAR" id="vai_scout_floor">ai scout floor</field>
                                                                                                   <value name="VALUE">
                                                                                                     <block type="math_number" id="b0047">
-                                                                                                      <field name="NUM">900</field>
+                                                                                                      <field name="NUM">15</field>
                                                                                                     </block>
                                                                                                   </value>
                                                                                                   <next>
                                                                                                     <block type="variables_set" id="b0050">
-                                                                                                      <field name="VAR" id="vai_market">ai market</field>
+                                                                                                      <field name="VAR" id="vai_scout_dwell">ai scout dwell</field>
                                                                                                       <value name="VALUE">
                                                                                                         <block type="math_number" id="b0049">
-                                                                                                          <field name="NUM"></field>
+                                                                                                          <field name="NUM">900</field>
                                                                                                         </block>
                                                                                                       </value>
                                                                                                       <next>
                                                                                                         <block type="variables_set" id="b0052">
-                                                                                                          <field name="VAR" id="vai_baseline">ai baseline</field>
+                                                                                                          <field name="VAR" id="vai_market">ai market</field>
                                                                                                           <value name="VALUE">
-                                                                                                            <block type="x_session_profit" id="b0051">
+                                                                                                            <block type="math_number" id="b0051">
+                                                                                                              <field name="NUM"></field>
                                                                                                             </block>
                                                                                                           </value>
                                                                                                           <next>
-                                                                                                            <block type="variables_set" id="b0064">
-                                                                                                              <field name="VAR" id="vai_decision">ai decision</field>
+                                                                                                            <block type="variables_set" id="b0054">
+                                                                                                              <field name="VAR" id="vai_baseline">ai baseline</field>
                                                                                                               <value name="VALUE">
-                                                                                                                <block type="x_price_decision" id="b0063">
-                                                                                                                  <field name="MODE">tick</field>
-                                                                                                                  <field name="REQUIRE">edge</field>
-                                                                                                                  <value name="LIST">
-                                                                                                                    <block type="ticks" id="b0062">
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="HORIZON">
-                                                                                                                    <block type="variables_get" id="b0053">
-                                                                                                                      <field name="VAR" id="vai_duration">ai duration</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="THRESHOLD">
-                                                                                                                    <block type="variables_get" id="b0054">
-                                                                                                                      <field name="VAR" id="vai_probability_floor">ai probability floor</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="MAX_TIE">
-                                                                                                                    <block type="variables_get" id="b0055">
-                                                                                                                      <field name="VAR" id="vai_max_tie">ai max tie</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="MIN_AGREEMENT">
-                                                                                                                    <block type="variables_get" id="b0056">
-                                                                                                                      <field name="VAR" id="vai_min_agreement">ai min agreement</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="MIN_EDGE">
-                                                                                                                    <block type="variables_get" id="b0057">
-                                                                                                                      <field name="VAR" id="vai_min_edge">ai min edge</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="PAYOUT">
-                                                                                                                    <block type="variables_get" id="b0058">
-                                                                                                                      <field name="VAR" id="vai_payout">ai payout</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="MIN_CONFIDENCE">
-                                                                                                                    <block type="variables_get" id="b0059">
-                                                                                                                      <field name="VAR" id="vai_min_confidence">ai min confidence</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="MIN_EV">
-                                                                                                                    <block type="variables_get" id="b0060">
-                                                                                                                      <field name="VAR" id="vai_min_ev">ai min ev</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
-                                                                                                                  <value name="SLIP">
-                                                                                                                    <block type="variables_get" id="b0061">
-                                                                                                                      <field name="VAR" id="vai_entry_slip">ai entry slip</field>
-                                                                                                                    </block>
-                                                                                                                  </value>
+                                                                                                                <block type="x_session_profit" id="b0053">
                                                                                                                 </block>
                                                                                                               </value>
                                                                                                               <next>
-                                                                                                                <block type="variables_set" id="b0067">
-                                                                                                                  <field name="VAR" id="vai_ready">ai ready</field>
+                                                                                                                <block type="variables_set" id="b0066">
+                                                                                                                  <field name="VAR" id="vai_decision">ai decision</field>
                                                                                                                   <value name="VALUE">
-                                                                                                                    <block type="x_price_decision_part" id="b0066">
-                                                                                                                      <field name="PART">ready</field>
-                                                                                                                      <value name="PLAN">
-                                                                                                                        <block type="variables_get" id="b0065">
-                                                                                                                          <field name="VAR" id="vai_decision">ai decision</field>
+                                                                                                                    <block type="x_price_decision" id="b0065">
+                                                                                                                      <field name="MODE">tick</field>
+                                                                                                                      <field name="REQUIRE">edge</field>
+                                                                                                                      <value name="LIST">
+                                                                                                                        <block type="ticks" id="b0064">
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="HORIZON">
+                                                                                                                        <block type="variables_get" id="b0055">
+                                                                                                                          <field name="VAR" id="vai_duration">ai duration</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="THRESHOLD">
+                                                                                                                        <block type="variables_get" id="b0056">
+                                                                                                                          <field name="VAR" id="vai_probability_floor">ai probability floor</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="MAX_TIE">
+                                                                                                                        <block type="variables_get" id="b0057">
+                                                                                                                          <field name="VAR" id="vai_max_tie">ai max tie</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="MIN_AGREEMENT">
+                                                                                                                        <block type="variables_get" id="b0058">
+                                                                                                                          <field name="VAR" id="vai_min_agreement">ai min agreement</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="MIN_EDGE">
+                                                                                                                        <block type="variables_get" id="b0059">
+                                                                                                                          <field name="VAR" id="vai_min_edge">ai min edge</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="PAYOUT">
+                                                                                                                        <block type="variables_get" id="b0060">
+                                                                                                                          <field name="VAR" id="vai_payout">ai payout</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="MIN_CONFIDENCE">
+                                                                                                                        <block type="variables_get" id="b0061">
+                                                                                                                          <field name="VAR" id="vai_min_confidence">ai min confidence</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="MIN_EV">
+                                                                                                                        <block type="variables_get" id="b0062">
+                                                                                                                          <field name="VAR" id="vai_min_ev">ai min ev</field>
+                                                                                                                        </block>
+                                                                                                                      </value>
+                                                                                                                      <value name="SLIP">
+                                                                                                                        <block type="variables_get" id="b0063">
+                                                                                                                          <field name="VAR" id="vai_entry_slip">ai entry slip</field>
                                                                                                                         </block>
                                                                                                                       </value>
                                                                                                                     </block>
                                                                                                                   </value>
                                                                                                                   <next>
-                                                                                                                    <block type="variables_set" id="b0070">
-                                                                                                                      <field name="VAR" id="vai_side">ai side</field>
+                                                                                                                    <block type="variables_set" id="b0069">
+                                                                                                                      <field name="VAR" id="vai_ready">ai ready</field>
                                                                                                                       <value name="VALUE">
-                                                                                                                        <block type="x_price_decision_part" id="b0069">
-                                                                                                                          <field name="PART">side</field>
+                                                                                                                        <block type="x_price_decision_part" id="b0068">
+                                                                                                                          <field name="PART">ready</field>
                                                                                                                           <value name="PLAN">
-                                                                                                                            <block type="variables_get" id="b0068">
+                                                                                                                            <block type="variables_get" id="b0067">
                                                                                                                               <field name="VAR" id="vai_decision">ai decision</field>
                                                                                                                             </block>
                                                                                                                           </value>
                                                                                                                         </block>
                                                                                                                       </value>
                                                                                                                       <next>
-                                                                                                                        <block type="notify" id="b0072">
-                                                                                                                          <field name="NOTIFICATION_TYPE">info</field>
-                                                                                                                          <field name="NOTIFICATION_SOUND">silent</field>
-                                                                                                                          <value name="MESSAGE">
-                                                                                                                            <block type="text" id="b0071">
-                                                                                                                              <field name="TEXT">High/Low Tick AI Sniper v5 armed — five-tick contract. Ten experts mixed by measured skill, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys the position with the highest expected value against what Deriv actually quotes, and refuses when there is none. Every skip names its gate; every tenth settlement prints the self-audit, every twenty-fifth the expert league, the market DNA and the execution clock. Demo first: estimates are not guarantees; confirm equal-extreme settlement with Deriv.</field>
+                                                                                                                        <block type="variables_set" id="b0072">
+                                                                                                                          <field name="VAR" id="vai_side">ai side</field>
+                                                                                                                          <value name="VALUE">
+                                                                                                                            <block type="x_price_decision_part" id="b0071">
+                                                                                                                              <field name="PART">side</field>
+                                                                                                                              <value name="PLAN">
+                                                                                                                                <block type="variables_get" id="b0070">
+                                                                                                                                  <field name="VAR" id="vai_decision">ai decision</field>
+                                                                                                                                </block>
+                                                                                                                              </value>
                                                                                                                             </block>
                                                                                                                           </value>
                                                                                                                           <next>
@@ -415,7 +437,8 @@
                                                                                                                               <field name="NOTIFICATION_TYPE">info</field>
                                                                                                                               <field name="NOTIFICATION_SOUND">silent</field>
                                                                                                                               <value name="MESSAGE">
-                                                                                                                                <block type="x_price_dna" id="b0073">
+                                                                                                                                <block type="text" id="b0073">
+                                                                                                                                  <field name="TEXT">High/Low Tick AI Sniper v6 armed — five-tick contract. Sixteen experts mixed by measured skill and gated by the live market regime, a deep online brain that learns from settled windows only, a tie-aware structural prior, and a live ten-outcome payout ladder: the bot buys the position with the highest expected value against what Deriv actually quotes, and refuses when there is none. Every skip names its gate; every tenth settlement prints the self-audit, every twenty-fifth the expert league, the market DNA, the AI core, the reverse engineering and the execution clock, every fifth the payout ladder and the outcome forecast. Demo first: estimates are not guarantees; confirm equal-extreme settlement with Deriv.</field>
                                                                                                                                 </block>
                                                                                                                               </value>
                                                                                                                               <next>
@@ -423,7 +446,7 @@
                                                                                                                                   <field name="NOTIFICATION_TYPE">info</field>
                                                                                                                                   <field name="NOTIFICATION_SOUND">silent</field>
                                                                                                                                   <value name="MESSAGE">
-                                                                                                                                    <block type="x_price_payout_table" id="b0075">
+                                                                                                                                    <block type="x_price_dna" id="b0075">
                                                                                                                                     </block>
                                                                                                                                   </value>
                                                                                                                                   <next>
@@ -431,9 +454,39 @@
                                                                                                                                       <field name="NOTIFICATION_TYPE">info</field>
                                                                                                                                       <field name="NOTIFICATION_SOUND">silent</field>
                                                                                                                                       <value name="MESSAGE">
-                                                                                                                                        <block type="x_price_clock" id="b0077">
+                                                                                                                                        <block type="x_price_payout_table" id="b0077">
                                                                                                                                         </block>
                                                                                                                                       </value>
+                                                                                                                                      <next>
+                                                                                                                                        <block type="notify" id="b0080">
+                                                                                                                                          <field name="NOTIFICATION_TYPE">info</field>
+                                                                                                                                          <field name="NOTIFICATION_SOUND">silent</field>
+                                                                                                                                          <value name="MESSAGE">
+                                                                                                                                            <block type="x_price_clock" id="b0079">
+                                                                                                                                            </block>
+                                                                                                                                          </value>
+                                                                                                                                          <next>
+                                                                                                                                            <block type="notify" id="b0082">
+                                                                                                                                              <field name="NOTIFICATION_TYPE">info</field>
+                                                                                                                                              <field name="NOTIFICATION_SOUND">silent</field>
+                                                                                                                                              <value name="MESSAGE">
+                                                                                                                                                <block type="x_price_brain" id="b0081">
+                                                                                                                                                </block>
+                                                                                                                                              </value>
+                                                                                                                                              <next>
+                                                                                                                                                <block type="notify" id="b0084">
+                                                                                                                                                  <field name="NOTIFICATION_TYPE">info</field>
+                                                                                                                                                  <field name="NOTIFICATION_SOUND">silent</field>
+                                                                                                                                                  <value name="MESSAGE">
+                                                                                                                                                    <block type="x_price_reverse" id="b0083">
+                                                                                                                                                    </block>
+                                                                                                                                                  </value>
+                                                                                                                                                </block>
+                                                                                                                                              </next>
+                                                                                                                                            </block>
+                                                                                                                                          </next>
+                                                                                                                                        </block>
+                                                                                                                                      </next>
                                                                                                                                     </block>
                                                                                                                                   </next>
                                                                                                                                 </block>
@@ -501,17 +554,17 @@
     </block>
   </statement>
   <statement name="SUBMARKET">
-    <block type="trade_definition_tradeoptions" id="b0280">
+    <block type="trade_definition_tradeoptions" id="b0315">
       <field name="DURATIONTYPE_LIST">t</field>
       <field name="CURRENCY_LIST">USD</field>
       <field name="AMOUNT_LIMITS"></field>
       <value name="DURATION">
-        <block type="variables_get" id="b0272">
+        <block type="variables_get" id="b0307">
           <field name="VAR" id="vai_duration">ai duration</field>
         </block>
       </value>
       <value name="AMOUNT">
-        <block type="variables_get" id="b0273">
+        <block type="variables_get" id="b0308">
           <field name="VAR" id="vstake">stake</field>
         </block>
       </value>
@@ -520,161 +573,161 @@
 </block>
 <block type="tick_analysis" id="hlTick01" x="0" y="1500">
   <statement name="TICKANALYSIS_STACK">
-    <block type="variables_set" id="b0082">
+    <block type="variables_set" id="b0088">
       <field name="VAR" id="vai_market">ai market</field>
       <value name="VALUE">
-        <block type="x_price_auto_market" id="b0081">
+        <block type="x_price_auto_market" id="b0087">
           <field name="MODE">suitable</field>
           <value name="FLOOR">
-            <block type="variables_get" id="b0079">
+            <block type="variables_get" id="b0085">
               <field name="VAR" id="vai_scout_floor">ai scout floor</field>
             </block>
           </value>
           <value name="DWELL">
-            <block type="variables_get" id="b0080">
+            <block type="variables_get" id="b0086">
               <field name="VAR" id="vai_scout_dwell">ai scout dwell</field>
             </block>
           </value>
         </block>
       </value>
       <next>
-        <block type="variables_set" id="b0086">
+        <block type="variables_set" id="b0092">
           <field name="VAR" id="vbaseline_profit">baseline profit</field>
           <value name="VALUE">
-            <block type="math_arithmetic" id="b0085">
+            <block type="math_arithmetic" id="b0091">
               <field name="OP">MINUS</field>
               <value name="A">
-                <block type="x_session_profit" id="b0083">
+                <block type="x_session_profit" id="b0089">
                 </block>
               </value>
               <value name="B">
-                <block type="variables_get" id="b0084">
+                <block type="variables_get" id="b0090">
                   <field name="VAR" id="vai_baseline">ai baseline</field>
                 </block>
               </value>
             </block>
           </value>
           <next>
-            <block type="variables_set" id="b0098">
+            <block type="variables_set" id="b0104">
               <field name="VAR" id="vai_decision">ai decision</field>
               <value name="VALUE">
-                <block type="x_price_decision" id="b0097">
+                <block type="x_price_decision" id="b0103">
                   <field name="MODE">tick</field>
                   <field name="REQUIRE">edge</field>
                   <value name="LIST">
-                    <block type="ticks" id="b0096">
+                    <block type="ticks" id="b0102">
                     </block>
                   </value>
                   <value name="HORIZON">
-                    <block type="variables_get" id="b0087">
+                    <block type="variables_get" id="b0093">
                       <field name="VAR" id="vai_duration">ai duration</field>
                     </block>
                   </value>
                   <value name="THRESHOLD">
-                    <block type="variables_get" id="b0088">
+                    <block type="variables_get" id="b0094">
                       <field name="VAR" id="vai_probability_floor">ai probability floor</field>
                     </block>
                   </value>
                   <value name="MAX_TIE">
-                    <block type="variables_get" id="b0089">
+                    <block type="variables_get" id="b0095">
                       <field name="VAR" id="vai_max_tie">ai max tie</field>
                     </block>
                   </value>
                   <value name="MIN_AGREEMENT">
-                    <block type="variables_get" id="b0090">
+                    <block type="variables_get" id="b0096">
                       <field name="VAR" id="vai_min_agreement">ai min agreement</field>
                     </block>
                   </value>
                   <value name="MIN_EDGE">
-                    <block type="variables_get" id="b0091">
+                    <block type="variables_get" id="b0097">
                       <field name="VAR" id="vai_min_edge">ai min edge</field>
                     </block>
                   </value>
                   <value name="PAYOUT">
-                    <block type="variables_get" id="b0092">
+                    <block type="variables_get" id="b0098">
                       <field name="VAR" id="vai_payout">ai payout</field>
                     </block>
                   </value>
                   <value name="MIN_CONFIDENCE">
-                    <block type="variables_get" id="b0093">
+                    <block type="variables_get" id="b0099">
                       <field name="VAR" id="vai_min_confidence">ai min confidence</field>
                     </block>
                   </value>
                   <value name="MIN_EV">
-                    <block type="variables_get" id="b0094">
+                    <block type="variables_get" id="b0100">
                       <field name="VAR" id="vai_min_ev">ai min ev</field>
                     </block>
                   </value>
                   <value name="SLIP">
-                    <block type="variables_get" id="b0095">
+                    <block type="variables_get" id="b0101">
                       <field name="VAR" id="vai_entry_slip">ai entry slip</field>
                     </block>
                   </value>
                 </block>
               </value>
               <next>
-                <block type="variables_set" id="b0101">
+                <block type="variables_set" id="b0107">
                   <field name="VAR" id="vai_ready">ai ready</field>
                   <value name="VALUE">
-                    <block type="x_price_decision_part" id="b0100">
+                    <block type="x_price_decision_part" id="b0106">
                       <field name="PART">ready</field>
                       <value name="PLAN">
-                        <block type="variables_get" id="b0099">
+                        <block type="variables_get" id="b0105">
                           <field name="VAR" id="vai_decision">ai decision</field>
                         </block>
                       </value>
                     </block>
                   </value>
                   <next>
-                    <block type="variables_set" id="b0104">
+                    <block type="variables_set" id="b0110">
                       <field name="VAR" id="vai_side">ai side</field>
                       <value name="VALUE">
-                        <block type="x_price_decision_part" id="b0103">
+                        <block type="x_price_decision_part" id="b0109">
                           <field name="PART">side</field>
                           <value name="PLAN">
-                            <block type="variables_get" id="b0102">
+                            <block type="variables_get" id="b0108">
                               <field name="VAR" id="vai_decision">ai decision</field>
                             </block>
                           </value>
                         </block>
                       </value>
                       <next>
-                        <block type="variables_set" id="b0113">
+                        <block type="variables_set" id="b0119">
                           <field name="VAR" id="vstake">stake</field>
                           <value name="VALUE">
-                            <block type="x_price_stake" id="b0112">
+                            <block type="x_price_stake" id="b0118">
                               <value name="PROBABILITY">
-                                <block type="x_price_decision_part" id="b0110">
+                                <block type="x_price_decision_part" id="b0116">
                                   <field name="PART">probability</field>
                                   <value name="PLAN">
-                                    <block type="variables_get" id="b0105">
+                                    <block type="variables_get" id="b0111">
                                       <field name="VAR" id="vai_decision">ai decision</field>
                                     </block>
                                   </value>
                                 </block>
                               </value>
                               <value name="PAYOUT">
-                                <block type="variables_get" id="b0111">
+                                <block type="variables_get" id="b0117">
                                   <field name="VAR" id="vai_payout">ai payout</field>
                                 </block>
                               </value>
                               <value name="BASE">
-                                <block type="variables_get" id="b0106">
+                                <block type="variables_get" id="b0112">
                                   <field name="VAR" id="vbase_stake">base stake</field>
                                 </block>
                               </value>
                               <value name="FRACTION">
-                                <block type="variables_get" id="b0107">
+                                <block type="variables_get" id="b0113">
                                   <field name="VAR" id="vai_kelly_fraction">ai kelly fraction</field>
                                 </block>
                               </value>
                               <value name="PERCENT">
-                                <block type="variables_get" id="b0108">
+                                <block type="variables_get" id="b0114">
                                   <field name="VAR" id="vai_stake_percent">ai stake percent</field>
                                 </block>
                               </value>
                               <value name="MAX_STAKE">
-                                <block type="variables_get" id="b0109">
+                                <block type="variables_get" id="b0115">
                                   <field name="VAR" id="vai_max_stake">ai max stake</field>
                                 </block>
                               </value>
@@ -695,72 +748,72 @@
 </block>
 <block type="before_purchase" id="hlBefore01" x="0" y="760">
   <statement name="BEFOREPURCHASE_STACK">
-    <block type="controls_if" id="b0182">
+    <block type="controls_if" id="b0193">
       <value name="IF0">
-        <block type="logic_compare" id="b0152">
+        <block type="logic_compare" id="b0163">
           <field name="OP">EQ</field>
           <value name="A">
-            <block type="variables_get" id="b0150">
+            <block type="variables_get" id="b0161">
               <field name="VAR" id="vai_ready">ai ready</field>
             </block>
           </value>
           <value name="B">
-            <block type="math_number" id="b0151">
+            <block type="math_number" id="b0162">
               <field name="NUM">0</field>
             </block>
           </value>
         </block>
       </value>
       <statement name="DO0">
-        <block type="variables_set" id="b0156">
+        <block type="variables_set" id="b0167">
           <field name="VAR" id="vai_skip_count">ai skip count</field>
           <value name="VALUE">
-            <block type="math_arithmetic" id="b0155">
+            <block type="math_arithmetic" id="b0166">
               <field name="OP">ADD</field>
               <value name="A">
-                <block type="variables_get" id="b0153">
+                <block type="variables_get" id="b0164">
                   <field name="VAR" id="vai_skip_count">ai skip count</field>
                 </block>
               </value>
               <value name="B">
-                <block type="math_number" id="b0154">
+                <block type="math_number" id="b0165">
                   <field name="NUM">1</field>
                 </block>
               </value>
             </block>
           </value>
           <next>
-            <block type="controls_if" id="b0164">
+            <block type="controls_if" id="b0175">
               <value name="IF0">
-                <block type="logic_compare" id="b0161">
+                <block type="logic_compare" id="b0172">
                   <field name="OP">EQ</field>
                   <value name="A">
-                    <block type="math_modulo" id="b0159">
+                    <block type="math_modulo" id="b0170">
                       <value name="DIVIDEND">
-                        <block type="variables_get" id="b0157">
+                        <block type="variables_get" id="b0168">
                           <field name="VAR" id="vai_skip_count">ai skip count</field>
                         </block>
                       </value>
                       <value name="DIVISOR">
-                        <block type="math_number" id="b0158">
+                        <block type="math_number" id="b0169">
                           <field name="NUM">20</field>
                         </block>
                       </value>
                     </block>
                   </value>
                   <value name="B">
-                    <block type="math_number" id="b0160">
+                    <block type="math_number" id="b0171">
                       <field name="NUM">1</field>
                     </block>
                   </value>
                 </block>
               </value>
               <statement name="DO0">
-                <block type="notify" id="b0163">
+                <block type="notify" id="b0174">
                   <field name="NOTIFICATION_TYPE">info</field>
                   <field name="NOTIFICATION_SOUND">silent</field>
                   <value name="MESSAGE">
-                    <block type="x_price_reason" id="b0162">
+                    <block type="x_price_reason" id="b0173">
                     </block>
                   </value>
                 </block>
@@ -770,72 +823,72 @@
         </block>
       </statement>
       <statement name="ELSE">
-        <block type="controls_if" id="b0181">
+        <block type="controls_if" id="b0192">
           <value name="IF0">
-            <block type="logic_operation" id="b0145">
+            <block type="logic_operation" id="b0156">
               <field name="OP">AND</field>
               <value name="A">
-                <block type="logic_compare" id="b0144">
+                <block type="logic_compare" id="b0155">
                   <field name="OP">EQ</field>
                   <value name="A">
-                    <block type="variables_get" id="b0142">
+                    <block type="variables_get" id="b0153">
                       <field name="VAR" id="vai_ready">ai ready</field>
                     </block>
                   </value>
                   <value name="B">
-                    <block type="math_number" id="b0143">
+                    <block type="math_number" id="b0154">
                       <field name="NUM">1</field>
                     </block>
                   </value>
                 </block>
               </value>
               <value name="B">
-                <block type="logic_operation" id="b0141">
+                <block type="logic_operation" id="b0152">
                   <field name="OP">AND</field>
                   <value name="A">
-                    <block type="logic_operation" id="b0131">
+                    <block type="logic_operation" id="b0137">
                       <field name="OP">AND</field>
                       <value name="A">
-                        <block type="logic_operation" id="b0123">
+                        <block type="logic_operation" id="b0129">
                           <field name="OP">OR</field>
                           <value name="A">
-                            <block type="logic_compare" id="b0116">
+                            <block type="logic_compare" id="b0122">
                               <field name="OP">LT</field>
                               <value name="A">
-                                <block type="variables_get" id="b0114">
+                                <block type="variables_get" id="b0120">
                                   <field name="VAR" id="vai_loss_streak">ai loss streak</field>
                                 </block>
                               </value>
                               <value name="B">
-                                <block type="variables_get" id="b0115">
+                                <block type="variables_get" id="b0121">
                                   <field name="VAR" id="vai_loss_streak_stop">ai loss streak stop</field>
                                 </block>
                               </value>
                             </block>
                           </value>
                           <value name="B">
-                            <block type="logic_compare" id="b0122">
+                            <block type="logic_compare" id="b0128">
                               <field name="OP">GTE</field>
                               <value name="A">
-                                <block type="x_price_decision_part" id="b0118">
+                                <block type="x_price_decision_part" id="b0124">
                                   <field name="PART">confidence</field>
                                   <value name="PLAN">
-                                    <block type="variables_get" id="b0117">
+                                    <block type="variables_get" id="b0123">
                                       <field name="VAR" id="vai_decision">ai decision</field>
                                     </block>
                                   </value>
                                 </block>
                               </value>
                               <value name="B">
-                                <block type="math_arithmetic" id="b0121">
+                                <block type="math_arithmetic" id="b0127">
                                   <field name="OP">ADD</field>
                                   <value name="A">
-                                    <block type="variables_get" id="b0119">
+                                    <block type="variables_get" id="b0125">
                                       <field name="VAR" id="vai_min_confidence">ai min confidence</field>
                                     </block>
                                   </value>
                                   <value name="B">
-                                    <block type="math_number" id="b0120">
+                                    <block type="math_number" id="b0126">
                                       <field name="NUM">5</field>
                                     </block>
                                   </value>
@@ -846,34 +899,34 @@
                         </block>
                       </value>
                       <value name="B">
-                        <block type="x_price_risk" id="b0130">
+                        <block type="x_price_risk" id="b0136">
                           <value name="STAKE">
-                            <block type="variables_get" id="b0124">
+                            <block type="variables_get" id="b0130">
                               <field name="VAR" id="vstake">stake</field>
                             </block>
                           </value>
                           <value name="LEGS">
-                            <block type="math_number" id="b0125">
+                            <block type="math_number" id="b0131">
                               <field name="NUM">1</field>
                             </block>
                           </value>
                           <value name="BASELINE">
-                            <block type="variables_get" id="b0127">
+                            <block type="variables_get" id="b0133">
                               <field name="VAR" id="vai_baseline">ai baseline</field>
                             </block>
                           </value>
                           <value name="LOSS">
-                            <block type="variables_get" id="b0128">
+                            <block type="variables_get" id="b0134">
                               <field name="VAR" id="vai_loss_limit">ai loss limit</field>
                             </block>
                           </value>
                           <value name="TARGET">
-                            <block type="variables_get" id="b0129">
+                            <block type="variables_get" id="b0135">
                               <field name="VAR" id="vai_profit_target">ai profit target</field>
                             </block>
                           </value>
                           <value name="PERCENT">
-                            <block type="variables_get" id="b0126">
+                            <block type="variables_get" id="b0132">
                               <field name="VAR" id="vai_stake_percent">ai stake percent</field>
                             </block>
                           </value>
@@ -882,44 +935,69 @@
                     </block>
                   </value>
                   <value name="B">
-                    <block type="logic_operation" id="b0140">
+                    <block type="logic_operation" id="b0151">
                       <field name="OP">AND</field>
                       <value name="A">
-                        <block type="logic_compare" id="b0135">
-                          <field name="OP">EQ</field>
+                        <block type="logic_operation" id="b0146">
+                          <field name="OP">AND</field>
                           <value name="A">
-                            <block type="x_price_decision_part" id="b0133">
-                              <field name="PART">stand-down</field>
-                              <value name="PLAN">
-                                <block type="variables_get" id="b0132">
-                                  <field name="VAR" id="vai_decision">ai decision</field>
+                            <block type="logic_compare" id="b0141">
+                              <field name="OP">EQ</field>
+                              <value name="A">
+                                <block type="x_price_decision_part" id="b0139">
+                                  <field name="PART">stand-down</field>
+                                  <value name="PLAN">
+                                    <block type="variables_get" id="b0138">
+                                      <field name="VAR" id="vai_decision">ai decision</field>
+                                    </block>
+                                  </value>
+                                </block>
+                              </value>
+                              <value name="B">
+                                <block type="math_number" id="b0140">
+                                  <field name="NUM">0</field>
                                 </block>
                               </value>
                             </block>
                           </value>
                           <value name="B">
-                            <block type="math_number" id="b0134">
-                              <field name="NUM">0</field>
+                            <block type="logic_compare" id="b0145">
+                              <field name="OP">GTE</field>
+                              <value name="A">
+                                <block type="x_price_decision_part" id="b0143">
+                                  <field name="PART">dna-score</field>
+                                  <value name="PLAN">
+                                    <block type="variables_get" id="b0142">
+                                      <field name="VAR" id="vai_decision">ai decision</field>
+                                    </block>
+                                  </value>
+                                </block>
+                              </value>
+                              <value name="B">
+                                <block type="variables_get" id="b0144">
+                                  <field name="VAR" id="vai_dna_floor">ai dna floor</field>
+                                </block>
+                              </value>
                             </block>
                           </value>
                         </block>
                       </value>
                       <value name="B">
-                        <block type="logic_compare" id="b0139">
+                        <block type="logic_compare" id="b0150">
                           <field name="OP">GTE</field>
                           <value name="A">
-                            <block type="x_price_decision_part" id="b0137">
-                              <field name="PART">dna-score</field>
+                            <block type="x_price_decision_part" id="b0148">
+                              <field name="PART">skill</field>
                               <value name="PLAN">
-                                <block type="variables_get" id="b0136">
+                                <block type="variables_get" id="b0147">
                                   <field name="VAR" id="vai_decision">ai decision</field>
                                 </block>
                               </value>
                             </block>
                           </value>
                           <value name="B">
-                            <block type="variables_get" id="b0138">
-                              <field name="VAR" id="vai_dna_floor">ai dna floor</field>
+                            <block type="variables_get" id="b0149">
+                              <field name="VAR" id="vai_skill_floor">ai skill floor</field>
                             </block>
                           </value>
                         </block>
@@ -931,33 +1009,33 @@
             </block>
           </value>
           <statement name="DO0">
-            <block type="variables_set" id="b0166">
+            <block type="variables_set" id="b0177">
               <field name="VAR" id="vai_skip_count">ai skip count</field>
               <value name="VALUE">
-                <block type="math_number" id="b0165">
+                <block type="math_number" id="b0176">
                   <field name="NUM">0</field>
                 </block>
               </value>
               <next>
-                <block type="notify" id="b0168">
+                <block type="notify" id="b0179">
                   <field name="NOTIFICATION_TYPE">success</field>
                   <field name="NOTIFICATION_SOUND">silent</field>
                   <value name="MESSAGE">
-                    <block type="x_price_reason" id="b0167">
+                    <block type="x_price_reason" id="b0178">
                     </block>
                   </value>
                   <next>
-                    <block type="x_tick_decision_purchase" id="b0149">
+                    <block type="x_tick_decision_purchase" id="b0160">
                       <value name="SIDE">
-                        <block type="variables_get" id="b0146">
+                        <block type="variables_get" id="b0157">
                           <field name="VAR" id="vai_side">ai side</field>
                         </block>
                       </value>
                       <value name="TICK">
-                        <block type="x_price_decision_part" id="b0148">
+                        <block type="x_price_decision_part" id="b0159">
                           <field name="PART">tick</field>
                           <value name="PLAN">
-                            <block type="variables_get" id="b0147">
+                            <block type="variables_get" id="b0158">
                               <field name="VAR" id="vai_decision">ai decision</field>
                             </block>
                           </value>
@@ -970,56 +1048,56 @@
             </block>
           </statement>
           <statement name="ELSE">
-            <block type="variables_set" id="b0172">
+            <block type="variables_set" id="b0183">
               <field name="VAR" id="vai_skip_count">ai skip count</field>
               <value name="VALUE">
-                <block type="math_arithmetic" id="b0171">
+                <block type="math_arithmetic" id="b0182">
                   <field name="OP">ADD</field>
                   <value name="A">
-                    <block type="variables_get" id="b0169">
+                    <block type="variables_get" id="b0180">
                       <field name="VAR" id="vai_skip_count">ai skip count</field>
                     </block>
                   </value>
                   <value name="B">
-                    <block type="math_number" id="b0170">
+                    <block type="math_number" id="b0181">
                       <field name="NUM">1</field>
                     </block>
                   </value>
                 </block>
               </value>
               <next>
-                <block type="controls_if" id="b0180">
+                <block type="controls_if" id="b0191">
                   <value name="IF0">
-                    <block type="logic_compare" id="b0177">
+                    <block type="logic_compare" id="b0188">
                       <field name="OP">EQ</field>
                       <value name="A">
-                        <block type="math_modulo" id="b0175">
+                        <block type="math_modulo" id="b0186">
                           <value name="DIVIDEND">
-                            <block type="variables_get" id="b0173">
+                            <block type="variables_get" id="b0184">
                               <field name="VAR" id="vai_skip_count">ai skip count</field>
                             </block>
                           </value>
                           <value name="DIVISOR">
-                            <block type="math_number" id="b0174">
+                            <block type="math_number" id="b0185">
                               <field name="NUM">20</field>
                             </block>
                           </value>
                         </block>
                       </value>
                       <value name="B">
-                        <block type="math_number" id="b0176">
+                        <block type="math_number" id="b0187">
                           <field name="NUM">0</field>
                         </block>
                       </value>
                     </block>
                   </value>
                   <statement name="DO0">
-                    <block type="notify" id="b0179">
+                    <block type="notify" id="b0190">
                       <field name="NOTIFICATION_TYPE">warn</field>
                       <field name="NOTIFICATION_SOUND">silent</field>
                       <value name="MESSAGE">
-                        <block type="text" id="b0178">
-                          <field name="TEXT">AI is ready but the entry gate held it — the confidence floor, the DNA floor, the rule's own graded record, a losing-streak cool-off, the balance percentage, the loss limit or the profit target blocked this entry.</field>
+                        <block type="text" id="b0189">
+                          <field name="TEXT">AI is ready but the entry gate held it — the confidence floor, the DNA floor, the skill floor, the rule's own graded record, a losing-streak cool-off, the balance percentage, the loss limit or the profit target blocked this entry.</field>
                         </block>
                       </value>
                     </block>
@@ -1035,35 +1113,35 @@
 </block>
 <block type="after_purchase" id="hlAfter01" x="760" y="760">
   <statement name="AFTERPURCHASE_STACK">
-    <block type="controls_if" id="b0207">
+    <block type="controls_if" id="b0218">
       <value name="IF0">
-        <block type="contract_check_result" id="b0200">
+        <block type="contract_check_result" id="b0211">
           <field name="CHECK_RESULT">win</field>
         </block>
       </value>
       <statement name="DO0">
-        <block type="variables_set" id="b0202">
+        <block type="variables_set" id="b0213">
           <field name="VAR" id="vai_loss_streak">ai loss streak</field>
           <value name="VALUE">
-            <block type="math_number" id="b0201">
+            <block type="math_number" id="b0212">
               <field name="NUM">0</field>
             </block>
           </value>
         </block>
       </statement>
       <statement name="ELSE">
-        <block type="variables_set" id="b0206">
+        <block type="variables_set" id="b0217">
           <field name="VAR" id="vai_loss_streak">ai loss streak</field>
           <value name="VALUE">
-            <block type="math_arithmetic" id="b0205">
+            <block type="math_arithmetic" id="b0216">
               <field name="OP">ADD</field>
               <value name="A">
-                <block type="variables_get" id="b0203">
+                <block type="variables_get" id="b0214">
                   <field name="VAR" id="vai_loss_streak">ai loss streak</field>
                 </block>
               </value>
               <value name="B">
-                <block type="math_number" id="b0204">
+                <block type="math_number" id="b0215">
                   <field name="NUM">1</field>
                 </block>
               </value>
@@ -1072,376 +1150,490 @@
         </block>
       </statement>
       <next>
-        <block type="variables_set" id="b0211">
+        <block type="variables_set" id="b0222">
           <field name="VAR" id="vai_contracts">ai contracts</field>
           <value name="VALUE">
-            <block type="math_arithmetic" id="b0210">
+            <block type="math_arithmetic" id="b0221">
               <field name="OP">ADD</field>
               <value name="A">
-                <block type="variables_get" id="b0208">
+                <block type="variables_get" id="b0219">
                   <field name="VAR" id="vai_contracts">ai contracts</field>
                 </block>
               </value>
               <value name="B">
-                <block type="math_number" id="b0209">
+                <block type="math_number" id="b0220">
                   <field name="NUM">1</field>
                 </block>
               </value>
             </block>
           </value>
           <next>
-            <block type="controls_if" id="b0219">
+            <block type="controls_if" id="b0230">
               <value name="IF0">
-                <block type="logic_compare" id="b0216">
+                <block type="logic_compare" id="b0227">
                   <field name="OP">EQ</field>
                   <value name="A">
-                    <block type="math_modulo" id="b0214">
+                    <block type="math_modulo" id="b0225">
                       <value name="DIVIDEND">
-                        <block type="variables_get" id="b0212">
+                        <block type="variables_get" id="b0223">
                           <field name="VAR" id="vai_contracts">ai contracts</field>
                         </block>
                       </value>
                       <value name="DIVISOR">
-                        <block type="math_number" id="b0213">
+                        <block type="math_number" id="b0224">
                           <field name="NUM">5</field>
                         </block>
                       </value>
                     </block>
                   </value>
                   <value name="B">
-                    <block type="math_number" id="b0215">
+                    <block type="math_number" id="b0226">
                       <field name="NUM">0</field>
                     </block>
                   </value>
                 </block>
               </value>
               <statement name="DO0">
-                <block type="notify" id="b0218">
+                <block type="notify" id="b0229">
                   <field name="NOTIFICATION_TYPE">info</field>
                   <field name="NOTIFICATION_SOUND">silent</field>
                   <value name="MESSAGE">
-                    <block type="x_price_calibration" id="b0217">
+                    <block type="x_price_calibration" id="b0228">
                     </block>
                   </value>
                 </block>
               </statement>
               <next>
-                <block type="controls_if" id="b0227">
+                <block type="controls_if" id="b0238">
                   <value name="IF0">
-                    <block type="logic_compare" id="b0224">
+                    <block type="logic_compare" id="b0235">
                       <field name="OP">EQ</field>
                       <value name="A">
-                        <block type="math_modulo" id="b0222">
+                        <block type="math_modulo" id="b0233">
                           <value name="DIVIDEND">
-                            <block type="variables_get" id="b0220">
+                            <block type="variables_get" id="b0231">
                               <field name="VAR" id="vai_contracts">ai contracts</field>
                             </block>
                           </value>
                           <value name="DIVISOR">
-                            <block type="math_number" id="b0221">
+                            <block type="math_number" id="b0232">
                               <field name="NUM">25</field>
                             </block>
                           </value>
                         </block>
                       </value>
                       <value name="B">
-                        <block type="math_number" id="b0223">
+                        <block type="math_number" id="b0234">
                           <field name="NUM">0</field>
                         </block>
                       </value>
                     </block>
                   </value>
                   <statement name="DO0">
-                    <block type="notify" id="b0226">
+                    <block type="notify" id="b0237">
                       <field name="NOTIFICATION_TYPE">info</field>
                       <field name="NOTIFICATION_SOUND">silent</field>
                       <value name="MESSAGE">
-                        <block type="x_price_model_weights" id="b0225">
+                        <block type="x_price_model_weights" id="b0236">
                         </block>
                       </value>
                     </block>
                   </statement>
                   <next>
-                    <block type="controls_if" id="b0235">
+                    <block type="controls_if" id="b0246">
                       <value name="IF0">
-                        <block type="logic_compare" id="b0232">
+                        <block type="logic_compare" id="b0243">
                           <field name="OP">EQ</field>
                           <value name="A">
-                            <block type="math_modulo" id="b0230">
+                            <block type="math_modulo" id="b0241">
                               <value name="DIVIDEND">
-                                <block type="variables_get" id="b0228">
+                                <block type="variables_get" id="b0239">
                                   <field name="VAR" id="vai_contracts">ai contracts</field>
                                 </block>
                               </value>
                               <value name="DIVISOR">
-                                <block type="math_number" id="b0229">
+                                <block type="math_number" id="b0240">
                                   <field name="NUM">10</field>
                                 </block>
                               </value>
                             </block>
                           </value>
                           <value name="B">
-                            <block type="math_number" id="b0231">
+                            <block type="math_number" id="b0242">
                               <field name="NUM">0</field>
                             </block>
                           </value>
                         </block>
                       </value>
                       <statement name="DO0">
-                        <block type="notify" id="b0234">
+                        <block type="notify" id="b0245">
                           <field name="NOTIFICATION_TYPE">info</field>
                           <field name="NOTIFICATION_SOUND">silent</field>
                           <value name="MESSAGE">
-                            <block type="x_price_audit" id="b0233">
+                            <block type="x_price_audit" id="b0244">
                             </block>
                           </value>
                         </block>
                       </statement>
                       <next>
-                        <block type="controls_if" id="b0243">
+                        <block type="controls_if" id="b0254">
                           <value name="IF0">
-                            <block type="logic_compare" id="b0240">
+                            <block type="logic_compare" id="b0251">
                               <field name="OP">EQ</field>
                               <value name="A">
-                                <block type="math_modulo" id="b0238">
+                                <block type="math_modulo" id="b0249">
                                   <value name="DIVIDEND">
-                                    <block type="variables_get" id="b0236">
+                                    <block type="variables_get" id="b0247">
                                       <field name="VAR" id="vai_contracts">ai contracts</field>
                                     </block>
                                   </value>
                                   <value name="DIVISOR">
-                                    <block type="math_number" id="b0237">
+                                    <block type="math_number" id="b0248">
                                       <field name="NUM">25</field>
                                     </block>
                                   </value>
                                 </block>
                               </value>
                               <value name="B">
-                                <block type="math_number" id="b0239">
+                                <block type="math_number" id="b0250">
                                   <field name="NUM">0</field>
                                 </block>
                               </value>
                             </block>
                           </value>
                           <statement name="DO0">
-                            <block type="notify" id="b0242">
+                            <block type="notify" id="b0253">
                               <field name="NOTIFICATION_TYPE">info</field>
                               <field name="NOTIFICATION_SOUND">silent</field>
                               <value name="MESSAGE">
-                                <block type="x_price_league" id="b0241">
+                                <block type="x_price_league" id="b0252">
                                 </block>
                               </value>
                             </block>
                           </statement>
                           <next>
-                            <block type="controls_if" id="b0251">
+                            <block type="controls_if" id="b0262">
                               <value name="IF0">
-                                <block type="logic_compare" id="b0248">
+                                <block type="logic_compare" id="b0259">
                                   <field name="OP">EQ</field>
                                   <value name="A">
-                                    <block type="math_modulo" id="b0246">
+                                    <block type="math_modulo" id="b0257">
                                       <value name="DIVIDEND">
-                                        <block type="variables_get" id="b0244">
+                                        <block type="variables_get" id="b0255">
                                           <field name="VAR" id="vai_contracts">ai contracts</field>
                                         </block>
                                       </value>
                                       <value name="DIVISOR">
-                                        <block type="math_number" id="b0245">
+                                        <block type="math_number" id="b0256">
                                           <field name="NUM">25</field>
                                         </block>
                                       </value>
                                     </block>
                                   </value>
                                   <value name="B">
-                                    <block type="math_number" id="b0247">
+                                    <block type="math_number" id="b0258">
                                       <field name="NUM">0</field>
                                     </block>
                                   </value>
                                 </block>
                               </value>
                               <statement name="DO0">
-                                <block type="notify" id="b0250">
+                                <block type="notify" id="b0261">
                                   <field name="NOTIFICATION_TYPE">info</field>
                                   <field name="NOTIFICATION_SOUND">silent</field>
                                   <value name="MESSAGE">
-                                    <block type="x_price_dna" id="b0249">
+                                    <block type="x_price_dna" id="b0260">
                                     </block>
                                   </value>
                                 </block>
                               </statement>
                               <next>
-                                <block type="controls_if" id="b0259">
+                                <block type="controls_if" id="b0270">
                                   <value name="IF0">
-                                    <block type="logic_compare" id="b0256">
+                                    <block type="logic_compare" id="b0267">
                                       <field name="OP">EQ</field>
                                       <value name="A">
-                                        <block type="math_modulo" id="b0254">
+                                        <block type="math_modulo" id="b0265">
                                           <value name="DIVIDEND">
-                                            <block type="variables_get" id="b0252">
+                                            <block type="variables_get" id="b0263">
                                               <field name="VAR" id="vai_contracts">ai contracts</field>
                                             </block>
                                           </value>
                                           <value name="DIVISOR">
-                                            <block type="math_number" id="b0253">
+                                            <block type="math_number" id="b0264">
                                               <field name="NUM">25</field>
                                             </block>
                                           </value>
                                         </block>
                                       </value>
                                       <value name="B">
-                                        <block type="math_number" id="b0255">
+                                        <block type="math_number" id="b0266">
                                           <field name="NUM">0</field>
                                         </block>
                                       </value>
                                     </block>
                                   </value>
                                   <statement name="DO0">
-                                    <block type="notify" id="b0258">
+                                    <block type="notify" id="b0269">
                                       <field name="NOTIFICATION_TYPE">info</field>
                                       <field name="NOTIFICATION_SOUND">silent</field>
                                       <value name="MESSAGE">
-                                        <block type="x_price_clock" id="b0257">
+                                        <block type="x_price_clock" id="b0268">
                                         </block>
                                       </value>
                                     </block>
                                   </statement>
                                   <next>
-                                    <block type="controls_if" id="b0267">
+                                    <block type="controls_if" id="b0278">
                                       <value name="IF0">
-                                        <block type="logic_compare" id="b0264">
+                                        <block type="logic_compare" id="b0275">
                                           <field name="OP">EQ</field>
                                           <value name="A">
-                                            <block type="math_modulo" id="b0262">
+                                            <block type="math_modulo" id="b0273">
                                               <value name="DIVIDEND">
-                                                <block type="variables_get" id="b0260">
+                                                <block type="variables_get" id="b0271">
                                                   <field name="VAR" id="vai_contracts">ai contracts</field>
                                                 </block>
                                               </value>
                                               <value name="DIVISOR">
-                                                <block type="math_number" id="b0261">
+                                                <block type="math_number" id="b0272">
                                                   <field name="NUM">5</field>
                                                 </block>
                                               </value>
                                             </block>
                                           </value>
                                           <value name="B">
-                                            <block type="math_number" id="b0263">
+                                            <block type="math_number" id="b0274">
                                               <field name="NUM">0</field>
                                             </block>
                                           </value>
                                         </block>
                                       </value>
                                       <statement name="DO0">
-                                        <block type="notify" id="b0266">
+                                        <block type="notify" id="b0277">
                                           <field name="NOTIFICATION_TYPE">info</field>
                                           <field name="NOTIFICATION_SOUND">silent</field>
                                           <value name="MESSAGE">
-                                            <block type="x_price_payout_table" id="b0265">
+                                            <block type="x_price_payout_table" id="b0276">
                                             </block>
                                           </value>
                                         </block>
                                       </statement>
                                       <next>
-                                        <block type="controls_if" id="b0271">
+                                        <block type="controls_if" id="b0290">
                                           <value name="IF0">
-                                            <block type="logic_operation" id="b0199">
-                                              <field name="OP">AND</field>
+                                            <block type="logic_compare" id="b0287">
+                                              <field name="OP">EQ</field>
                                               <value name="A">
-                                                <block type="x_price_risk" id="b0189">
-                                                  <value name="STAKE">
-                                                    <block type="variables_get" id="b0183">
-                                                      <field name="VAR" id="vbase_stake">base stake</field>
+                                                <block type="math_modulo" id="b0285">
+                                                  <value name="DIVIDEND">
+                                                    <block type="variables_get" id="b0283">
+                                                      <field name="VAR" id="vai_contracts">ai contracts</field>
                                                     </block>
                                                   </value>
-                                                  <value name="LEGS">
-                                                    <block type="math_number" id="b0184">
-                                                      <field name="NUM">1</field>
-                                                    </block>
-                                                  </value>
-                                                  <value name="BASELINE">
-                                                    <block type="variables_get" id="b0186">
-                                                      <field name="VAR" id="vai_baseline">ai baseline</field>
-                                                    </block>
-                                                  </value>
-                                                  <value name="LOSS">
-                                                    <block type="variables_get" id="b0187">
-                                                      <field name="VAR" id="vai_loss_limit">ai loss limit</field>
-                                                    </block>
-                                                  </value>
-                                                  <value name="TARGET">
-                                                    <block type="variables_get" id="b0188">
-                                                      <field name="VAR" id="vai_profit_target">ai profit target</field>
-                                                    </block>
-                                                  </value>
-                                                  <value name="PERCENT">
-                                                    <block type="variables_get" id="b0185">
-                                                      <field name="VAR" id="vai_stake_percent">ai stake percent</field>
+                                                  <value name="DIVISOR">
+                                                    <block type="math_number" id="b0284">
+                                                      <field name="NUM">25</field>
                                                     </block>
                                                   </value>
                                                 </block>
                                               </value>
                                               <value name="B">
-                                                <block type="logic_operation" id="b0198">
-                                                  <field name="OP">AND</field>
-                                                  <value name="A">
-                                                    <block type="logic_compare" id="b0194">
-                                                      <field name="OP">GT</field>
-                                                      <value name="A">
-                                                        <block type="variables_get" id="b0190">
-                                                          <field name="VAR" id="vbaseline_profit">baseline profit</field>
-                                                        </block>
-                                                      </value>
-                                                      <value name="B">
-                                                        <block type="math_arithmetic" id="b0193">
-                                                          <field name="OP">MULTIPLY</field>
-                                                          <value name="A">
-                                                            <block type="math_number" id="b0191">
-                                                              <field name="NUM">-1</field>
-                                                            </block>
-                                                          </value>
-                                                          <value name="B">
-                                                            <block type="variables_get" id="b0192">
-                                                              <field name="VAR" id="vai_loss_limit">ai loss limit</field>
-                                                            </block>
-                                                          </value>
-                                                        </block>
-                                                      </value>
-                                                    </block>
-                                                  </value>
-                                                  <value name="B">
-                                                    <block type="logic_compare" id="b0197">
-                                                      <field name="OP">LT</field>
-                                                      <value name="A">
-                                                        <block type="variables_get" id="b0195">
-                                                          <field name="VAR" id="vbaseline_profit">baseline profit</field>
-                                                        </block>
-                                                      </value>
-                                                      <value name="B">
-                                                        <block type="variables_get" id="b0196">
-                                                          <field name="VAR" id="vai_profit_target">ai profit target</field>
-                                                        </block>
-                                                      </value>
-                                                    </block>
-                                                  </value>
+                                                <block type="math_number" id="b0286">
+                                                  <field name="NUM">0</field>
                                                 </block>
                                               </value>
                                             </block>
                                           </value>
                                           <statement name="DO0">
-                                            <block type="trade_again" id="b0268">
-                                            </block>
-                                          </statement>
-                                          <statement name="ELSE">
-                                            <block type="notify" id="b0270">
-                                              <field name="NOTIFICATION_TYPE">warn</field>
+                                            <block type="notify" id="b0289">
+                                              <field name="NOTIFICATION_TYPE">info</field>
                                               <field name="NOTIFICATION_SOUND">silent</field>
                                               <value name="MESSAGE">
-                                                <block type="text" id="b0269">
-                                                  <field name="TEXT">AI session stop — the loss limit, the profit target or the balance rule was reached. Open contracts still settle; restart the bot to begin a new session.</field>
+                                                <block type="x_price_brain" id="b0288">
                                                 </block>
                                               </value>
                                             </block>
                                           </statement>
+                                          <next>
+                                            <block type="controls_if" id="b0298">
+                                              <value name="IF0">
+                                                <block type="logic_compare" id="b0295">
+                                                  <field name="OP">EQ</field>
+                                                  <value name="A">
+                                                    <block type="math_modulo" id="b0293">
+                                                      <value name="DIVIDEND">
+                                                        <block type="variables_get" id="b0291">
+                                                          <field name="VAR" id="vai_contracts">ai contracts</field>
+                                                        </block>
+                                                      </value>
+                                                      <value name="DIVISOR">
+                                                        <block type="math_number" id="b0292">
+                                                          <field name="NUM">25</field>
+                                                        </block>
+                                                      </value>
+                                                    </block>
+                                                  </value>
+                                                  <value name="B">
+                                                    <block type="math_number" id="b0294">
+                                                      <field name="NUM">0</field>
+                                                    </block>
+                                                  </value>
+                                                </block>
+                                              </value>
+                                              <statement name="DO0">
+                                                <block type="notify" id="b0297">
+                                                  <field name="NOTIFICATION_TYPE">info</field>
+                                                  <field name="NOTIFICATION_SOUND">silent</field>
+                                                  <value name="MESSAGE">
+                                                    <block type="x_price_reverse" id="b0296">
+                                                    </block>
+                                                  </value>
+                                                </block>
+                                              </statement>
+                                              <next>
+                                                <block type="controls_if" id="b0306">
+                                                  <value name="IF0">
+                                                    <block type="logic_compare" id="b0303">
+                                                      <field name="OP">EQ</field>
+                                                      <value name="A">
+                                                        <block type="math_modulo" id="b0301">
+                                                          <value name="DIVIDEND">
+                                                            <block type="variables_get" id="b0299">
+                                                              <field name="VAR" id="vai_contracts">ai contracts</field>
+                                                            </block>
+                                                          </value>
+                                                          <value name="DIVISOR">
+                                                            <block type="math_number" id="b0300">
+                                                              <field name="NUM">5</field>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </value>
+                                                      <value name="B">
+                                                        <block type="math_number" id="b0302">
+                                                          <field name="NUM">0</field>
+                                                        </block>
+                                                      </value>
+                                                    </block>
+                                                  </value>
+                                                  <statement name="DO0">
+                                                    <block type="notify" id="b0305">
+                                                      <field name="NOTIFICATION_TYPE">info</field>
+                                                      <field name="NOTIFICATION_SOUND">silent</field>
+                                                      <value name="MESSAGE">
+                                                        <block type="x_price_forecast" id="b0304">
+                                                        </block>
+                                                      </value>
+                                                    </block>
+                                                  </statement>
+                                                  <next>
+                                                    <block type="controls_if" id="b0282">
+                                                      <value name="IF0">
+                                                        <block type="logic_operation" id="b0210">
+                                                          <field name="OP">AND</field>
+                                                          <value name="A">
+                                                            <block type="x_price_risk" id="b0200">
+                                                              <value name="STAKE">
+                                                                <block type="variables_get" id="b0194">
+                                                                  <field name="VAR" id="vbase_stake">base stake</field>
+                                                                </block>
+                                                              </value>
+                                                              <value name="LEGS">
+                                                                <block type="math_number" id="b0195">
+                                                                  <field name="NUM">1</field>
+                                                                </block>
+                                                              </value>
+                                                              <value name="BASELINE">
+                                                                <block type="variables_get" id="b0197">
+                                                                  <field name="VAR" id="vai_baseline">ai baseline</field>
+                                                                </block>
+                                                              </value>
+                                                              <value name="LOSS">
+                                                                <block type="variables_get" id="b0198">
+                                                                  <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                                                </block>
+                                                              </value>
+                                                              <value name="TARGET">
+                                                                <block type="variables_get" id="b0199">
+                                                                  <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                                                </block>
+                                                              </value>
+                                                              <value name="PERCENT">
+                                                                <block type="variables_get" id="b0196">
+                                                                  <field name="VAR" id="vai_stake_percent">ai stake percent</field>
+                                                                </block>
+                                                              </value>
+                                                            </block>
+                                                          </value>
+                                                          <value name="B">
+                                                            <block type="logic_operation" id="b0209">
+                                                              <field name="OP">AND</field>
+                                                              <value name="A">
+                                                                <block type="logic_compare" id="b0205">
+                                                                  <field name="OP">GT</field>
+                                                                  <value name="A">
+                                                                    <block type="variables_get" id="b0201">
+                                                                      <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                    </block>
+                                                                  </value>
+                                                                  <value name="B">
+                                                                    <block type="math_arithmetic" id="b0204">
+                                                                      <field name="OP">MULTIPLY</field>
+                                                                      <value name="A">
+                                                                        <block type="math_number" id="b0202">
+                                                                          <field name="NUM">-1</field>
+                                                                        </block>
+                                                                      </value>
+                                                                      <value name="B">
+                                                                        <block type="variables_get" id="b0203">
+                                                                          <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                                                        </block>
+                                                                      </value>
+                                                                    </block>
+                                                                  </value>
+                                                                </block>
+                                                              </value>
+                                                              <value name="B">
+                                                                <block type="logic_compare" id="b0208">
+                                                                  <field name="OP">LT</field>
+                                                                  <value name="A">
+                                                                    <block type="variables_get" id="b0206">
+                                                                      <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                    </block>
+                                                                  </value>
+                                                                  <value name="B">
+                                                                    <block type="variables_get" id="b0207">
+                                                                      <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                                                    </block>
+                                                                  </value>
+                                                                </block>
+                                                              </value>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </value>
+                                                      <statement name="DO0">
+                                                        <block type="trade_again" id="b0279">
+                                                        </block>
+                                                      </statement>
+                                                      <statement name="ELSE">
+                                                        <block type="notify" id="b0281">
+                                                          <field name="NOTIFICATION_TYPE">warn</field>
+                                                          <field name="NOTIFICATION_SOUND">silent</field>
+                                                          <value name="MESSAGE">
+                                                            <block type="text" id="b0280">
+                                                              <field name="TEXT">AI session stop — the loss limit, the profit target or the balance rule was reached. Open contracts still settle; restart the bot to begin a new session.</field>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </statement>
+                                                    </block>
+                                                  </next>
+                                                </block>
+                                              </next>
+                                            </block>
+                                          </next>
                                         </block>
                                       </next>
                                     </block>

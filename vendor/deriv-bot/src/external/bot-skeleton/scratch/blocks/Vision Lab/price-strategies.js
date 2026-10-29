@@ -11,7 +11,7 @@ defineValueBlock({
         numberInput('MAX_TIE', '0.2'), numberInput('MIN_AGREEMENT', '0'), numberInput('MIN_EDGE', '0'), numberInput('PAYOUT', '0.95'),
         numberInput('MIN_CONFIDENCE', '0'), numberInput('MIN_EV', '0'), numberInput('SLIP', '0')],
     output: 'Array', colour, category, inputsInline: false,
-    tooltip: localize('Ten experts (tie-aware structural anchor, frequency, Markov transition, recent, kernel analog, drift, serial dependence, online softmax net, regime and a position Markov chain) mixed by their measured Brier loss. The entry needs a positive edge over the break-even implied by the live payout (1/(1+payout)), not an unreachable absolute probability. A tie rate above the limit blocks the entry: on a fixed-step market an even horizon ties far too often to trade. The confidence floor, when set, is applied inside the engine so the decisions it grades are the decisions the bot would have taken. "On the best read available" trades the ensemble's best side on every readable tick and lets the stake carry the caution — Kelly sizes a thin read down to the exchange minimum — which is what a strategy that must keep a cadence needs. Historical estimates do not guarantee an edge.'),
+    tooltip: localize('Sixteen experts (tie-aware structural anchor, frequency, Markov transition, recent, kernel analog, drift, serial dependence, a deep online net, regime, a position Markov chain, volatility, microtrend, range, entropy, Hurst memory and extreme-phase cycle) mixed by their measured Brier loss and gated by the live market regime. The entry needs a positive edge over the break-even implied by the live payout (1/(1+payout)), not an unreachable absolute probability. A tie rate above the limit blocks the entry: on a fixed-step market an even horizon ties far too often to trade. The confidence floor, when set, is applied inside the engine so the decisions it grades are the decisions the bot would have taken. "On the best read available" trades the ensemble's best side on every readable tick and lets the stake carry the caution — Kelly sizes a thin read down to the exchange minimum — which is what a strategy that must keep a cadence needs. Historical estimates do not guarantee an edge.'),
     display_name: localize('Price-path AI ensemble'), description: localize('Scores every expert walk-forward, blends them by measured skill, shrinks the result by its sample size and returns one decision with its tie rate, edge over break-even, expected value, confidence and agreement. The horizon is the contract duration; the payout is read from the live proposal and this value is only the fallback.'),
     call: (input, field) => `Bot.priceDecision(${input.LIST}, ${field.MODE}, ${input.HORIZON}, ${input.THRESHOLD}, ${input.MAX_TIE}, ${input.MIN_AGREEMENT}, ${input.MIN_EDGE}, ${input.PAYOUT}, ${input.MIN_CONFIDENCE}, ${field.REQUIRE}, ${input.MIN_EV}, ${input.SLIP})`,
 });
@@ -194,6 +194,45 @@ defineValueBlock({
     display_name: localize('Self-audit'),
     description: localize('Measured, not modelled. A bot whose graded record sits below break-even is not trading an edge, whatever its probability says.'),
     call: () => 'Bot.priceAudit()',
+});
+
+defineValueBlock({
+    type: 'x_price_brain',
+    message: localize('AI core'),
+    args: [],
+    output: 'String',
+    colour,
+    category,
+    tooltip: localize('The internal brain, as one journal line: the deep net\u2019s walk-forward training state, the meta-learner\u2019s regime call, and the three experts carrying the live decision. Everything here is measured on settled windows, never asserted.'),
+    display_name: localize('AI core'),
+    description: localize('What the brain has learned and who is carrying the decision. Print it on a slow cadence: it is the difference between \u201cthe model is idle\u201d and \u201cthe model is learning\u201d.'),
+    call: () => 'Bot.priceBrain()',
+});
+
+defineValueBlock({
+    type: 'x_price_reverse',
+    message: localize('reverse engineering'),
+    args: [],
+    output: 'String',
+    colour,
+    category,
+    tooltip: localize('The market\u2019s deep diagnosis: phase, Hurst memory, extreme entropy, jump rate, extreme-phase persistence, tie clustering and compression, plus the auto-tuning the bot derived from them. Descriptive, not predictive.'),
+    display_name: localize('Reverse engineering'),
+    description: localize('How the bot reverse-engineered the market it stands on, and the caution it set for itself. Print it at start-up and on a slow cadence.'),
+    call: () => 'Bot.priceReverse()',
+});
+
+defineValueBlock({
+    type: 'x_price_forecast',
+    message: localize('outcome forecast'),
+    args: [],
+    output: 'String',
+    colour,
+    category,
+    tooltip: localize('The full outcome read: the top High/Low Tick positions by expected value with their win probabilities and live quotes. The whole scan the EV gate decides on, in one line.'),
+    display_name: localize('Outcome forecast'),
+    description: localize('What the scan sees across all ten outcomes. Print it with the payout ladder to watch the bot think.'),
+    call: () => 'Bot.priceForecast()',
 });
 
 defineValueBlock({

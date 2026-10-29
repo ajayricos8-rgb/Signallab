@@ -1067,6 +1067,11 @@ export const ToolboxItems = () =>
                     <Block type='x_price_payout_table' />
                     <Block type='x_price_league' />
                     <Block type='x_price_audit' />
+                    {/* v6: the internal AI core, the deep reverse-engineering
+                        diagnosis and the full outcome forecast. */}
+                    <Block type='x_price_brain' />
+                    <Block type='x_price_reverse' />
+                    <Block type='x_price_forecast' />
                     <Block type='x_price_market_score' />
                     <Block type='x_price_auto_market' />
                     <Block type='x_price_clock' />

@@ -14,9 +14,11 @@
   the four-tick contract anyway, set "ai duration" to 4 and "ai max tie" to 0.5 — the bot will
   trade it, and the entry line will print the tie rate it is paying.
 
-  Nine experts, mixed by their measured walk-forward skill, decide the side; the stake is
+  Sixteen experts, mixed by their measured walk-forward skill and gated by the live market
+  regime, decide the side, with a deep online brain learning from settled windows; the stake is
   tenth-Kelly on the calibrated probability, and the calibration comes from the rule's own
-  graded record, so a run of losses shrinks the stake rather than parking the bot.
+  graded record (per outcome, not just overall), so a run of losses shrinks the stake rather
+  than parking the bot.
 
   What each part does:
 
