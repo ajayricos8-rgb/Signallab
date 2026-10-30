@@ -8,6 +8,7 @@ import { atr, closedCandles, correlation, distribution, ema, eventWins, horizonE
 import { quoteEconomics, researchAdvisory, scopeSettlements } from '../src/lib/engine-lab/execution.ts';
 import { fuseResearch, researchEvidence } from '../src/lib/engine-lab/fusion.ts';
 import { analyzeDigitMarket } from '../src/lib/signal-engine/digit-signal.ts';
+import { runScanJob } from '../src/lib/signal-engine/scan-protocol.ts';
 import { analyzeRiseFallMarket, RISE_FALL_ENGINES } from '../src/lib/signal-engine/rise-fall-signal.ts';
 import { analyzeDigitEntry } from '../src/lib/signal-engine/entry.ts';
 import { confidenceScore } from '../src/lib/signal-engine/confidence.ts';
@@ -436,8 +437,10 @@ test('research advice is reported but never blocks a purchase, and payout econom
 
 for (const family of ['matches', 'even-odd', 'over-under']) test(`${family} production scan runs the library and preserves signal/entry audit consistency`, () => {
   const data = ticks(41);
-  const result = analyzeDigitMarket({ family, symbol: 'R_100', name: 'Volatility 100', horizon: 2,
-    ticks: data.map(({ epoch, digit }) => ({ epoch, digit })), quoteTicks: data.map(({ epoch, quote }) => ({ epoch, quote })), fresh: true, marketsInScan: 13 });
+  const result = runScanJob({ kind: 'digit', input: { family, symbol: 'R_100', name: 'Volatility 100', horizon: 2,
+    ticks: data.map(({ epoch, digit }) => ({ epoch, digit })), quoteTicks: data.map(({ epoch, quote }) => ({ epoch, quote })), fresh: true, marketsInScan: 13 } });
+  assert.equal(result.aiSynthesis.family, family);
+  assert.ok(result.aiSynthesis.metrics, 'quant measurements from the former panels run inside the scan');
   assert.equal(result.engineLab.registered, 300);
   assert.equal(result.engineCount, 17, 'catalog entries are not dishonest extra predictor votes');
   assert.deepEqual(result.engineLab.contract, result.best.contract);
@@ -455,8 +458,10 @@ for (const family of ['matches', 'even-odd', 'over-under']) test(`${family} prod
 
 test('Rise/Fall production scan runs all 300 entries on the selected exact duration', () => {
   const data = ticks(42);
-  const result = analyzeRiseFallMarket({ symbol: 'R_100', name: 'Volatility 100', ticks: data, digitTicks: data, fresh: true, marketsInScan: 13,
-    horizons: [{ unit: 'ticks', value: 1 }, { unit: 'ticks', value: 10 }, { unit: 'minutes', value: 3 }] });
+  const result = runScanJob({ kind: 'rise-fall', input: { symbol: 'R_100', name: 'Volatility 100', ticks: data, digitTicks: data, fresh: true, marketsInScan: 13,
+    horizons: [{ unit: 'ticks', value: 1 }, { unit: 'ticks', value: 10 }, { unit: 'minutes', value: 3 }] } });
+  assert.equal(result.aiSynthesis.family, 'rise-fall');
+  assert.ok(result.aiSynthesis.metrics, 'quant measurements from the former panels run inside the scan');
   assert.equal(result.engineLab.registered, 300);
   // 13 state engines (level-reversion included) + drift + the AI meta-model.
   assert.equal(result.engineCount, RISE_FALL_ENGINES.length);

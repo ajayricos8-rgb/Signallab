@@ -199,8 +199,12 @@ async function runSmoke() {
   // The draggable AI launcher is wired to the live Blockly catalog. Build and
   // load generated XML into the real workspace, then verify the risk procedure
   // survives import and that the analysis gate can generate code separately.
-  await page.getByTestId('dbot-ai-launcher').click();
+  await page.getByTestId('dbot-open-analysis').click();
   await page.getByTestId('dbot-ai-panel').waitFor();
+  assert.equal(await page.getByTestId('dbot-ai-tab-analysis').getAttribute('aria-selected'), 'true', 'the direct entry opens AI Analysis');
+  assert.equal(await page.getByTestId('dbot-ai-tab-research').count(), 0, 'the former research tab must not be present');
+  assert.equal(await page.getByTestId('tab-tools').count(), 0, 'the former Tools tab must not be present');
+  await page.getByTestId('dbot-ai-tab-builder').click();
   await page.getByTestId('dbot-ai-registry-status').getByText('READY', { exact: true }).waitFor({ timeout: 20_000 });
   const aiRegistry = await bot.evaluate(() => ({
     gate: Boolean(window.Blockly.Blocks.signal_lab_analysis_gate),
@@ -300,7 +304,7 @@ async function runSmoke() {
   assert.ok(loaded > 20, 'Load should populate the workspace without running it');
   assert.ok(mock.dialogs.some(message => /replaces the blocks/i.test(message)));
 
-  await page.getByTestId('button-dashboard-nav').click();
+  await page.getByTestId('button-base-nav').click();
   await page.getByTestId('button-dbot-space-nav').click();
   assert.equal(await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).length), loaded, 'switching app tabs must not reload the iframe');
 

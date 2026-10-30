@@ -698,9 +698,9 @@ function RandomnessChallenge({
 }
 
 export function ForgeBaseWorkspace({
-  onOpenTools,
+  onOpenAnalysis,
 }: {
-  onOpenTools: () => void;
+  onOpenAnalysis: () => void;
 }) {
   const feed = useMarketFeed();
   const [selectedSymbol, setSelectedSymbol] = useState("");
@@ -757,11 +757,11 @@ export function ForgeBaseWorkspace({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={onOpenTools}
+              onClick={onOpenAnalysis}
               className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/55 px-3 py-2 text-[10px] font-bold text-foreground transition-colors hover:border-primary/40 hover:text-primary"
-              data-testid="button-base-open-tools"
+              data-testid="button-base-open-analysis"
             >
-              <Wrench size={12} /> Open Signal Copilot
+              <Wrench size={12} /> Open AI Analysis
             </button>
             <StatusPill
               live={feed.status === "live" && Boolean(selectedMarket?.fresh)}
