@@ -22,6 +22,8 @@ export default Engine =>
             super();
             this.sessionRuns = 0;
             this.sessionProfit = 0;
+            this.signalLabSessionProfit = 0;
+            this.signalLabSessionRuns = 0;
 
             globalObserver.register('statistics.clear', this.clearStatistics.bind(this));
         }
@@ -48,6 +50,7 @@ export default Engine =>
             accountStat.totalLosses += !win ? 1 : 0;
 
             this.sessionProfit = getRoundedNumber(Number(this.sessionProfit) + Number(profit), currency);
+            this.signalLabSessionProfit = getRoundedNumber(Number(this.signalLabSessionProfit) + Number(profit), currency);
 
             accountStat.totalProfit = getRoundedNumber(Number(accountStat.totalProfit) + Number(profit), currency);
 
@@ -71,6 +74,7 @@ export default Engine =>
 
         updateAndReturnTotalRuns() {
             this.sessionRuns++;
+            this.signalLabSessionRuns++;
             const accountStat = this.getAccountStat();
 
             return ++accountStat.totalRuns;

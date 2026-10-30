@@ -82,6 +82,23 @@ const getSignalLabInterface = (tradeEngine = null) => ({
         return account?.accountId ?? '';
     },
     isSignalLabConnected: async () => isSignalLabConnected(),
+    signalLabStartSession: async () => {
+        if (!tradeEngine) throw new Error('Session accounting is unavailable');
+        tradeEngine.signalLabSessionProfit = 0;
+        tradeEngine.signalLabSessionRuns = 0;
+    },
+    signalLabSessionProfit: async () => tradeEngine?.signalLabSessionProfit ?? 0,
+    signalLabSessionRuns: async () => tradeEngine?.signalLabSessionRuns ?? 0,
+    signalLabNotifySessionStop: async (reason, profit) => {
+        const value = Number(profit);
+        if ((reason !== 'take-profit' && reason !== 'stop-loss') || !Number.isFinite(value)) return;
+        if (window.parent !== window) {
+            window.parent.postMessage({
+                source: 'signal-lab-dbot', type: 'session-limit-hit', reason, profit: value,
+                currency: String(tradeEngine?.tradeOptions?.currency || tradeEngine?.accountInfo?.currency || ''),
+            }, window.location.origin);
+        }
+    },
     // Cross-market scan (all markets).
     signalLabScanMarkets: async (family, duration, minScore) =>
         signalLabScanMarkets(family, duration, minScore),

@@ -20,7 +20,7 @@ import WorkspaceWrapper from './workspace-wrapper';
 
 function getWorkspaceBlockRegistry() {
     const entries = Object.entries(window.Blockly?.Blocks ?? {});
-    const requiredAiBlocks = ['vision_analyse', 'vision_go', 'signal_lab_analysis_gate'];
+    const requiredAiBlocks = ['vision_analyse', 'vision_go', 'signal_lab_analysis_gate', 'signal_lab_session_stop', 'signal_lab_session_start', 'signal_lab_session_profit', 'signal_lab_session_runs'];
     // Keep every Signal Lab/Vision block in the snapshot even if Deriv adds
     // enough standard blocks to push those definitions past the cap.
     const preferred = entries.filter(([type]) =>

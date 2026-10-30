@@ -83,6 +83,8 @@ export type DbotAiStrategyRequest = {
   procedureName?: string;
   /** Exact Signal Lab analysis snapshot required by the generated entry gate. */
   analysisId?: string;
+  /** Enable session-scoped limits and the settlement stop notification. */
+  sessionControls?: boolean;
   maxTrades?: number;
   lossLimit?: number;
   profitTarget?: number;
@@ -91,6 +93,8 @@ export type DbotAiStrategyRequest = {
   stakingPlan?: DbotAiStakingPlan;
   /** Martingale / reverse-martingale multiplier (default 2). */
   stakeMultiplier?: number;
+  /** Number of consecutive loss-triggered increases before resetting to the base stake. */
+  maxMartingaleSteps?: number;
   /** D'Alembert unit added after a loss and removed after a win. */
   stakeStep?: number;
   /** Hard ceiling for a progressed stake. */
@@ -210,6 +214,7 @@ const AI_VARIABLES = {
   winStreak: { id: "aiWinStreakVariable", name: "ai win streak" },
   markov: { id: "aiMarkovVariable", name: "ai markov" },
   mode: { id: "aiModeVariable", name: "ai mode" },
+  martingaleSteps: { id: "aiMartingaleStepsVariable", name: "ai martingale steps" },
 } as const;
 type AiVariableKey = keyof typeof AI_VARIABLES;
 
@@ -282,6 +287,11 @@ function initVariableIfNull(id: string, key: AiVariableKey, initial: number): st
   return `<block type="controls_if" id="${id}"><value name="IF0">${isNull}</value><statement name="DO0">${variablesSet(`${id}Set`, key, numberValue(`${id}Initial`, initial))}</statement></block>`;
 }
 
+/** Session-local totals, independent of the account-wide DBot statistics. */
+function sessionMetric(id: string, metric: "profit" | "runs"): string {
+  return `<block type="signal_lab_session_${metric}" id="${id}"></block>`;
+}
+
 function riskGateDefinition(
   request: Required<
     Pick<
@@ -289,12 +299,12 @@ function riskGateDefinition(
       "procedureName" | "maxTrades" | "lossLimit" | "profitTarget"
     >
   > &
-    Pick<DbotAiStrategyRequest, "stopAfterLossStreak" | "stopAfterWinStreak">,
+    Pick<DbotAiStrategyRequest, "stopAfterLossStreak" | "stopAfterWinStreak" | "sessionControls">,
 ): string {
   const conditions = [
-    comparisonBlock("aiGateLoss", "GT", "total_profit", -request.lossLimit),
-    comparisonBlock("aiGateProfit", "LT", "total_profit", request.profitTarget),
-    comparisonBlock("aiGateTrades", "LT", "total_runs", request.maxTrades),
+    request.sessionControls ? compareValues("aiGateLoss", "GT", sessionMetric("aiGateLossSession", "profit"), numberValue("aiGateLossLimit", -request.lossLimit)) : comparisonBlock("aiGateLoss", "GT", "total_profit", -request.lossLimit),
+    request.sessionControls ? compareValues("aiGateProfit", "LT", sessionMetric("aiGateProfitSession", "profit"), numberValue("aiGateProfitLimit", request.profitTarget)) : comparisonBlock("aiGateProfit", "LT", "total_profit", request.profitTarget),
+    request.sessionControls ? compareValues("aiGateTrades", "LT", sessionMetric("aiGateTradesSession", "runs"), numberValue("aiGateTradesLimit", request.maxTrades)) : comparisonBlock("aiGateTrades", "LT", "total_runs", request.maxTrades),
   ];
   if (request.stopAfterLossStreak)
     conditions.push(
@@ -380,6 +390,11 @@ function tradeRoot(
   // runs once, before the trading loop) — initialising it in Purchase
   // conditions is one cycle too late and the first amount reads as unset.
   const initializations: string[] = [];
+  if (request.sessionControls) {
+    initializations.push(`<block type="signal_lab_session_start" id="aiInitSession"></block>`);
+  }
+  if (request.sessionControls && request.stakingPlan === "martingale")
+    initializations.push(variablesSet("aiInitMartingaleSteps", "martingaleSteps", numberValue("aiInitMartingaleStepsZero", 0)));
   if (amountFromVariable)
     initializations.push(variablesSet("aiInitStakeVar", "stake", numberValue("aiInitStakeValue", stake)));
   if (request.stopAfterLossStreak)
@@ -896,16 +911,24 @@ function progressionStatements(request: DbotAiStrategyRequest, baseStake: number
   const won = `<block type="contract_check_result" id="aiResultWin"><field name="CHECK_RESULT">win</field></block>`;
   const plan = request.stakingPlan ?? "flat";
   if (plan === "martingale" || plan === "reverse-martingale") {
-    const multiplier = clamp(numberOr(request.stakeMultiplier, 2), 1.1, 10);
+    const multiplier = request.sessionControls ? numberOr(request.stakeMultiplier, 2) : clamp(numberOr(request.stakeMultiplier, 2), 1.1, 10);
     const grow = variablesSet(
       "aiStakeGrow",
       "stake",
       arithmetic("aiStakeGrowCalc", "MULTIPLY", variablesGet("aiStakeGrowGet", "stake"), numberValue("aiStakeGrowFactor", multiplier)),
     );
     const reset = variablesSet("aiStakeReset", "stake", numberValue("aiStakeResetValue", baseStake));
-    statements.push(
-      `<block type="controls_if" id="aiStakeProgression"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${plan === "martingale" ? reset : grow}</statement><statement name="ELSE">${plan === "martingale" ? grow : reset}</statement></block>`,
-    );
+    if (request.sessionControls && plan === "martingale") {
+      const resetSteps = variablesSet("aiStepReset", "martingaleSteps", numberValue("aiStepResetZero", 0));
+      const increment = variablesSet("aiStepIncrement", "martingaleSteps", arithmetic("aiStepIncrementCalc", "ADD", variablesGet("aiStepIncrementGet", "martingaleSteps"), numberValue("aiStepIncrementOne", 1)));
+      const underCap = compareValues("aiStepUnderCap", "LT", variablesGet("aiStepCount", "martingaleSteps"), numberValue("aiStepLimit", request.maxMartingaleSteps ?? 5));
+      const lossAction = `<block type="controls_if" id="aiStepCheck"><mutation else="1"></mutation><value name="IF0">${underCap}</value><statement name="DO0">${chainStatements([grow, increment])}</statement><statement name="ELSE">${chainStatements([reset, resetSteps])}</statement></block>`;
+      // Unique Blockly ids are needed in the win and loss branches.
+      const winReset = chainStatements([variablesSet("aiWinStakeReset", "stake", numberValue("aiWinStakeBase", baseStake)), variablesSet("aiWinStepReset", "martingaleSteps", numberValue("aiWinStepZero", 0))]);
+      statements.push(`<block type="controls_if" id="aiStakeProgression"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${winReset}</statement><statement name="ELSE">${lossAction}</statement></block>`);
+    } else {
+      statements.push(`<block type="controls_if" id="aiStakeProgression"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0">${plan === "martingale" ? reset : grow}</statement><statement name="ELSE">${plan === "martingale" ? grow : reset}</statement></block>`);
+    }
   } else if (plan === "dalembert" || plan === "reverse-dalembert") {
     const step = clamp(numberOr(request.stakeStep, baseStake), 0.01, 10_000);
     const up = variablesSet(
@@ -1011,9 +1034,18 @@ function afterPurchase(request: DbotAiStrategyRequest, baseStake: number, cooldo
       `<block type="controls_if" id="aiModeUpdate"><mutation else="1"></mutation><value name="IF0">${won}</value><statement name="DO0"><block type="controls_if" id="aiModeRevert"><value name="IF0">${recovered}</value><statement name="DO0">${variablesSet("aiModeRevertSet", "mode", numberValue("aiModeRevertValue", 0))}</statement></block></statement><statement name="ELSE">${variablesSet("aiModeSwitchSet", "mode", numberValue("aiModeSwitchValue", 1))}</statement></block>`,
     );
   }
-  const stack = request.virtual
+  let stack = request.virtual
     ? again
     : chainStatements([...modeStatements, ...progressionStatements(request, baseStake), again]);
+  if (request.sessionControls) {
+    // At settlement choose either a stop notification or the next trade, never both.
+    // Falling off After Purchase ends the interpreter and DBot stops itself.
+    const reachedProfit = compareValues("aiReachedProfit", "GTE", sessionMetric("aiStopProfit", "profit"), numberValue("aiStopProfitTarget", request.profitTarget!));
+    const reachedLoss = compareValues("aiReachedLoss", "LTE", sessionMetric("aiStopLoss", "profit"), numberValue("aiStopLossLimit", -request.lossLimit!));
+    const reachedTrades = compareValues("aiReachedTrades", "GTE", sessionMetric("aiStopRuns", "runs"), numberValue("aiStopTradeLimit", request.maxTrades!));
+    const notification = (reason: string, id: string) => `<block type="signal_lab_session_stop" id="${id}"><field name="REASON">${reason}</field><value name="PROFIT">${sessionMetric(`${id}Profit`, "profit")}</value></block>`;
+    stack = `<block type="controls_if" id="aiSessionStop"><mutation elseif="2" else="1"></mutation><value name="IF0">${reachedProfit}</value><statement name="DO0">${notification("take-profit", "aiTakeProfitNotice")}</statement><value name="IF1">${reachedLoss}</value><statement name="DO1">${notification("stop-loss", "aiStopLossNotice")}</statement><value name="IF2">${reachedTrades}</value><statement name="DO2"></statement><statement name="ELSE">${stack}</statement></block>`;
+  }
   return `<block type="after_purchase" id="aiAfterPurchase" x="700" y="300"><statement name="AFTERPURCHASE_STACK">${stack}</statement></block>`;
 }
 
@@ -1035,12 +1067,23 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
         // contract is rejected by Deriv as "Invalid barrier", so the
         // generated strategy never asks for one.
         clamp(Math.round(numberOr(input.duration, 1)), family === "higher-lower" ? 5 : 1, 10);
-  const stake = clamp(numberOr(input.stake, 0.35), 0.35, 10);
+  if (input.sessionControls) {
+    for (const value of [input.stake, input.lossLimit, input.profitTarget]) {
+      if (!Number.isFinite(value) || value! <= 0) throw new Error("Stake, stop loss and take profit must be positive finite numbers.");
+    }
+    if (!Number.isSafeInteger(input.maxTrades) || input.maxTrades! < 1 ||
+        !Number.isSafeInteger(input.maxMartingaleSteps) || input.maxMartingaleSteps! < 0 ||
+        !Number.isFinite(input.stakeMultiplier) || input.stakeMultiplier! < 1 ||
+        !Number.isFinite(input.stake! * Math.pow(input.stakeMultiplier!, input.maxMartingaleSteps!))) {
+      throw new Error("Invalid trade cap or martingale settings.");
+    }
+  }
+  const stake = input.sessionControls ? input.stake! : clamp(numberOr(input.stake, 0.35), 0.35, 10);
   const currency = cleanCurrency(input.currency);
   const procedureName = cleanProcedureName(input.procedureName);
-  const maxTrades = clamp(Math.round(numberOr(input.maxTrades, 25)), 1, 500);
-  const lossLimit = clamp(numberOr(input.lossLimit, 3), 0.35, 10_000);
-  const profitTarget = clamp(numberOr(input.profitTarget, 5), 0.35, 10_000);
+  const maxTrades = input.sessionControls ? input.maxTrades! : clamp(Math.round(numberOr(input.maxTrades, 25)), 1, 500);
+  const lossLimit = input.sessionControls ? input.lossLimit! : clamp(numberOr(input.lossLimit, 3), 0.35, 10_000);
+  const profitTarget = input.sessionControls ? input.profitTarget! : clamp(numberOr(input.profitTarget, 5), 0.35, 10_000);
   // Default to no post-trade pause: entries already wait for the previous
   // contract to settle, and users expect a position again on the next ticks.
   // A cooldown is only added when the request asks for one.
@@ -1050,6 +1093,7 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
     maxTrades,
     lossLimit,
     profitTarget,
+    sessionControls: input.sessionControls,
     stopAfterLossStreak: input.stopAfterLossStreak
       ? clamp(Math.round(input.stopAfterLossStreak), 1, 100)
       : undefined,
@@ -1063,10 +1107,12 @@ export function buildDbotAiStrategyXml(input: DbotAiStrategyRequest): string {
     // blocks that look `duration` ticks ahead (Markov horizon) read it too.
     duration,
     durationUnit,
+    maxTrades, lossLimit, profitTarget,
     stopAfterLossStreak: resolved.stopAfterLossStreak,
     stopAfterWinStreak: resolved.stopAfterWinStreak,
   };
   const variableKeys: AiVariableKey[] = [];
+  if (input.sessionControls && input.stakingPlan === "martingale") variableKeys.push("martingaleSteps");
   if (input.stakingPlan && input.stakingPlan !== "flat") variableKeys.push("stake");
   if (input.stakingPlan === "fibonacci") variableKeys.push("prevStake");
   if (resolved.stopAfterLossStreak) variableKeys.push("lossStreak");

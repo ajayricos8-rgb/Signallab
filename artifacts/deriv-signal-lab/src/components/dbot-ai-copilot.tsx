@@ -576,6 +576,19 @@ export function DbotAiCopilot({
   const [lossLimit, setLossLimit] = useState(5);
   const [profitTarget, setProfitTarget] = useState(5);
   const [maxTrades, setMaxTrades] = useState(25);
+  const [martingale, setMartingale] = useState(2);
+  const [maxMartingaleSteps, setMaxMartingaleSteps] = useState(5);
+  // Auto is intentionally opt-in for each page session; never start from a cached result.
+  const [autoMode, setAutoMode] = useState(false);
+  const autoModeRef = useRef(false);
+  autoModeRef.current = autoMode;
+  const [pendingAutoRun, setPendingAutoRun] = useState<number | null>(null);
+  const [autoNotice, setAutoNotice] = useState('');
+  const configValid = [stake, lossLimit, profitTarget].every(value => Number.isFinite(value) && value > 0)
+    && Number.isSafeInteger(maxTrades) && maxTrades > 0
+    && Number.isFinite(martingale) && martingale >= 1
+    && Number.isSafeInteger(maxMartingaleSteps) && maxMartingaleSteps >= 0
+    && Number.isFinite(stake * Math.pow(martingale, maxMartingaleSteps));
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [scanRequestAt, setScanRequestAt] = useState<number | null>(null);
   const [loadingRun, setLoadingRun] = useState(false);
@@ -597,7 +610,8 @@ export function DbotAiCopilot({
   const registryReady =
     blockRegistry.length > 0 &&
     aiRuntimeRegistered &&
-    registryTypes.has("signal_lab_analysis_gate");
+    registryTypes.has("signal_lab_analysis_gate") &&
+    ["signal_lab_session_stop", "signal_lab_session_start", "signal_lab_session_profit", "signal_lab_session_runs"].every(type => registryTypes.has(type));
   const markets = feed.markets;
   const analysis = useSignalScan<ScanJobResult, DbotAiRunMeta>(
     "dbot-ai-analysis",
@@ -769,6 +783,8 @@ export function DbotAiCopilot({
   const runAnalysis = useCallback(async () => {
     if (analysis.scanning) return;
     setScanRequestAt(Date.now());
+    setPendingAutoRun(null);
+    setAutoNotice('');
     if (!botRunning) onClearAnalysis();
     const symbols =
       scope === ALL_MARKETS ? [] : [scope];
@@ -892,7 +908,10 @@ export function DbotAiCopilot({
         return { jobs, skipped };
       },
     });
-    if (next) setSelectedSymbol(next.results[0]?.symbol ?? null);
+    if (next) {
+      setSelectedSymbol(next.results[0]?.symbol ?? null);
+      if (autoModeRef.current) setPendingAutoRun(next.id);
+    }
   }, [
     analysis,
     botRunning,
@@ -1007,7 +1026,7 @@ export function DbotAiCopilot({
   }
 
   const resultRequest = useMemo<DbotAiStrategyRequest | null>(() => {
-    if (!currentResult || !currentRun || !selectedSignal) return null;
+    if (!currentResult || !currentRun || !selectedSignal || !configValid) return null;
     const contract = selectedContract(currentResult);
     const request: DbotAiStrategyRequest = {
       family,
@@ -1041,10 +1060,10 @@ export function DbotAiCopilot({
       maxTrades,
       lossLimit,
       profitTarget,
-      // Standard equipment on every loaded bot: martingale recovery plus
-      // the take profit / stop loss limits above.
+      sessionControls: true,
       stakingPlan: "martingale",
-      stakeMultiplier: 2,
+      stakeMultiplier: martingale,
+      maxMartingaleSteps,
       // No post-trade pause: the next entry is evaluated as soon as the
       // previous contract settles, so cadence is set by duration alone.
       cooldownSeconds: 0,
@@ -1052,6 +1071,9 @@ export function DbotAiCopilot({
     return request;
   }, [
     accountCurrency,
+    configValid,
+    martingale,
+    maxMartingaleSteps,
     currentResult,
     currentRun,
     duration,
@@ -1135,6 +1157,23 @@ export function DbotAiCopilot({
     selectedAnalysisSnapshot,
     snapshotReady,
   ]);
+
+  useEffect(() => {
+    if (pendingAutoRun === null || analysis.scanning || analysis.run?.id !== pendingAutoRun) return;
+    // One attempt per newly completed scan: a reconnect or later setting change
+    // must never unexpectedly start an old signal.
+    setPendingAutoRun(null);
+    if (!autoMode) return;
+    if (!configValid || !currentResult || !currentRun || !analysisXml || !selectedAnalysisSnapshot ||
+        !snapshotReady || !ready || !registryReady || !accountReady || botRunning || loadingRun || analysis.error) {
+      setAutoNotice('Auto start skipped: check the settings, account link, workspace, and signal freshness, then run a new analysis or start manually.');
+      return;
+    }
+    setAutoNotice('Auto mode is loading and starting the new signal.');
+    handleLoadAndRun();
+  }, [pendingAutoRun, autoMode, analysis.scanning, analysis.run?.id, analysis.error, configValid,
+      currentResult, currentRun, analysisXml, selectedAnalysisSnapshot, snapshotReady, ready,
+      registryReady, accountReady, botRunning, loadingRun, handleLoadAndRun]);
 
   // Derive the panel size from the viewport so its edge controls remain reachable
   // above Signal Lab's fixed bottom navigation on mobile.
@@ -1499,13 +1538,10 @@ export function DbotAiCopilot({
                         Stake · {accountCurrency}
                         <input
                           type="number"
-                          min="0.35"
-                          max="10"
-                          step="0.05"
-                          value={stake}
-                          onChange={(event) =>
-                            setStake(Number(event.target.value) || 0.35)
-                          }
+                          min="0.01"
+                          step="any"
+                          value={Number.isFinite(stake) ? stake : ""}
+                          onChange={(event) => setStake(event.target.value === '' ? NaN : Number(event.target.value))}
                           className="mt-1 h-8 w-full rounded-lg border border-white/10 bg-[#0b1827] px-2 text-[10px] font-semibold text-white outline-none focus:border-cyan-200/40"
                           data-testid="dbot-ai-stake"
                         />
@@ -1514,13 +1550,10 @@ export function DbotAiCopilot({
                         Loss cap · {accountCurrency}
                         <input
                           type="number"
-                          min="0.35"
-                          max="10000"
-                          step="0.5"
-                          value={lossLimit}
-                          onChange={(event) =>
-                            setLossLimit(Number(event.target.value) || 0.35)
-                          }
+                          min="0.01"
+                          step="any"
+                          value={Number.isFinite(lossLimit) ? lossLimit : ""}
+                          onChange={(event) => setLossLimit(event.target.value === '' ? NaN : Number(event.target.value))}
                           className="mt-1 h-8 w-full rounded-lg border border-white/10 bg-[#0b1827] px-2 text-[10px] font-semibold text-white outline-none focus:border-cyan-200/40"
                           data-testid="dbot-ai-loss-limit"
                         />
@@ -1529,13 +1562,10 @@ export function DbotAiCopilot({
                         Profit target · {accountCurrency}
                         <input
                           type="number"
-                          min="0.35"
-                          max="10000"
-                          step="0.5"
-                          value={profitTarget}
-                          onChange={(event) =>
-                            setProfitTarget(Number(event.target.value) || 0.35)
-                          }
+                          min="0.01"
+                          step="any"
+                          value={Number.isFinite(profitTarget) ? profitTarget : ""}
+                          onChange={(event) => setProfitTarget(event.target.value === '' ? NaN : Number(event.target.value))}
                           className="mt-1 h-8 w-full rounded-lg border border-white/10 bg-[#0b1827] px-2 text-[10px] font-semibold text-white outline-none focus:border-cyan-200/40"
                           data-testid="dbot-ai-profit-target"
                         />
@@ -1545,17 +1575,32 @@ export function DbotAiCopilot({
                         <input
                           type="number"
                           min="1"
-                          max="500"
                           step="1"
-                          value={maxTrades}
-                          onChange={(event) =>
-                            setMaxTrades(Number(event.target.value) || 1)
-                          }
+                          value={Number.isFinite(maxTrades) ? maxTrades : ""}
+                          onChange={(event) => setMaxTrades(event.target.value === '' ? NaN : Number(event.target.value))}
                           className="mt-1 h-8 w-full rounded-lg border border-white/10 bg-[#0b1827] px-2 text-[10px] font-semibold text-white outline-none focus:border-cyan-200/40"
                           data-testid="dbot-ai-max-trades"
                         />
                       </label>
                     </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="text-[8px] font-bold uppercase tracking-[.07em] text-slate-500">Martingale multiplier
+                        <input type="number" min="1" step="any" value={Number.isFinite(martingale) ? martingale : ""} onChange={event => setMartingale(event.target.value === '' ? NaN : Number(event.target.value))} className="mt-1 h-8 w-full rounded-lg border border-white/10 bg-[#0b1827] px-2 text-[10px] font-semibold text-white outline-none focus:border-cyan-200/40" data-testid="dbot-ai-martingale" />
+                      </label>
+                      <label className="text-[8px] font-bold uppercase tracking-[.07em] text-slate-500">Max martingale steps
+                        <input type="number" min="0" step="1" value={Number.isFinite(maxMartingaleSteps) ? maxMartingaleSteps : ""} onChange={event => setMaxMartingaleSteps(event.target.value === '' ? NaN : Number(event.target.value))} className="mt-1 h-8 w-full rounded-lg border border-white/10 bg-[#0b1827] px-2 text-[10px] font-semibold text-white outline-none focus:border-cyan-200/40" data-testid="dbot-ai-martingale-steps" />
+                      </label>
+                    </div>
+                    <p className="text-[9px] leading-relaxed text-amber-200/80">After a loss the stake is multiplied up to the step limit; a win or a further loss at the limit resets it. Use 1× or 0 steps for flat staking. Martingale can increase losses quickly. Limits apply after settlement and may be exceeded. Deriv may reject a stake that exceeds its limits or your balance.</p>
+                    {!configValid && <p role="alert" className="text-[10px] text-rose-300" data-testid="dbot-ai-invalid-config">Enter positive finite stake and limits, a positive whole trade cap, a multiplier of at least 1, and a non-negative whole step limit that does not overflow.</p>}
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-cyan-200/15 bg-cyan-200/[.04] p-3">
+                      <div><div className="text-[10px] font-bold text-slate-100">Signal execution</div><p className="mt-1 text-[9px] text-slate-400">{autoMode ? 'Auto replaces the workspace and starts a newly generated signal on the linked account.' : 'Manual: review the signal and start it yourself.'}</p></div>
+                      <div role="group" aria-label="Signal execution mode" className="flex shrink-0 rounded-lg border border-white/10 bg-slate-950 p-1">
+                        <button type="button" aria-pressed={!autoMode} onClick={() => { setAutoMode(false); setPendingAutoRun(null); setAutoNotice(''); }} className={`rounded-md px-2 py-1.5 text-[9px] font-bold ${!autoMode ? 'bg-cyan-200 text-slate-950' : 'text-slate-400'}`} data-testid="dbot-ai-mode-manual">Manual</button>
+                        <button type="button" aria-pressed={autoMode} onClick={() => { setAutoMode(true); setAutoNotice('Auto starts only after a new analysis. It can place real trades and replace unsaved blocks.'); }} className={`rounded-md px-2 py-1.5 text-[9px] font-bold ${autoMode ? 'bg-cyan-200 text-slate-950' : 'text-slate-400'}`} data-testid="dbot-ai-mode-auto">Auto</button>
+                      </div>
+                    </div>
+                    {autoNotice && <p role="status" data-testid="dbot-ai-auto-notice" className="text-[9px] text-amber-200">{autoNotice}</p>}
                     <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[.08] bg-white/[.025] p-2.5">
                       <div className="min-w-0">
                         <div className="text-[9px] font-bold text-slate-200">
@@ -1788,7 +1833,7 @@ export function DbotAiCopilot({
                             if (!currentResult || !selectedAnalysisSnapshot || !snapshotReady || !ready || !registryReady || botRunning || analysis.scanning) return;
                             onLoadAnalysis(analysisXml, `AI ${dbotAiFamilyLabel(family)} · ${currentResult.symbol}`, selectedAnalysisSnapshot);
                           }}
-                          disabled={!ready || !registryReady || !snapshotReady || botRunning || loadingRun || analysis.scanning || Boolean(analysis.error)}
+                          disabled={!configValid || !ready || !registryReady || !snapshotReady || botRunning || loadingRun || analysis.scanning || Boolean(analysis.error)}
                           className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-cyan-200/30 px-4 text-[11px] font-bold text-cyan-100 hover:bg-cyan-200/10 disabled:cursor-not-allowed disabled:opacity-40"
                           data-testid="dbot-ai-load-analysis">
                           <ArrowDownToLine size={14} /> Load blocks for editing
@@ -1802,6 +1847,7 @@ export function DbotAiCopilot({
                           type="button"
                           onClick={handleLoadAndRun}
                           disabled={
+                            !configValid ||
                             !ready ||
                             !registryReady ||
                             !accountReady ||

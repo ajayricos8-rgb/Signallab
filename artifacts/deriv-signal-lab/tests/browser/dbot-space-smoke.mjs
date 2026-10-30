@@ -406,8 +406,16 @@ async function runSmoke() {
     };
   });
   await page.getByTestId('dbot-open-analysis').click();
+  assert.equal(await page.getByTestId('dbot-ai-mode-manual').getAttribute('aria-pressed'), 'true');
+  await page.getByTestId('dbot-ai-stake').fill('12345.67');
+  await page.getByTestId('dbot-ai-loss-limit').fill('250000');
+  await page.getByTestId('dbot-ai-profit-target').fill('900000');
+  await page.getByTestId('dbot-ai-max-trades').fill('8000');
+  await page.getByTestId('dbot-ai-martingale').fill('2.5');
+  await page.getByTestId('dbot-ai-martingale-steps').fill('2');
   await page.getByTestId('dbot-ai-run-analysis').click();
   await page.getByTestId('dbot-ai-best-market').waitFor({ timeout: 90_000 });
+  assert.equal(await bot.locator('#db-animation__stop-button:visible').count(), 0, 'manual analysis must never auto-start');
   await page.getByTestId('dbot-ai-weak-edge').waitFor({ state: 'visible' });
   await page.getByTestId('dbot-ai-load-analysis').waitFor({ state: 'visible' });
   await page.getByTestId('dbot-ai-load-and-run').waitFor({ state: 'visible' });
@@ -432,6 +440,49 @@ async function runSmoke() {
   await bot.locator('#db-animation__stop-button:visible').first().waitFor({ timeout: 20_000 });
   assert.deepEqual(mock.dialogs.slice(beforeRunDialogs), [], 'Load and Run must not show either confirmation');
   assert.ok(await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).some(block => block.type === 'signal_lab_analysis_gate')), 'the selected analysis must be loaded as gated Blockly XML');
+  // Read the real loaded Blockly workspace and execute its generated After
+  // Purchase code against a synchronous fake Bot. No live order is sent.
+  const logic = await bot.evaluate(() => {
+    const ws = window.Blockly.derivWorkspace;
+    const gen = window.Blockly.JavaScript.javascriptGenerator;
+    const code = gen.workspaceToCode(ws);
+    const stakeName = code.match(/([A-Za-z_$][\w$]*)\s*=\s*12345\.67;/)?.[1];
+    const stepName = code.match(/([A-Za-z_$][\w$]*)\s*=\s*\1\s*\+\s*1;/)?.[1];
+    if (!stakeName || !stepName) throw new Error(`Could not identify generated variables: ${code}`);
+    const fake = { pnl: 0, runs: 0, won: false, events: [],
+      init() {}, start(options) { this.lastAmount = options.amount; }, highlightBlock() {}, signalLabStartSession() { this.pnl = 0; this.runs = 0; },
+      signalLabSessionProfit() { return this.pnl; }, signalLabSessionRuns() { return this.runs; },
+      isResult() { return this.won; }, isTradeAgain() {},
+      signalLabNotifySessionStop(reason, profit) { this.events.push({ reason, profit }); },
+    };
+    const script = new Function('Bot', `var BinaryBotPrivateInit, BinaryBotPrivateStart, BinaryBotPrivateBeforePurchase, BinaryBotPrivateAfterPurchase, BinaryBotPrivateHasCalledTradeOptions, BinaryBotPrivateLimitations = {}; ${code}; return { init: BinaryBotPrivateInit, start: BinaryBotPrivateStart, after: BinaryBotPrivateAfterPurchase, stake: () => ${stakeName}, steps: () => ${stepName} };`)(fake);
+    script.init();
+    const initial = script.stake();
+    script.start(); const initialTradeAmount = fake.lastAmount;
+    const ladder = [];
+    for (let i = 1; i <= 3; i++) { fake.pnl = -i; fake.runs = i; script.after(); script.start(); ladder.push([script.stake(), script.steps(), fake.lastAmount]); }
+    fake.won = true; fake.pnl = 1; fake.runs++; script.after(); const winReset = [script.stake(), script.steps()];
+    fake.pnl = 900000; const take = script.after();
+    fake.pnl = -250000; const loss = script.after();
+    fake.pnl = 0; fake.runs = 8000; const cap = script.after();
+    return { initial, initialTradeAmount, ladder, winReset, take, loss, cap, events: fake.events,
+      lossLimit: ws.getBlockById('aiGateLossLimit')?.getFieldValue('NUM'),
+      profitTarget: ws.getBlockById('aiGateProfitLimit')?.getFieldValue('NUM') };
+  });
+  assert.equal(logic.initial, 12345.67);
+  assert.equal(logic.initialTradeAmount, 12345.67);
+  assert.deepEqual(logic.ladder, [[30864.175, 1, 30864.17], [77160.4375, 2, 77160.44], [12345.67, 0, 12345.67]]);
+  assert.deepEqual(logic.winReset, [12345.67, 0]);
+  assert.deepEqual(logic.events, [{ reason: 'take-profit', profit: 900000 }, { reason: 'stop-loss', profit: -250000 }]);
+  assert.equal(logic.take, false); assert.equal(logic.loss, false); assert.equal(logic.cap, false);
+  assert.equal(Number(logic.lossLimit), -250000); assert.equal(Number(logic.profitTarget), 900000);
+  for (const [reason, profit, title] of [['take-profit', 900000, 'Take profit hit'], ['stop-loss', -250000, 'Stop loss hit']]) {
+    await bot.evaluate(({ reason, profit }) => window.parent.postMessage({ source: 'signal-lab-dbot', type: 'session-limit-hit', reason, profit, currency: 'USD' }, window.location.origin), { reason, profit });
+    const notification = page.getByTestId('dbot-session-limit-dialog');
+    await notification.getByText(title).waitFor();
+    assert.match(await notification.innerText(), /session profit \/ loss/i);
+    await notification.getByRole('button', { name: 'Dismiss' }).click();
+  }
   assert.equal(requests.some(request => request.sell), false, 'the test must not sell a position');
   mock.setDialogAction('accept');
   await page.getByTestId('dbot-ai-close').click();
@@ -458,14 +509,18 @@ async function runSmoke() {
   await page.getByTestId('dbot-toggle-real').click();
   await page.getByTestId('dbot-account-status').getByText(/Auto-linked · CR123456/).waitFor({ timeout: 30_000 });
   await page.getByTestId('dbot-open-analysis').click();
+  await page.getByTestId('dbot-ai-mode-auto').click();
+  assert.equal(await page.getByTestId('dbot-ai-mode-auto').getAttribute('aria-pressed'), 'true');
+  await page.waitForTimeout(250);
+  assert.equal(await bot.locator('#db-animation__stop-button:visible').count(), 0, 'turning on Auto must not run a cached signal');
+  const realRunDialogs = mock.dialogs.length;
+  mock.setDialogAction('dismiss');
   await page.getByTestId('dbot-ai-run-analysis').click();
   await page.getByTestId('dbot-ai-best-market').waitFor({ timeout: 90_000 });
   await page.getByTestId('dbot-ai-immediate-run-warning').getByText(/REAL account with real money/).waitFor();
-  const realRunDialogs = mock.dialogs.length;
-  mock.setDialogAction('dismiss');
-  await page.getByTestId('dbot-ai-load-and-run').click();
   await bot.locator('#db-animation__stop-button:visible').first().waitFor({ timeout: 20_000 });
-  assert.deepEqual(mock.dialogs.slice(realRunDialogs), [], 'a real-account Load and Run must not prompt');
+  assert.deepEqual(mock.dialogs.slice(realRunDialogs), [], 'auto mode must start a new signal without prompts');
+  await page.getByTestId('dbot-ai-mode-manual').click();
   mock.setDialogAction('accept');
   await page.getByTestId('dbot-ai-close').click();
   await bot.locator('#db-animation__stop-button:visible').first().dispatchEvent('click');
