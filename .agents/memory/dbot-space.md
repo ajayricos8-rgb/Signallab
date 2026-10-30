@@ -3,7 +3,7 @@ name: DBot Space (embedded workspace)
 description: How the embedded DBot workspace connects to the Signal Lab account automatically and what it may read from Signal Lab.
 ---
 
-`components/dbot-space.tsx` embeds `vendor/deriv-bot` in a **same-origin** iframe. The account is
+`components/dbot-space/` embeds `vendor/deriv-bot` in a **same-origin** iframe. The account is
 never entered twice: when the workspace reports ready and `useDerivTrading()` is connected, an effect
 calls `createBotSocket()` and posts `connect-account` with a single-use `wss` URL (never the PAT). The
 same account is re-linked automatically after a lost socket, an iframe reload or an account switch;
@@ -120,8 +120,31 @@ thin alias that imports it and writes identical bytes — it used to be a second
 that stayed v4 for months and would have overwritten the shipped v5 bot with a weaker one. Do not
 add a third writer; extend the spec and regenerate.
 
-**Watch out for:** `src/components/dbot-space.tsx` had two stray duplicated string literals inside
-the STRATEGIES object (an `AI_VISION_OVER_UNDER` risk note and an `AI_EVEN_SWITCHER` one), which is
-a syntax error — the whole Bot store page failed to parse. There is no bundler in the sandbox, so
-the quick check is to extract `const STRATEGIES: Strategy[] = [ … ];` and `eval` it with the icon
-identifiers replaced by `null`.
+## Shell layout (rebuilt 2026-10-30)
+
+The old single-file shell (`src/components/dbot-space.tsx`, 744 lines and one giant `else if` chain)
+is gone. The workspace UI now lives in `src/components/dbot-space/`:
+
+- `index.tsx` — page layout only: header, demo/real balance cluster, tabs, notice, and the four
+  hand-offs to the AI copilot. It owns the host `view` and passes it to the hook.
+- `use-dbot-workspace.ts` — the engine: iframe lifecycle and boot timeout, the automatic account
+  link state machine (grant + revision, 3 automatic attempts, 25 s confirm timeout, 18 s backoff cap),
+  the 1 s tick/account bridge, and every `postMessage` conversation.
+- `protocol.ts` — the typed wire protocol: `parseFrameMessage` sanitises what the frame reports
+  (module caps at 800, string caps, grant/OTP ids required) and the `host*` builders shape what we
+  send. Pure — no React — so it is pinned by `tests/dbot-space-protocol.test.mjs`
+  (`pnpm --filter @workspace/deriv-signal-lab test:dbot-space`).
+- `workspace-panel.tsx` — frame chrome/status plus the always-mounted iframe (hiding it keeps a
+  running bot alive when the store or Digits & risk tab is open).
+- `store-view.tsx` + `bot-store.ts` — the bot store. The catalog was moved byte-for-byte; the six
+  Deriv quick strategies and all five AI preset XML imports are unchanged.
+
+**Watch out for:** the data bridge in `lib/dbot-bridge.ts` is wire-only and its feed/account frames
+carry **no** `source` field, while the frame drops anything that is not tagged `signal-lab`. Every
+outbound message therefore goes through `post()` → `tagHostPayload()`, which stamps the tag last so a
+payload can neither be posted untagged nor spoof another source. A test pins that, and pinning it is
+the point: an untagged bridge silently feeds the workspace nothing.
+
+The workspace boots on its default template (`scratch/xml/main.xml`: trade definition + purchase);
+the shell never primes a canvas of its own. With no bundler in the sandbox the quick check is
+`esbuild <file> --loader:.tsx=tsx --jsx=automatic` for syntax plus a `tsc` pass on the folder.
