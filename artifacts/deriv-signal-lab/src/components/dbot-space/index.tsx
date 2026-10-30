@@ -6,13 +6,12 @@
 // and the hand-offs to the AI copilot.
 import { useCallback, useState, type ComponentType } from 'react';
 import {
-  Activity, Boxes, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, X,
+  Boxes, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, X,
   type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { formatAmount } from '@/lib/deriv-trading';
 import { DbotAiCopilot } from '@/components/dbot-ai-copilot';
-import { DbotMarketTools } from '@/components/dbot-market-tools';
 import type { DbotAiAnalysisSnapshot } from '@/lib/dbot-ai';
 import type { Strategy } from './bot-store';
 import { linkSummary, type SpaceView } from './protocol';
@@ -24,7 +23,6 @@ const VIEWS: Array<{ id: SpaceView; label: string; icon: ComponentType<LucidePro
   { id: 'builder', label: 'Bot builder', icon: Boxes },
   { id: 'chart', label: 'Charts', icon: ChartNoAxesCombined },
   { id: 'store', label: 'Bot store', icon: Library },
-  { id: 'tools', label: 'Digits & risk', icon: Activity },
 ];
 
 export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
@@ -246,10 +244,11 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         onNotice={setNotice}
       />
 
-      {view === 'tools' && <DbotMarketTools />}
       {view === 'store' && <StoreView onUse={useStrategy} />}
 
       <DbotAiCopilot
+        toolDeck
+
         ready={ready}
         accountConnected={link.status === 'connected'}
         accountType={link.accountType}

@@ -24,7 +24,7 @@ const ACCOUNT_LIMIT = 64;
 /** The two real tabs inside the vendored app. */
 export type WorkspaceTab = 'builder' | 'chart';
 /** Sections of the Space shell; the last two are rendered by the host. */
-export type SpaceView = WorkspaceTab | 'store' | 'tools';
+export type SpaceView = WorkspaceTab | 'store';
 export type AccountKind = 'demo' | 'real' | 'unknown';
 export type LinkStatus = 'idle' | 'connecting' | 'connected';
 

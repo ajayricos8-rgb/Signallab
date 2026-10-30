@@ -24,9 +24,11 @@ import {
   Send,
   ShieldAlert,
   Sparkles,
+  Wrench,
   X,
 } from "lucide-react";
 import { useDerivTrading } from "@/components/deriv-trading-provider";
+import { DbotMarketTools } from "@/components/dbot-market-tools";
 import {
   useMarketFeed,
   type MarketFeedEntry,
@@ -88,6 +90,7 @@ type DbotAiCopilotProps = {
     name: string,
     analysis: DbotAiAnalysisSnapshot,
   ) => void;
+  toolDeck?: boolean;
 };
 
 const ALL_MARKETS = "all";
@@ -542,13 +545,14 @@ export function DbotAiCopilot({
   onClearAnalysis,
   onLoadStrategy,
   onLoadAndRun,
+  toolDeck = false,
 }: DbotAiCopilotProps) {
   const trading = useDerivTrading();
   const feed = useMarketFeed();
   const [open, setOpen] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [activeTab, setActiveTab] = useState<"builder" | "analysis">("builder");
+  const [activeTab, setActiveTab] = useState<"builder" | "analysis" | "tools">("builder");
   const [viewport, setViewport] = useState<Viewport>(currentViewport);
   const [position, setPosition] =
     useState<LauncherPosition>(readLauncherPosition);
@@ -1225,6 +1229,7 @@ export function DbotAiCopilot({
                   [
                     { id: "builder", label: "Bot Builder", icon: Sparkles },
                     { id: "analysis", label: "AI Analysis", icon: Activity },
+                    ...(toolDeck ? [{ id: "tools", label: "Signal Tools", icon: Wrench }] : []),
                   ] as const
                 ).map(({ id, label, icon: Icon }) => (
                   <button
@@ -1245,7 +1250,19 @@ export function DbotAiCopilot({
                 </span>
               </div>
               <div className="h-[calc(100%-104px)] overflow-y-auto overscroll-contain p-3.5 sm:p-4">
-                {activeTab === "builder" ? (
+                {activeTab === "tools" ? (
+                  <section className="space-y-3" data-testid="dbot-ai-tools">
+                    <div className="rounded-xl border border-cyan-200/10 bg-gradient-to-br from-cyan-300/[.07] via-transparent to-violet-300/[.05] p-3.5">
+                      <div className="flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-[.15em] text-cyan-100">
+                        <Wrench size={14} /> Signal tool deck
+                      </div>
+                      <p className="mt-1.5 text-[9px] leading-4 text-slate-400">
+                        Digits monitoring, risk sizing, and contract helpers now live inside Signal Copilot. Use the Bot Builder to turn any tool result into a guarded, draggable XML block bot, then use AI Analysis → Load and Run when the live signal is ready.
+                      </p>
+                    </div>
+                    <DbotMarketTools />
+                  </section>
+                ) : activeTab === "builder" ? (
                   <section
                     className="flex h-full min-h-0 flex-col"
                     data-testid="dbot-ai-builder"
