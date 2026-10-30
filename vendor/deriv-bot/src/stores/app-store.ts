@@ -69,6 +69,9 @@ export default class AppStore {
                 }),
             ]);
 
+            // A load that eventually completes inside the watchdog window wins;
+            // clear the transient timeout state before exposing the workspace.
+            blockly_store.setInitializationError('');
             blockly_store.setContainerSize();
             this.registerCurrencyReaction.call(this);
             this.registerOnAccountSwitch.call(this);

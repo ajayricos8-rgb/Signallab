@@ -304,6 +304,8 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       } else if (data.type === 'ready') {
         readyRef.current = true;
         setReady(true);
+        setWorkspaceError('');
+        setNotice((current) => current.startsWith('DBot ') ? '' : current);
         if (viewRef.current === 'builder' || viewRef.current === 'chart') send({ type: 'navigate', tab: viewRef.current });
         if (pendingLoad.current) {
           send({ type: 'load-bot', ...pendingLoad.current });
@@ -317,8 +319,11 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         // it is ready; answer here in case the request raced the load event.
         if (subscribedRef.current) sendSnapshot();
       } else if (data.type === 'feed-subscribe') {
+        // Keep the expensive 15-market history snapshot off Blockly's critical
+        // startup path. The iframe retries this request while loading; deliver
+        // the first full snapshot as soon as the workspace is actually ready.
         subscribedRef.current = true;
-        sendSnapshot();
+        if (readyRef.current) sendSnapshot();
       } else if (data.type === 'quick-strategy-open') {
         // The embedded wizard's footer is fixed to the iframe, not to the host
         // viewport. Bring it above the host's fixed navigation on small screens.

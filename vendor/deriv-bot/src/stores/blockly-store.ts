@@ -4,6 +4,8 @@ import { getSavedWorkspaces, onWorkspaceResize } from '@/external/bot-skeleton';
 import { getSetting, storeSetting } from '@/utils/settings';
 import RootStore from './root-store';
 
+const LOADING_WATCHDOG_MESSAGE = 'DBot workspace loading took too long. Reload the workspace to try again.';
+
 export default class BlocklyStore {
     root_store: RootStore;
 
@@ -17,6 +19,7 @@ export default class BlocklyStore {
             has_saved_bots: computed,
             setLoading: action,
             setInitializationError: action,
+            handleLoadingWatchdog: action,
             setActiveTab: action,
             checkForSavedBots: action,
         });
@@ -26,6 +29,8 @@ export default class BlocklyStore {
     is_loading = false;
     initialization_error = '';
     active_tab = tabs_title.WORKSPACE;
+    private loading_watchdog: ReturnType<typeof setTimeout> | null = null;
+    private loading_watchdog_error = false;
 
     // Computed property to check if there's an active bot
     get has_active_bot(): boolean {
@@ -87,11 +92,44 @@ export default class BlocklyStore {
         window.removeEventListener('resize', this.setContainerSize);
     };
 
+    handleLoadingWatchdog = (): void => {
+        this.loading_watchdog = null;
+        this.loading_watchdog_error = true;
+        this.initialization_error = LOADING_WATCHDOG_MESSAGE;
+        this.is_loading = false;
+        if (window.parent !== window) {
+            window.parent.postMessage(
+                { source: 'signal-lab-dbot', type: 'workspace-error', message: LOADING_WATCHDOG_MESSAGE },
+                window.location.origin
+            );
+        }
+    };
+
     setLoading = (is_loading: boolean): void => {
-        this.is_loading = is_loading;
+        if (is_loading) {
+            // One slow preview/load callback must not keep the workspace behind
+            // the global mask forever. Only start the watchdog on the transition
+            // from idle so repeated `true` calls cannot postpone recovery.
+            if (!this.is_loading && !this.loading_watchdog) {
+                this.loading_watchdog = setTimeout(this.handleLoadingWatchdog, 15000);
+            }
+            this.is_loading = true;
+            return;
+        }
+
+        if (this.loading_watchdog) {
+            clearTimeout(this.loading_watchdog);
+            this.loading_watchdog = null;
+        }
+        this.is_loading = false;
+        if (this.loading_watchdog_error) {
+            this.loading_watchdog_error = false;
+            this.setInitializationError('');
+        }
     };
 
     setInitializationError = (message: string): void => {
+        if (message !== LOADING_WATCHDOG_MESSAGE) this.loading_watchdog_error = false;
         this.initialization_error = message;
     };
 }
