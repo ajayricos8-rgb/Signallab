@@ -759,6 +759,7 @@
 <block type="before_purchase" id="hlBefore01" x="0" y="760">
   <statement name="BEFOREPURCHASE_STACK">
     <block type="controls_if" id="b0193">
+      <mutation else="1"></mutation>
       <value name="IF0">
         <block type="logic_compare" id="b0163">
           <field name="OP">EQ</field>
@@ -834,6 +835,7 @@
       </statement>
       <statement name="ELSE">
         <block type="controls_if" id="b0192">
+          <mutation else="1"></mutation>
           <value name="IF0">
             <block type="logic_operation" id="b0156">
               <field name="OP">AND</field>
@@ -1124,6 +1126,7 @@
 <block type="after_purchase" id="hlAfter01" x="760" y="760">
   <statement name="AFTERPURCHASE_STACK">
     <block type="controls_if" id="b0218">
+      <mutation else="1"></mutation>
       <value name="IF0">
         <block type="contract_check_result" id="b0211">
           <field name="CHECK_RESULT">win</field>
@@ -1539,6 +1542,7 @@
                                                   </statement>
                                                   <next>
                                                     <block type="controls_if" id="b0282">
+                                                      <mutation else="1"></mutation>
                                                       <value name="IF0">
                                                         <block type="logic_operation" id="b0210">
                                                           <field name="OP">AND</field>

@@ -21,6 +21,8 @@
     "test:engine-lab:browser": "node ./tests/browser/engine-lab-smoke.mjs",
     "docs:engines:check": "node --experimental-strip-types ./scripts/generate-engine-catalog.mjs --check",
     "test:dbot:browser": "node ./tests/browser/dbot-space-smoke.mjs",
+    "test:tick-sniper": "node --test ./tests/high-low-tick-import.test.mjs",
+    "test:tick-sniper:browser": "node ./tests/browser/high-low-tick-import-smoke.mjs",
     "test:parity:browser": "node ./tests/browser/dbot-parity-import-smoke.mjs",
     "test:dbot-market-tools:browser": "node ./tests/browser/dbot-market-tools-smoke.mjs"
   },
