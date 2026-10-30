@@ -6,7 +6,7 @@
 // and the hand-offs to the AI copilot.
 import { useCallback, useState, type ComponentType } from 'react';
 import {
-  Activity, Boxes, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, X,
+  Activity, Boxes, BrainCircuit, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, X,
   type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
@@ -27,9 +27,10 @@ const VIEWS: Array<{ id: SpaceView; label: string; icon: ComponentType<LucidePro
   { id: 'tools', label: 'Digits & risk', icon: Activity },
 ];
 
-export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function DbotSpace({ onOpenSettings, researchRequest = 0 }: { onOpenSettings: () => void; researchRequest?: number }) {
   const trading = useDerivTrading();
   const [view, setView] = useState<SpaceView>('builder');
+  const [localResearchRequest, setLocalResearchRequest] = useState(0);
 
   const workspace = useDbotWorkspace({
     view,
@@ -38,7 +39,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   });
   const {
     ready, link, autoLink, autoPaused, notice, botRunning, shared, blockRegistry, aiRuntimeRegistered,
-    aiRunNotice, setNotice, setAiRunNotice, showTab, loadBot, loadAndRunBot, openQuickStrategy,
+    aiRunNotice, setNotice, setAiRunNotice, showTab, loadBot, loadAndRunBot, loadAnalysisBot, openQuickStrategy,
   } = workspace;
 
   const hasAccount = trading.status === 'connected' && Boolean(trading.activeAccount);
@@ -77,6 +78,16 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
     loadBot(xml, name);
   }, [ready, loadBot, setNotice, setAiRunNotice]);
 
+  const loadAiAnalysis = useCallback((xml: string, name: string, analysis: DbotAiAnalysisSnapshot) => {
+    if (!ready || botRunning) {
+      setAiRunNotice(botRunning ? 'Stop the current DBot strategy before loading another one.' : 'The DBot workspace is still loading.');
+      return;
+    }
+    setView('builder');
+    setAiRunNotice(`${name} is loading into the block workspace. The analysis expires; run a fresh scan if the gate closes.`);
+    loadAnalysisBot(xml, name, analysis);
+  }, [ready, botRunning, loadAnalysisBot, setAiRunNotice]);
+
   const loadAndRunAiStrategy = useCallback((xml: string, name: string, analysis: DbotAiAnalysisSnapshot) => {
     if (!ready) {
       setAiRunNotice('The DBot workspace is still loading. Run Analysis again once it is ready.');
@@ -110,6 +121,9 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => setLocalResearchRequest((value) => value + 1)} className="dbot-outline-button" data-testid="dbot-open-research">
+            <BrainCircuit size={14} /> Signal Copilot research
+          </button>
           {/* Account cluster: the live balance with a Real/Demo switch. It drives
               the same Signal Lab account selection the connection card uses, so
               DBot re-links to whichever account is active. */}
@@ -250,6 +264,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       {view === 'store' && <StoreView onUse={useStrategy} />}
 
       <DbotAiCopilot
+        researchRequest={researchRequest + localResearchRequest}
         ready={ready}
         accountConnected={link.status === 'connected'}
         accountType={link.accountType}
@@ -259,6 +274,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         runNotice={aiRunNotice}
         onClearAnalysis={workspace.clearAnalysis}
         onLoadStrategy={loadAiStrategy}
+        onLoadAnalysis={loadAiAnalysis}
         onLoadAndRun={loadAndRunAiStrategy}
       />
     </section>

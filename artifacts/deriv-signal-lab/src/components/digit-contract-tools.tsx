@@ -1,19 +1,17 @@
+import type { ResearchHandoff } from '@/components/signal/research-handoff';
 import { useMemo, useState } from 'react';
 import { Activity, AlertTriangle, Play, Radio, ShieldAlert, Square, Wifi, WifiOff, Zap } from 'lucide-react';
 import { analyzeDigits, supportedTickDurations, type DigitAnalysis, type DigitContractCandidate } from '@/lib/digit-analysis';
 import { analyzePriceContext } from '@/lib/price-context';
 import { FAMILY_CONTRACTS, type DigitFamily } from '@/lib/digit-signals';
 import { digitTicksOf } from '@/lib/market-feed';
-import { DIGIT_SIGNAL_MIN_TICKS, type DigitContractSignal, type DigitMarketAnalysis } from '@/lib/signal-engine/digit-signal';
+import { DIGIT_SIGNAL_MIN_TICKS, type DigitMarketAnalysis } from '@/lib/signal-engine/digit-signal';
 import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner';
 import type { OverUnderReport } from '@/lib/over-under/ensemble';
-import type { TradeRecommendation } from '@/lib/trade-draft';
 import { explainSignal } from '@/lib/signal-engine/confidence';
-import { recommendedRuns } from '@/lib/signal-bot/plan.ts';
 import { effectiveWindowTicks, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 import { useMarketFeed, type MarketFeedEntry, type MarketFeedValue } from '@/components/market-feed-provider';
 import { useSignalScan } from '@/hooks/use-signal-scan';
-import { TradeDock } from '@/components/trade-dock';
 import { EngineLabPanel } from '@/components/signal/engine-lab-panel';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { scopeSettlements } from '@/lib/engine-lab/execution';
@@ -92,18 +90,6 @@ function contractsFor(entry: MarketFeedEntry, family: DigitFamily, duration: num
     }
   }
   return contracts.length ? { contracts } : { skip: 'No supported contract in the scanned range' };
-}
-
-function recommendationFor(result: DigitMarketAnalysis, signal: DigitContractSignal): TradeRecommendation {
-  const contract = signal.contract;
-  return {
-    symbol: result.symbol,
-    contractType: contract.contractType,
-    barrier: contract.family === 'over-under' ? contract.barrier : contract.family === 'matches' ? contract.targetDigit : undefined,
-    duration: result.horizon,
-    durationUnit: 't',
-    label: signal.label,
-  };
 }
 
 function FeedStatusBadge({ feed }: { feed: MarketFeedValue }) {
@@ -249,7 +235,7 @@ function LiveMarketPanel({ entry }: { entry: MarketFeedEntry | undefined }) {
   );
 }
 
-function DigitContractTool({ family }: { family: DigitFamily }) {
+function DigitContractTool({ family, onPrepare }: { family: DigitFamily; onPrepare: (handoff: ResearchHandoff) => void }) {
   const trading = useDerivTrading();
   const feed = useMarketFeed();
   const scan = useSignalScan<DigitMarketAnalysis, DigitRunMeta>(`digit:${family}`);
@@ -257,8 +243,6 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   const [duration, setDuration] = useState<number>(() => scan.run?.meta.duration ?? 1);
   const [viewSymbol, setViewSymbol] = useState<string | null>(null);
   const [tradeMarket, setTradeMarket] = useState<string | null>(() => scan.run?.results[0]?.symbol ?? null);
-  const [tradeExpiry, setTradeExpiry] = useState<number | null>(() => scan.run?.meta.duration ?? 1);
-  const [applyRequest, setApplyRequest] = useState(0);
   const details = FAMILY_DETAILS[family];
   const run = scan.run;
   const markets = feed.markets;
@@ -283,51 +267,6 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
   const detailDigits = useMemo(() => digitTicksOf(detailEntry?.ticks ?? []), [detailEntry?.ticks]);
   const detailAnalysis = useMemo(() => analyzeDigits(detailDigits), [detailDigits]);
   const priceContext = useMemo(() => analyzePriceContext(detailEntry?.ticks ?? []), [detailEntry?.ticks]);
-  const recommendation = selectedResult && signal ? recommendationFor(selectedResult, signal) : null;
-  // Passed to the trade dock so it can pop open and offer Load and Run.
-  const analysis = selectedResult && signal
-    ? {
-        runId: run?.id ?? 0,
-        confidence: signal.confidence,
-        strength: signal.strength,
-        marketName: selectedResult.name,
-        ranAt: run?.ranAt ?? 0,
-        entry: signal.entry,
-        master: signal.master,
-        researchDecision: signal.researchDecision,
-        research: signal.research,
-        probability: signal.probability,
-        // Every contract the analysis measured, for the bot's hit-rate aim.
-        candidates: selectedResult.contracts.map((candidate) => ({
-          label: candidate.label,
-          contractType: candidate.contract.contractType,
-          barrier: (candidate.contract as { barrier?: number; targetDigit?: number }).barrier
-            ?? (candidate.contract as { targetDigit?: number }).targetDigit
-            ?? null,
-          probability: candidate.probability,
-          fairProbability: candidate.fairProbability,
-          entry: candidate.entry,
-          confidence: candidate.confidence,
-          strength: candidate.strength,
-          recommendedRuns: recommendedRuns({ confidence: candidate.confidence, strength: candidate.strength }),
-          master: candidate.master,
-          researchDecision: candidate.researchDecision,
-          research: candidate.research,
-          confirmation: {
-            status: candidate.deep.confirmation.status,
-            edgePts: candidate.deep.confirmation.edgePts,
-            decisive: candidate.deep.confirmation.decisive,
-          },
-        })),
-        confirmation: {
-          status: signal.deep.confirmation.status,
-          edgePts: signal.deep.confirmation.edgePts,
-          decisive: signal.deep.confirmation.decisive,
-        },
-      }
-    : null;
-  const tradeEntry = markets.find((entry) => entry.symbol === (tradeMarket ?? detailSymbol));
-
   async function handleRunAnalysis() {
     if (scan.scanning) return;
     const symbols = scope === ALL_MARKETS ? feed.getSnapshot().map((entry) => entry.symbol) : [scope];
@@ -357,7 +296,6 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
     if (next) {
       setViewSymbol(next.results[0].symbol);
       setTradeMarket(next.results[0].symbol);
-      setTradeExpiry(next.meta.duration);
     }
   }
 
@@ -477,7 +415,8 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
                   hint: `The entry stays valid for ${effectiveWindowTicks(signal.entry)} ticks — the shorter of the plan's window and the measured edge validity; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed ticks matched`}.`,
                 },
               ]}
-              onUse={() => { setTradeMarket(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+              useLabel="Prepare XML bot"
+              onUse={() => onPrepare({ run, family, duration: run.meta.duration, symbol: selectedResult.symbol })}
             />
             <ConfirmationPanel report={signal.deep.confirmation} />
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={signal.fairProbability} /> : null}
@@ -533,28 +472,14 @@ function DigitContractTool({ family }: { family: DigitFamily }) {
 
       <div className="flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-[11px] leading-relaxed text-muted-foreground">
         <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
-        <span>Every engine is fitted on each market's own recent ticks with a train / tune / held-out split, so backtests never see the data they are scored on. Deriv's synthetic indices are generated by a random number generator: no model can guarantee a win, and confidence is evidence strength rather than a promise. Orders are only placed from the trade ticket after you confirm a live Deriv price.</span>
+        <span>Every engine is fitted on each market's own recent ticks with a train / tune / held-out split, so backtests never see the data they are scored on. Deriv's synthetic indices are generated by a random number generator: no model can guarantee a win, and confidence is evidence strength rather than a promise. Prepare the selected signal in the Copilot to review its XML bot and risk limits before running.</span>
       </div>
 
-      <TradeDock
-        family={family}
-        recommendation={recommendation}
-        analysis={analysis}
-        applyRequest={applyRequest}
-        marketCode={tradeMarket ?? detailSymbol ?? null}
-        marketName={tradeEntry?.name ?? null}
-        marketChoices={markets.map((entry) => ({ code: entry.symbol, name: entry.name }))}
-        onMarketChange={setTradeMarket}
-        expiry={tradeExpiry}
-        expiryOptions={durations}
-        onExpiryChange={setTradeExpiry}
-        contracts={tradeEntry?.contractsLoaded ? tradeEntry.contracts : undefined}
-        expiryVerified={Boolean(tradeEntry?.contractsLoaded)}
-      />
+
     </div>
   );
 }
 
-export function OverUnderTool() { return <DigitContractTool family="over-under" />; }
-export function EvenOddTool() { return <DigitContractTool family="even-odd" />; }
-export function MatchesTool() { return <DigitContractTool family="matches" />; }
+export function OverUnderTool({ onPrepare }: { onPrepare: (handoff: ResearchHandoff) => void }) { return <DigitContractTool family="over-under" onPrepare={onPrepare} />; }
+export function EvenOddTool({ onPrepare }: { onPrepare: (handoff: ResearchHandoff) => void }) { return <DigitContractTool family="even-odd" onPrepare={onPrepare} />; }
+export function MatchesTool({ onPrepare }: { onPrepare: (handoff: ResearchHandoff) => void }) { return <DigitContractTool family="matches" onPrepare={onPrepare} />; }

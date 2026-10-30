@@ -1,10 +1,8 @@
-# Signal Lab — Deriv digit tools
+# Signal Lab — signal research and visual bots
 
-This workspace contains the Rise/Fall tool and the Over/Under, Even/Odd, and Matches research panels. A compact dark-blue trade configuration dock is shown above the workspace navigation on each tool, and its Trade button places real Deriv Options contracts after you confirm a live quote.
+The Rise/Fall, Over/Under, Even/Odd and Matches research panels live in **DBot Space → Signal Copilot → Research**. Run an analysis, choose a market and select **Prepare XML bot**. The Copilot carries that exact scan into AI Analysis, where you can review stake, stop loss, take profit and trade cap. **Load blocks for editing** loads the generated XML and its analysis snapshot without starting a bot; **Load and Run** loads and starts it after the account and freshness checks. Loading replaces the current canvas after confirmation. The snapshot expires, so run a fresh analysis if its gate closes.
 
-Trading is opt-in. Connect a Deriv account with a Personal Access Token (PAT) in the Settings tab (or straight from the trade ticket). The PAT is exchanged for the accounts it can trade, a single-use OTP WebSocket URL is minted per account, and that authenticated socket streams balance, portfolio, profit table and contract updates. Open and closed positions appear on the Trade history tab.
-
-The research panels themselves remain public-market-data analysis: they do not auto-trade, and a signal is never turned into an order automatically.
+The former Tools trade dock and its separate signal-bot auto-run and direct trade ticket are not used by this workflow. The new DBot strategy is an editable block bot, not the old signal-bot runner. Linking an account or analysing a market does not itself place an order. Running a bot can lose money; test with a demo account and review the limits first. Open and closed positions appear on the Trade history tab.
 
 ## Run locally
 

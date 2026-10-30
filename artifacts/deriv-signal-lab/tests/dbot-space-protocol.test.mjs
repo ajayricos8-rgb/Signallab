@@ -120,6 +120,9 @@ test('host messages are tagged, shaped and free of credentials', () => {
   // `runAfterLoad` and an analysis snapshot are only sent when asked for.
   assert.equal('runAfterLoad' in hostLoadBot({ xml: '<xml/>', name: 'x' }), false);
   assert.equal('analysisSnapshot' in hostLoadBot({ xml: '<xml/>', name: 'x' }), false);
+  const editable = hostLoadBot({ xml: '<xml/>', name: 'x', analysisSnapshot: { analysisId: 'a' } });
+  assert.deepEqual(editable.analysisSnapshot, { analysisId: 'a' });
+  assert.equal('runAfterLoad' in editable, false, 'loading for editing must not start trading');
   // A failed OTP carries the reason, not a URL.
   const failed = hostOtpResponse({ requestId: 1, accountId: 'VRTC1', error: 'gone' });
   assert.equal('url' in failed, false);

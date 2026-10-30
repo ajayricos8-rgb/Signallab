@@ -761,7 +761,7 @@ export function ForgeBaseWorkspace({
               className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/55 px-3 py-2 text-[10px] font-bold text-foreground transition-colors hover:border-primary/40 hover:text-primary"
               data-testid="button-base-open-tools"
             >
-              <Wrench size={12} /> Go to Tools
+              <Wrench size={12} /> Open Signal Copilot
             </button>
             <StatusPill
               live={feed.status === "live" && Boolean(selectedMarket?.fresh)}
