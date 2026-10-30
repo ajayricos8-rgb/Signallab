@@ -1,10 +1,11 @@
-// Structural checks on the shipped AI Even Switcher bot.
+// Structural checks on the shipped AI Even Switcher v2 bot.
 //
 // The bot is a strategy file, so the things that stop it trading are wiring
-// mistakes: a scan that never runs before the purchase conditions, a Markov
-// read the entry branches never see, a mode variable nothing flips, or a
-// recovery that can never revert. These assertions pin that wiring down
-// without a browser, the same way the AI Vision bot is pinned.
+// mistakes: a decision the entry branches never see, a side variable nothing
+// reads, a stake input fed by the wrong quote, or a brake that can never
+// release. These assertions pin that wiring down without a browser, the same
+// way the price presets are pinned — and they pin the v2 contract the v1 bot
+// broke: both Even and Odd are bought by analysis, never by the P&L.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -26,167 +27,105 @@ const section = (rootType, nextTypes) => {
     .sort((a, b) => a - b)[0];
   return XML.slice(start, following ?? XML.length);
 };
+const init = section("trade_definition", ["tick_analysis", "before_purchase", "after_purchase"]);
+const tick = section("tick_analysis", ["before_purchase", "after_purchase"]);
 const before = section("before_purchase", ["after_purchase"]);
 const after = section("after_purchase", []);
 
 test("the bot is a complete Even/Odd DBot program", () => {
   ["trade_definition", "trade_definition_market", "trade_definition_tradetype",
-    "trade_definition_tradeoptions", "before_purchase", "after_purchase"].forEach((type) => {
+    "trade_definition_tradeoptions", "tick_analysis", "before_purchase", "after_purchase"].forEach((type) => {
     assert.ok(has(type), `missing mandatory block ${type}`);
   });
   assert.match(XML, /<field name="TRADETYPE_LIST">evenodd<\/field>/);
+  assert.match(XML, /<field name="TRADETYPECAT_LIST">digits<\/field>/);
+  // Even/Odd takes no barrier and no digit prediction: the trade options say
+  // so explicitly, or the contract rejects the purchase inputs.
+  assert.match(XML, /has_first_barrier="false" has_second_barrier="false" has_prediction="false"/);
   assert.ok(has("trade_again"), "the bot restarts its cycle after a settlement");
-  assert.equal(count("purchase"), 3, "primary Even + recovery Even + recovery Odd");
-  assert.equal((XML.match(/<field name="PURCHASE_LIST">DIGITEVEN<\/field>/g) ?? []).length, 2);
+});
+
+test("both sides are bought, and the side comes from the analysis", () => {
+  assert.equal(count("purchase"), 2, "one Even purchase, one Odd purchase — no recovery-only Odd");
+  assert.equal((XML.match(/<field name="PURCHASE_LIST">DIGITEVEN<\/field>/g) ?? []).length, 1);
   assert.equal((XML.match(/<field name="PURCHASE_LIST">DIGITODD<\/field>/g) ?? []).length, 1);
+  // The purchase branch reads the scored side: side == 1 buys Even, else Odd.
+  const sideAt = before.indexOf('>ai side</field>');
+  const evenAt = before.indexOf('PURCHASE_LIST">DIGITEVEN');
+  const oddAt = before.indexOf('PURCHASE_LIST">DIGITODD');
+  assert.ok(sideAt > 0 && sideAt < evenAt && evenAt < oddAt,
+    "the side read comes first, Even on the == 1 branch, Odd on the else");
 });
 
-test("every cycle scans all markets and stands on the strongest", () => {
-  assert.match(before, /signal_lab_scan_markets/, "the all-markets scan runs per cycle");
-  assert.match(before, /<field name="FAMILY">even-odd<\/field>/);
-  assert.match(before, /signal_lab_switch_to_best/, "the bot moves to the scanned market");
-  const scanAt = before.indexOf("signal_lab_scan_markets");
-  const purchaseAt = before.indexOf('type="purchase"');
-  assert.ok(scanAt < purchaseAt, "the scan happens before any purchase can fire");
-  // The scanner still ranks all markets; the entry gate independently requires a measured edge.
-  assert.match(before, /<value name="MIN_SCORE"><shadow type="math_number" id="evScanFloor"><field name="NUM">0<\/field>/);
+test("the ensemble is scored fresh every cycle in cadence mode", () => {
+  assert.equal(count("x_parity_decision"), 2, "one score at arming, one per tick");
+  assert.equal((XML.match(/<field name="REQUIRE">always<\/field>/g) ?? []).length, 2);
+  assert.match(tick, /x_parity_decision/, "the tick section re-scores before the gates run");
+  assert.match(tick, />ai decision<\//, "the fresh plan is stored where the gates read it");
+  assert.match(tick, /x_parity_decision_part/, "ready and side are unpacked from the plan");
 });
 
-test("the Markov read measures the even transition chance at the settling tick", () => {
-  assert.equal(count("m_transition"), 5, "one transition per even digit");
-  for (const digit of [0, 2, 4, 6, 8])
-    assert.match(before, new RegExp(`id="evT${digit}To"><field name="NUM">${digit}<\\/field>`));
-  assert.equal(count("ticks"), 7, "each transition, the share read and the sample count use the real tick list");
-  assert.equal(count("last_digit"), 5, "each transition starts from the current digit");
-  // A buy's entry tick is the tick AFTER the purchase, so every transition
-  // looks duration+1 ticks out: the tick that settles the contract.
-  for (const digit of [0, 2, 4, 6, 8]) {
-    assert.match(
-      before,
-      new RegExp(`id="evHz${digit}"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="evT${digit}Hor"><field name="VAR" id="evVar03">ai duration</field></block></value><value name="B"><shadow type="math_number" id="evHz${digit}One"><field name="NUM">1</field>`),
-      `transition to ${digit} targets the settling tick`,
-    );
+test("entries need a ready model, a record, a readable market and cool books", () => {
+  assert.match(before, /x_parity_risk/, "the session risk block guards the entry");
+  assert.match(before, /PART">stand-down/, "a broken graded record vetoes the entry");
+  assert.match(before, /PART">dna-score/, "unreadable markets are refused");
+  assert.match(before, /PART">skill/, "a skill-less blend is refused");
+  assert.match(before, />ai loss streak<\//, "the losing-streak cool-off is wired");
+  assert.match(before, />ai max drawdown<\//, "the drawdown pause is wired");
+  assert.match(before, /x_parity_reason/, "entries journal why the model said yes");
+});
+
+test("the stake is sized from the side probability and its own quote", () => {
+  assert.equal(count("x_parity_stake"), 1, "one stake computation per cycle");
+  assert.match(tick, /PART">probability/, "the stake reads the side probability");
+  assert.match(tick, /PART">quote/, "the stake reads the winning side's own quote");
+  assert.match(XML, /<value name="AMOUNT">.*>stake<\//s, "the computed stake feeds the trade options");
+});
+
+test("the scout roams the digit markets under a floor and a dwell", () => {
+  assert.equal(count("x_parity_auto_market"), 1);
+  assert.match(tick, /<field name="MODE">suitable<\/field>/);
+  assert.match(tick, />ai scout floor<\//);
+  assert.match(tick, />ai scout dwell<\//);
+  assert.match(tick, />ai market<\//, "the chosen market is remembered for the journal");
+});
+
+test("every skip names its gate and every settlement teaches the journal", () => {
+  assert.equal(count("x_parity_reason"), 2, "entry reasons and skip reasons");
+  for (const report of ["x_parity_forecast", "x_parity_payouts", "x_parity_audit",
+      "x_parity_league", "x_parity_dna", "x_parity_brain", "x_parity_reverse"]) {
+    assert.match(after, new RegExp(report), `the journal prints ${report}`);
   }
+  assert.match(init, /x_parity_dna/, "arming prints the market fingerprint first");
+  assert.match(init, /x_parity_brain/, "arming prints the AI core");
+  assert.match(init, /x_parity_reverse/, "arming prints the reverse engineering");
 });
 
-test("the parity score blends Markov with even share, and entries are precision-gated", () => {
-  // Raw Markov is measured first, then blended 65/35 with the even-digit
-  // share so thin transition rows cannot swing the gate on noise alone.
-  assert.match(before, /id="evMarkovSet">\s*<field name="VAR" id="evVar14">ai markov raw<\/field>/);
-  assert.match(before, /type="m_even_share" id="evShareBlock"/);
-  assert.match(before, /id="evBlendShareW"><field name="NUM">0\.35<\/field>/);
-  assert.match(before, /id="evBlendRawW"><field name="NUM">0\.65<\/field>/);
-  assert.match(before, /id="evBlendSet"><field name="VAR" id="evVar05">ai markov<\/field>/, "the blend is what the gates read");
-  // Primary entries are confirmed: no Even into a full-margin Odd read.
-  assert.match(before, /type="logic_compare" id="evPrimaryGate"><field name="OP">GTE<\/field>/);
-  assert.match(before, /id="evPrimaryGateIf"[\s\S]*?id="evBuyPrimary"/, "the primary buy sits inside the confirmation gate");
-  // Market roaming happens only in primary mode: recovery keeps its warm
-  // 1000-tick history instead of trading it for a cold stream every cycle.
-  assert.match(before, /type="logic_operation" id="evSwitchAnd"/);
-  assert.match(before, /type="logic_compare" id="evRoamModeCheck"><field name="OP">EQ<\/field>/);
-  assert.match(XML, /id="evIn06"><field name="NUM">54<\/field>/, "the threshold ships at 54 for the less noisy blend");
-  assert.match(before, /id="evPrimaryGateThreshold"><field name="VAR" id="evVar06">ai markov threshold<\/field>/, "primary Even requires score >= threshold");
+test("the shipped knobs match the documented defaults", () => {
+  const knob = (name, value) => new RegExp(
+    `${name}<\\/field><value name="VALUE"><block type="math_number"[^>]*><field name="NUM">${value}<\\/field>`);
+  for (const [name, value] of [
+      ["ai duration", "5"], ["ai payout", "1.95"], ["ai entry slip", "1"],
+      ["ai loss streak stop", "4"], ["ai max drawdown", "15"], ["ai dna floor", "35"],
+      ["ai scout floor", "15"], ["ai scout dwell", "90"], ["ai loss limit", "30"],
+      ["ai profit target", "50"], ["ai stake percent", "2"], ["ai max stake", "1.5"],
+      ["ai kelly fraction", "0.1"], ["ai skill floor", "-1"],
+  ]) assert.match(init, knob(name, value), `knob ${name} ships as ${value}`);
 });
 
-test("the parity read is shrunk by its own sample size before anything gates on it", () => {
-  // Ten-bin transition rows on a cold stream are mostly noise, so the blend is
-  // pulled toward a fair 50% by n / (n + 64): a deep history keeps almost all
-  // of its deviation, a thin one keeps under half of it.
-  assert.match(before, /type="lists_length" id="evTickCountLen"/, "the read counts the ticks it learned from");
-  assert.match(before, /id="evTickCountSet">\s*<field name="VAR" id="evVar22">ai tick count<\/field>/);
-  assert.match(before, /id="evShrinkSet">\s*<field name="VAR" id="evVar05">ai markov<\/field>/, "the blend itself is what gets shrunk");
-  assert.match(before, /id="evShrinkPriorN"><field name="NUM">64<\/field>/, "the prior is 64 ticks");
-  assert.match(before, /id="evShrinkCentre"><field name="NUM">50<\/field>/, "shrinkage is toward a fair 50%");
-  // Order matters: the shrink has to happen before the side probability is read.
-  const shrinkAt = before.indexOf('id="evShrinkSet"');
-  const sideAt = before.indexOf('id="evSideProbSet"');
-  assert.ok(shrinkAt > 0 && shrinkAt < sideAt, "the shrunk score is what the side probability and the gates read");
+test("the cool-off counter follows the settled contract, not the balance", () => {
+  assert.equal(count("contract_check_result"), 1);
+  assert.match(after, /<field name="CHECK_RESULT">win<\/field>/);
+  const resetAt = after.indexOf('CHECK_RESULT">win');
+  const streakAt = after.indexOf('>ai loss streak</field>', resetAt);
+  assert.ok(streakAt > resetAt, "a win resets the streak right where the result is checked");
 });
 
-test("the bot grades itself and calibrates the side probability by its own record", () => {
-  assert.match(XML, /id="evInitGraded">\s*<field name="VAR" id="evVar24">ai graded<\/field>/, "the record is initialised");
-  assert.match(XML, /id="evInitCal">\s*<field name="VAR" id="evVar25">ai calibration<\/field>/);
-  assert.match(XML, /id="evInitCalN"><field name="NUM">1<\/field>/, "an empty record calibrates to 1");
-  // Every settlement is graded, and a win is counted.
-  assert.match(after, /id="evGradedSet"/);
-  assert.match(after, /id="evWinsIf"[\s\S]{0,400}?CHECK_RESULT">win</);
-  assert.match(after, /id="evRecCmp">[\s\S]{0,400}?<field name="NUM">20<\/field>/, "twenty decisions before the record counts");
-  // calibration = (wins / graded) x payout; earned record scales up (capped at
-  // 1.25), unearned scales down (floored at 0.35).
-  assert.match(after, /id="evCalRaw"><field name="OP">MULTIPLY<\/field>/);
-  assert.match(after, /id="evCapSet"[\s\S]{0,200}?<field name="NUM">1.25<\/field>/);
-  assert.match(after, /id="evFloorSet"[\s\S]{0,200}?<field name="NUM">0.35<\/field>/);
-  // And the calibrated value is what the expected value is computed from.
-  const calAt = before.indexOf('id="evSideCalSetE"');
-  const evAt = before.indexOf('id="evEvSet"');
-  assert.ok(calAt > 0 && calAt < evAt, "the side probability is calibrated before EV");
-  assert.match(before, /id="evSideCalFactorE">[\s\S]{0,120}?ai calibration/, "the calibration factor is the multiplier");
-});
-
-test("mode 0 buys Even; recovery buys whichever parity clears the Markov bar", () => {
-  assert.match(before, /id="evModeBranch"/);
-  assert.match(before, /<mutation elseif="2"><\/mutation>/, "three-way branch: primary, recovery Even, recovery Odd");
-  assert.match(before, /id="evBuyPrimary"/);
-  assert.match(before, /id="evBuyRecoveryEven"/);
-  assert.match(before, /id="evBuyRecoveryOdd"/);
-  // The Odd branch is the complement bar (100 − threshold) on the same read.
-  assert.match(before, /id="evOddBar"/);
-  assert.match(before, /<field name="OP">MINUS<\/field>/);
-});
-
-test("a loss switches to recovery; a win back in profit reverts and resets", () => {
-  assert.match(after, /id="evResultWin"/);
-  assert.match(after, /id="evModeSwitch"/, "loss branch sets the mode");
-  assert.match(after, /id="evModeSwitchN"><field name="NUM">1<\/field>/);
-  assert.match(after, /id="evModeRevert"/, "recovered branch clears the mode");
-  assert.match(after, /id="evModeRevertN"><field name="NUM">0<\/field>/);
-  assert.match(after, /type="total_profit"/, "the revert reads the session profit");
-  assert.match(after, /id="evStakeReset"/, "the stake resets on revert");
-  assert.match(after, /id="evNotifySwitch"/, "the switch is announced");
-  assert.match(after, /id="evNotifyRevert"/, "the revert is announced");
-});
-
-test("risk is standard issue: capped martingale ladder, TP/SL guards, balance cap", () => {
-  assert.match(after, /id="evStakeGrow"/, "the capped recovery ladder remains available when explicitly configured");
-  assert.match(XML, /id="evIn07"><field name="NUM">1<\/field>/, "flat staking is the default");
-  assert.match(after, /id="evLadderCheck"/, "the ladder is checked against its cap");
-  assert.match(after, /id="evStakeCapReset"/, "past the cap the ladder restarts");
-  // The limits must read a number that actually moves. `r_loss_guard` and
-  // `r_profit_guard` read the vision brain's session memory, which only
-  // `vision_learn` updates — and this bot learns through `m_transition`, never
-  // through the brain. Pinned to those blocks the loss limit and the profit
-  // target were permanently true, so the documented stops could never fire.
-  // They now compare the trade engine's own session profit, which moves on
-  // every settled contract.
-  assert.equal(count("r_loss_guard"), 0, "the dead memory guards are gone");
-  assert.equal(count("r_profit_guard"), 0, "the dead memory guards are gone");
-  assert.equal(count("x_session_profit"), 4, "loss and profit limits read the engine session profit, on entries and on trade-again");
-  assert.match(before, /id="evGateLoss"[\s\S]{0,200}?<field name="OP">GT<\/field>/);
-  assert.match(before, /id="evGateLossFloor"[\s\S]{0,260}?<field name="NUM">-1<\/field>/, "loss limit is compared against minus the limit");
-  assert.match(before, /id="evGateProfit"[\s\S]{0,200}?<field name="OP">LT<\/field>/);
-  // Session brakes beside them: drawdown floor and losing-streak stop.
-  assert.match(before, /id="evGateDrawdown"[\s\S]{0,600}?ai max drawdown/);
-  assert.match(before, /id="evGateStreak"[\s\S]{0,600}?ai loss streak stop/);
-  assert.ok(has("r_safe_stake"), "the stake is capped by balance share");
-  // The bot only stops at its limits (or manually): trade_again is gated by
-  // the guards, never skipped silently.
-  assert.match(after, /id="evAgainIf"/);
-  assert.match(after, /id="evTradeAgain"/);
-  assert.match(after, /id="evNotifyLimit"/);
-});
-
-test("session brakes are shipped and initialised", () => {
-  for (const [name, value] of [["ai max drawdown", "15"], ["ai loss streak stop", "4"]]) {
-    assert.ok(XML.includes(name), `${name} is declared`);
-  }
-  assert.match(XML, /id="evIs14"[\s\S]{0,160}?ai max drawdown[\s\S]{0,160}?<field name="NUM">15<\/field>/);
-  assert.match(XML, /id="evIs15"[\s\S]{0,160}?ai loss streak stop[\s\S]{0,160}?<field name="NUM">4<\/field>/);
-});
-
-test("the knobs live in Run once at start, all variables declared", () => {
-  const declared = new Set([...XML.matchAll(/<variable type="" id="([^"]+)">([^<]+)<\/variable>/g)].map((m) => m[1]));
-  const used = new Set([...XML.matchAll(/<field name="VAR" id="([^"]+)"/g)].map((m) => m[1]));
-  for (const id of used) assert.ok(declared.has(id), `variable ${id} is declared`);
-  for (const knob of ["ai base stake", "ai markov threshold", "ai multiplier", "ai max steps", "ai loss limit", "ai profit target"])
-    assert.ok(XML.includes(knob), `knob "${knob}" exists`);
+test("the session brakes stop the cycle on ruin or target", () => {
+  assert.equal(count("x_parity_risk"), 2, "risk guards the entry and the restart");
+  const brakesAt = after.indexOf("x_parity_risk");
+  const againAt = after.indexOf('type="trade_again"');
+  assert.ok(brakesAt > 0 && brakesAt < againAt, "the restart is gated on the risk block");
+  assert.match(after, />ai loss limit<\//);
+  assert.match(after, />ai profit target<\//);
 });

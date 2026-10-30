@@ -11,3 +11,4 @@ import './risk';
 import './shortcuts';
 
 import './price-strategies';
+import './parity-strategies';

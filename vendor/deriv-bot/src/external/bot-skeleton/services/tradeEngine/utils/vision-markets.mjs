@@ -29,6 +29,19 @@ export const VOLATILITY_MARKETS = [
 ];
 
 /**
+ * Every synthetic Deriv offers Even/Odd on: the ten volatility indices plus
+ * the four Jump indices (JD75 is absent from every digit listing found, so
+ * the scout does not walk it — see docs/even-odd-research.md §1).
+ */
+export const DIGIT_MARKETS = [
+    ...VOLATILITY_MARKETS,
+    'JD10',
+    'JD25',
+    'JD50',
+    'JD100',
+];
+
+/**
  * A 0-100 read on how worth trading a market is: how far past the noise the
  * strongest lean sits, how confident the ensemble is, how many models agree,
  * and how much data is behind the lot. It ranks markets for choosing where to

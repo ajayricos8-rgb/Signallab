@@ -1089,6 +1089,74 @@ export const ToolboxItems = () =>
                     <Block type='hedge_purchase' />
                 </Category>
 
+                <Category id='vision_parity' name={localize('Parity strategies')}>
+                    {/* The brain behind the shipped AI Even Switcher. Sixteen
+                        experts forecast P(even) at the settling tick, the two
+                        sides are priced against the live DIGITEVEN/DIGITODD
+                        quotes, and the better expected value wins. */}
+                    <Block type='x_parity_decision'>
+                        <Field name='REQUIRE'>edge</Field>
+                        <Value name='LIST'>
+                            <Block type='ticks' />
+                        </Value>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='THRESHOLD'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_EDGE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PAYOUT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.95</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_CONFIDENCE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_AGREEMENT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_EV'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='SLIP'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_parity_decision_part' />
+                    <Block type='x_parity_dna' />
+                    <Block type='x_parity_dna_part' />
+                    <Block type='x_parity_payouts' />
+                    <Block type='x_parity_league' />
+                    <Block type='x_parity_audit' />
+                    <Block type='x_parity_brain' />
+                    <Block type='x_parity_reverse' />
+                    <Block type='x_parity_forecast' />
+                    <Block type='x_parity_market_score' />
+                    <Block type='x_parity_auto_market' />
+                    <Block type='x_parity_reason' />
+                    <Block type='x_parity_stake' />
+                    <Block type='x_parity_contracts' />
+                    <Block type='x_parity_risk' />
+                </Category>
+
                 <Category id='vision_shortcut' name={localize('Shortcuts')}>
                     <Block type='x_speed' />
                     <Block type='x_speed_index' />
