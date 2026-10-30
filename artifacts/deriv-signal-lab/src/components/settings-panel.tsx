@@ -179,7 +179,7 @@ export function SettingsPanel() {
           <li>
             <strong className="text-foreground">When it votes:</strong> only after positive Brier and log-loss skill and a paired
             z above the selection-adjusted bar. A validated Forge can confirm, trim or veto the published estimate. A weak master verdict is shown
-            before starting and requires confirmation. Forge itself never places an order.
+            before starting. Load and Run starts immediately, and Forge itself never places an order.
           </li>
           <li>
             <strong className="text-foreground">Where to see it:</strong> AI Analysis incorporates the Forge estimate when it has passed its validation gates;

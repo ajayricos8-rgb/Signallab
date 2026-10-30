@@ -274,7 +274,7 @@ function buildAnalysisSnapshot(
   // Analysis almost never produced a strategy that could trade — the bot
   // loaded, ran, and its entry gate stayed shut forever. The verdict remains
   // on screen with its measured edge; whether to run the strongest candidate
-  // anyway is the user's call, confirmed at Load and Run.
+  // anyway is the user's call when they press Load and Run.
   const tradeable = true;
   const familyForStrategy: DbotAiFamily =
     result.kind === "digit" ? result.family : "rise-fall";
@@ -1113,24 +1113,6 @@ export function DbotAiCopilot({
     )
       return;
     if (!registryReady) return;
-    // A weak (NO_EDGE) verdict no longer blocks loading — the user decides —
-    // but it is named plainly before anything starts, on demo and real alike.
-    const weakEdge = !signalTradeable;
-    if (weakEdge || accountType === "real") {
-      const edgeText = weakEdge
-        ? `The master measured no decisive edge on this candidate (${selectedSignal ? `${selectedSignal.master.edgePts >= 0 ? "+" : ""}${selectedSignal.master.edgePts.toFixed(1)} pts` : "unmeasured"}); it is the strongest market from this scan, not a certified edge. `
-        : "";
-      const accountText =
-        accountType === "real"
-          ? `This will start ${contractLabel(currentResult)} on ${currentResult.name} using your REAL Deriv account. `
-          : `This will start ${contractLabel(currentResult)} on ${currentResult.name}. `;
-      if (
-        !window.confirm(
-          `${edgeText}${accountText}The strategy has a ${lossLimit} loss limit and ${maxTrades} trade cap, but losses are possible. Continue?`,
-        )
-      )
-        return;
-    }
     setLoadingRun(true);
     onLoadAndRun(
       analysisXml,
@@ -1139,7 +1121,6 @@ export function DbotAiCopilot({
     );
   }, [
     accountReady,
-    accountType,
     analysis.error,
     analysis.scanning,
     analysisXml,
@@ -1147,15 +1128,11 @@ export function DbotAiCopilot({
     currentResult,
     currentRun,
     family,
-    lossLimit,
     loadingRun,
-    maxTrades,
     onLoadAndRun,
     ready,
     registryReady,
     selectedAnalysisSnapshot,
-    selectedSignal,
-    signalTradeable,
     snapshotReady,
   ]);
 
@@ -1767,7 +1744,7 @@ export function DbotAiCopilot({
                           </div>
                           The strongest ranked candidate can always be loaded —
                           when its measured edge is small the panel says so and
-                          Load and Run asks you to confirm. The exact analysis
+                          Load and Run starts immediately. The exact analysis
                           key, market, entry window, session loss cap and run
                           limit are still checked inside the generated DBot
                           blocks on every tick. Synthetic-index outcomes remain
@@ -1782,9 +1759,8 @@ export function DbotAiCopilot({
                             decisive edge on this scan (
                             {selectedSignal.master.edgePts >= 0 ? "+" : ""}
                             {selectedSignal.master.edgePts.toFixed(1)} pts).
-                            Load and Run still works — it will ask you to
-                            confirm, and the strategy keeps its loss cap and
-                            trade limit.
+                            Load and Run starts this candidate immediately;
+                            the strategy keeps its loss cap and trade limit.
                           </div>
                         )}
                         {!contractVerified && (
@@ -1817,6 +1793,11 @@ export function DbotAiCopilot({
                           data-testid="dbot-ai-load-analysis">
                           <ArrowDownToLine size={14} /> Load blocks for editing
                         </button>
+                        <p className="rounded-lg border border-amber-200/20 bg-amber-200/[.04] px-3 py-2 text-[9px] leading-4 text-amber-100" data-testid="dbot-ai-immediate-run-warning">
+                          Load and Run replaces the current blocks without asking and starts trading immediately
+                          {accountType === "real" ? " on your REAL account with real money" : " on the linked account"}.
+                          Unsaved workspace changes will be lost. Losses are possible; review the stake and limits first.
+                        </p>
                         <button
                           type="button"
                           onClick={handleLoadAndRun}

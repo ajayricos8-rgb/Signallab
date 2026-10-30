@@ -115,7 +115,10 @@ const BotBuilder = observer(() => {
                 const raw_name = typeof data.name === 'string' ? data.name : typeof data.fileName === 'string' ? data.fileName : '';
                 const name = raw_name.trim() || 'Vision Lab bot';
                 const has_blocks = workspace.getAllBlocks(false).length > 0;
-                if (has_blocks && !window.confirm(`Replace the strategy in the workspace with “${name}”? Unsaved changes will be lost.`)) {
+                // Load and Run is the user's explicit start action: do not delay
+                // an entry with a second canvas-replacement prompt. Load-only
+                // and other imports still protect unsaved workspace changes.
+                if (!runAfterLoad && has_blocks && !window.confirm(`Replace the strategy in the workspace with “${name}”? Unsaved changes will be lost.`)) {
                     return;
                 }
                 setSignalLabAnalysisSnapshot(null);
