@@ -12,7 +12,7 @@
     "test:dbot-ai": "node --experimental-strip-types --test ./tests/dbot-ai.test.mjs ./tests/dbot-hedge-barrier.test.mjs",
     "test:dbot-gate": "node --experimental-strip-types --test ../../vendor/deriv-bot/tests/signallab-analysis-gate.test.mjs",
     "test:dbot-blocks": "node --experimental-strip-types --test ../../vendor/deriv-bot/tests/signallab-blocks.test.mjs",
-    "test:vision": "node --experimental-strip-types --test ./tests/vision-engine.test.mjs ./tests/vision-entry.test.mjs ./tests/vision-memory.test.mjs ./tests/ai-vision-bot.test.mjs ./tests/ai-even-switcher-bot.test.mjs ./tests/parity-strategies.test.mjs ./tests/parity-safety.test.mjs && node --test tests/vision-accuracy.test.mjs",
+    "test:vision": "node --experimental-strip-types --test ./tests/vision-engine.test.mjs ./tests/vision-entry.test.mjs ./tests/vision-memory.test.mjs ./tests/ai-vision-bot.test.mjs ./tests/ai-even-switcher-bot.test.mjs ./tests/parity-strategies.test.mjs ./tests/parity-safety.test.mjs ./tests/parity-runtime-regression.test.mjs && node --test tests/vision-accuracy.test.mjs",
     "test:engine-lab": "node --experimental-strip-types --test ./tests/engine-lab.test.mjs",
     "test:neural": "node --experimental-strip-types --test ./tests/neural-model.test.mjs",
     "test:forge": "node --experimental-strip-types --test ./tests/forge-model.test.mjs",
