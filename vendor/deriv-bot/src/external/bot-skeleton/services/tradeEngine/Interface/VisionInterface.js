@@ -1162,7 +1162,6 @@ const getVisionInterface = tradeEngine => {
             const clock = tickClock();
             const result = priceDecision(list, mode === 'tick' ? 'tick' : 'rise', context.horizon, threshold, {
                 maxTie: num(maxTie, 0.2),
-                pipSize,
                 minAgreement: num(minAgreement, 0),
                 minEdge: num(minEdge, 0),
                 minConfidence: num(minConfidence, 0),
@@ -1642,6 +1641,7 @@ const getVisionInterface = tradeEngine => {
             const assumed = num(payout, PARITY_FALLBACK_PAYOUT) || PARITY_FALLBACK_PAYOUT;
             const duration = clamp(Math.round(num(horizon, 5)) || 5, 1, 10);
             const result = parityDecision(list, duration, num(threshold, 0), {
+                pipSize,
                 minAgreement: num(minAgreement, 0),
                 minEdge: num(minEdge, 0),
                 minConfidence: num(minConfidence, 0),

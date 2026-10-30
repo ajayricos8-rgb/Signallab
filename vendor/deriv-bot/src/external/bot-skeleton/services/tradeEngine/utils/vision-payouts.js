@@ -112,12 +112,11 @@ export class PayoutTable {
 
     /** True only when every tradeable slot came from the API. */
     get complete() {
-        let expected = 0;
         for (let b = 0; b <= 9; b++) {
-            if (winningDigitCount('over', b) > 0) expected += 1;
-            if (winningDigitCount('under', b) > 0) expected += 1;
+            if (winningDigitCount('over', b) > 0 && !this.has('over', b)) return false;
+            if (winningDigitCount('under', b) > 0 && !this.has('under', b)) return false;
         }
-        return this.filled >= expected;
+        return true;
     }
 
     toJSON() {
@@ -173,6 +172,12 @@ async function fetchTable(key, options) {
     const table = cache.get(key) || PayoutTable.fromJSON({ ...(stored[key] || {}), key });
 
     const jobs = [];
+    // Price Even/Odd first. Unsupported Over/Under proposals can take twelve
+    // seconds per batch and must not block parity quotes from reaching the bot.
+    ['even', 'odd'].forEach(side => {
+        if (table.hasParity(side) && Date.now() - table.parityAt[side] < REFRESH_MS) return;
+        jobs.push({ parity: side });
+    });
     for (let barrier = 0; barrier <= 9; barrier++) {
         ['over', 'under'].forEach(direction => {
             if (winningDigitCount(direction, barrier) <= 0) return;
@@ -180,11 +185,6 @@ async function fetchTable(key, options) {
             jobs.push({ barrier, direction });
         });
     }
-    // Even/Odd needs no barrier: two proposals price the whole family.
-    ['even', 'odd'].forEach(side => {
-        if (table.hasParity(side) && Date.now() - table.parityAt[side] < REFRESH_MS) return;
-        jobs.push({ parity: side });
-    });
     if (!jobs.length) return table;
 
     let sawLive = false;
@@ -218,6 +218,9 @@ async function fetchTable(key, options) {
                     if (payout > 0 && stake > 0) {
                         if (isParity) table.setParity(job.parity, payout / stake);
                         else table.set(job.direction, job.barrier, payout / stake);
+                        // Publish each successful response immediately, including
+                        // parity, rather than waiting for unrelated slow jobs.
+                        cache.set(key, table);
                         sawLive = true;
                     }
                 } catch {
@@ -282,7 +285,7 @@ export async function ensurePayouts(options) {
             refreshPayouts(options),
             new Promise(resolve => setTimeout(() => resolve(table || null), 4000)),
         ]);
-        table = result || table;
+        table = result || cache.get(key) || table;
     } else if (isStale) {
         refreshPayouts(options);
     }
@@ -317,18 +320,6 @@ export function payoutSnapshot(options) {
     if (!table) return null;
     return { live: table.live, complete: table.complete, ageSeconds: (Date.now() - table.at) / 1000, table };
 }
-
-export default {
-    ensurePayouts,
-    refreshPayouts,
-    peekPayouts,
-    payoutSnapshot,
-    PayoutTable,
-    refreshTickPayouts,
-    peekTickPayouts,
-    tickPayoutSnapshot,
-    TickPayoutTable,
-};
 
 /* ------------------------------------------------------------------------- *
  * High/Low Tick pay-out table — ten quotes, one per (side, selected_tick).
@@ -531,3 +522,15 @@ export function tickPayoutSnapshot(options) {
         table,
     };
 }
+
+export default {
+    ensurePayouts,
+    refreshPayouts,
+    peekPayouts,
+    payoutSnapshot,
+    PayoutTable,
+    refreshTickPayouts,
+    peekTickPayouts,
+    tickPayoutSnapshot,
+    TickPayoutTable,
+};
