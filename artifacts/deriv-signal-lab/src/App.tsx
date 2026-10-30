@@ -1,31 +1,27 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { RiseFallTool } from '@/components/rise-fall-tool';
-import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
+import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
+import { SignalBotProvider } from '@/components/signal-bot-provider';
+import { MarketFeedProvider } from '@/components/market-feed-provider';
+import { SettingsPanel } from '@/components/settings-panel';
+import { TradeHistoryPanel } from '@/components/trade-history-panel';
+import { ForgeBaseWorkspace } from '@/components/forge-base-workspace';
+import { DbotSpace } from '@/components/dbot-space';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Activity, Bot, Clock3, Menu, Moon, Sun, Wrench, X } from 'lucide-react';
+import { Activity, Boxes, Clock3, Menu, Moon, Settings, Sun, X } from 'lucide-react';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 
 const queryClient = new QueryClient();
 
 type Theme = 'light' | 'dark';
-type WorkspaceTab = 'tools' | 'trade-history' | 'premium-bots';
-type ToolsMiniTab = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
-
-const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
-  { id: 'rise-fall', label: 'Rise/Fall' },
-  { id: 'over-under', label: 'Over/Under' },
-  { id: 'even-odd', label: 'Even/Odd' },
-  { id: 'matches', label: 'Matches' },
-];
-
+type WorkspaceTab = 'trade-history' | 'dbot-space' | 'settings';
 const workspaceTabs = [
-  { id: 'tools', label: 'Tools', icon: Wrench },
-  { id: 'trade-history', label: 'Signal history', icon: Clock3 },
-  { id: 'premium-bots', label: 'Premium bots', icon: Bot },
+  { id: 'trade-history', label: 'Trade history', icon: Clock3 },
+  { id: 'dbot-space', label: 'DBot Space', icon: Boxes },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
 function readSavedTheme(): Theme {
@@ -38,11 +34,15 @@ function readSavedTheme(): Theme {
 
 function Home() {
   const [mobileNav, setMobileNav] = useState(false);
-  const [activeToolsMiniTab, setActiveToolsMiniTab] = useState<ToolsMiniTab>('rise-fall');
   const [theme, setTheme] = useState<Theme>(readSavedTheme);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>('tools');
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('dbot-space');
+  const [analysisRequest, setAnalysisRequest] = useState(0);
+  const [dbotMounted, setDbotMounted] = useState(false);
+  useEffect(() => { if (activeTab === 'dbot-space') setDbotMounted(true); }, [activeTab]);
+  const trading = useDerivTrading();
+  const openPositions = trading.openPositions.length;
   const selectedTab = workspaceTabs.find(({ id }) => id === activeTab);
-  const tabLabel = selectedTab?.label ?? 'Tools';
+  const tabLabel = selectedTab?.label ?? 'DBot Space';
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -85,7 +85,7 @@ function Home() {
             <div className="eyebrow px-3 pb-2">Workspace</div>
             {workspaceTabs.map(({ id, label, icon: Icon }) => {
               const active = activeTab === id;
-              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'trade-history' ? 'button-history-nav' : 'button-premium-bots-nav';
+              const testId = id === 'trade-history' ? 'button-history-nav' : id === 'settings' ? 'button-settings-nav' : 'button-dbot-space-nav';
               return (
                 <button
                   key={id}
@@ -95,7 +95,12 @@ function Home() {
                 >
                   <Icon size={16} className={active ? 'text-primary' : ''} />
                   {label}
-                  {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}
+                  {id === 'trade-history' && openPositions > 0 && (
+                    <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary" data-testid="badge-open-positions">
+                      {openPositions}
+                    </span>
+                  )}
+                  {active && <span className={`${id === 'trade-history' && openPositions > 0 ? '' : 'ml-auto '}h-1.5 w-1.5 rounded-full bg-primary`} />}
                 </button>
               );
             })}
@@ -109,7 +114,7 @@ function Home() {
               <button onClick={() => setMobileNav(true)} className="rounded-lg border border-border p-2 text-muted-foreground hover:text-foreground md:hidden" aria-label="Open navigation" data-testid="button-open-navigation"><Menu size={18} /></button>
               <div>
                 <div className="eyebrow">Signal Lab <span className="mx-1 text-border">/</span> {tabLabel}</div>
-                <h1 className="mt-1 text-base font-bold tracking-[-0.025em] sm:text-lg">Market analysis workspace</h1>
+                <h1 className="mt-1 text-base font-bold tracking-[-0.025em] sm:text-lg">{activeTab === 'dbot-space' ? 'Visual bot workspace' : activeTab === 'settings' ? 'Settings and research base' : 'Trade history'}</h1>
               </div>
             </div>
             <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="focus-ring rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground" aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-pressed={theme === 'dark'} title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} data-testid="button-theme-toggle">
@@ -117,25 +122,16 @@ function Home() {
             </button>
           </header>
 
-          <div className="min-h-[calc(100dvh-76px)] px-4 py-5 pb-24 sm:px-6 sm:py-7 lg:px-8">
+          <div className="min-h-[calc(100dvh-76px)] px-4 pt-5 pb-24 sm:px-6 sm:pt-7 lg:px-8">
+            {dbotMounted && <div hidden={activeTab !== 'dbot-space'}><DbotSpace onOpenSettings={() => setActiveTab('settings')} analysisRequest={analysisRequest} /></div>}
             {activeTab === 'trade-history' ? (
-              <div className="mx-auto w-full max-w-[1500px]">
-                <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
-                  <div className="eyebrow">Workspace records</div>
-                  <h2 className="mt-1 text-xl font-bold tracking-tight">Trade history</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">No verified records have been stored. The analysis tools do not yet persist signals or run a walk-forward contract backtest.</p>
-                  <div className="mt-4 rounded-lg border border-dashed border-border bg-background/40 px-4 py-8 text-center text-sm text-muted-foreground">Signal history will remain empty until real, gated outputs are recorded.</div>
-                </section>
+              <TradeHistoryPanel />
+            ) : activeTab === 'settings' ? (
+              <div className="space-y-8" data-testid="settings-workspace">
+                <SettingsPanel />
+                <ForgeBaseWorkspace onOpenAnalysis={() => { setActiveTab('dbot-space'); setAnalysisRequest((value) => value + 1); }} />
               </div>
-            ) : activeTab === 'premium-bots' ? (
-              <div className="mx-auto w-full max-w-3xl rounded-xl border border-card-border bg-card/90 p-6 panel-glow sm:p-8">
-                <div className="eyebrow">Premium tools</div>
-                <h2 className="mt-1 text-xl font-bold tracking-tight">Premium bots</h2>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Premium bots will be listed here when they are configured for this workspace.</p>
-              </div>
-            ) : (
-              <ToolsWorkspace activeTab={activeToolsMiniTab} onTabChange={setActiveToolsMiniTab} />
-            )}
+            ) : null}
           </div>
         </main>
       </div>
@@ -144,7 +140,7 @@ function Home() {
         <div className="mx-auto flex w-full max-w-3xl gap-1 px-2 py-2 sm:px-4">
           {workspaceTabs.map(({ id, label, icon: Icon }) => {
             const active = activeTab === id;
-            const compactLabel = id === 'trade-history' ? 'History' : id === 'premium-bots' ? 'Premium' : label;
+            const compactLabel = id === 'trade-history' ? 'History' : id === 'dbot-space' ? 'DBot' : label;
             return (
               <button
                 key={id}
@@ -158,45 +154,15 @@ function Home() {
                 <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8 ${active ? 'bg-primary/10' : ''}`}><Icon size={16} strokeWidth={active ? 2.4 : 1.8} /></span>
                 <span className="truncate sm:hidden">{compactLabel}</span>
                 <span className="hidden truncate sm:inline">{label}</span>
+                {id === 'trade-history' && openPositions > 0 && (
+                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary">{openPositions}</span>
+                )}
               </button>
             );
           })}
         </div>
       </nav>
     </div>
-  );
-}
-
-function ToolsWorkspace({
-  activeTab,
-  onTabChange,
-}: {
-  activeTab: ToolsMiniTab;
-  onTabChange: (tab: ToolsMiniTab) => void;
-}) {
-  return (
-    <section className="mx-auto w-full max-w-[1500px]" data-testid="tools-workspace">
-      <div role="group" aria-label="Tool categories" className="flex w-full items-center gap-1 overflow-x-auto border-b border-border">
-        {toolsMiniTabs.map(({ id, label }) => {
-          const active = activeTab === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => onTabChange(id)}
-              aria-pressed={active}
-              className={`focus-ring -mb-px shrink-0 border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${active ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'}`}
-              data-testid={`tools-mini-tab-${id}`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
-      <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
-        {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
-      </div>
-    </section>
   );
 }
 
@@ -220,9 +186,18 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <Router />
-        </WouterRouter>
+        <DerivTradingProvider>
+          {/* Above the bot because every run waits for the entry the analysis
+              planned, and that wait reads live ticks even while the user is on
+              another workspace tab. */}
+          <MarketFeedProvider>
+            <SignalBotProvider>
+              <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+                <Router />
+              </WouterRouter>
+            </SignalBotProvider>
+          </MarketFeedProvider>
+        </DerivTradingProvider>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

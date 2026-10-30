@@ -74,7 +74,7 @@ async function start() {
     if (build.status !== 0) {
       throw new Error(`Authentication API build failed${build.status === null ? '' : ` (exit ${build.status})`}.`);
     }
-    apiProcess = spawn(process.execPath, ['--enable-source-maps', 'dist/index.mjs'], {
+    apiProcess = spawn(process.execPath, [`--env-file-if-exists=${path.join(apiDirectory, '.env')}`, '--enable-source-maps', 'dist/index.mjs'], {
       cwd: apiDirectory,
       env: {
         ...process.env,
