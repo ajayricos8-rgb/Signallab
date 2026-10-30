@@ -20,7 +20,8 @@
     "docs:engines": "node --experimental-strip-types ./scripts/generate-engine-catalog.mjs",
     "test:engine-lab:browser": "node ./tests/browser/engine-lab-smoke.mjs",
     "docs:engines:check": "node --experimental-strip-types ./scripts/generate-engine-catalog.mjs --check",
-    "test:dbot:browser": "node ./tests/browser/dbot-space-smoke.mjs"
+    "test:dbot:browser": "node ./tests/browser/dbot-space-smoke.mjs",
+    "test:parity:browser": "node ./tests/browser/dbot-parity-import-smoke.mjs"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",

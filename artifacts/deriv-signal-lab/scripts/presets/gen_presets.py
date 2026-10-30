@@ -37,11 +37,14 @@ class Emitter:
             self.variables.append((ident, name))
         return self.by_name[name]
 
-    def block(self, btype, fields=None, values=None, statements=None, nxt=None):
+    def block(self, btype, fields=None, values=None, statements=None, nxt=None, mutation=None):
         for name in (fields or {}):
             if name == "VAR":
                 self.var(fields[name])
         parts = [f'<block type="{btype}" id="{self.nid()}">']
+        if mutation:
+            attrs = " ".join(f'{name}="{escape(str(value))}"' for name, value in mutation.items())
+            parts.append(f'  <mutation {attrs}></mutation>')
         for name, value in (fields or {}).items():
             if name == "VAR":
                 # The id is what binds a get/set to the declared variable; a
@@ -115,6 +118,9 @@ class Emitter:
     def if_(self, cond, do, otherwise=None):
         return self.block(
             "controls_if",
+            # Blockly creates ELSE inputs only when this mutation is present.
+            # Without it, deserialization silently discards the whole branch.
+            mutation={"else": "1"} if otherwise else None,
             values={"IF0": cond},
             statements={"DO0": do if isinstance(do, list) else [do], "ELSE": otherwise or []},
         )
