@@ -37,7 +37,10 @@ in the Vision Lab -> Price strategies toolbox:
   x_price_brain           the deep net's training state and the regime call
   x_price_reverse         the DNA v2 auto-reverse-engineering diagnosis
   x_price_forecast        the full ten-outcome read in one line
-  x_price_auto_market     the scout: leave a market it cannot read
+  x_market_scan           the AI multi-market scan: read every shared market
+                          with this bot's own model, all at the same moment
+  x_scan_switch_best      stand on the most suitable market from that scan
+  x_trade_due             the once-a-minute cadence clock
 
 Run `scripts/presets/validate_presets.py src/lib/bot-store/bots/*.xml`
 afterwards, then the preset tests.

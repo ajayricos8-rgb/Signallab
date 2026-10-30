@@ -8,8 +8,8 @@ sixteen experts scored walk-forward under a regime-gated meta-learner, a deep on
 brain, a tie-aware structural prior measured from the market itself, the live ten-outcome
 payout ladder as the value test, an execution clock that turns five ticks into seconds, DNA v2
 auto-reverse-engineering with self-derived tuning, per-outcome calibration of the graded
-record, a self-audit that grades every published decision, and a market scout that can move the
-bot when the market it is standing on stops being readable.
+record, a self-audit that grades every published decision, and an AI multi-market scan that
+reads every market Signal Lab shares with this same model before the bot decides where to stand.
 
 Numbers marked **[measured]** come from the simulation and enumeration scripts described in
 [§12](#12-reproducing-the-numbers); numbers marked **[contract]** come from Deriv's published
@@ -656,7 +656,8 @@ is a thin alias that writes the same bytes).
 | Where | Blocks | What it does |
 | --- | --- | --- |
 | Initialisation | `x_price_dna`, `x_price_payout_table`, `x_price_clock` | describes the market, the ladder and the clock before a contract is bought |
-| Every tick | `x_price_auto_market` (scout) | moves to a readable market, at most every 15 minutes |
+| Every tick | `x_market_scan`, `x_scan_switch_best` | reads every shared market with the same model and stands on the most suitable one (floor, margin, dwell) |
+| Before purchase | `x_trade_due` | after a whole minute without a purchase, the quality gates stand aside so the bot still trades |
 | Every tick | `x_price_decision` (12 inputs) | ten experts, EV floor `ai min ev`, entry slip, tie gate |
 | Every tick | `x_price_decision_part` | side, tick, probability, EV, confidence, certainty, stand-down |
 | Every tick | `x_price_risk`, `x_price_stake` | exposure gate, tenth-Kelly stake on the calibrated probability |
@@ -953,7 +954,7 @@ widen their edge requirement, and charge entry slip. Any residual overlay the
 scan finds after those guards is the closest thing to a tradeable inefficiency
 a retail bot can reach — small, fleeting, and correctly sized tenth-Kelly.
 
-### 15.8 Cross-market rotation (the scout's thesis)
+### 15.8 Cross-market rotation (the scan's thesis)
 
 High/Low Ticks are quoted on every synthetic index, and the ladders, tie rates
 and tick speeds differ. Rotation helps for three boring, real reasons: (1) a
@@ -962,9 +963,14 @@ read; (2) a market whose granularity the engine models better (higher DNA
 readability, positive walk-forward skill) wastes less of the estimate; (3) a
 market whose tick rate fits the bot's latency preserves label fidelity. The
 cost is a cold tick stream (~256 windows before the models publish), which is
-why the dwell is fifteen minutes and the floor is low. Rotation is market
-*selection*, not prediction — and the scout score (EV, certainty,
+why a switch needs a margin over the incumbent and a dwell time. Rotation is
+market *selection*, not prediction — and the scan score (EV, certainty,
 readability, sample, skill) is a ranking, never a forecast.
+
+Because the scan prices every market at the same moment, the comparison is a
+real cross-section rather than thirteen decisions taken minutes apart. The bot
+still trades one contract at a time: `x_market_scan` reads, `x_scan_switch_best`
+moves the stream, and the strategy's own Purchase block buys.
 
 ### 15.9 Session engineering (streak stops, cooldowns, targets)
 

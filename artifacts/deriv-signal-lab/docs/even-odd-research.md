@@ -92,14 +92,31 @@ least the forecast horizon so a training target is not in the future at the
 next origin; model selection and overlapping historical features still require
 independent evaluation.
 
-The shipped preset uses 5 ticks, a one-tick forecast-slip assumption and an
-estimated one-sigma EV floor of 0.5%. Both independently priced proposals
-must be present and less than five minutes old; a fallback or old quote alone
-cannot authorize an entry. This is not a live execution quote guarantee, nor
-is there a guarantee that the purchase uses the earlier proposal. The engine
-records hypothetical forecasts at their forecast horizon; they are **not**
-necessarily bought contracts or actual settlement results. The inferred
-latency can be wrong. Stale feeds, gaps and rolling history may affect scoring.
+The shipped preset uses 5 ticks and a one-tick forecast-slip assumption. The
+entry mode is "always" with the EV floor at zero: on a five-tick Even/Odd
+contract a positive one-sigma EV bound is not reached often enough to trade,
+and the bot that shipped with it sat in "Entry held" indefinitely. The EV
+floor and the DNA floor remain knobs — raise them back to 0.005 and 35 for the
+selective posture — but they ship off so the bot actually opens positions.
+Both independently priced proposals must still be present and fresh; a
+fallback or old quote alone cannot authorize an entry. This is not a live
+execution quote guarantee, nor is there a guarantee that the purchase uses the
+earlier proposal. The engine records hypothetical forecasts at their forecast
+horizon; they are **not** necessarily bought contracts or actual settlement
+results. The inferred latency can be wrong. Stale feeds, gaps and rolling
+history may affect scoring.
+
+The bot also runs an AI multi-market scan: the same parity ensemble reads every
+digit market Signal Lab shares, at the same moment, and scores them on one
+scale (measured EV, certainty, DNA readability, sample and walk-forward skill).
+It moves to the most suitable one only when that market clears `ai scan floor`,
+beats the market it is on by `ai scan margin`, and `ai scan dwell` seconds have
+passed — a switch costs a cold tick stream. The scan never opens an order; the
+Purchase block still buys, on the market the scan chose. A separate
+`x_trade_due` arm of the entry gate covers "at least one trade a minute": after
+a whole `ai cadence` window with no purchase the DNA, skill and confidence
+gates stand aside, while the risk block, the session brakes, the losing-streak
+cool-off, the trade cap and a broken graded record still refuse the entry.
 
 The preset uses a 0.35 base stake, a 1.5 maximum, a strict 2% of balance,
 30 session loss limit, 50 profit target, 15 session-loss brake, 4 consecutive

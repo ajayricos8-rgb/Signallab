@@ -36,6 +36,24 @@ import {
 } from '../utils/vision-entry.mjs';
 import { createMarketPicker, scoreMarket, VOLATILITY_MARKETS, DIGIT_MARKETS } from '../utils/vision-markets.mjs';
 import {
+    DEFAULT_CADENCE_S,
+    DEFAULT_SCAN_DWELL_S,
+    DEFAULT_SCAN_FLOOR,
+    DEFAULT_SCAN_INTERVAL_S,
+    DEFAULT_SCAN_MARGIN,
+    SCAN_MIN_TICKS,
+    SCAN_STALE_MS,
+    SCAN_TICK_LIMIT,
+    chooseScanTarget,
+    createCadenceClock,
+    normalizeScanFamily,
+    rankReads,
+    scanMode,
+    scanReport,
+    scoreRead,
+} from '../utils/market-scan.mjs';
+import { getSignalLabMarkets } from '@/services/signallab-feed';
+import {
     ensurePayouts,
     peekPayouts,
     peekTickPayouts,
@@ -671,6 +689,11 @@ const getVisionInterface = tradeEngine => {
     const picker = createMarketPicker({ markets: MARKETS });
     /** The parity scout walks all fourteen Even/Odd markets, jumps included. */
     const parityPicker = createMarketPicker({ markets: DIGIT_MARKETS });
+    // The scouts' dwell clock used to start only when `choose()` was first
+    // asked, so `secondsOnMarket()` read zero for the whole warm-up and the
+    // "stuck" escape hatch could never fire. Start both clocks with the run.
+    picker.start();
+    parityPicker.start();
 
     /**
      * Move the running bot to another market: swap the symbol the engine trades
@@ -699,6 +722,211 @@ const getVisionInterface = tradeEngine => {
         ensurePayouts(payoutOptions()); // price the new market in the background
         refreshTickPayouts({ symbol, currency: tradeOptions().currency || 'USD' });
         return symbol;
+    };
+
+    /* ------------------------------------------------------------------ *
+     * The AI multi-market scan
+     *
+     * Signal Lab streams thirteen volatility indices into this frame, and the
+     * decision models are pure functions of a tick array, so the bot can read
+     * *every* market before it decides where to stand instead of walking them
+     * one at a time. The scan runs the bot's own model — the same
+     * `parityDecision` / `priceDecision` the strategy trades on — over each
+     * market's cached stream, ranks the reads with one comparable score, and
+     * moves only when the challenger wins by a margin over a floor after a
+     * dwell. It never places an order; the strategy still owns the purchase.
+     * ------------------------------------------------------------------ */
+
+    const scanState = {
+        family: '',
+        at: 0,
+        ordered: [],
+        scores: new Map(),
+        rank: new Map(),
+        count: 0,
+        best: '',
+        reason: 'no AI scan has run yet',
+        current: '',
+        switchedAt: 0,
+    };
+
+    /** One "at least one entry a minute" clock per run. */
+    const cadence = createCadenceClock({ gapSeconds: DEFAULT_CADENCE_S });
+
+    /**
+     * The tick streams the scan may read.
+     *
+     * Inside the Signal Lab workspace that is every market the shared feed
+     * holds — read at the same moment, so the ranking is a real cross-section
+     * rather than thirteen decisions taken minutes apart. Outside it there is
+     * no all-market feed, so the scan still ranks the one market the engine
+     * streams instead of returning nothing.
+     */
+    const scannedMarkets = async () => {
+        const now = Date.now();
+        const shared = getSignalLabMarkets()
+            .filter(market => market && typeof market.symbol === 'string' && Array.isArray(market.ticks))
+            .filter(market => market.ticks.length >= SCAN_MIN_TICKS)
+            .filter(market => !market.updatedAt || now - market.updatedAt <= SCAN_STALE_MS);
+        if (shared.length) {
+            return shared.map(market => ({
+                symbol: market.symbol,
+                pipSize: Number.isInteger(market.pipSize) ? market.pipSize : null,
+                prices: market.ticks.slice(-SCAN_TICK_LIMIT).map(tick => tick.quote),
+            }));
+        }
+        const prices = (await readTicks()).slice(-SCAN_TICK_LIMIT);
+        return prices.length >= SCAN_MIN_TICKS
+            ? [{ symbol: symbolOf(), pipSize: parityPipSize(), prices }]
+            : [];
+    };
+
+    /**
+     * Read every market with this bot's own model and remember the ranking.
+     *
+     * The scan is rate limited by `every` seconds: the models are cheap but not
+     * free, and a one-second market would otherwise spend its whole tick on a
+     * thirteen-market replay. Between scans the last ranking is returned, so a
+     * strategy can call this every tick.
+     */
+    const marketScan = async (family, horizon, payout, slip, every, maxTie) => {
+        const wanted = normalizeScanFamily(family);
+        const interval = Math.max(0, num(every, DEFAULT_SCAN_INTERVAL_S)) * 1000;
+        if (scanState.count && scanState.family === wanted && interval > 0 && Date.now() - scanState.at < interval) {
+            return scanState.count;
+        }
+        const markets = await scannedMarkets();
+        const duration = clamp(Math.round(num(horizon, horizonTicks())), 1, 10);
+        const assumed = num(payout, wanted === 'high-low-tick' ? 3.5 : PARITY_FALLBACK_PAYOUT)
+            || (wanted === 'high-low-tick' ? 3.5 : PARITY_FALLBACK_PAYOUT);
+        const slipTicks = clamp(Math.round(num(slip, 1)), 0, 3);
+        const tie = clamp(num(maxTie, wanted === 'high-low-tick' ? 0.35 : 0.2), 0, 1);
+        const reads = [];
+        for (const market of markets) {
+            let decision = null;
+            let score = 0;
+            try {
+                if (wanted === 'over-under') {
+                    // The AI Vision bot's own model, replayed on every market's
+                    // stream: the same engine that prices the live contract.
+                    decision = ai.planTrade(market.prices, {
+                        horizon: duration + 1,
+                        minEdge: -100,
+                        minLean: 0,
+                        minConfidence: 0,
+                        minAgreement: 0,
+                        risk: DEFAULT_RISK,
+                        window: 40,
+                    });
+                    if (!decision?.best) continue;
+                    score = scoreMarket(decision);
+                } else {
+                    decision = wanted === 'even-odd'
+                        ? parityDecision(market.prices, duration, 0, {
+                              pipSize: market.pipSize,
+                              requireEdge: false,
+                              minEv: 0,
+                              payout: assumed,
+                              payoutEven: assumed,
+                              payoutOdd: assumed,
+                              entrySlip: slipTicks,
+                          })
+                        : priceDecision(market.prices, scanMode(wanted), duration, 0, {
+                              requireEdge: false,
+                              minEv: 0,
+                              minAgreement: 0,
+                              maxTie: tie,
+                              payout: assumed,
+                              entrySlip: slipTicks,
+                          });
+                    if (!decision?.modelReady) continue;
+                    score = scoreRead(decision, decision.dna);
+                }
+            } catch {
+                continue; // one unreadable market must never end the scan
+            }
+            reads.push({ symbol: market.symbol, score, decision });
+        }
+        const ranked = rankReads(reads);
+        scanState.family = wanted;
+        scanState.at = Date.now();
+        scanState.ordered = ranked.ordered;
+        scanState.scores = ranked.scores;
+        scanState.rank = ranked.rank;
+        scanState.count = ranked.count;
+        scanState.best = ranked.best;
+        scanState.current = symbolOf();
+        scanState.reason = ranked.count
+            ? `best ${ranked.best} ${num(ranked.ordered[0]?.score, 0).toFixed(1)} of ${ranked.count} read`
+            : (markets.length ? 'no market could be read this pass' : 'no shared market has a readable tick stream yet');
+        return ranked.count;
+    };
+
+    /**
+     * Stand on the market the last scan rated best, if it earned the move.
+     *
+     * Returns the market the bot now trades — the current one when the scan did
+     * not move — so a strategy can record it and the journal can say where the
+     * session stands. The move itself is the same `switchToMarket` the scout
+     * uses: symbol swapped, stream resubscribed, history awaited, payouts warmed.
+     */
+    const scanSwitchBest = async (floor, margin, dwell) => {
+        const current = symbolOf();
+        const dwellMs = Math.max(0, num(dwell, DEFAULT_SCAN_DWELL_S)) * 1000;
+        const dwellOk = !scanState.switchedAt || Date.now() - scanState.switchedAt >= dwellMs;
+        const target = chooseScanTarget({
+            current,
+            currentScore: scanState.scores.has(current) ? scanState.scores.get(current) : null,
+            ordered: scanState.ordered,
+            scores: scanState.scores,
+            floor: num(floor, DEFAULT_SCAN_FLOOR),
+            margin: num(margin, DEFAULT_SCAN_MARGIN),
+            dwellOk,
+        });
+        scanState.current = current;
+        if (!target.switched) {
+            scanState.reason = target.reason;
+            return current;
+        }
+        const moved = await switchToMarket(target.symbol);
+        scanState.current = moved;
+        if (moved === target.symbol) {
+            scanState.switchedAt = Date.now();
+            scanState.reason = target.reason;
+        } else {
+            // A market we could not stream is not worth leaving a good one for.
+            scanState.reason = `could not stream ${target.symbol} — staying on ${current}`;
+        }
+        return moved;
+    };
+
+    /** The score the last scan gave `symbol` (or the market the bot is on). */
+    const scanMarketScore = symbol => {
+        const key = String(symbol || '').trim() || symbolOf();
+        return round(scanState.scores.has(key) ? scanState.scores.get(key) : 0, 1);
+    };
+
+    /** The rank the last scan gave `symbol` (0 = not in the scan). */
+    const scanMarketRank = symbol => {
+        const key = String(symbol || '').trim() || symbolOf();
+        return scanState.rank.has(key) ? scanState.rank.get(key) : 0;
+    };
+
+    /**
+     * Has the bot gone a whole interval without a purchase?
+     *
+     * The engine's own run counter is what marks a trade, so a contract bought
+     * by any block in any section resets the clock with no bookkeeping in the
+     * strategy. The answer is 1 or 0 because the interpreter compares numbers
+     * far more reliably than booleans across blocks.
+     */
+    const tradeDue = seconds => {
+        try {
+            cadence.observe(num(tradeEngine?.getTotalRuns?.(), 0));
+        } catch {
+            // An unreadable counter must not stop the cadence from answering.
+        }
+        return cadence.due(num(seconds, DEFAULT_CADENCE_S)) ? 1 : 0;
     };
 
     return {
@@ -1846,6 +2074,46 @@ const getVisionInterface = tradeEngine => {
             const dna = plan?.dna || (await parityDnaOf());
             return round(plan ? scoreParityMarket(plan, dna) : 0, 1);
         },
+
+        /* ---------------- AI multi-market scan ----------------
+         * Read every market at once with this bot's own model, then trade the
+         * one it rates most suitable. Nothing here places an order.
+         */
+
+        /**
+         * Scan every market Signal Lab shares. `family` picks the model —
+         * even-odd, high-low-tick or rise-fall — and the same parameters the
+         * strategy trades with should be passed so the ranking describes the
+         * contract that will actually settle. Returns the number of markets it
+         * could read; `every` is the minimum seconds between two full scans.
+         */
+        marketScan: async (family, horizon, payout, slip, every, maxTie) =>
+            marketScan(family, horizon, payout, slip, every, maxTie),
+        /** Stand on the best market from the last scan. Returns the one traded. */
+        scanSwitchBest: async (floor, margin, dwell) => scanSwitchBest(floor, margin, dwell),
+        /** The best market from the last scan, or the current one before a scan. */
+        scanBest: async () => scanState.best || symbolOf(),
+        /** The last scan's score for a market (empty = the market being traded). */
+        scanScore: async symbol => scanMarketScore(symbol),
+        /** The last scan's rank for a market (0 = it was not in the scan). */
+        scanRank: async symbol => scanMarketRank(symbol),
+        /** How many markets the last scan could read. */
+        scanCount: async () => scanState.count,
+        /** The whole scan as one journal line: ranking, standing market, reason. */
+        scanSummary: async () => scanReport(scanState),
+        /** Move the running bot to a named market (the scan's pick, usually). */
+        scanSwitchMarket: async symbol => switchToMarket(String(symbol || '').trim()),
+        /**
+         * 1 when no contract has been bought for `seconds`, else 0.
+         *
+         * The "at least one entry a minute" switch: a strategy uses it to relax
+         * the gates that are about *quality* — a DNA floor, a confidence bar —
+         * while every money gate keeps its own value. It reports, it does not
+         * trade.
+         */
+        tradeDue: async seconds => tradeDue(seconds),
+        /** Seconds since the engine last recorded a purchase. */
+        secondsSinceTrade: async () => round(cadence.secondsSinceTrade(), 1),
         /** Contracts this run has bought, from the engine's own run counter. */
         parityContracts: async () => num(tradeEngine.getTotalRuns?.(), 0),
         parityRisk: async (stake, legs, baseline, loss, target, percent) => {

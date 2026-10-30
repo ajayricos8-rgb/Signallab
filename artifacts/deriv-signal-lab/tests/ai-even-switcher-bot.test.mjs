@@ -58,9 +58,14 @@ test("both sides are bought, and the side comes from the analysis", () => {
     "the side read comes first, Even on the == 1 branch, Odd on the else");
 });
 
-test("the ensemble is scored fresh every cycle in selective mode", () => {
+test("the ensemble is scored fresh every cycle in cadence mode", () => {
   assert.equal(count("x_parity_decision"), 2, "one score at arming, one per tick");
-  assert.equal((XML.match(/<field name="REQUIRE">edge<\/field>/g) ?? []).length, 2);
+  // `always` is what makes the switcher open positions: with `edge` the
+  // ensemble had to publish a positive one-sigma edge on a five-tick Even/Odd
+  // contract, and it never did, so the bot sat in "Entry held" forever. The
+  // score, its side and every gate are unchanged.
+  assert.equal((XML.match(/<field name="REQUIRE">always<\/field>/g) ?? []).length, 2);
+  assert.equal((XML.match(/<field name="REQUIRE">edge<\/field>/g) ?? []).length, 0);
   assert.match(tick, /x_parity_decision/, "the tick section re-scores before the gates run");
   assert.match(tick, />ai decision<\//, "the fresh plan is stored where the gates read it");
   assert.match(tick, /x_parity_decision_part/, "ready and side are unpacked from the plan");
@@ -85,12 +90,22 @@ test("the stake is sized from the side probability and its own quote", () => {
   assert.match(XML, /<value name="AMOUNT">.*>stake<\//s, "the computed stake feeds the trade options");
 });
 
-test("the scout roams the digit markets under a floor and a dwell", () => {
-  assert.equal(count("x_parity_auto_market"), 1);
-  assert.match(tick, /<field name="MODE">suitable<\/field>/);
-  assert.match(tick, />ai scout floor<\//);
-  assert.match(tick, />ai scout dwell<\//);
-  assert.match(tick, />ai market<\//, "the chosen market is remembered for the journal");
+test("the AI scan reads every digit market and stands on the most suitable one", () => {
+  // One switching path: the old one-market scout is gone, and the multi-market
+  // scan is the only block that chooses where the bot trades.
+  assert.equal(count("x_parity_auto_market"), 0, "the one-market scout is removed");
+  assert.equal(count("x_market_scan"), 1, "one scan of every shared market per cycle");
+  assert.match(tick, /<field name="FAMILY">even-odd<\/field>/, "the scan runs this bot's own model");
+  assert.equal(count("x_scan_switch_best"), 1, "the winner is chosen from the last scan");
+  for (const knob of ["ai scan floor", "ai scan margin", "ai scan dwell"]) {
+    assert.match(tick, new RegExp(`>${knob}<\\/`), `the switch reads ${knob}`);
+  }
+  const scanAt = tick.indexOf("x_market_scan");
+  const switchAt = tick.indexOf("x_scan_switch_best");
+  const marketAt = tick.indexOf('type="variables_set"');
+  assert.ok(scanAt > 0 && scanAt < switchAt, "the scan runs before its winner is taken");
+  assert.match(tick, />ai market<\//, "the chosen market is remembered where the bot trades it");
+  assert.ok(marketAt > 0 && marketAt < switchAt, "the scan is the first thing the cycle does");
 });
 
 test("every skip names its gate and every settlement teaches the journal", () => {
@@ -108,12 +123,17 @@ test("the shipped knobs match the documented defaults", () => {
   const knob = (name, value) => new RegExp(
     `${name}<\\/field><value name="VALUE"><block type="math_number"[^>]*><field name="NUM">${value}<\\/field>`);
   for (const [name, value] of [
-      ["ai duration", "5"], ["ai payout", "1.95"], ["ai min ev", "0.005"], ["ai max contracts", "100"], ["ai entry slip", "1"],
-      ["ai loss streak stop", "4"], ["ai max drawdown", "15"], ["ai dna floor", "35"],
-      ["ai scout floor", "15"], ["ai scout dwell", "90"], ["ai loss limit", "30"],
-      ["ai profit target", "50"], ["ai stake percent", "2"], ["ai max stake", "1.5"],
+      ["ai duration", "5"], ["ai payout", "1.95"], ["ai min ev", "0"], ["ai max contracts", "100"], ["ai entry slip", "1"],
+      ["ai loss streak stop", "4"], ["ai max drawdown", "15"], ["ai dna floor", "0"],
+      ["ai scan every", "8"], ["ai scan floor", "25"], ["ai scan margin", "3"],
+      ["ai scan dwell", "25"], ["ai cadence", "60"],
+      ["ai loss limit", "30"], ["ai profit target", "50"], ["ai stake percent", "2"], ["ai max stake", "1.5"],
       ["ai kelly fraction", "0.1"], ["ai skill floor", "-1"],
   ]) assert.match(init, knob(name, value), `knob ${name} ships as ${value}`);
+  // The EV floor and the DNA floor ship at zero: a five-tick Even/Odd contract
+  // cannot clear a positive one-sigma EV bound, and a zero DNA floor keeps the
+  // gate wired without refusing every market. Both stay knobs, not deletions.
+  assert.doesNotMatch(init, /ai scout floor/, "the retired scout knobs are gone");
 });
 
 test("the loss-streak counter checks win and loss separately", () => {
@@ -126,7 +146,9 @@ test("the loss-streak counter checks win and loss separately", () => {
 });
 
 test("the session brakes stop the cycle on ruin or target", () => {
-  assert.equal(count("x_parity_risk"), 2, "risk guards the entry and the restart");
+  // Three: the normal entry, the once-a-minute cadence branch (which may relax
+  // the quality gates but never the money gates), and the restart.
+  assert.equal(count("x_parity_risk"), 3, "risk guards the entry, the cadence branch and the restart");
   const brakesAt = after.indexOf("x_parity_risk");
   const againAt = after.indexOf('type="trade_again"');
   assert.ok(brakesAt > 0 && brakesAt < againAt, "the restart is gated on the risk block");
@@ -137,6 +159,23 @@ test("the session brakes stop the cycle on ruin or target", () => {
   assert.match(after, />ai max drawdown<\//);
 });
 
+
+test("a minute without a purchase lets the quality gates stand aside", () => {
+  // At least one trade a minute: the entry IF is `quality gates OR cadence`,
+  // and the cadence branch still holds every money gate.
+  assert.equal(count("x_trade_due"), 1, "one cadence clock per bot");
+  assert.match(before, />ai cadence<\//, "the clock reads its own knob");
+  const entryIf = before.slice(before.indexOf('type="logic_operation"'));
+  assert.match(entryIf, /<field name="OP">OR<\/field>/, "the cadence is ORed into the entry gate");
+  const dueAt = before.indexOf("x_trade_due");
+  assert.ok(dueAt > 0, "the cadence block is wired into the entry branch");
+  // The risk block is inside the cadence branch too: a slow minute never
+  // unlocks a stake the session cannot afford.
+  const afterDue = before.slice(dueAt);
+  assert.match(afterDue, /x_parity_risk/, "the cadence branch keeps the risk block");
+  assert.match(afterDue, />ai loss streak<\//, "and the losing-streak cool-off");
+  assert.match(afterDue, />ai max contracts<\//, "and the trade cap");
+});
 
 test("every ELSE branch has the Blockly mutation needed to deserialize it", () => {
   const xmlPath = new URL("../src/lib/bot-store/bots/ai-even-switcher.xml", import.meta.url);

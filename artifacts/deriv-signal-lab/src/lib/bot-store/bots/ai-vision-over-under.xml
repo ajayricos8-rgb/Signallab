@@ -76,9 +76,12 @@
     ai min confidence   55     minimum model confidence (0-100)
     ai agreement        0.7    minimum share of models that must agree
     ai entry gap        2      seconds between positions. 0 = no limit
-    ai market dwell     15     seconds to stay on a market before moving on
-    ai market floor     20     with the "most suitable" mode, the score below
-                               which the bot leaves a market
+    ai scan every       8      seconds between AI scans of every shared market
+    ai scan floor       25     the score a market must reach before the bot moves
+    ai scan margin      3      how much better than the current market it must read
+    ai scan dwell       25     seconds on a market before it may move again
+    ai cadence          60     after this many seconds without a purchase the
+                               quality gates stand aside (the money gates never do)
     ai loss limit       30     stop the bot after this much loss
     ai profit target    50     stop the bot after this much profit
     ai max drawdown     15     no new entries after this much session drawdown —
@@ -100,8 +103,14 @@
   contract prints the brain's own scorecard (trained samples and the net's hit
   rate), so an idle or a losing session can be read rather than guessed at.
 
-  The market block is set to "the most suitable market". Change its dropdown to
-  "the next market in turn" to walk the ten markets, or "any market at random".
+  Every eight seconds an AI scan reads every market Signal Lab shares with this
+  same brain - all at the same moment - scores the cross-section on one scale
+  and stands the bot on the most suitable market. It moves only when that
+  market clears the score floor, beats the market the bot is on by the margin,
+  and the dwell has passed; a switch costs a cold tick stream. The scan never
+  places an order: the Purchase block still buys, on the market the scan chose.
+  After a whole minute without a purchase the quality gates stand aside so the
+  bot still trades at least once a minute. The money gates never do.
 -->
 <xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">
   <variables>
@@ -116,13 +125,17 @@
     <variable type="" id="aiVar09">ai profit target</variable>
     <variable type="" id="aiVar11">ai stake percent</variable>
     <variable type="" id="aiVar12">ai contracts</variable>
-    <variable type="" id="aiVar13">ai market dwell</variable>
-    <variable type="" id="aiVar14">ai market floor</variable>
+    <variable type="" id="aiVar13">ai scan floor</variable>
+    <variable type="" id="aiVar14">ai scan dwell</variable>
     <variable type="" id="aiVar15">ai entry gap</variable>
     <variable type="" id="aiVar16">ai risk throttle</variable>
     <variable type="" id="aiVar17">ai max drawdown</variable>
     <variable type="" id="aiVar18">ai loss streak stop</variable>
     <variable type="" id="aiVar19">ai skip count</variable>
+      <variable type="" id="vai_scan_every">ai scan every</variable>
+      <variable type="" id="vai_scan_margin">ai scan margin</variable>
+      <variable type="" id="vai_cadence">ai cadence</variable>
+      <variable type="" id="vai_market">ai market</variable>
   </variables>
   <block type="trade_definition" id="aiTrade01" x="0" y="0">
     <statement name="TRADE_OPTIONS">
@@ -248,18 +261,18 @@
                                                 </value>
                                                 <next>
                                                   <block type="variables_set" id="is13">
-                                                    <field name="VAR" id="aiVar13">ai market dwell</field>
+                                                    <field name="VAR" id="aiVar13">ai scan floor</field>
                                                     <value name="VALUE">
                                                       <shadow type="math_number" id="in13">
-                                                        <field name="NUM">15</field>
+                                                        <field name="NUM">25</field>
                                                       </shadow>
                                                     </value>
                                                     <next>
                                                       <block type="variables_set" id="is14">
-                                                        <field name="VAR" id="aiVar14">ai market floor</field>
+                                                        <field name="VAR" id="aiVar14">ai scan dwell</field>
                                                         <value name="VALUE">
                                                           <shadow type="math_number" id="in14">
-                                                            <field name="NUM">20</field>
+                                                            <field name="NUM">25</field>
                                                           </shadow>
                                                         </value>
                                                         <next>
@@ -313,7 +326,7 @@
                                                                                         <field name="TEXT">AI Vision Over/Under armed — the AI prices all twenty Over/Under contracts against the live payout table and enters only on positive expected value with significance, confidence, agreement, drawdown and losing-streak gates. Staking follows the measured edge and de-risks after a loss (the old loss-doubling ladder is gone); every twentieth skip and every twentieth entry explain themselves in the journal.</field>
                                                                                       </block>
                                                                                     </value>
-                                                                                  </block>
+                                                                                  <next><block type="variables_set" id="vs006"><field name="VAR" id="vai_scan_every">ai scan every</field><value name="VALUE"><block type="math_number" id="vs005"><field name="NUM">8</field></block></value><next><block type="variables_set" id="vs004"><field name="VAR" id="vai_scan_margin">ai scan margin</field><value name="VALUE"><block type="math_number" id="vs003"><field name="NUM">3</field></block></value><next><block type="variables_set" id="vs002"><field name="VAR" id="vai_cadence">ai cadence</field><value name="VALUE"><block type="math_number" id="vs001"><field name="NUM">60</field></block></value></block></next></block></next></block></next></block>
                                                                                 </next>
                                                                               </block>
                                                                             </next>
@@ -400,20 +413,8 @@
   </block>
   <block type="tick_analysis" id="aiTick01" x="0" y="1500">
     <statement name="TICKANALYSIS_STACK">
-      <block type="vision_auto_market" id="aiMarketPick01">
-        <field name="MODE">suitable</field>
-        <value name="FLOOR">
-          <block type="variables_get" id="amg01">
-            <field name="VAR" id="aiVar14">ai market floor</field>
-          </block>
-        </value>
-        <value name="DWELL">
-          <block type="variables_get" id="amg02">
-            <field name="VAR" id="aiVar13">ai market dwell</field>
-          </block>
-        </value>
-        <next>
-          <block type="vision_analyse" id="aiAnalyse01">
+      
+          <block type="x_market_scan" id="vs012"><field name="FAMILY">over-under</field><value name="HORIZON"><block type="variables_get" id="vs013"><field name="VAR" id="aiVar02">ai duration</field></block></value><value name="PAYOUT"><block type="math_number" id="vs014"><field name="NUM">1.95</field></block></value><value name="SLIP"><block type="math_number" id="vs015"><field name="NUM">1</field></block></value><value name="EVERY"><block type="variables_get" id="vs016"><field name="VAR" id="vai_scan_every">ai scan every</field></block></value><value name="MAX_TIE"><block type="math_number" id="vs017"><field name="NUM">0.2</field></block></value><next><block type="variables_set" id="vs011"><field name="VAR" id="vai_market">ai market</field><value name="VALUE"><block type="x_scan_switch_best" id="vs007"><value name="FLOOR"><block type="variables_get" id="vs008"><field name="VAR" id="aiVar13">ai scan floor</field></block></value><value name="MARGIN"><block type="variables_get" id="vs009"><field name="VAR" id="vai_scan_margin">ai scan margin</field></block></value><value name="DWELL"><block type="variables_get" id="vs010"><field name="VAR" id="aiVar14">ai scan dwell</field></block></value></block></value><next><block type="vision_analyse" id="aiAnalyse01">
             <value name="HORIZON">
               <block type="variables_get" id="g050">
                 <field name="VAR" id="aiVar02">ai duration</field>
@@ -444,15 +445,14 @@
                 <field name="VAR" id="aiVar07">ai risk</field>
               </block>
             </value>
-          </block>
-        </next>
-      </block>
+          </block></next></block></next></block>
+        
     </statement>
   </block>
   <block type="before_purchase" id="aiBefore01" x="0" y="760">
     <statement name="BEFOREPURCHASE_STACK">
       <block type="controls_if" id="aiEntryIf01">
-        <value name="IF0">
+        <value name="IF0"><block type="logic_operation" id="cadenceOr01"><field name="OP">OR</field><value name="A">
           <block type="logic_operation" id="l038">
             <field name="OP">AND</field>
             <value name="A">
@@ -528,7 +528,7 @@
               </block>
             </value>
           </block>
-        </value>
+        </value><value name="B"><block type="logic_operation" id="vs034"><field name="OP">AND</field><value name="A"><block type="logic_compare" id="vs021"><field name="OP">EQ</field><value name="A"><block type="x_trade_due" id="vs018"><value name="SECONDS"><block type="variables_get" id="vs019"><field name="VAR" id="vai_cadence">ai cadence</field></block></value></block></value><value name="B"><block type="math_number" id="vs020"><field name="NUM">1</field></block></value></block></value><value name="B"><block type="logic_operation" id="vs033"><field name="OP">AND</field><value name="A"><block type="r_drawdown_ok" id="vs022"><value name="LIMIT"><block type="variables_get" id="vs023"><field name="VAR" id="aiVar17">ai max drawdown</field></block></value></block></value><value name="B"><block type="logic_operation" id="vs032"><field name="OP">AND</field><value name="A"><block type="logic_compare" id="vs026"><field name="OP">LT</field><value name="A"><block type="r_loss_streak" id="vs024"></block></value><value name="B"><block type="variables_get" id="vs025"><field name="VAR" id="aiVar18">ai loss streak stop</field></block></value></block></value><value name="B"><block type="logic_operation" id="vs031"><field name="OP">AND</field><value name="A"><block type="r_loss_guard" id="vs027"><value name="LIMIT"><block type="variables_get" id="vs028"><field name="VAR" id="aiVar08">ai loss limit</field></block></value></block></value><value name="B"><block type="r_profit_guard" id="vs029"><value name="TARGET"><block type="variables_get" id="vs030"><field name="VAR" id="aiVar09">ai profit target</field></block></value></block></value></block></value></block></value></block></value></block></value></block></value>
         <statement name="ELSE">
           <block type="variables_set" id="s050">
             <field name="VAR" id="aiVar19">ai skip count</field>

@@ -12,3 +12,4 @@ import './shortcuts';
 
 import './price-strategies';
 import './parity-strategies';
+import './market-scan';

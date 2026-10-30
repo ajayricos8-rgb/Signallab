@@ -1087,6 +1087,46 @@ export const ToolboxItems = () =>
                     <Block type='x_price_risk' />
                     <Block type='x_tick_decision_purchase' />
                     <Block type='hedge_purchase' />
+                    {/* The AI multi-market scan: read every market at once with
+                        the bot's own model, then trade the one it rates most
+                        suitable. Nothing here opens an order by itself. */}
+                    <Block type='x_market_scan'>
+                        <Field name='FAMILY'>even-odd</Field>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PAYOUT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.95</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='SLIP'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='EVERY'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>8</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MAX_TIE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.35</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_scan_switch_best' />
+                    <Block type='x_scan_stand_best' />
+                    <Block type='x_scan_best' />
+                    <Block type='x_scan_score' />
+                    <Block type='x_scan_rank' />
+                    <Block type='x_scan_count' />
+                    <Block type='x_scan_summary' />
+                    <Block type='x_trade_due' />
+                    <Block type='x_seconds_since_trade' />
                 </Category>
 
                 <Category id='vision_parity' name={localize('Parity strategies')}>
@@ -1155,6 +1195,46 @@ export const ToolboxItems = () =>
                     <Block type='x_parity_stake' />
                     <Block type='x_parity_contracts' />
                     <Block type='x_parity_risk' />
+                    {/* The AI multi-market scan: read every market at once with
+                        the bot's own model, then trade the one it rates most
+                        suitable. Nothing here opens an order by itself. */}
+                    <Block type='x_market_scan'>
+                        <Field name='FAMILY'>even-odd</Field>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>5</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PAYOUT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1.95</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='SLIP'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>1</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='EVERY'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>8</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MAX_TIE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.35</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_scan_switch_best' />
+                    <Block type='x_scan_stand_best' />
+                    <Block type='x_scan_best' />
+                    <Block type='x_scan_score' />
+                    <Block type='x_scan_rank' />
+                    <Block type='x_scan_count' />
+                    <Block type='x_scan_summary' />
+                    <Block type='x_trade_due' />
+                    <Block type='x_seconds_since_trade' />
                 </Category>
 
                 <Category id='vision_shortcut' name={localize('Shortcuts')}>
