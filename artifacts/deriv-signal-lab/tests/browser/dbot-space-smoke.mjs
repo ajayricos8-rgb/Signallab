@@ -304,9 +304,28 @@ async function runSmoke() {
   assert.ok(loaded > 20, 'Load should populate the workspace without running it');
   assert.ok(mock.dialogs.some(message => /replaces the blocks/i.test(message)));
 
-  await page.getByTestId('button-base-nav').click();
-  await page.getByTestId('button-dbot-space-nav').click();
-  assert.equal(await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).length), loaded, 'switching app tabs must not reload the iframe');
+  // Settings retains every Base section below the original settings controls.
+  for (const id of ['button-base-nav', 'button-premium-bots-nav', 'tab-base', 'tab-premium-bots']) {
+    assert.equal(await page.getByTestId(id).count(), 0, `${id} must not appear in navigation`);
+  }
+  await page.getByTestId('button-settings-nav').click();
+  const settingsOrder = await page.getByTestId('settings-workspace').evaluate(element =>
+    [...element.children].map(child => child.getAttribute('data-testid')),
+  );
+  assert.deepEqual(settingsOrder, ['settings-panel', 'forge-base-workspace']);
+  for (const id of ['base-live-market', 'base-knowledge-library', 'base-market-atlas', 'base-randomness-challenge', 'base-live-forecast', 'base-model-honesty']) {
+    assert.equal(await page.getByTestId(id).count(), 1, `${id} must remain in Settings`);
+  }
+  await page.getByTestId('base-knowledge-search').fill('no-such-lesson-xyz');
+  await page.getByText('No knowledge entries match those filters.').waitFor();
+  await page.getByTestId('base-knowledge-search').fill('');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="button-run-rng-audit"]').disabled, null, { timeout: 20_000 });
+  await page.getByTestId('button-run-rng-audit').click();
+  await page.getByTestId('rng-audit-results').waitFor();
+  await page.getByTestId('button-base-open-analysis').click();
+  await page.getByTestId('dbot-ai-analysis').waitFor();
+  assert.equal(await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).length), loaded, 'the Base shortcut must not reload the iframe');
+  await page.getByTestId('dbot-ai-close').click();
 
   await page.getByTestId('dbot-view-chart').click();
   await bot.locator('canvas:visible').first().waitFor({ timeout: 20_000 });
@@ -489,6 +508,14 @@ async function runSmoke() {
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await mockDeriv(mobile);
   const mobileBot = await openWorkspace(mobile, true);
+  for (const id of ['button-base-nav', 'button-premium-bots-nav', 'tab-base', 'tab-premium-bots']) {
+    assert.equal(await mobile.getByTestId(id).count(), 0, `${id} must not appear on mobile`);
+  }
+  await mobile.getByTestId('tab-settings').click();
+  await mobile.getByTestId('forge-base-workspace').waitFor();
+  await mobile.getByTestId('button-base-open-analysis').click();
+  await mobile.getByTestId('dbot-ai-analysis').waitFor();
+  await mobile.getByTestId('dbot-ai-close').click();
   const mobileInitial = await mobileBot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).length);
   await mobileBot.getByTestId('db-toolbox-mobile-toggle').click();
   await mobileBot.getByText('Utility', { exact: true }).click();

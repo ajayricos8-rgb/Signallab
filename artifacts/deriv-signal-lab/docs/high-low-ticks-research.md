@@ -312,8 +312,6 @@ With equal stakes and fair pricing, EV ≈ 0 minus two margins. The pair *spread
 does not create value. Its real use is **operational**: when a position must be opened on every
 cycle (a cadence requirement), the pair converts "one bet, 27 % chance" into "mostly a small
 loss, occasionally a large win" — a different distribution with the same negative expectation.
-The repository's hedging bot prices exactly this and the Step pair analysis lives in
-`src/lib/hedging-bot/economics.ts`.
 
 ### 5.6 Two-position barbell (ticks 1 and 5)
 
