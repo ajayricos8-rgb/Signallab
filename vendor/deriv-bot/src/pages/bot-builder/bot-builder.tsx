@@ -64,7 +64,7 @@ const BotBuilder = observer(() => {
     const { active_tab, active_tour, is_preview_on_popup } = dashboard;
     const { is_open } = quick_strategy;
     const { is_running } = run_panel;
-    const { is_loading } = blockly_store;
+    const { is_loading, initialization_error } = blockly_store;
     const is_blockly_listener_registered = React.useRef(false);
     const is_blockly_delete_listener_registered = React.useRef(false);
     const { isDesktop } = useDevice();
@@ -74,7 +74,7 @@ const BotBuilder = observer(() => {
     // Narrow same-origin bridge for Signal Lab's navigation and curated store.
     // It deliberately exposes no tokens, order methods, or arbitrary XML.
     React.useEffect(() => {
-        if (is_loading || !window.Blockly?.derivWorkspace || window.parent === window) return;
+        if (is_loading || initialization_error || !window.Blockly?.derivWorkspace || window.parent === window) return;
         const notify = (type: string, detail: Record<string, unknown> = {}) =>
             window.parent.postMessage({ source: 'signal-lab-dbot', type, ...detail }, window.location.origin);
         const onMessage = (event: MessageEvent) => {
@@ -239,7 +239,7 @@ const BotBuilder = observer(() => {
             window.removeEventListener('message', onMessage);
             window.removeEventListener('signallab-dbot-socket-closed', onSocketClosed);
         };
-    }, [is_loading, dashboard, quick_strategy, run_panel, client]);
+    }, [is_loading, initialization_error, dashboard, quick_strategy, run_panel, client]);
 
     React.useEffect(() => {
         if (window.parent !== window && is_open) {

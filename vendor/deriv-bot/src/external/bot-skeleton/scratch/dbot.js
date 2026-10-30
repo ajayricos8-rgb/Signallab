@@ -129,7 +129,7 @@ class DBot {
                 }
                 const el_scratch_div = document.getElementById('scratch_div');
                 if (!el_scratch_div) {
-                    return;
+                    throw new Error('The Blockly workspace container is not available yet.');
                 }
 
                 this.workspace = window.Blockly.inject(el_scratch_div, {

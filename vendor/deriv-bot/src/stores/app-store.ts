@@ -55,20 +55,37 @@ export default class AppStore {
 
         if (!this.dbot_store) return;
 
+        blockly_store.setInitializationError('');
         blockly_store.setLoading(true);
-        await DBot.initWorkspace(process.env.DBOT_BASE_PATH || '/dbot/', this.dbot_store, this.api_helpers_store, ui.is_mobile, false);
+        let initTimeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+            // Blockly boot includes dynamically loaded modules and browser storage.
+            // Bound the wait so a failed chunk or unavailable storage cannot leave
+            // the full-screen loading mask over the workspace forever.
+            await Promise.race([
+                DBot.initWorkspace(process.env.DBOT_BASE_PATH || '/dbot/', this.dbot_store, this.api_helpers_store, ui.is_mobile, false),
+                new Promise<never>((_, reject) => {
+                    initTimeout = setTimeout(() => reject(new Error('DBot workspace initialization timed out.')), 20000);
+                }),
+            ]);
 
-        blockly_store.setContainerSize();
-        blockly_store.setLoading(false);
-
-        this.registerCurrencyReaction.call(this);
-        this.registerOnAccountSwitch.call(this);
-
-        this.registerResidenceChangeReaction.call(this);
-
-        window.addEventListener('click', this.onClickOutsideBlockly);
-
-        blockly_store.getCachedActiveTab();
+            blockly_store.setContainerSize();
+            this.registerCurrencyReaction.call(this);
+            this.registerOnAccountSwitch.call(this);
+            this.registerResidenceChangeReaction.call(this);
+            window.addEventListener('click', this.onClickOutsideBlockly);
+            blockly_store.getCachedActiveTab();
+        } catch (error) {
+            console.error('[DBot] Workspace initialization failed:', error);
+            const message = error instanceof Error ? error.message : 'An unexpected initialization error occurred.';
+            blockly_store.setInitializationError(message);
+            if (window.parent !== window) {
+                window.parent.postMessage({ source: 'signal-lab-dbot', type: 'workspace-error', message }, window.location.origin);
+            }
+        } finally {
+            if (initTimeout) clearTimeout(initTimeout);
+            blockly_store.setLoading(false);
+        }
     };
 
     onUnmount = () => {
