@@ -79,6 +79,10 @@ orders; start the dev server first and supply a Chromium executable if needed:
 BROWSER_EXECUTABLE_PATH=/path/to/chromium pnpm --filter @workspace/deriv-signal-lab test:dbot:browser
 ```
 
+For a quicker check of workspace startup, scan blocks, saved-bot restoration,
+and account linking on desktop and mobile, run `test:dbot-startup:browser`
+instead. Both browser tests use the same mocked Deriv responses.
+
 ## Validate
 
 ```sh

@@ -14,6 +14,7 @@
  * stake and its own gates.
  */
 
+import { localize } from '@deriv-com/translations';
 import { defineStatementBlock, defineValueBlock, dropdown, numberInput } from './factory';
 import { visionColours } from './colour';
 
