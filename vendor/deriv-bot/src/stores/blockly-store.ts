@@ -10,11 +10,13 @@ export default class BlocklyStore {
     constructor(root_store: RootStore) {
         makeObservable(this, {
             is_loading: observable,
+            initialization_error: observable,
             active_tab: observable,
             _has_saved_bots: observable,
             has_active_bot: computed,
             has_saved_bots: computed,
             setLoading: action,
+            setInitializationError: action,
             setActiveTab: action,
             checkForSavedBots: action,
         });
@@ -22,6 +24,7 @@ export default class BlocklyStore {
     }
 
     is_loading = false;
+    initialization_error = '';
     active_tab = tabs_title.WORKSPACE;
 
     // Computed property to check if there's an active bot
@@ -86,5 +89,9 @@ export default class BlocklyStore {
 
     setLoading = (is_loading: boolean): void => {
         this.is_loading = is_loading;
+    };
+
+    setInitializationError = (message: string): void => {
+        this.initialization_error = message;
     };
 }

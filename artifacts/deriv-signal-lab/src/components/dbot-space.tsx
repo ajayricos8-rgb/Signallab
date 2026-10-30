@@ -118,6 +118,9 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   const viewRef = useRef(view);
   viewRef.current = view;
   const [ready, setReady] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState('');
+  const [frameLoaded, setFrameLoaded] = useState(false);
+  const [frameRevision, setFrameRevision] = useState(0);
   const readyRef = useRef(false);
   const [linkState, setLinkState] = useState<LinkState>('idle');
   const [linkAccount, setLinkAccount] = useState('');
@@ -275,7 +278,11 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       if (event.origin !== window.location.origin || event.source !== frameRef.current?.contentWindow) return;
       const data = event.data as Record<string, unknown> | null;
       if (!data || data.source !== 'signal-lab-dbot') return;
-      if (data.type === 'block-registry') {
+      if (data.type === 'workspace-error') {
+        const message = typeof data.message === 'string' ? data.message : 'DBot could not finish loading.';
+        setWorkspaceError(message);
+        setNotice(`DBot could not finish loading: ${message} Reload the workspace to try again.`);
+      } else if (data.type === 'block-registry') {
         const blocks = Array.isArray(data.blocks) ? data.blocks.flatMap((entry) => {
           if (!entry || typeof entry !== 'object') return [];
           const block = entry as Record<string, unknown>;
@@ -383,6 +390,17 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
     return () => window.removeEventListener('message', handleMessage);
   }, [send, sendSnapshot, clearSharedAccount, failAutoLink]);
 
+  // Surface a failed iframe boot instead of leaving the host status on
+  // "Connecting workspace" indefinitely if the bundled app or a lazy chunk fails.
+  useEffect(() => {
+    if (!frameLoaded || ready || workspaceError) return;
+    const timer = window.setTimeout(() => {
+      setWorkspaceError('DBot did not become ready. The workspace bundle may not have loaded correctly.');
+      setNotice('DBot did not become ready. Reload the workspace to try again.');
+    }, 30_000);
+    return () => window.clearTimeout(timer);
+  }, [frameLoaded, ready, workspaceError]);
+
   // A grant belongs to one exact account. Switching or disconnecting in Settings
   // revokes it and stops the bot rather than quietly trading a different account.
   useEffect(() => {
@@ -454,6 +472,14 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
     }, FEED_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [ready, buildSource, send, sendAccount]);
+
+  function reloadWorkspace() {
+    setFrameLoaded(false);
+    setWorkspaceError('');
+    setReady(false);
+    setFrameRevision((revision) => revision + 1);
+    setNotice('Reloading the DBot workspace…');
+  }
 
   function selectView(next: SpaceView) {
     setView(next);
@@ -595,7 +621,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div className="hidden items-center gap-1.5 pb-2 text-[10px] font-medium text-muted-foreground sm:flex"><LockKeyhole size={12} /> Keep this browser tab open while running</div>
       </div>
 
-      {notice && <div role="status" className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs leading-5 text-foreground" data-testid="dbot-notice"><span>{notice}</span><button type="button" onClick={() => setNotice('')} aria-label="Dismiss message" className="text-muted-foreground"><X size={14} /></button></div>}
+      {notice && <div role="status" className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs leading-5 text-foreground" data-testid="dbot-notice"><span>{notice}</span><div className="flex shrink-0 items-center gap-3">{workspaceError && <button type="button" onClick={reloadWorkspace} className="font-bold text-primary hover:underline" data-testid="dbot-reload-workspace">Reload workspace</button>}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss message" className="text-muted-foreground"><X size={14} /></button></div></div>}
 
       {/* Keep the frame mounted while viewing the store; unloading it would stop a running bot. */}
       <div className={view === 'store' || view === 'tools' ? 'hidden' : 'mt-4'}>
@@ -609,7 +635,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
                   ? `${shared.markets} markets · ${shared.ticks.toLocaleString()} ticks shared`
                   : 'Waiting for Signal Lab ticks'}
               </span>
-              <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="dbot-workspace-status"><span className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-400' : 'bg-amber-400'}`} />{ready ? 'Workspace ready' : 'Connecting workspace'}</span>
+              <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="dbot-workspace-status"><span className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-400' : workspaceError ? 'bg-rose-400' : 'bg-amber-400'}`} />{ready ? 'Workspace ready' : workspaceError ? 'Workspace needs reload' : 'Connecting workspace'}</span>{workspaceError && <button type="button" onClick={reloadWorkspace} className="text-[10px] font-bold text-primary hover:underline" data-testid="dbot-reload-workspace-header">Reload</button>}
               <button type="button" onClick={() => {
                 const frame = frameRef.current;
                 if (!frame?.requestFullscreen) { setNotice('Full screen is not available in this browser.'); return; }
@@ -617,7 +643,9 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
               }} className="inline-flex items-center gap-1 text-[10px] font-bold text-primary hover:underline" title="Expand this workspace without reloading it" data-testid="dbot-fullscreen"><Maximize2 size={12} /> <span className="hidden sm:inline">Full screen</span></button>
             </div>
           </div>
-          <iframe ref={frameRef} src={`${import.meta.env.BASE_URL}dbot/index.html#bot_builder`} title="Deriv Bot workspace" allow="fullscreen" allowFullScreen className="block w-full bg-white" style={{ height: 'min(850px, calc(100dvh - 160px))', minHeight: 480 }} data-testid="dbot-frame" onLoad={() => {
+          <iframe key={frameRevision} ref={frameRef} src={`${import.meta.env.BASE_URL}dbot/index.html#bot_builder`} title="Deriv Bot workspace" allow="fullscreen" allowFullScreen className="block w-full bg-white" style={{ height: 'min(850px, calc(100dvh - 160px))', minHeight: 480 }} data-testid="dbot-frame" onLoad={() => {
+            setFrameLoaded(true);
+            setWorkspaceError('');
             readyRef.current = false;
             setReady(false);
             setBlockRegistry([]);
