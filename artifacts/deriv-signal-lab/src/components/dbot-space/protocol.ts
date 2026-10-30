@@ -50,6 +50,7 @@ export type FrameMessage =
   | { type: 'workspace-error'; message: string }
   | { type: 'block-registry'; blocks: WorkspaceBlockInfo[]; aiRuntimeRegistered: boolean }
   | { type: 'bot-status'; running: boolean }
+  | { type: 'session-limit-hit'; reason: 'take-profit' | 'stop-loss'; profit: number; currency: string }
   | { type: 'bot-run-started'; message: string }
   | { type: 'bot-loaded'; name: string; runAfterLoad: boolean }
   | { type: 'feed-subscribe' }
@@ -126,6 +127,12 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       };
     case 'bot-status':
       return { type: 'bot-status', running: raw.running === true };
+    case 'session-limit-hit': {
+      const profit = number(raw.profit);
+      const currency = text(raw.currency, 8).toUpperCase();
+      if ((raw.reason !== 'take-profit' && raw.reason !== 'stop-loss') || profit === null || !/^[A-Z]{3,5}$/.test(currency)) return null;
+      return { type: 'session-limit-hit', reason: raw.reason, profit, currency };
+    }
     case 'bot-run-started':
       return {
         type: 'bot-run-started',

@@ -9,3 +9,5 @@ import './scan';
 import './hedging';
 import './virtual';
 import './analysis-gate';
+
+import './session-stop';

@@ -164,3 +164,13 @@ test('the shared-data line reports markets and ticks, or nothing yet', () => {
   assert.equal(sharedTicksLabel({ markets: 0, ticks: 0 }), 'Waiting for Signal Lab ticks');
   assert.equal(sharedTicksLabel({ markets: 3, ticks: 1750 }), '3 markets · 1,750 ticks shared');
 });
+
+test('session limit messages require a valid result, reason and currency', () => {
+  assert.deepEqual(parseFrameMessage(frame('session-limit-hit', { reason: 'take-profit', profit: 25000.5, currency: 'usd' })),
+    { type: 'session-limit-hit', reason: 'take-profit', profit: 25000.5, currency: 'USD' });
+  assert.deepEqual(parseFrameMessage(frame('session-limit-hit', { reason: 'stop-loss', profit: -12, currency: 'EUR' })),
+    { type: 'session-limit-hit', reason: 'stop-loss', profit: -12, currency: 'EUR' });
+  assert.equal(parseFrameMessage(frame('session-limit-hit', { reason: 'other', profit: 5, currency: 'USD' })), null);
+  assert.equal(parseFrameMessage(frame('session-limit-hit', { reason: 'stop-loss', profit: NaN, currency: 'USD' })), null);
+  assert.equal(parseFrameMessage(frame('session-limit-hit', { reason: 'stop-loss', profit: -5, currency: '' })), null);
+});

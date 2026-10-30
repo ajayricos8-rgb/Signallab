@@ -9,7 +9,7 @@
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:digit-analysis": "node --experimental-strip-types --test ./tests/*.test.mjs",
-    "test:dbot-ai": "node --experimental-strip-types --test ./tests/dbot-ai.test.mjs ./tests/dbot-hedge-barrier.test.mjs",
+    "test:dbot-ai": "node --experimental-strip-types --test ./tests/dbot-ai.test.mjs ./tests/dbot-hedge-barrier.test.mjs ./tests/dbot-session.test.mjs",
     "test:dbot-space": "node --experimental-strip-types --test ./tests/dbot-space-protocol.test.mjs",
     "test:dbot-gate": "node --experimental-strip-types --test ../../vendor/deriv-bot/tests/signallab-analysis-gate.test.mjs",
     "test:dbot-blocks": "node --experimental-strip-types --experimental-vm-modules --test ../../vendor/deriv-bot/tests/signallab-blocks.test.mjs ../../vendor/deriv-bot/tests/vision-market-scan-blocks.test.mjs",

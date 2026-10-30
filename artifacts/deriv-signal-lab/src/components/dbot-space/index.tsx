@@ -5,6 +5,7 @@
 // `StoreView` draws the bot store. This file is the layout, the account cluster
 // and the hand-offs to the AI copilot.
 import { useCallback, useState, type ComponentType } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Activity, Boxes, BrainCircuit, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, X,
   type LucideProps,
@@ -38,7 +39,7 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
     onFrameTab: setView,
   });
   const {
-    ready, link, autoLink, autoPaused, notice, botRunning, shared, blockRegistry, aiRuntimeRegistered,
+    ready, link, autoLink, autoPaused, notice, botRunning, shared, blockRegistry, aiRuntimeRegistered, sessionLimit, setSessionLimit,
     aiRunNotice, setNotice, setAiRunNotice, showTab, loadBot, loadAndRunBot, loadAnalysisBot, openQuickStrategy,
   } = workspace;
 
@@ -108,6 +109,20 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
 
   return (
     <section className="dbot-space mx-auto w-full max-w-[1700px]" data-testid="dbot-space">
+      {sessionLimit && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/80 p-5 backdrop-blur-md" role="presentation">
+          <div role="alertdialog" aria-modal="true" aria-labelledby="session-limit-title" aria-describedby="session-limit-profit" data-testid="dbot-session-limit-dialog"
+            className={`relative w-full max-w-md overflow-hidden rounded-[28px] border p-7 text-center text-white shadow-[0_25px_100px_rgba(0,0,0,.65)] ${sessionLimit.reason === 'take-profit' ? 'border-emerald-300/35 bg-gradient-to-br from-emerald-950 via-slate-950 to-slate-950' : 'border-rose-300/35 bg-gradient-to-br from-rose-950 via-slate-950 to-slate-950'}`}>
+            <div className={`mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border ${sessionLimit.reason === 'take-profit' ? 'border-emerald-300/40 bg-emerald-400/10 text-emerald-300 shadow-[0_0_40px_rgba(52,211,153,.2)]' : 'border-rose-300/40 bg-rose-400/10 text-rose-300 shadow-[0_0_40px_rgba(251,113,133,.2)]'}`}><Activity size={29} /></div>
+            <p className="text-[10px] font-bold uppercase tracking-[.3em] text-slate-400">Session complete</p>
+            <h2 id="session-limit-title" className={`mt-2 text-2xl font-black tracking-tight ${sessionLimit.reason === 'take-profit' ? 'text-emerald-300' : 'text-rose-300'}`}>{sessionLimit.reason === 'take-profit' ? 'Take profit hit' : 'Stop loss hit'}</h2>
+            <p className="mt-5 text-xs font-semibold uppercase tracking-widest text-slate-400">Total session profit / loss</p>
+            <p id="session-limit-profit" className="mt-2 text-3xl font-black tabular-nums">{sessionLimit.profit >= 0 ? '+' : '−'}{formatAmount(Math.abs(sessionLimit.profit), sessionLimit.currency)}</p>
+            <p className="mt-4 text-xs leading-relaxed text-slate-400">The bot has stopped opening new trades. Any other open contracts can still settle.</p>
+            <button type="button" autoFocus onClick={() => setSessionLimit(null)} className="mt-6 w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-bold transition hover:bg-white/20">Dismiss</button>
+          </div>
+        </div>, document.body,
+      )}
       <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="mb-2 flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-[.16em] text-primary">

@@ -42,6 +42,8 @@ export type DbotWorkspace = {
   ready: boolean;
   workspaceError: string;
   botRunning: boolean;
+  sessionLimit: { reason: 'take-profit' | 'stop-loss'; profit: number; currency: string } | null;
+  setSessionLimit: (value: { reason: 'take-profit' | 'stop-loss'; profit: number; currency: string } | null) => void;
   blockRegistry: WorkspaceBlockInfo[];
   aiRuntimeRegistered: boolean;
   shared: SharedData;
@@ -99,6 +101,7 @@ export function useDbotWorkspace({
   const [ready, setReady] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
   const [botRunning, setBotRunning] = useState(false);
+  const [sessionLimit, setSessionLimit] = useState<{ reason: 'take-profit' | 'stop-loss'; profit: number; currency: string } | null>(null);
   const [blockRegistry, setBlockRegistry] = useState<WorkspaceBlockInfo[]>([]);
   const [aiRuntimeRegistered, setAiRuntimeRegistered] = useState(false);
   const [shared, setShared] = useState<SharedData>({ markets: 0, ticks: 0 });
@@ -252,6 +255,10 @@ export function useDbotWorkspace({
         case 'block-registry': {
           setBlockRegistry(message.blocks);
           setAiRuntimeRegistered(message.aiRuntimeRegistered);
+          return;
+        }
+        case 'session-limit-hit': {
+          setSessionLimit({ reason: message.reason, profit: message.profit, currency: message.currency });
           return;
         }
         case 'bot-status': {
@@ -529,6 +536,7 @@ export function useDbotWorkspace({
 
   const loadAndRunBot = useCallback((xml: string, name: string, analysis: unknown) => {
     if (!readyRef.current) return false;
+    setSessionLimit(null);
     post(hostLoadBot({ xml, name, runAfterLoad: true, analysisSnapshot: analysis }));
     return true;
   }, [post]);
@@ -575,6 +583,7 @@ export function useDbotWorkspace({
   }, [post, clearSharedAccount, forgetGrant, setLinkState]);
 
   return {
+    sessionLimit, setSessionLimit,
     frameRef,
     frameRevision,
     frameLoaded,

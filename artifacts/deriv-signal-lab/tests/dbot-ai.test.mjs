@@ -680,3 +680,26 @@ test("follow-up edits can change the strategy shape", () => {
   const widened = applyDbotAiEdit(hl, "change the barrier offset to +2.5");
   assert.equal(widened?.barrierOffset, 2.5);
 });
+
+test('analysis session keeps large settings, caps martingale steps and stops on settlement', () => {
+  const request = { family: 'even-odd', symbol: 'R_100', duration: 1, analysisId: 'fresh',
+    sessionControls: true, stake: 12345.67, lossLimit: 250000, profitTarget: 900000,
+    maxTrades: 8000, stakingPlan: 'martingale', stakeMultiplier: 12.5, maxMartingaleSteps: 3 };
+  const xml = buildDbotAiStrategyXml(request);
+  for (const [id, expected] of [['aiInitStakeValue', '12345.67'], ['aiGateLossLimit', '-250000'], ['aiGateProfitLimit', '900000'], ['aiGateTradesLimit', '8000'], ['aiStakeGrowFactor', '12.5'], ['aiStepLimit', '3']]) {
+    assert.match(xml, new RegExp(`id="${id}"><field name="NUM">${expected}</field>`));
+  }
+  assert.match(xml, /type="signal_lab_session_start"/);
+  assert.match(xml, /type="signal_lab_session_profit"/);
+  assert.match(xml, /type="signal_lab_session_runs"/);
+  assert.match(xml, /type="signal_lab_session_stop" id="aiTakeProfitNotice"/);
+  assert.match(xml, /type="signal_lab_session_stop" id="aiStopLossNotice"/);
+  assert.match(xml, /<field name="OP">GTE<\/field>/);
+  assert.match(xml, /<field name="OP">LTE<\/field>/);
+  const ids = [...xml.matchAll(/<(?:block|shadow) type="[^"]+" id="([^"]+)"/g)].map(match => match[1]);
+  assert.equal(new Set(ids).size, ids.length, 'Blockly block ids must be unique');
+  assert.equal(tagCount(xml, 'block').open, tagCount(xml, 'block').close);
+  for (const invalid of [{ stake: 0 }, { lossLimit: Infinity }, { maxTrades: 1.5 }, { maxMartingaleSteps: -1 }, { stakeMultiplier: 1e300, maxMartingaleSteps: 5 }]) {
+    assert.throws(() => buildDbotAiStrategyXml({ ...request, ...invalid }), /positive|Invalid/);
+  }
+});
