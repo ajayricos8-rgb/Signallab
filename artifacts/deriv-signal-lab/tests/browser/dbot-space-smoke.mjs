@@ -1,5 +1,6 @@
 // Mocked browser integration test. Start Signal Lab first, then run:
 //   pnpm test:dbot:browser
+// For the focused startup regression, run pnpm test:dbot-startup:browser.
 // Deriv REST and WebSockets are intercepted; no real orders can be placed.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -63,6 +64,8 @@ async function mockDeriv(page) {
       else if (key === 'trading_times') response.trading_times = { markets: [{ name: 'Derived', submarkets: [{ name: 'Continuous Indices', symbols: [{ underlying_symbol: 'R_100', symbol: 'R_100', times: { open: ['00:00:00'], close: ['23:59:59'] } }] }] }] };
       else if (key === 'contracts_for') response.contracts_for = { available: ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER'].map(contract_type => ({ contract_type, contract_category: contract_type === 'CALL' || contract_type === 'PUT' ? 'callput' : 'digits', contract_category_display: 'Up/Down', display_name: contract_type, market: 'synthetic_index', submarket: 'random_index', underlying_symbol: 'R_100', min_contract_duration: '1t', max_contract_duration: '10t' })) };
       else if (key === 'ticks_history') {
+        // Deriv replies to ticks_history with a `history` message.
+        response.msg_type = 'history';
         response.history = { prices, times };
         response.pip_size = 2;
         response.subscription = { id: `sub-${request.req_id}` };
@@ -86,13 +89,20 @@ async function mockDeriv(page) {
   return { authSockets, dialogs, setDialogAction: action => { dialogAction = action; }, holdProposals: () => { holdProposals = true; } };
 }
 
-async function openWorkspace(page, mobile = false) {
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+async function openWorkspace(page, mobile = false, navigate = true) {
+  if (navigate) await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByTestId(mobile ? 'tab-dbot-space' : 'button-dbot-space-nav').click();
-  await page.getByTestId('dbot-workspace-status').getByText('Workspace ready').waitFor({ timeout: 60_000 });
+  const status = page.getByTestId('dbot-workspace-status');
+  await status.getByText(/Workspace ready|Workspace needs reload/).waitFor({ timeout: 60_000 });
+  if ((await status.innerText()).includes('Workspace needs reload')) {
+    const notice = await page.getByTestId('dbot-notice').innerText();
+    assert.fail(`DBot failed to initialize: ${notice}`);
+  }
   const bot = page.frames().find(frame => frame.url().includes('/dbot/'));
   assert.ok(bot, 'the bundled Deriv application must load in an iframe');
   await bot.getByText('Trade parameters', { exact: false }).first().waitFor({ timeout: 20_000 });
+  assert.equal(await bot.getByTestId('blockly-load-error').count(), 0, 'workspace initialization must not fail');
+  await bot.getByTestId('blockly-loader').waitFor({ state: 'hidden' });
   return bot;
 }
 
@@ -109,15 +119,86 @@ async function loadPreset(page, bot, strategy = 'D_ALEMBERT') {
   assert.ok(count > 20, 'the preset must load its real strategy blocks');
 }
 
-try {
+async function runSmoke() {
   // Tablet-sized iframe exercises the native mobile/tablet wizard layout.
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   const mock = await mockDeriv(page);
   const bot = await openWorkspace(page);
 
+  // These modules are evaluated during Blockly startup. A missing translation
+  // import used to abort the entire workspace, not just the scan blocks.
+  const marketScan = await bot.evaluate(() => {
+    const Blockly = window.Blockly;
+    const generator = Blockly.JavaScript.javascriptGenerator;
+    const types = [
+      'x_market_scan', 'x_scan_switch_best', 'x_scan_stand_best', 'x_scan_best',
+      'x_scan_score', 'x_scan_rank', 'x_scan_count', 'x_scan_summary',
+      'x_trade_due', 'x_seconds_since_trade',
+    ];
+    const missing = types.filter(type => !Blockly.Blocks[type] || !generator.forBlock[type]);
+    const block = Blockly.derivWorkspace.newBlock('x_market_scan');
+    const families = block.getField('FAMILY').getOptions(false).map(option => option[1]);
+    const code = generator.blockToCode(block);
+    block.dispose();
+    return { missing, families, code };
+  });
+  assert.deepEqual(marketScan.missing, [], 'all AI market-scan blocks and generators must load');
+  assert.deepEqual(marketScan.families, ['even-odd', 'over-under', 'high-low-tick', 'rise-fall']);
+  assert.match(marketScan.code, /Bot\.marketScan\("even-odd", 5, 1\.95, 1, 8, 0\.35\);/);
+
+  if (process.argv.includes('--startup-only')) {
+    // Load a shipped AI bot that uses these scan blocks, without running it.
+    await page.getByTestId('dbot-view-store').click();
+    await page.getByTestId('dbot-use-HIGH_LOW_TICK_SNIPER').click();
+    await page.getByTestId('dbot-notice').getByText(/High\/Low Tick AI Sniper v6 is on the canvas/i).waitFor({ timeout: 30_000 });
+    const loadedTypes = await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).map(block => block.type));
+    assert.ok(loadedTypes.includes('x_market_scan'), 'the shipped AI bot must load its scan block');
+    assert.ok(loadedTypes.includes('x_scan_switch_best'), 'the shipped AI bot must load its market switch block');
+
+    // The workspace must also start when an account is connected, and recover
+    // and re-link correctly if the embedded frame is reloaded.
+    await page.getByTestId('button-settings-nav').click();
+    await page.getByTestId('deriv-pat-input').fill('test-only-token');
+    await page.getByTestId('button-deriv-connect').click();
+    await page.getByTestId('deriv-connection-status').getByText('Connected').first().waitFor({ timeout: 20_000 });
+    await page.getByTestId('button-dbot-space-nav').click();
+    await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC123456/).waitFor({ timeout: 30_000 });
+    await bot.evaluate(() => window.location.reload());
+    await page.getByTestId('dbot-notice').getByText(/reloaded/i).waitFor({ timeout: 20_000 });
+    await page.getByTestId('dbot-workspace-status').getByText('Workspace ready').waitFor({ timeout: 60_000 });
+    await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC123456/).waitFor({ timeout: 30_000 });
+    assert.equal(await bot.getByTestId('blockly-load-error').count(), 0);
+    assert.ok(await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).some(block => block.type === 'x_market_scan')),
+      'the saved AI bot should be restored after reloading the workspace');
+    await page.close();
+
+    // Match the case where Signal Lab is already connected before DBot opens.
+    const connected = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+    await mockDeriv(connected);
+    await connected.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await connected.getByTestId('button-settings-nav').click();
+    await connected.getByTestId('deriv-pat-input').fill('test-only-token');
+    await connected.getByTestId('button-deriv-connect').click();
+    await connected.getByTestId('deriv-connection-status').getByText('Connected').first().waitFor({ timeout: 20_000 });
+    await openWorkspace(connected, false, false);
+    await connected.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC123456/).waitFor({ timeout: 30_000 });
+    await connected.close();
+
+    // Check a fresh mobile workspace can open and load a real strategy too.
+    const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    await mockDeriv(mobile);
+    const mobileBot = await openWorkspace(mobile, true);
+    await loadPreset(mobile, mobileBot);
+    await mobile.close();
+    assert.equal(requests.some(request => request.buy || request.sell), false, 'startup and loading must not trade');
+    assert.deepEqual(errors, [], 'browser pages should not throw uncaught errors');
+    console.log('DBot startup passed: desktop and mobile workspaces, scan blocks, safe preset loading, account link and reload.');
+    return;
+  }
+
   // The draggable AI launcher is wired to the live Blockly catalog. Build and
-  // load generated XML into the real workspace, then verify the custom gate
-  // and generated risk procedure survive Blockly's XML importer.
+  // load generated XML into the real workspace, then verify the risk procedure
+  // survives import and that the analysis gate can generate code separately.
   await page.getByTestId('dbot-ai-launcher').click();
   await page.getByTestId('dbot-ai-panel').waitFor();
   await page.getByTestId('dbot-ai-registry-status').getByText('READY', { exact: true }).waitFor({ timeout: 20_000 });
@@ -134,27 +215,32 @@ try {
   await page.getByTestId('dbot-notice').getByText(/is on the canvas/i).waitFor({ timeout: 20_000 });
   const generatedWorkspace = await bot.evaluate(() => {
     const workspace = window.Blockly.derivWorkspace;
-    const blocks = workspace.getAllBlocks(false);
-    const gate = blocks.find(block => block.type === 'signal_lab_analysis_gate');
-    return {
-      types: blocks.map(block => block.type),
-      gateFields: gate ? {
-        family: gate.getFieldValue('FAMILY'),
-        symbol: gate.getFieldValue('SYMBOL'),
-        contractType: gate.getFieldValue('CONTRACT_TYPE'),
-        barrier: String(gate.getFieldValue('BARRIER')),
-        targetDigit: String(gate.getFieldValue('TARGET_DIGIT')),
-      } : null,
-      gateCode: gate ? window.Blockly.JavaScript.javascriptGenerator.blockToCode(gate)[0] : '',
+    const types = workspace.getAllBlocks(false).map(block => block.type);
+    const gate = workspace.newBlock('signal_lab_analysis_gate');
+    gate.setFieldValue('PUT', 'CONTRACT_TYPE');
+    gate.setFieldValue('analysis-1', 'ANALYSIS_ID');
+    const gateFields = {
+      family: gate.getFieldValue('FAMILY'),
+      symbol: gate.getFieldValue('SYMBOL'),
+      contractType: gate.getFieldValue('CONTRACT_TYPE'),
+      barrier: String(gate.getFieldValue('BARRIER')),
+      targetDigit: String(gate.getFieldValue('TARGET_DIGIT')),
+      analysisId: gate.getFieldValue('ANALYSIS_ID'),
     };
+    const gateCode = window.Blockly.JavaScript.javascriptGenerator.blockToCode(gate)[0];
+    gate.dispose();
+    return { types, gateFields, gateCode };
   });
-  for (const type of ['signal_lab_analysis_gate', 'procedures_defreturn', 'procedures_callreturn', 'total_profit', 'total_runs', 'purchase']) {
+  for (const type of ['procedures_defreturn', 'procedures_callreturn', 'total_profit', 'total_runs', 'purchase']) {
     assert.ok(generatedWorkspace.types.includes(type), `generated Blockly XML must load registered block ${type}`);
   }
+  // A prompt has no analysis snapshot; adding an empty analysis gate would
+  // make its entry permanently impossible. Analysis-backed strategies do use it.
+  assert.ok(!generatedWorkspace.types.includes('signal_lab_analysis_gate'));
   assert.deepEqual(generatedWorkspace.gateFields, {
-    family: 'rise-fall', symbol: 'R_100', contractType: 'PUT', barrier: '0', targetDigit: '0',
+    family: 'rise-fall', symbol: 'R_100', contractType: 'PUT', barrier: '0', targetDigit: '0', analysisId: 'analysis-1',
   });
-  assert.match(generatedWorkspace.gateCode, /Bot\.getSignalLabAnalysisGate\("rise-fall", "R_100", "", "PUT", 0, 0\)/);
+  assert.match(generatedWorkspace.gateCode, /Bot\.getSignalLabAnalysisGate\("rise-fall", "R_100", "analysis-1", "PUT", 0, 0\)/);
   assert.equal(requests.some(request => request.buy || request.sell), false, 'loading AI blocks must never place an order');
   await page.getByTestId('dbot-ai-tab-analysis').click();
   const analysisFamilies = await page.getByTestId('dbot-ai-family-select').locator('option').evaluateAll(options => options.map(option => option.value));
@@ -190,7 +276,9 @@ try {
 
   await page.getByTestId('dbot-view-store').click();
   await page.getByTestId('dbot-store-search').fill('reverse');
-  assert.equal(await page.locator('[data-testid^="dbot-strategy-"]').count(), 2);
+  assert.equal(await page.getByTestId('dbot-strategy-REVERSE_MARTINGALE').count(), 1);
+  assert.equal(await page.getByTestId('dbot-strategy-REVERSE_D_ALEMBERT').count(), 1);
+  assert.equal(await page.getByTestId('dbot-strategy-MARTINGALE').count(), 0);
   await page.getByTestId('dbot-store-search').fill('');
   await page.getByTestId('dbot-use-D_ALEMBERT').click();
   await bot.getByTestId('qs-load-button').waitFor();
@@ -248,9 +336,9 @@ try {
     const generator = (type, mutate) => {
       const instance = window.Blockly.derivWorkspace.newBlock(type);
       if (mutate) mutate(instance);
-      const generated = window.Blockly.JavaScript.javascriptGenerator.blockToCode(instance)[0];
+      const generated = window.Blockly.JavaScript.javascriptGenerator.blockToCode(instance);
       instance.dispose();
-      return generated;
+      return Array.isArray(generated) ? generated[0] : generated;
     };
     return {
       missing,
@@ -302,12 +390,29 @@ try {
   assert.equal(await page.evaluate(() => sessionStorage.getItem('signal-lab-deriv-pat')), 'test-only-token');
 
   // Switching the Signal Lab account moves the link with it, again by itself.
+  // Record bridge messages because the disconnect notice may be replaced by
+  // the automatic reconnect notice before the Settings screen is closed.
+  await bot.evaluate(() => {
+    window.__dbotTestSwitchMessages = [];
+    window.addEventListener('message', event => {
+      if (event.origin !== window.location.origin || event.source !== window.parent || event.data?.source !== 'signal-lab') return;
+      if (event.data.type === 'disconnect-account' || event.data.type === 'connect-account') {
+        window.__dbotTestSwitchMessages.push({ type: event.data.type, grantId: event.data.grantId, accountId: event.data.accountId });
+      }
+    });
+  });
   await page.getByTestId('button-settings-nav').click();
   await page.getByTestId('deriv-account-select').selectOption('VRTC222222');
   await page.getByTestId('deriv-connection-status').getByText('Connected').first().waitFor({ timeout: 20_000 });
   await page.getByTestId('button-dbot-space-nav').click();
-  await page.getByTestId('dbot-notice').getByText(/changed or disconnected/i).waitFor({ timeout: 10_000 });
+  // The resulting link must name the new account, and the old grant must have
+  // been revoked before the new one was sent to the workspace.
   await page.getByTestId('dbot-account-status').getByText(/Auto-linked · VRTC222222/).waitFor({ timeout: 30_000 });
+  const switchMessages = await bot.evaluate(() => window.__dbotTestSwitchMessages);
+  const revokedIndex = switchMessages.findIndex(message => message.type === 'disconnect-account');
+  const linkedIndex = switchMessages.findIndex(message => message.type === 'connect-account' && message.accountId === 'VRTC222222');
+  assert.ok(revokedIndex >= 0 && linkedIndex > revokedIndex, 'account switches must revoke the previous grant before linking');
+  assert.notEqual(switchMessages[revokedIndex].grantId, switchMessages[linkedIndex].grantId);
   // Unlinking is the one manual action; it pauses automatic linking.
   await page.getByTestId('dbot-disconnect-account').click();
   await page.getByTestId('dbot-account-status').getByText('Linking paused').waitFor();
@@ -340,6 +445,10 @@ try {
   assert.equal(requests.some(request => request.buy || request.sell), false, 'no buy or sell may be sent by these tests');
   assert.deepEqual(errors, [], 'browser pages should not throw uncaught errors');
   console.log('DBot smoke passed: desktop drag, chart, store, safe preset loading, mobile blocks, iframe persistence, automatic account linking, and the Signal Lab data bridge.');
+}
+
+try {
+  await runSmoke();
 } finally {
   for (const timer of timers) clearInterval(timer);
   await browser.close();
