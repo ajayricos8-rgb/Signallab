@@ -14,6 +14,7 @@
 
 import { api_base } from '../../api/api-base';
 import { fallbackPayout, winningDigitCount } from './vision-ai.mjs';
+import { PARITY_FALLBACK_PAYOUT } from './parity-strategies.mjs';
 
 const STORAGE_KEY = 'signal-lab.vision-payouts.v1';
 const REFRESH_MS = 5 * 60 * 1000;
@@ -56,6 +57,10 @@ export class PayoutTable {
         this.key = key;
         this.over = new Array(10).fill(0);
         this.under = new Array(10).fill(0);
+        // Even/Odd pays one multiple per side (no barrier): two slots read by
+        // the parity engine. Old stored tables lack them and read as 0.
+        this.even = 0;
+        this.odd = 0;
         this.filled = 0;
         this.live = false;
         this.at = 0;
@@ -80,6 +85,29 @@ export class PayoutTable {
         return fallbackPayout(direction, index);
     }
 
+    setParity(side, multiple) {
+        const key = String(side).toLowerCase() === 'odd' ? 'odd' : 'even';
+        if (!(multiple > 0)) return;
+        if (!this[key]) this.filled += 1;
+        this[key] = multiple;
+    }
+
+    hasParity(side) {
+        const key = String(side).toLowerCase() === 'odd' ? 'odd' : 'even';
+        return this[key] > 0;
+    }
+
+    /** Even/Odd multiple for a side; the modelled 1.95× until quoted. */
+    getParity(side) {
+        const key = String(side).toLowerCase() === 'odd' ? 'odd' : 'even';
+        return this[key] > 0 ? this[key] : PARITY_FALLBACK_PAYOUT;
+    }
+
+    /** True when both Even/Odd slots came from the API. */
+    get parityComplete() {
+        return this.even > 0 && this.odd > 0;
+    }
+
     /** True only when every tradeable slot came from the API. */
     get complete() {
         let expected = 0;
@@ -95,6 +123,8 @@ export class PayoutTable {
             key: this.key,
             over: this.over,
             under: this.under,
+            even: this.even,
+            odd: this.odd,
             filled: this.filled,
             live: this.live,
             at: this.at || Date.now(),
@@ -105,7 +135,11 @@ export class PayoutTable {
         const table = new PayoutTable(data?.key);
         if (Array.isArray(data?.over)) table.over = data.over.slice(0, 10);
         if (Array.isArray(data?.under)) table.under = data.under.slice(0, 10);
-        table.filled = Number(data?.filled) || table.over.filter(Boolean).length + table.under.filter(Boolean).length;
+        table.even = Number(data?.even) || 0;
+        table.odd = Number(data?.odd) || 0;
+        table.filled =
+            Number(data?.filled) ||
+            table.over.filter(Boolean).length + table.under.filter(Boolean).length + (table.even ? 1 : 0) + (table.odd ? 1 : 0);
         table.live = Boolean(data?.live);
         table.at = Number(data?.at) || Date.now();
         return table;
@@ -141,30 +175,44 @@ async function fetchTable(key, options) {
             jobs.push({ barrier, direction });
         });
     }
+    // Even/Odd needs no barrier: two proposals price the whole family.
+    ['even', 'odd'].forEach(side => {
+        if (table.hasParity(side) && Date.now() - table.at < REFRESH_MS) return;
+        jobs.push({ parity: side });
+    });
     if (!jobs.length) return table;
 
     let sawLive = false;
     for (let i = 0; i < jobs.length; i += BATCH_SIZE) {
         const batch = jobs.slice(i, i + BATCH_SIZE);
         await Promise.all(
-            batch.map(async ({ barrier, direction }) => {
+            batch.map(async job => {
                 try {
-                    const response = await sendProposal({
+                    const isParity = Boolean(job.parity);
+                    const request = {
                         proposal: 1,
                         amount: Number(amount) > 0 ? Number(amount) : 1,
                         basis: 'stake',
-                        contract_type: direction === 'over' ? 'DIGITOVER' : 'DIGITUNDER',
+                        contract_type: isParity
+                            ? job.parity === 'odd'
+                                ? 'DIGITODD'
+                                : 'DIGITEVEN'
+                            : job.direction === 'over'
+                              ? 'DIGITOVER'
+                              : 'DIGITUNDER',
                         currency: currency || 'USD',
                         duration: Number(duration) || 5,
                         duration_unit: durationUnit || 't',
-                        barrier,
                         underlying_symbol: symbol,
-                    });
+                    };
+                    if (!isParity) request.barrier = job.barrier;
+                    const response = await sendProposal(request);
                     const proposal = response?.proposal;
                     const payout = Number(proposal?.payout);
                     const stake = Number(proposal?.ask_price) || Number(amount) || 1;
                     if (payout > 0 && stake > 0) {
-                        table.set(direction, barrier, payout / stake);
+                        if (isParity) table.setParity(job.parity, payout / stake);
+                        else table.set(job.direction, job.barrier, payout / stake);
                         sawLive = true;
                     }
                 } catch {

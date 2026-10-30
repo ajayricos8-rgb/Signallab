@@ -20,6 +20,7 @@ import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
 import { DEFAULT_LATENCY, aiBrainReport, forecastReport, labelFidelity, marketDna, priceDecision, reverseEngineerReport } from '../utils/price-strategies.mjs';
+import { PARITY_FALLBACK_PAYOUT, parityAuditReport, parityBrainReport, parityDecision, parityDna, parityForecastReport, parityLeagueReport, parityReverseReport, scoreParityMarket } from '../utils/parity-strategies.mjs';
 import { adaptiveStake, priceRiskAllowed, resolvePriceContext } from '../utils/price-risk.mjs';
 import * as memory from '../utils/vision-memory.mjs';
 import {
@@ -32,7 +33,7 @@ import {
     readStake,
     waitingReason,
 } from '../utils/vision-entry.mjs';
-import { createMarketPicker, scoreMarket, VOLATILITY_MARKETS } from '../utils/vision-markets.mjs';
+import { createMarketPicker, scoreMarket, VOLATILITY_MARKETS, DIGIT_MARKETS } from '../utils/vision-markets.mjs';
 import {
     ensurePayouts,
     peekPayouts,
@@ -71,6 +72,15 @@ const lastPrice = new Map();
  */
 const priceLedger = new Map();
 const priceCalibration = new Map();
+/** The last parity decision, with its reason, per market. */
+const lastParity = new Map();
+/**
+ * Published parity decisions waiting for their settling tick, per market, and
+ * their scorecard — the same honest grading as the price ledger, per side, so
+ * an even read that keeps missing is shrunk without punishing the odd reads.
+ */
+const parityLedger = new Map();
+const parityCalibration = new Map();
 /**
  * The decision that was open when the current position was bought, per
  * market. Learning must score *that* forecast against the outcome — the
@@ -194,6 +204,13 @@ const getVisionInterface = tradeEngine => {
         const cached = lastPrice.get(symbolOf())?.dna;
         if (cached) return cached;
         return marketDna(await readTicks(), { horizon: 5 });
+    };
+
+    /** The parity DNA of the market as it stands. */
+    const parityDnaOf = async () => {
+        const cached = lastParity.get(symbolOf())?.dna;
+        if (cached) return cached;
+        return parityDna(await readTicks());
     };
 
     const readTicks = async () => {
@@ -363,6 +380,84 @@ const getVisionInterface = tradeEngine => {
 
     const calibrationOf = symbol => {
         const calibration = priceCalibration.get(symbol) || { hits: 0, samples: 0, predicted: 0 };
+        return {
+            ...calibration,
+            rate: calibration.samples ? calibration.hits / calibration.samples : 0,
+            mean: calibration.samples ? num(calibration.predicted, 0) / calibration.samples : 0,
+        };
+    };
+
+    /**
+     * Grade every published parity decision whose settling tick has printed.
+     *
+     * The contract settles on the `duration`-th tick after the decision — the
+     * +1 the forecast carries is processing slip, not contract length, so the
+     * grade uses the true duration. Digits are extracted from the whole stream
+     * with its inferred pip size (a trailing zero is a digit 0, never missing).
+     */
+    const gradeParityForecasts = (symbol, list) => {
+        const prices = math.toNumbers(list);
+        const ledger = parityLedger.get(symbol) || [];
+        const calibration = parityCalibration.get(symbol) || { hits: 0, samples: 0, predicted: 0 };
+        if (!calibration.byOutcome) {
+            const cell = () => ({ hits: 0, samples: 0, predicted: 0 });
+            calibration.byOutcome = { even: cell(), odd: cell() };
+        }
+        const pip = math.inferPipSize(prices);
+        const digits = math.lastDigits(prices, pip);
+        const pending = [];
+        ledger.forEach(entry => {
+            const exitIndex = entry.index + Math.max(1, Math.round(num(entry.duration, 5)));
+            if (exitIndex >= digits.length) {
+                pending.push(entry);
+                return;
+            }
+            if (prices[entry.index] !== entry.lastQuote) return; // history shifted: drop
+            const digit = digits[exitIndex];
+            if (!Number.isInteger(digit)) return;
+            const win = entry.side > 0 ? digit % 2 === 0 : digit % 2 === 1;
+            const predicted = Math.max(0, Math.min(1, num(entry.winProbability, 0)));
+            calibration.samples += 1;
+            calibration.predicted += predicted;
+            if (win) calibration.hits += 1;
+            const lane = entry.side > 0 ? calibration.byOutcome.even : calibration.byOutcome.odd;
+            lane.samples += 1;
+            lane.predicted += predicted;
+            if (win) lane.hits += 1;
+        });
+        parityLedger.set(symbol, pending.slice(-64));
+        parityCalibration.set(symbol, calibration);
+        return {
+            hits: calibration.hits,
+            samples: calibration.samples,
+            rate: calibration.samples ? calibration.hits / calibration.samples : 0,
+            mean: calibration.samples ? num(calibration.predicted, 0) / calibration.samples : 0,
+            byOutcome: calibration.byOutcome,
+        };
+    };
+
+    /** Remember a parity decision that reached "model ready" for later grading. */
+    const fileParityForecast = (symbol, list, result, duration) => {
+        try {
+            if (!result?.modelReady) return;
+            const prices = math.toNumbers(list);
+            if (!prices.length) return;
+            const ledger = parityLedger.get(symbol) || [];
+            ledger.push({
+                index: prices.length - 1,
+                lastQuote: prices[prices.length - 1],
+                duration: Math.max(1, Math.round(num(duration, 5))),
+                side: result.side,
+                winProbability: num(result.winProbability, 0),
+            });
+            parityLedger.set(symbol, ledger.slice(-64));
+        } catch {
+            // Calibration must never be able to break a trading tick.
+        }
+    };
+
+    const parityCalibrationOf = symbol => {
+        const calibration = parityCalibration.get(symbol) || { hits: 0, samples: 0, predicted: 0 };
         return {
             ...calibration,
             rate: calibration.samples ? calibration.hits / calibration.samples : 0,
@@ -569,6 +664,8 @@ const getVisionInterface = tradeEngine => {
      */
     const MARKETS = VOLATILITY_MARKETS;
     const picker = createMarketPicker({ markets: MARKETS });
+    /** The parity scout walks all fourteen Even/Odd markets, jumps included. */
+    const parityPicker = createMarketPicker({ markets: DIGIT_MARKETS });
 
     /**
      * Move the running bot to another market: swap the symbol the engine trades
@@ -1502,6 +1599,248 @@ const getVisionInterface = tradeEngine => {
             const plan = lastPrice.get(symbolOf());
             const dna = plan?.dna || (await priceDnaOf());
             return round(plan ? scoreTickMarket(plan, dna) : 0, 1);
+        },
+
+        /* ---------------- parity (Even/Odd) ----------------
+         *
+         * The Even/Odd ensemble behind the AI Even Switcher. Sixteen experts
+         * forecast P(even) at the settling tick, both sides are priced against
+         * the live DIGITEVEN/DIGITODD quotes, and the better expected value
+         * wins. Published decisions are graded against the settling tick per
+         * side, and the plan is:
+         *
+         * [ready, side, probability, even-probability, edge, confidence,
+         *  agreement, samples, horizon, separation, stderr, record,
+         *  calibration, quote, fair-quote, ev-margin, dna-score, skill,
+         *  stand-down, certainty, ev-lower, t-stat, break-even, ev,
+         *  hit-samples, payout-live]
+         *
+         * Read it with `parityDecisionPart`.
+         */
+        parityDecision: async (list, horizon, threshold, require, minEdge, payout, minConfidence, minAgreement, minEv, slip) => {
+            const symbol = symbolOf();
+            const calibration = gradeParityForecasts(symbol, list);
+            // Live Even/Odd quotes first: the payout table's two slots, then
+            // the running trade options' own proposals, then the fallback.
+            const table = peekPayouts(payoutOptions());
+            const quoted = quotedPayout(['DIGITEVEN', 'DIGITODD']);
+            const quotedMultiple = quoted > 0 ? quoted + 1 : 0;
+            const liveEven = table && table.even > 0 ? table.even : 0;
+            const liveOdd = table && table.odd > 0 ? table.odd : 0;
+            const assumed = num(payout, PARITY_FALLBACK_PAYOUT) || PARITY_FALLBACK_PAYOUT;
+            const duration = clamp(Math.round(num(horizon, 5)) || 5, 1, 10);
+            const result = parityDecision(list, duration, num(threshold, 0), {
+                minAgreement: num(minAgreement, 0),
+                minEdge: num(minEdge, 0),
+                minConfidence: num(minConfidence, 0),
+                // 'always' keeps the cadence a switching strategy needs: the
+                // better-EV side every readable cycle, sized down when thin.
+                requireEdge: String(require) !== 'always',
+                payout: assumed,
+                payoutEven: liveEven || quotedMultiple || assumed,
+                payoutOdd: liveOdd || quotedMultiple || assumed,
+                payouts: liveEven || liveOdd ? { even: liveEven, odd: liveOdd } : undefined,
+                minEv: num(minEv, 0),
+                // The contract's ticks start when Deriv processes the buy, not
+                // when the model looked: charge one tick of slip by default.
+                entrySlip: num(slip, 1),
+                // The rule's own graded record, per side — the one input that
+                // is evidence rather than inference.
+                evidence: {
+                    hits: calibration.hits,
+                    samples: calibration.samples,
+                    rate: calibration.rate,
+                    mean: calibration.mean,
+                    byOutcome: calibration.byOutcome,
+                },
+            });
+            // File before the value gate is applied: a bot that stopped
+            // publishing would also stop grading, and then it could never
+            // demonstrate that the estimates had recovered.
+            fileParityForecast(symbol, list, result, duration);
+            lastParity.set(symbol, {
+                ...result,
+                payoutLive: liveEven || liveOdd || quotedMultiple ? 1 : 0,
+            });
+            return [
+                result.ready ? 1 : 0,
+                result.side,
+                result.probability,
+                result.evenProbability,
+                result.edge,
+                result.confidence,
+                result.agreement,
+                result.samples,
+                result.horizon,
+                result.separation,
+                result.stderr,
+                Number.isFinite(result.hitRate) ? result.hitRate : 0,
+                num(result.calibration, 1),
+                num(result.payoutAt, 0),
+                num(result.fairPayout, 0),
+                num(result.evMargin, 0),
+                num(result.dnaScore, 0),
+                num(result.skill, 0),
+                num(result.standDown, 0),
+                num(result.certainty, 0),
+                Number.isFinite(result.evLower) ? num(result.evLower, 0) : 0,
+                num(result.tStat, 0),
+                num(result.breakEven, 0.5),
+                Number.isFinite(result.ev) ? num(result.ev, 0) : 0,
+                num(result.hitSamples, 0),
+                liveEven || liveOdd || quotedMultiple ? 1 : 0,
+            ];
+        },
+        parityDecisionPart: async (plan, part) => {
+            const index = {
+                ready: 0,
+                side: 1,
+                probability: 2,
+                'even-prob': 3,
+                edge: 4,
+                confidence: 5,
+                agreement: 6,
+                samples: 7,
+                horizon: 8,
+                separation: 9,
+                stderr: 10,
+                record: 11,
+                evidence: 12,
+                quote: 13,
+                'fair-quote': 14,
+                'ev-margin': 15,
+                'dna-score': 16,
+                skill: 17,
+                'stand-down': 18,
+                certainty: 19,
+                'ev-lower': 20,
+                't-stat': 21,
+                'break-even': 22,
+                ev: 23,
+                'hit-samples': 24,
+                'payout-live': 25,
+            }[part];
+            return Array.isArray(plan) && index !== undefined ? num(plan[index], 0) : 0;
+        },
+        /** Why the last parity decision did (or did not) reach an entry. */
+        parityReason: async () => String(lastParity.get(symbolOf())?.reason || 'no decision yet'),
+        /**
+         * What DIGITEVEN and DIGITODD pay on this market right now, as one
+         * journal line — and whether Deriv said so or the fallback did.
+         */
+        parityPayouts: async () => {
+            const plan = lastParity.get(symbolOf());
+            if (!plan) return 'no quotes yet — no decision has been scored';
+            const live = plan.payoutLive ? 'live' : 'modelled';
+            return (
+                `quotes · EVEN ${num(plan.payoutEven, 0).toFixed(3)}× (fair ${num(plan.evTable?.[0]?.fairPayout, 0).toFixed(3)}×)` +
+                ` · ODD ${num(plan.payoutOdd, 0).toFixed(3)}× (fair ${num(plan.evTable?.[1]?.fairPayout, 0).toFixed(3)}×)` +
+                ` · ${live}`
+            );
+        },
+        /** PARITY DNA — the digit stream's measured structure, one line. */
+        parityDna: async () => {
+            const dna = await parityDnaOf();
+            if (!dna || !dna.windows) return String(dna?.verdict || 'no DNA yet — waiting for ticks');
+            return `${dna.summary} · ${dna.verdict}`;
+        },
+        /** One measured field of the parity DNA report. */
+        parityDnaPart: async part => {
+            const dna = await parityDnaOf();
+            if (!dna) return 0;
+            const phase = { cold: 0, fair: 1, sticky: 2, alternating: 3, mixed: 4, frozen: 5 }[dna.phase] ?? 0;
+            const regime = { unknown: 0, fair: 1, sticky: 2, alternating: 3, drifty: 4, frozen: 5 }[dna.regime] ?? 0;
+            const fields = {
+                score: dna.readability,
+                'even-share': dna.evenShare,
+                alternation: dna.alternation,
+                'runs-z': dna.runsZ,
+                'markov-chi': dna.markovChi,
+                'digit-chi': dna.digitChi,
+                entropy: dna.entropy,
+                repeat: dna.repeatRate,
+                'longest-run': dna.longestRun,
+                warmth: dna.warmth,
+                phase,
+                regime,
+                drift: dna.driftZ,
+                ticks: dna.ticks,
+            };
+            return num(fields[part], 0);
+        },
+        /** Each expert's measured skill against the fair coin, best first. */
+        parityLeague: async () => parityLeagueReport(lastParity.get(symbolOf())),
+        /** The bot holding itself to its own numbers. */
+        parityAudit: async () => parityAuditReport(lastParity.get(symbolOf())),
+        /** The internal brain: nets, regime call, carrying experts. */
+        parityBrain: async () => parityBrainReport(lastParity.get(symbolOf())),
+        /** The market's deep diagnosis plus the derived auto-tuning. */
+        parityReverse: async () => parityReverseReport(await parityDnaOf()),
+        /** The full two-sided read: both sides, quotes and EVs. */
+        parityForecast: async () => parityForecastReport(lastParity.get(symbolOf())),
+        parityStake: async (probability, payout, base, fraction, percent, maxStake) => {
+            let balance = 0;
+            try {
+                balance = num(await tradeEngine.getBalance('NUM'), 0);
+            } catch {
+                balance = 0; // An unreadable balance must not stop the bot.
+            }
+            const drawdown = Math.max(0, -num(tradeEngine.sessionProfit, 0));
+            return adaptiveStake({
+                probability: Number.isFinite(Number(probability)) ? num(probability, 0) : num(lastParity.get(symbolOf())?.probability, 0),
+                payout: num(payout, PARITY_FALLBACK_PAYOUT),
+                base: num(base, 0.35),
+                fraction: num(fraction, 0.1),
+                balance,
+                maxPercent: num(percent, 5),
+                maxStake: num(maxStake, 0),
+                drawdown,
+                minStake: 0.35,
+            });
+        },
+        /**
+         * Let the bot choose which of the fourteen Even/Odd markets it stands
+         * on. The markets do not pay the same and do not read the same: this
+         * scores the market the bot is on (expected value, certainty, DNA
+         * readability, sample, skill) and moves when the score falls under the
+         * floor — with a dwell time so a session cannot spend its life
+         * switching between cold tick streams.
+         */
+        parityAutoMarket: async (mode, minScore, dwell) => {
+            const symbol = symbolOf();
+            const plan = lastParity.get(symbol);
+            const dna = plan?.dna || (await parityDnaOf());
+            const score = plan ? scoreParityMarket(plan, dna) : 0;
+            parityPicker.recordScore(symbol, score);
+            const ticks = await readTicks();
+            const secondsHere = parityPicker.secondsOnMarket();
+            const stuck = secondsHere > Math.max(90, num(dwell, 90) * 2);
+            if (ticks.length < 300 && !stuck) return symbol;
+            const target = parityPicker.choose({
+                mode: String(mode || 'suitable'),
+                minScore: num(minScore, 0),
+                dwell: num(dwell, 90),
+                current: symbol,
+                score,
+            });
+            if (target === symbol) return symbol;
+            const moved = await switchToMarket(target);
+            if (moved === target) parityPicker.markSwitched();
+            return moved;
+        },
+        /** The score the parity scout gives the market the bot is on. */
+        parityMarketScore: async () => {
+            const plan = lastParity.get(symbolOf());
+            const dna = plan?.dna || (await parityDnaOf());
+            return round(plan ? scoreParityMarket(plan, dna) : 0, 1);
+        },
+        /** Contracts this run has bought, from the engine's own run counter. */
+        parityContracts: async () => num(tradeEngine.getTotalRuns?.(), 0),
+        parityRisk: async (stake, legs, baseline, loss, target, percent) => {
+            let balance;
+            try { balance = await tradeEngine.getBalance('NUM'); } catch { return false; }
+            return priceRiskAllowed({ stake, legs, baseline, loss, target, percent, balance,
+                sessionProfit: tradeEngine.sessionProfit, hedgeIncomplete: tradeEngine.hedgeIncomplete });
         },
 
         /** Contracts this run has bought, from the engine's own run counter. */
