@@ -9,7 +9,7 @@ Reviewed 30 October 2026. This is a partial comparison, not an inventory of auth
 
 ## What Signal Lab already has
 
-DBot Space has an embedded Blockly builder, XML import, chart, a strategy store, a quick-strategy flow and AI copilot. Signal Lab shares volatility data with DBot and provides trading and analysis elsewhere in the app. Some custom blocks provide scanning, virtual ledger, hedging and risk logic. These existing tools are not necessarily equivalent to similarly named features on either reference site; in particular, the bot-store scouts are not a simultaneous, contract-verified scanner, and the virtual ledger is not necessarily a Virtual Hook switcher.
+DBot Space has an embedded Blockly builder, XML import, chart, a strategy store, a quick-strategy flow and AI copilot. Signal Lab shares volatility data with DBot and provides trading and analysis elsewhere in the app. Some custom blocks provide scanning, virtual ledger, hedging and risk logic. These existing tools are not necessarily equivalent to similarly named features on either reference site: the bot-store presets now share one AI multi-market scan that reads every market Signal Lab streams at the same moment, but it is a model ranking rather than a contract-verified price scanner, and the virtual ledger is not necessarily a Virtual Hook switcher.
 
 ## Added in this iteration
 

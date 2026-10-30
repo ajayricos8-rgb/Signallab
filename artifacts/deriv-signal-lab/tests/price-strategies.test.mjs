@@ -395,7 +395,29 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   assert.match(tick, /type="x_price_league"/, 'the expert league is reported');
   assert.match(tick, /type="x_price_audit"/, 'the bot audits itself');
   assert.match(tick, /type="x_price_payout_table"/, 'the payout ladder is reported');
-  assert.match(tick, /type="x_price_auto_market"/, 'the scout can choose a market');
+  // The multi-market scan replaced the one-market scout: every preset reads
+  // every market with its own model, then stands on the most suitable one, and
+  // the once-a-minute cadence keeps the quality gates from parking the bot.
+  for (const [xml, family] of [[tick, 'high-low-tick'], [rise, 'rise-fall'], [hedge, 'rise-fall']]) {
+    assert.match(xml, /type="x_market_scan"/, 'the AI scan reads every market');
+    assert.match(xml, new RegExp(`<field name="FAMILY">${family}</field>`), `the scan runs the ${family} model`);
+    assert.match(xml, /type="x_scan_switch_best"/, 'the scan chooses the market to trade');
+    assert.doesNotMatch(xml, /x_price_auto_market/, 'the one-market scout is removed');
+    const cycle = xml.slice(xml.indexOf('<block type="tick_analysis"'));
+    const scanAt = cycle.indexOf('x_market_scan');
+    const decisionAt = cycle.indexOf('x_price_decision');
+    assert.ok(scanAt > 0 && scanAt < decisionAt, 'the scan runs before the decision');
+    assert.match(xml, /type="x_trade_due"/, 'the entry cadence clock is wired');
+    const beforeSection = xml.slice(
+      xml.indexOf('<block type="before_purchase"'),
+      xml.indexOf('<block type="after_purchase"')
+    );
+    const cadenceAt = beforeSection.indexOf('x_trade_due');
+    assert.ok(cadenceAt > 0, 'the cadence reaches the purchase conditions');
+    const cadenceBranch = beforeSection.slice(cadenceAt);
+    assert.match(cadenceBranch, /x_price_risk/, 'the cadence branch keeps the risk gate');
+    assert.match(cadenceBranch, /ai loss streak/, 'and the losing-streak cool-off');
+  }
   // The execution clock ships with the sniper: five ticks is not a duration
   // until the tick rate is known, and the bot says so at start-up.
   assert.match(tick, /type="x_price_clock"/, 'the clock is reported');
@@ -413,7 +435,7 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   for (const xml of [rise, hedge]) {
     assert.match(xml, /<field name="VAR" id="vai_entry_slip">ai entry slip<\/field>/);
     assert.doesNotMatch(xml, /ai dna floor/, 'the DNA gate is a High/Low Tick knob');
-    assert.doesNotMatch(xml, /x_price_auto_market/, 'the scout is a High/Low Tick block');
+    assert.doesNotMatch(xml, /x_price_auto_market/, 'the one-market scout is gone everywhere');
   }
   assert.match(tick, /<field name="MODE">tick<\/field>/);
   assert.match(tick, /<field name="SYMBOL_LIST">R_100<\/field>/);

@@ -50,13 +50,20 @@ test('the bot is a complete DBot program', () => {
     assert.ok(types.includes('trade_again'), 'the bot restarts its cycle after a settlement');
 });
 
-test('every tick reads the market before anything else', () => {
+test('every tick scans every market before it reads the one it stands on', () => {
     const tick = section('tick_analysis', ['before_purchase', 'after_purchase', 'during_purchase']);
     assert.match(tick, /vision_analyse/, 'the AI read runs on every tick');
-    assert.match(tick, /vision_auto_market/, 'the market choice runs before the read');
+    // One switching path: the old one-market scout is gone; the multi-market
+    // scan is now the only block that decides where the bot trades.
+    assert.equal(types.filter(type => type === 'vision_auto_market').length, 0, 'the one-market scout is removed');
+    assert.match(tick, /x_market_scan/, 'the scan runs on every tick');
+    assert.match(tick, /<field name="FAMILY">over-under<\/field>/, "the scan runs this bot's own model");
+    assert.match(tick, /x_scan_switch_best/, 'the scan chooses the market to trade');
+    assert.match(tick, />ai market<\//, 'the chosen market is recorded');
     const readAt = tick.indexOf('vision_analyse');
-    const marketAt = tick.indexOf('vision_auto_market');
-    assert.ok(marketAt < readAt, 'the market is chosen before it is read');
+    const scanAt = tick.indexOf('x_market_scan');
+    const switchAt = tick.indexOf('x_scan_switch_best');
+    assert.ok(scanAt > 0 && scanAt < switchAt && switchAt < readAt, 'the market is scanned, chosen, then read');
 });
 
 test('the trade options are built from the AI decision, never a fixed digit', () => {
@@ -105,12 +112,30 @@ test('the shipped tuning is evidence-gated and skips weak or negative-edge setup
     assert.ok(XML.includes('id="in07"><field name="NUM">0.2</field>'), 'fractional risk is conservative by default');
 });
 
-test('the market block cannot strand the bot on a market it cannot read', () => {
-    // The dwell has to be long enough to read a market after switching to it.
-    const dwell = XML.match(/id="aiVar13">ai market dwell<\/field><value name="VALUE"><shadow type="math_number" id="in13"><field name="NUM">(\d+)/);
-    assert.ok(dwell, 'the dwell variable is set in the start block');
-    assert.ok(Number(dwell[1]) >= 5, `a ${dwell[1]}s dwell re-subscribes faster than a market can be read`);
-    assert.match(XML, /<field name="MODE">suitable<\/field>/, 'it stays where it scores well');
+test('the scan cannot strand the bot on a market it cannot read', () => {
+    // The dwell and the margin are what stop a scan from thrashing between
+    // two markets that score within noise of each other.
+    assert.match(XML, /<variable type="" id="[^"]+">ai scan dwell<\/variable>/, 'the scan dwell is declared');
+    // This preset is hand-authored and sets its knobs through shadows, so the
+    // matcher accepts either a block or a shadow holding the number.
+    const set = XML.match(/>ai scan dwell<\/field>[\s\S]{0,260}?<field name="NUM">(\d+)</);
+    assert.ok(set, 'the dwell is set in the start block');
+    assert.ok(Number(set[1]) >= 5, `a ${set[1]}s dwell re-subscribes faster than a market can be read`);
+    const margin = XML.match(/>ai scan margin<\/field>[\s\S]{0,260}?<field name="NUM">([\d.]+)</);
+    assert.ok(margin && Number(margin[1]) > 0, 'a switch needs a margin over the market it is on');
+});
+
+test('a minute without a purchase lets the quality gates stand aside', () => {
+    const before = section('before_purchase', ['after_purchase', 'during_purchase']);
+    assert.equal(types.filter(type => type === 'x_trade_due').length, 1, 'one cadence clock');
+    assert.match(before, />ai cadence<\//, 'the clock reads its own knob');
+    assert.match(before, /<field name="OP">OR<\/field>/, 'the cadence branch is ORed into the entry gate');
+    const dueAt = before.indexOf('x_trade_due');
+    const cadenceBranch = before.slice(dueAt);
+    assert.match(cadenceBranch, /r_loss_guard/, 'the cadence branch keeps the loss limit');
+    assert.match(cadenceBranch, /r_profit_guard/, 'and the profit target');
+    assert.match(cadenceBranch, /r_drawdown_ok/, 'and the drawdown brake');
+    assert.match(cadenceBranch, /r_loss_streak/, 'and the losing-streak cool-off');
 });
 
 test('learning happens on every settled contract', () => {

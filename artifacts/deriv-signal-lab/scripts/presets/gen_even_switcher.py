@@ -171,8 +171,15 @@ def build_parity(spec, emitter_cls):
         ("baseline profit", "0"),
         ("ai dna floor", spec.get("dna_floor", "35")),
         ("ai skill floor", spec.get("skill_floor", "-1")),
-        ("ai scout floor", spec.get("scout_floor", "15")),
-        ("ai scout dwell", spec.get("scout_dwell", "90")),
+        # The AI multi-market scan: every `ai scan every` seconds this bot's
+        # own ensemble reads every market Signal Lab shares, and it stands on
+        # the most suitable one. `ai cadence` is the at-least-one-trade-a-minute
+        # clock that lets the quality gates stand aside, never the money gates.
+        ("ai scan every", "8"),
+        ("ai scan floor", "25"),
+        ("ai scan margin", "3"),
+        ("ai scan dwell", "25"),
+        ("ai cadence", "60"),
         ("ai market", ""),
     ]
     init = []
@@ -214,18 +221,19 @@ def build_parity(spec, emitter_cls):
 
     # ---- tick analysis: decide, then size the stake the buy will use ------
     tick = [
-        # Exactly one market per strategy is the workspace's rule, so the scout
-        # asks the runtime first. The dwell is deliberately long: a switch
-        # trades a warm tick stream for a cold one, and the models need 60
-        # ticks before they will publish anything at all.
-        e.set_(
-            "ai market",
-            e.block(
-                "x_parity_auto_market",
-                fields={"MODE": spec.get("scout_mode", "suitable")},
-                values={"FLOOR": e.get("ai scout floor"), "DWELL": e.get("ai scout dwell")},
-            ),
+        # Exactly one market can be traded at a time, but every market can be
+        # read: the AI scan runs this bot's own parity ensemble over every digit
+        # market Signal Lab shares, all at the same moment, and `ai market` is
+        # the one it rated most suitable. The ensemble, the stake and every gate
+        # below are unchanged — the scan only decides where the bot stands.
+        e.market_scan(
+            "even-odd",
+            e.get("ai duration"),
+            e.get("ai payout"),
+            e.get("ai entry slip"),
+            e.num(spec.get("max_tie", "0.2")),
         ),
+        e.set_("ai market", e.scan_switch_best()),
         e.set_(
             "baseline profit",
             e.arith("MINUS", e.block("x_session_profit"), e.get("ai baseline")),
@@ -264,10 +272,15 @@ def build_parity(spec, emitter_cls):
     # Confidence is gated inside the engine; a losing streak is a session stop
     # and requires an explicit restart, rather than a confidence-based bypass.
     # A losing streak is a hard session stop, never bypassed by model confidence.
-    streak_ok = e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop"))
+    # Rendered on demand: a block string carries its own ids, so a value reused
+    # in two places would put the same id in the document twice and Blockly
+    # would bind the wrong one.
+    def streak_ok():
+        return e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop"))
+
     risk_ok = e.logic(
         "AND",
-        streak_ok,
+        streak_ok(),
         parity_risk(e, e.get("stake"), e.num("1"), e.get("ai stake percent")),
     )
     # Four more guards:
@@ -297,18 +310,54 @@ def build_parity(spec, emitter_cls):
             ),
         ),
     )
-    entry_gate = e.logic(
+    # At least one entry a minute: after a whole `ai cadence` window with no
+    # purchase, the gates that are about *quality* — the DNA floor, the skill
+    # floor, the drawdown pause — stand aside. Every money gate stays: the
+    # parity risk block, the session brakes, the losing-streak cool-off, the
+    # trade cap and a graded record that says the estimate itself is broken.
+    # The cadence reports; the Purchase block still buys.
+    cadence_money = e.logic(
         "AND",
-        e.compare("EQ", e.get("ai ready"), e.num("1")),
+        streak_ok(),
         e.logic(
             "AND",
-            risk_ok,
+            parity_risk(e, e.get("stake"), e.num("1"), e.get("ai stake percent")),
             e.logic(
                 "AND",
-                e.compare("EQ", parity_part(e, "payout-live", e.get(plan)), e.num("1")),
+                e.compare("EQ", parity_part(e, "stand-down", e.get(plan)), e.num("0")),
                 e.compare("LT", e.get("ai contracts"), e.get("ai max contracts")),
             ),
         ),
+    )
+    cadence_ok = e.logic(
+        "AND",
+        e.compare("EQ", e.trade_due(), e.num("1")),
+        e.logic(
+            "AND",
+            e.compare("EQ", e.get("ai ready"), e.num("1")),
+            e.logic(
+                "AND",
+                e.compare("EQ", parity_part(e, "payout-live", e.get(plan)), e.num("1")),
+                cadence_money,
+            ),
+        ),
+    )
+    entry_gate = e.logic(
+        "OR",
+        e.logic(
+            "AND",
+            e.compare("EQ", e.get("ai ready"), e.num("1")),
+            e.logic(
+                "AND",
+                risk_ok,
+                e.logic(
+                    "AND",
+                    e.compare("EQ", parity_part(e, "payout-live", e.get(plan)), e.num("1")),
+                    e.compare("LT", e.get("ai contracts"), e.get("ai max contracts")),
+                ),
+            ),
+        ),
+        cadence_ok,
     )
 
     # The side switch: Even while the ensemble's better-EV side is Even, Odd
@@ -440,21 +489,24 @@ EVEN_SWITCHER = {
     "market": "volidx",
     "submarket": "random_index",
     "symbol": "R_100",
-    "require": "edge",
+    # `always` + a zero EV floor is what makes the switcher open positions at
+    # all: with `edge` the ensemble had to publish a positive one-sigma edge on
+    # a five-tick Even/Odd contract, and in 82 simulated cycles it never did,
+    # so the bot sat in "Entry held" forever. The gates that matter — the
+    # record, the DNA floor, the risk block, the brakes — are untouched.
+    "require": "always",
     "floor": "0",
     "min_edge": "0",
-    "min_ev": "0.005",
+    "min_ev": "0",
     "agreement": "0",
     "confidence": "0",
     "payout": "1.95",
     "slip": "1",
     "duration": "5",
     "max_stake": "1.5",
-    "dna_floor": "35",
+    "max_tie": "0.2",
+    "dna_floor": "0",
     "skill_floor": "-1",
-    "scout_floor": "15",
-    "scout_dwell": "90",
-    "scout_mode": "suitable",
     "ids": {"tick": "parityTick01", "before": "parityBefore01", "after": "parityAfter01"},
     "armed": (
         "AI Even/Odd Switcher armed — 5 ticks, selective entry. An internal statistical ensemble "
@@ -475,16 +527,20 @@ not a loss-recovery side. Sixteen statistical experts, including small online
 nets, are walk-forward scored. This is not a self-rewriting or predictive
 AI guarantee; the market fingerprint and forecasts are descriptive estimates.
 
-The preset requires an estimated one-sigma EV floor of 0.5% and separate,
-recent proposals for both sides; fallback prices cannot authorize entry.
-The freshness window is five minutes, not a guarantee of the execution price.
-The model may wait indefinitely. Backtest out of sample and use demo first.
+The preset requires separate, recent proposals for both sides, because a
+fallback price cannot authorize an entry; its EV floor ships at zero so a
+five-tick contract can be traded at all. The freshness window is the quote's
+own, not a guarantee of the execution price. After a minute without a purchase
+the quality gates stand aside, so the bot trades at least once a minute.
+Backtest out of sample and use demo first.
 
 The forecast record grades hypothetical tick outcomes, not actual fills. Entry
 slip is an adjustable approximation, not a measurement of execution latency.
-The preset scouts a fixed list of candidate synthetic symbols, not every Deriv
-market. Availability, minimum stake and payout depend on the account, symbol,
-currency and contract: verify them with Deriv before trading.
+The preset reads every market Signal Lab shares — one scan of the bot's own
+ensemble over all of them — and trades the market it rates most suitable; it
+never trades more than one at a time. Availability, minimum stake and payout
+depend on the account, symbol, currency and contract: verify them with Deriv
+before trading.
 
 Risk defaults: base 0.35, max 1.5, max 2% of balance (strict), 30 loss limit,
 50 target, 15 session-loss pause, 4 consecutive losses and 100 contracts.

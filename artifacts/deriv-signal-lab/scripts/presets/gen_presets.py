@@ -187,6 +187,36 @@ class Emitter:
             },
         )
 
+    # ---- the AI multi-market scan ---------------------------------------
+    def market_scan(self, family, horizon, payout, slip, tie):
+        """Read every market Signal Lab shares with this bot's own model."""
+        return self.block(
+            "x_market_scan",
+            fields={"FAMILY": family},
+            values={
+                "HORIZON": horizon,
+                "PAYOUT": payout,
+                "SLIP": slip,
+                "EVERY": self.get("ai scan every"),
+                "MAX_TIE": tie,
+            },
+        )
+
+    def scan_switch_best(self):
+        """Stand on the most suitable market from the last scan."""
+        return self.block(
+            "x_scan_switch_best",
+            values={
+                "FLOOR": self.get("ai scan floor"),
+                "MARGIN": self.get("ai scan margin"),
+                "DWELL": self.get("ai scan dwell"),
+            },
+        )
+
+    def trade_due(self):
+        """1 when no contract has been bought for `ai cadence` seconds."""
+        return self.block("x_trade_due", values={"SECONDS": self.get("ai cadence")})
+
     def variables_xml(self):
         out = ["<variables>"]
         for ident, name in self.variables:
@@ -279,6 +309,18 @@ def build(spec):
         ("ai loss streak", "0"),
         ("ai skip count", "0"),
         ("ai contracts", "0"),
+        # The AI multi-market scan and the entry cadence. The scan reads every
+        # market Signal Lab shares once every `ai scan every` seconds and the
+        # bot moves only when the challenger clears `ai scan floor` and beats
+        # the market it is on by `ai scan margin`, never more often than
+        # `ai scan dwell`. `ai cadence` is the at-least-one-trade-a-minute
+        # clock: after that many seconds without a purchase the quality gates
+        # stand aside while every money gate keeps its own value.
+        ("ai scan every", "8"),
+        ("ai scan floor", "25"),
+        ("ai scan margin", "3"),
+        ("ai scan dwell", "25"),
+        ("ai cadence", "60"),
         # Session profit measured from the equity the bot started with: the
         # engine reports realised profit for the whole run, so a bot that is
         # restarted mid-run would otherwise see someone else's losses as its own.
@@ -286,19 +328,21 @@ def build(spec):
     ]
     if spec["mode"] == "tick":
         # The structural knobs only exist on the High/Low Tick family: there is
-        # no DNA gate to apply on a directional contract, and the scout is a
-        # High/Low Tick market chooser.
+        # no DNA gate to apply on a directional contract. The multi-market
+        # scan runs on every family.
         defaults += [
             ("ai dna floor", spec.get("dna_floor", "0")),
             ("ai skill floor", spec.get("skill_floor", "-1")),
-            ("ai scout floor", spec.get("scout_floor", "15")),
-            ("ai scout dwell", spec.get("scout_dwell", "900")),
             ("ai market", ""),
         ]
     init = []
     for name, value in defaults:
         if name == "stake":
             init.append(e.set_("stake", e.get("base stake")))
+        elif name == "ai market":
+            # The market is a symbol, not a number: the scan assigns a string
+            # to it, so it has to start as one.
+            init.append(e.set_(name, e.text(value)))
         else:
             init.append(e.set_(name, e.num(value)))
     if spec.get("hedge_ratio"):
@@ -346,22 +390,21 @@ def build(spec):
             init.append(e.notify("info", e.block("x_price_reverse")))
 
     # ---- tick analysis: decide, then size the stake the buy will use ------
-    tick = []
-    if spec.get("scout"):
-        # Exactly one market per strategy is the workspace's rule, so the scout
-        # asks the runtime first. The dwell time is deliberately long: a switch
-        # trades a warm tick stream for a cold one, and the models need 256
-        # completed windows before they will publish anything at all.
-        tick.append(
-            e.set_(
-                "ai market",
-                e.block(
-                    "x_price_auto_market",
-                    fields={"MODE": spec.get("scout_mode", "suitable")},
-                    values={"FLOOR": e.get("ai scout floor"), "DWELL": e.get("ai scout dwell")},
-                ),
-            )
-        )
+    tick = [
+        # Exactly one market can be traded at a time, but every market can be
+        # read: the AI scan runs this bot's own model over every stream Signal
+        # Lab shares, all at the same moment, and `ai market` is the one it
+        # rated most suitable. The models, the stake and every gate below are
+        # unchanged — the scan only decides where the bot stands.
+        e.market_scan(
+            "high-low-tick" if spec["mode"] == "tick" else "rise-fall",
+            e.get("ai duration"),
+            e.get("ai payout"),
+            e.get("ai entry slip"),
+            e.get("ai max tie"),
+        ),
+        e.set_("ai market", e.scan_switch_best()),
+    ]
     tick += [
         e.set_(
             "baseline profit",
@@ -405,14 +448,23 @@ def build(spec):
     # Confidence is gated inside the engine (see `decision`), so what is left
     # here is the part that depends on the session: a losing streak widens the
     # floor instead of stopping the bot dead.
-    streak_ok = e.logic(
-        "OR",
-        e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop")),
-        e.compare("GTE", e.part("confidence", e.get(plan)), e.arith("ADD", e.get("ai min confidence"), e.num("5"))),
-    )
+    # Rendered on demand: a block string carries its own ids, so a value reused
+    # in two places would put the same id in the document twice and Blockly
+    # would bind the wrong one.
+    def streak_ok():
+        return e.logic(
+            "OR",
+            e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop")),
+            e.compare(
+                "GTE",
+                e.part("confidence", e.get(plan)),
+                e.arith("ADD", e.get("ai min confidence"), e.num("5")),
+            ),
+        )
+
     risk_ok = e.logic(
         "AND",
-        streak_ok,
+        streak_ok(),
         e.risk(e.get("stake"), legs(), e.get("ai stake percent")),
     )
     if spec["mode"] == "tick":
@@ -437,10 +489,39 @@ def build(spec):
                 e.compare("GTE", e.part("skill", e.get(plan)), e.get("ai skill floor")),
             ),
         )
-    entry_gate = e.logic(
+    # At least one entry a minute: when a whole `ai cadence` window passes with
+    # no purchase, the gates that are about *quality* — the DNA floor, the skill
+    # floor, a mild confidence bar — stand aside. Every money gate stays: the
+    # risk block, the losing-streak cool-off and, on this contract family, the
+    # graded-record stand-down. The cadence reports, it never trades by itself.
+    cadence_money = e.logic(
         "AND",
-        e.compare("EQ", e.get("ai ready"), e.num("1")),
-        risk_ok,
+        streak_ok(),
+        e.risk(e.get("stake"), legs(), e.get("ai stake percent")),
+    )
+    if spec["mode"] == "tick":
+        cadence_money = e.logic(
+            "AND",
+            cadence_money,
+            e.compare("EQ", e.part("stand-down", e.get(plan)), e.num("0")),
+        )
+    cadence_ok = e.logic(
+        "AND",
+        e.compare("EQ", e.trade_due(), e.num("1")),
+        e.logic(
+            "AND",
+            e.compare("EQ", e.get("ai ready"), e.num("1")),
+            cadence_money,
+        ),
+    )
+    entry_gate = e.logic(
+        "OR",
+        e.logic(
+            "AND",
+            e.compare("EQ", e.get("ai ready"), e.num("1")),
+            risk_ok,
+        ),
+        cadence_ok,
     )
 
     if spec["mode"] == "tick":
@@ -654,6 +735,17 @@ visible rather than hidden — the entry line prints the probability, the break-
 the tie rate and the measured record. Set the decision block's entry field to "only with a
 measured edge" if you would rather trade rarely and only on evidence.
 
+THE MARKET
+One Deriv contract is one market, but every market can be read. Every "ai scan every" seconds
+this bot's own ensemble scores every market Signal Lab shares, all at the same moment, on one
+comparable scale (measured EV, certainty, readability, sample and walk-forward skill), and the
+bot stands on the most suitable one: only when that market clears "ai scan floor", beats the
+market it is on by "ai scan margin", and "ai scan dwell" seconds have passed. The scan never
+opens an order — the Purchase block below still buys, on the market the scan chose, with this
+strategy's own stake and gates. If a whole "ai cadence" minute passes without a purchase, the
+quality gates stand aside so the bot still trades at least once a minute; the stake, the loss
+limit, the profit target, the drawdown brake and the losing-streak cool-off are never relaxed.
+
 An even horizon on a fixed-step market ties about a third of windows and every tie loses, so
 the horizon is the odd five-tick contract, and a measured tie rate above "ai max tie" refuses
 the shape instead of hiding it. The decision is taken in Tick analysis, so the stake it sizes
@@ -743,6 +835,16 @@ What each part does:
      balance percent, the loss limit and the remaining budget before either order is sent, and
      After purchase waits for both legs to settle before the next cycle.
 
+THE MARKET
+One Deriv contract is one market, but every market can be read. Every "ai scan every" seconds
+this bot's own ensemble scores every market Signal Lab shares, all at the same moment, on one
+comparable scale, and stands on the most suitable one: only when that market clears
+"ai scan floor", beats the market it is on by "ai scan margin", and "ai scan dwell" seconds have
+passed. The scan never opens an order — the hedged purchase below still buys, on the market the
+scan chose. If a whole "ai cadence" minute passes without a purchase, the quality gates stand
+aside so the bot still trades at least once a minute; the risk gate and the session brakes are
+never relaxed.
+
 Session brakes still stop the bot: the loss limit, the profit target and the balance rule are
 entry checks, not guarantees, and open contracts can settle beyond them. Estimates are
 historical and conditional, not calibrated odds. Test on demo first.
@@ -794,14 +896,6 @@ TICK_SNIPER = {
     # -1 (off): the skill still shrinks the estimate through the trust curve,
     # and raising this knob makes it a hard entry gate instead.
     "skill_floor": "-1",
-    # The scout: High/Low Ticks are quoted on every synthetic index and the
-    # markets do not pay the same. A floor this low means the bot only leaves a
-    # market it genuinely cannot read, and the 15-minute dwell means it cannot
-    # thrash between cold tick streams.
-    "scout": True,
-    "scout_mode": "suitable",
-    "scout_floor": "15",
-    "scout_dwell": "900",
     "ids": {"tick": "hlTick01", "before": "hlBefore01", "after": "hlAfter01"},
     "armed": (
         "High/Low Tick AI Sniper v6 armed — five-tick contract, cadence mode. Sixteen experts mixed by "
@@ -875,8 +969,9 @@ live-like ladders, the selective posture published 0 entries in ~800 ticks on R_
 the cadence publishes on nearly every readable cycle, and what that costs is visible rather
 than hidden — the entry line prints the probability, the quote, the EV and the measured record.
 Kelly sizes thin reads to the 0.35 exchange minimum; the DNA floor still refuses unreadable
-markets outright (the scout then moves), and the losing-streak cool-off still paces entries
-after three straight losses.
+markets outright (the AI scan then moves the bot), and the losing-streak cool-off still paces
+entries after three straight losses. After a whole minute without a purchase the quality gates
+stand aside so the bot still trades at least once a minute; the money gates never do.
 
 THE EXECUTION CLOCK
 Five ticks is the contract, but it is not a duration until the tick rate is known: on R_100 a tick
@@ -915,13 +1010,15 @@ are the loss limit, the profit target, the balance percentage and a losing-strea
 tick of entry slip is charged against the estimate, because the contract's five ticks start
 when Deriv processes the buy, not when the model looked.
 
-THE MARKET SCOUT
-High/Low Ticks are quoted on every synthetic index, and they do not pay the same. The scout
-scores the market the bot is standing on (measured EV, certainty, DNA readability, sample and
-walk-forward skill) and moves when the score falls under "ai scout floor", never more often than
-"ai scout dwell" seconds. A switch costs a cold tick stream, so the dwell is fifteen minutes and
-the floor is low: the bot only leaves a market it cannot read. Set the floor to 0 to keep the scout on
-whatever market you selected.
+THE MULTI-MARKET SCAN
+High/Low Ticks are quoted on every synthetic index, and they do not pay the same. Every
+"ai scan every" seconds the bot's own model reads every market Signal Lab shares, all at the
+same moment, and scores them on one comparable scale (measured EV, certainty, DNA readability,
+sample and walk-forward skill). The bot then stands on the most suitable one: only when that
+market clears "ai scan floor", beats the market it is on by "ai scan margin", and "ai scan dwell"
+seconds have passed. A switch costs a cold tick stream, so the margin and the dwell stop the bot
+thrashing between them. The scan never opens an order — the Purchase block below still buys, on
+the market the scan chose, with this strategy's own stake and gates.
 
 HONESTY
 These are historical, conditional estimates. Deriv prices this contract with the same
