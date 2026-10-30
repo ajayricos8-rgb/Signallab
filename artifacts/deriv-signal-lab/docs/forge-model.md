@@ -210,7 +210,7 @@ thing that can make the term negative.
 
 ## 6. The Base workspace and randomness audit
 
-The new Base workspace tab (labelled “The Base”) exposes the forge profile, the full searchable
+The Base section at the bottom of Settings exposes the forge profile, the full searchable
 syllabus and market atlas, the selected market's shared public feed, and a
 separate one-step digit research probe (`src/lib/forge/randomness-audit.ts`).
 The probe is not the trading model and never submits an order.

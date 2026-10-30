@@ -27,7 +27,7 @@ const FLOW_STEPS = [
 
 export function SettingsPanel() {
   return (
-    <div className="mx-auto w-full max-w-[1100px] space-y-4">
+    <div className="mx-auto w-full max-w-[1100px] space-y-4" data-testid="settings-panel">
       <DerivConnectionCard />
 
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="settings-neural-model">
@@ -183,7 +183,7 @@ export function SettingsPanel() {
           </li>
           <li>
             <strong className="text-foreground">Where to see it:</strong> AI Analysis incorporates the Forge estimate when it has passed its validation gates;
-            the selected signal reflects the combined model and its decision. <em>The Base</em> tab remains separate: its transition probe is exploratory research, not this trained model.
+            the selected signal reflects the combined model and its decision. <em>The Base</em> below includes an exploratory transition probe, not this trained model.
           </li>
         </ul>
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
