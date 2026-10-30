@@ -42,7 +42,7 @@ async function mockDeriv(page) {
       const account = request.url().match(/accounts\/([^/]+)\/otp/)?.[1];
       return route.fulfill({ status: 200, headers, body: JSON.stringify({ data: { url: `wss://api.derivws.com/trading/v1/options/ws/authenticated?account=${account}` } }) });
     }
-    return route.fulfill({ status: 200, headers, body: JSON.stringify({ data: ['VRTC123456', 'VRTC222222'].map(account_id => ({ account_id, balance: '10000', currency: 'USD', group: 'demo', status: 'active', account_type: 'demo' })) }) });
+    return route.fulfill({ status: 200, headers, body: JSON.stringify({ data: [...['VRTC123456', 'VRTC222222'].map(account_id => ({ account_id, balance: '10000', currency: 'USD', group: 'demo', status: 'active', account_type: 'demo' })), { account_id: 'CR123456', balance: '10000', currency: 'USD', group: 'real', status: 'active', account_type: 'real' }] }) });
   });
   const now = Math.floor(Date.now() / 1000);
   const prices = Array.from({ length: 1000 }, (_, i) => Number((100 + Math.sin(i / 8) + i / 1000).toFixed(2)));
@@ -79,7 +79,7 @@ async function mockDeriv(page) {
       else if (key === 'proposal_open_contract') response.proposal_open_contract = {};
       else if (key === 'transaction') response.transaction = {};
       else if (key === 'forget_all') response.forget_all = [];
-      else if (key === 'proposal' && holdProposals) return;
+      else if ((key === 'proposal' || key === 'buy') && holdProposals) return;
       else if (key === 'proposal') response.proposal = { id: 'mock', ask_price: 1, payout: 1.9, spot: 100, date_start: now };
       else if (key === 'buy' || key === 'sell') response.error = { code: 'Blocked', message: 'Trading is blocked by the smoke test.' };
       else response[key] = {};
@@ -369,12 +369,53 @@ async function runSmoke() {
   assert.match(bridge.virtualBuy, /Bot\.signalLabVirtualBuy\("R_100", "rise", 1, 1\.9, 5\);/);
   assert.equal(bridge.virtualProfit, 'Bot.signalLabVirtualProfit()');
 
-  // Hold mock quotes so the strategy can enter the running state without
-  // issuing a buy, then verify socket loss immediately stops the interpreter.
+  // Hold mock quotes and buy responses so no mocked order can complete. Re-scan
+  // after linking the account to use a fresh, exact analysis snapshot.
   mock.holdProposals();
-  await page.evaluate(() => window.scrollBy(0, Math.max(0, document.querySelector('[data-testid=dbot-frame]').getBoundingClientRect().bottom - window.innerHeight + 100)));
-  await bot.locator('#db-animation__run-button:visible').last().click();
-  await bot.locator('#db-animation__stop-button:visible').first().waitFor({ timeout: 10_000 });
+  // Exercise the former weak-edge confirmation deterministically, without
+  // relying on the model's verdict for the generated tick fixture.
+  await page.evaluate(() => {
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener('message', event => {
+          const master = event.data?.type === 'result' && event.data.result?.best?.master;
+          if (master) { master.verdict = 'NO_EDGE'; master.entry.action = 'no-edge'; }
+        });
+      }
+    };
+  });
+  await page.getByTestId('dbot-open-analysis').click();
+  await page.getByTestId('dbot-ai-run-analysis').click();
+  await page.getByTestId('dbot-ai-best-market').waitFor({ timeout: 90_000 });
+  await page.getByTestId('dbot-ai-weak-edge').waitFor({ state: 'visible' });
+  await page.getByTestId('dbot-ai-load-analysis').waitFor({ state: 'visible' });
+  await page.getByTestId('dbot-ai-load-and-run').waitFor({ state: 'visible' });
+  await page.getByTestId('dbot-ai-immediate-run-warning').getByText(/replaces the current blocks without asking/i).waitFor();
+
+  // A load-only action must retain the separate unsaved-work confirmation.
+  const beforeLoadOnly = await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).length);
+  const beforeLoadOnlyDialogs = mock.dialogs.length;
+  mock.setDialogAction('dismiss');
+  const loadOnlyDialog = page.waitForEvent('dialog');
+  await page.getByTestId('dbot-ai-load-analysis').click();
+  const dialog = await loadOnlyDialog;
+  // The dialog handler records the cancellation; no workspace should be replaced.
+  assert.match(dialog.message(), /Replace the strategy in the workspace/i);
+  assert.equal(mock.dialogs.length, beforeLoadOnlyDialogs + 1);
+  assert.equal(await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).length), beforeLoadOnly);
+
+  // Dismiss any unexpected prompt: an accidental confirmation would cancel the
+  // run, making this fail instead of silently accepting it.
+  const beforeRunDialogs = mock.dialogs.length;
+  await page.getByTestId('dbot-ai-load-and-run').click();
+  await bot.locator('#db-animation__stop-button:visible').first().waitFor({ timeout: 20_000 });
+  assert.deepEqual(mock.dialogs.slice(beforeRunDialogs), [], 'Load and Run must not show either confirmation');
+  assert.ok(await bot.evaluate(() => window.Blockly.derivWorkspace.getAllBlocks(false).some(block => block.type === 'signal_lab_analysis_gate')), 'the selected analysis must be loaded as gated Blockly XML');
+  assert.equal(requests.some(request => request.sell), false, 'the test must not sell a position');
+  mock.setDialogAction('accept');
+  await page.getByTestId('dbot-ai-close').click();
 
   // A dropped child socket must stop the bot and the link must come back by
   // itself, without the user pressing anything.
@@ -392,6 +433,24 @@ async function runSmoke() {
   assert.equal(await page.evaluate(() => localStorage.getItem('signal-lab-test-preserve')), 'local');
   assert.equal(await page.evaluate(() => sessionStorage.getItem('signal-lab-test-preserve')), 'session');
   assert.equal(await page.evaluate(() => sessionStorage.getItem('signal-lab-deriv-pat')), 'test-only-token');
+
+  // The immediate start must also work on a real-account selection. This is
+  // still entirely mocked; quotes and buys are held and no Deriv order is sent.
+  await page.getByTestId('dbot-toggle-real').click();
+  await page.getByTestId('dbot-account-status').getByText(/Auto-linked · CR123456/).waitFor({ timeout: 30_000 });
+  await page.getByTestId('dbot-open-analysis').click();
+  await page.getByTestId('dbot-ai-run-analysis').click();
+  await page.getByTestId('dbot-ai-best-market').waitFor({ timeout: 90_000 });
+  await page.getByTestId('dbot-ai-immediate-run-warning').getByText(/REAL account with real money/).waitFor();
+  const realRunDialogs = mock.dialogs.length;
+  mock.setDialogAction('dismiss');
+  await page.getByTestId('dbot-ai-load-and-run').click();
+  await bot.locator('#db-animation__stop-button:visible').first().waitFor({ timeout: 20_000 });
+  assert.deepEqual(mock.dialogs.slice(realRunDialogs), [], 'a real-account Load and Run must not prompt');
+  mock.setDialogAction('accept');
+  await page.getByTestId('dbot-ai-close').click();
+  await bot.locator('#db-animation__stop-button:visible').first().dispatchEvent('click');
+  await bot.locator('#db-animation__stop-button:visible').first().waitFor({ state: 'hidden', timeout: 10_000 });
 
   // Switching the Signal Lab account moves the link with it, again by itself.
   // Record bridge messages because the disconnect notice may be replaced by
@@ -446,7 +505,9 @@ async function runSmoke() {
   await loadPreset(wide, wideBot, 'MARTINGALE');
   await wide.close();
 
-  assert.equal(requests.some(request => request.buy || request.sell), false, 'no buy or sell may be sent by these tests');
+  assert.equal(requests.some(request => request.sell), false, 'the tests must not sell a position');
+  // All WebSockets are mocked, and buy responses are held during Load and Run;
+  // no order can reach Deriv even if the interpreter attempts a buy.
   assert.deepEqual(errors, [], 'browser pages should not throw uncaught errors');
   console.log('DBot smoke passed: desktop drag, chart, store, safe preset loading, mobile blocks, iframe persistence, automatic account linking, and the Signal Lab data bridge.');
 }
