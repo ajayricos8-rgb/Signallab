@@ -150,7 +150,7 @@ export function SettingsPanel() {
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div className="eyebrow flex items-center gap-1.5"><Flame size={11} /> Primary research model · Forge</div>
+            <div className="eyebrow flex items-center gap-1.5"><Flame size={11} /> Primary analysis model · Forge</div>
             <h3 className="mt-1 text-xs font-bold">signal-lab-forge-v1 · engines + AI + research + neural + calculations</h3>
           </div>
           <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] text-emerald-500">
@@ -158,7 +158,7 @@ export function SettingsPanel() {
           </span>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-          Forge is the model used first in each Signal Copilot research summary for the selected contract and duration—not an extra model card beside
+          Forge is the model used first in each AI Analysis summary for the selected contract and duration—not an extra model card beside
           the signal. It learns how the family-weighted engines, causal AI, independent research, horizon-matched neural forecasts,
           analysis prior, rolling baseline and market calculations fit together on this market. Replay inputs are aligned to their
           origin and horizon, and a source forecast is included only when it was out of sample at that origin. The model is fitted
@@ -178,14 +178,12 @@ export function SettingsPanel() {
           </li>
           <li>
             <strong className="text-foreground">When it votes:</strong> only after positive Brier and log-loss skill and a paired
-            z above the selection-adjusted bar. A validated Forge can confirm, trim or veto the published estimate; a veto is a hard
-            master NO_EDGE that blocks Auto and manual bot starts. It never places an order, and the live proposal/payout check still
-            runs before any purchase.
+            z above the selection-adjusted bar. A validated Forge can confirm, trim or veto the published estimate. A weak master verdict is shown
+            before starting and requires confirmation. Forge itself never places an order.
           </li>
           <li>
-            <strong className="text-foreground">Where to see it:</strong> Forge is the first card in both digit and Rise/Fall research panels
-            views, with separate Forge-view and published-after-Forge probabilities; its evidence also appears in the master decision
-            and entry plan. <em>The Base</em> tab remains separate: its transition probe is exploratory research, not this trained model.
+            <strong className="text-foreground">Where to see it:</strong> AI Analysis incorporates the Forge estimate when it has passed its validation gates;
+            the selected signal reflects the combined model and its decision. <em>The Base</em> tab remains separate: its transition probe is exploratory research, not this trained model.
           </li>
         </ul>
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">

@@ -16,6 +16,9 @@ export type WorkerResponse =
   | { jobId: number; type: 'error'; message: string }
   | { type: 'pong' };
 
+/** Shared worker and fallback entry point. AI Analysis must run these full market
+ * analyzers (not a lightweight UI-only summary): they build the measurement,
+ * quant-synthesis, validated forecast, neural and Forge layers before ranking. */
 export function runScanJob(job: ScanJob, onProgress?: (fraction: number, stage: string) => void): ScanJobResult {
   return job.kind === 'digit' ? analyzeDigitMarket(job.input, onProgress) : analyzeRiseFallMarket(job.input, onProgress);
 }

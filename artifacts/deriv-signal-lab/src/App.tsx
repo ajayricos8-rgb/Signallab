@@ -61,7 +61,7 @@ function Home() {
   const [activeBotTab, setActiveBotTab] = useState<PremiumBotTab>(readSavedBotTab);
   const [theme, setTheme] = useState<Theme>(readSavedTheme);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('dbot-space');
-  const [researchRequest, setResearchRequest] = useState(0);
+  const [analysisRequest, setAnalysisRequest] = useState(0);
   const [dbotMounted, setDbotMounted] = useState(false);
   useEffect(() => { if (activeTab === 'dbot-space') setDbotMounted(true); }, [activeTab]);
   const trading = useDerivTrading();
@@ -148,9 +148,9 @@ function Home() {
           </header>
 
           <div className="min-h-[calc(100dvh-76px)] px-4 pt-5 pb-24 sm:px-6 sm:pt-7 lg:px-8">
-            {dbotMounted && <div hidden={activeTab !== 'dbot-space'}><DbotSpace onOpenSettings={() => setActiveTab('settings')} researchRequest={researchRequest} /></div>}
+            {dbotMounted && <div hidden={activeTab !== 'dbot-space'}><DbotSpace onOpenSettings={() => setActiveTab('settings')} analysisRequest={analysisRequest} /></div>}
             {activeTab === 'dbot-space' ? null : activeTab === 'base' ? (
-              <ForgeBaseWorkspace onOpenTools={() => { setActiveTab('dbot-space'); setResearchRequest((value) => value + 1); }} />
+              <ForgeBaseWorkspace onOpenAnalysis={() => { setActiveTab('dbot-space'); setAnalysisRequest((value) => value + 1); }} />
             ) : activeTab === 'trade-history' ? (
               <TradeHistoryPanel />
             ) : activeTab === 'premium-bots' ? (

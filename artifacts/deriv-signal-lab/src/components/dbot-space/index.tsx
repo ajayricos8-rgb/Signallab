@@ -27,10 +27,10 @@ const VIEWS: Array<{ id: SpaceView; label: string; icon: ComponentType<LucidePro
   { id: 'tools', label: 'Digits & risk', icon: Activity },
 ];
 
-export function DbotSpace({ onOpenSettings, researchRequest = 0 }: { onOpenSettings: () => void; researchRequest?: number }) {
+export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSettings: () => void; analysisRequest?: number }) {
   const trading = useDerivTrading();
   const [view, setView] = useState<SpaceView>('builder');
-  const [localResearchRequest, setLocalResearchRequest] = useState(0);
+  const [localAnalysisRequest, setLocalAnalysisRequest] = useState(0);
 
   const workspace = useDbotWorkspace({
     view,
@@ -121,8 +121,8 @@ export function DbotSpace({ onOpenSettings, researchRequest = 0 }: { onOpenSetti
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => setLocalResearchRequest((value) => value + 1)} className="dbot-outline-button" data-testid="dbot-open-research">
-            <BrainCircuit size={14} /> Signal Copilot research
+          <button type="button" onClick={() => setLocalAnalysisRequest((value) => value + 1)} className="dbot-outline-button" data-testid="dbot-open-analysis">
+            <BrainCircuit size={14} /> Open AI Analysis
           </button>
           {/* Account cluster: the live balance with a Real/Demo switch. It drives
               the same Signal Lab account selection the connection card uses, so
@@ -264,7 +264,7 @@ export function DbotSpace({ onOpenSettings, researchRequest = 0 }: { onOpenSetti
       {view === 'store' && <StoreView onUse={useStrategy} />}
 
       <DbotAiCopilot
-        researchRequest={researchRequest + localResearchRequest}
+        analysisRequest={analysisRequest + localAnalysisRequest}
         ready={ready}
         accountConnected={link.status === 'connected'}
         accountType={link.accountType}
