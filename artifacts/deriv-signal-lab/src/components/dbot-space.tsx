@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import {
   ArrowRight, BookOpen, Boxes, BrainCircuit, ChartNoAxesCombined, CheckCircle2, CircleHelp, Link2, LoaderCircle,
-  Library, LockKeyhole, Maximize2, Search, ShieldAlert, Signal, Sparkles, Unlink, Wallet, X, type LucideProps,
+  Library, LockKeyhole, Maximize2, Search, ShieldAlert, Signal, Sparkles, Unlink, Wallet, X, Activity, type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { formatAmount } from '@/lib/deriv-trading';
 import { useMarketFeed } from '@/components/market-feed-provider';
 import { DbotAiCopilot, type DbotAiBlockInfo } from '@/components/dbot-ai-copilot';
+import { DbotMarketTools } from '@/components/dbot-market-tools';
 import type { DbotAiAnalysisSnapshot } from '@/lib/dbot-ai';
 import {
   bridgeStats, buildAccountMessage, buildBridgeSnapshot, buildBridgeUpdate, sameAccountState,
@@ -20,7 +21,7 @@ import highLowTickSniperXml from '@/lib/bot-store/bots/high-low-tick-sniper.xml?
 import riseFallEnsembleXml from '@/lib/bot-store/bots/rise-fall-ensemble.xml?raw';
 import stepRiseFallHedgeXml from '@/lib/bot-store/bots/step-rise-fall-hedge.xml?raw';
 
-type SpaceView = 'builder' | 'chart' | 'store';
+type SpaceView = 'builder' | 'chart' | 'store' | 'tools';
 type LinkState = 'idle' | 'connecting' | 'connected';
 type StrategyCategory = 'Progression' | 'Reverse progression' | 'Sequence' | 'AI';
 type Strategy = {
@@ -99,6 +100,7 @@ const views: { id: SpaceView; label: string; icon: ComponentType<LucideProps> }[
   { id: 'builder', label: 'Bot builder', icon: Boxes },
   { id: 'chart', label: 'Charts', icon: ChartNoAxesCombined },
   { id: 'store', label: 'Bot store', icon: Library },
+  { id: 'tools', label: 'Digits & risk', icon: Activity },
 ];
 
 /** Consecutive automatic link attempts before we stop and ask for a click. */
@@ -295,7 +297,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       } else if (data.type === 'ready') {
         readyRef.current = true;
         setReady(true);
-        if (viewRef.current !== 'store') send({ type: 'navigate', tab: viewRef.current });
+        if (viewRef.current === 'builder' || viewRef.current === 'chart') send({ type: 'navigate', tab: viewRef.current });
         if (pendingLoad.current) {
           send({ type: 'load-bot', ...pendingLoad.current });
           pendingLoad.current = null;
@@ -317,7 +319,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
           const bottom = frameRef.current?.getBoundingClientRect().bottom;
           if (bottom && bottom > window.innerHeight - 90) window.scrollBy({ top: bottom - window.innerHeight + 90, behavior: 'smooth' });
         });
-      } else if (data.type === 'active-tab' && viewRef.current !== 'store') {
+      } else if (data.type === 'active-tab' && (viewRef.current === 'builder' || viewRef.current === 'chart')) {
         if (data.tab === 1) setView('builder');
         else if (data.tab === 2) setView('chart');
       } else if (data.type === 'account-connected' && data.accountId === grantRef.current && data.grantId === grantRevisionRef.current) {
@@ -456,7 +458,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
   function selectView(next: SpaceView) {
     setView(next);
     setNotice('');
-    if (next !== 'store' && readyRef.current) send({ type: 'navigate', tab: next });
+    if ((next === 'builder' || next === 'chart') && readyRef.current) send({ type: 'navigate', tab: next });
   }
 
   /** Manual link: resumes automatic linking after a pause. */
@@ -582,7 +584,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border">
-        <div className="flex gap-1" role="tablist" aria-label="DBot Space sections">
+        <div className="flex flex-wrap gap-1" role="tablist" aria-label="DBot Space sections">
           {views.map(({ id, label, icon: Icon }) => (
             <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => selectView(id)} data-testid={`dbot-view-${id}`}
               className={`focus-ring -mb-px inline-flex items-center gap-2 border-b-2 px-3 py-3 text-xs font-bold transition-colors sm:px-4 sm:text-sm ${view === id ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
@@ -596,7 +598,7 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
       {notice && <div role="status" className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs leading-5 text-foreground" data-testid="dbot-notice"><span>{notice}</span><button type="button" onClick={() => setNotice('')} aria-label="Dismiss message" className="text-muted-foreground"><X size={14} /></button></div>}
 
       {/* Keep the frame mounted while viewing the store; unloading it would stop a running bot. */}
-      <div className={view === 'store' ? 'hidden' : 'mt-4'}>
+      <div className={view === 'store' || view === 'tools' ? 'hidden' : 'mt-4'}>
         <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-3 py-2 sm:px-4">
             <div className="flex items-center gap-2 text-[11px] font-bold"><span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary"><Boxes size={13} /></span> Deriv Bot workspace <span className="hidden font-normal text-muted-foreground sm:inline">/ {view === 'chart' ? 'Charts' : 'Builder'}</span></div>
@@ -658,6 +660,8 @@ export function DbotSpace({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         </div>
       </div>
+
+      {view === 'tools' && <DbotMarketTools />}
 
       {view === 'store' && (
         <div className="py-5" data-testid="dbot-store">
