@@ -136,7 +136,7 @@ const BotBuilder = observer(() => {
                                 notify('error', { message: error });
                                 return;
                             }
-                            if (runAfterLoad && !setSignalLabAnalysisSnapshot(data.analysisSnapshot)) {
+                            if ((runAfterLoad || data.analysisSnapshot !== undefined) && !setSignalLabAnalysisSnapshot(data.analysisSnapshot)) {
                                 notify('error', { message: 'The analysis snapshot is missing or invalid. Run a fresh analysis and load the strategy again.' });
                                 return;
                             }

@@ -1,6 +1,6 @@
+import type { ResearchHandoff } from '@/components/signal/research-handoff';
 import { useMemo, useState } from 'react';
 import { AlertTriangle, BarChart3, Clock3, Play, Radio, ShieldAlert, Square, TrendingDown, Wifi, WifiOff, Zap } from 'lucide-react';
-import { TradeDock } from '@/components/trade-dock';
 import { EngineLabPanel } from '@/components/signal/engine-lab-panel';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { scopeSettlements } from '@/lib/engine-lab/execution';
@@ -23,15 +23,11 @@ import {
   type RiseFallHorizonSignal, type RiseFallMarketAnalysis,
 } from '@/lib/signal-engine/rise-fall-signal';
 import type { ScanFailure, ScanMarketJob } from '@/lib/signal-engine/scan-runner';
-import type { TradeRecommendation } from '@/lib/trade-draft';
 import { explainSignal } from '@/lib/signal-engine/confidence';
 import { effectiveWindowTicks, entryModeLabel } from '@/lib/signal-engine/entry.ts';
 
 const ALL_MARKETS = 'all';
 const ENGINE_COUNT = RISE_FALL_ENGINES.length;
-// The trade ticket accepts tick expiries 1–10; minute signals use the minutes field.
-const DRAFT_TICK_EXPIRIES = Array.from({ length: 10 }, (_, index) => index + 1);
-
 type RiseFallRunMeta = { scope: string };
 
 function formatQuote(value: number | null | undefined): string {
@@ -46,16 +42,6 @@ function formatPct(value: number | null): string {
 function formatSigned(value: number | null, digits = 2): string {
   if (value === null || !Number.isFinite(value)) return '—';
   return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`;
-}
-
-function recommendationFor(result: RiseFallMarketAnalysis, signal: RiseFallHorizonSignal): TradeRecommendation {
-  return {
-    symbol: result.symbol,
-    contractType: signal.direction === 'RISE' ? 'CALL' : 'PUT',
-    duration: signal.horizon.value,
-    durationUnit: signal.horizon.unit === 'ticks' ? 't' : 'm',
-    label: signal.direction,
-  };
 }
 
 function FeedBadge({ feed }: { feed: MarketFeedValue }) {
@@ -178,15 +164,13 @@ function DurationTable({ result }: { result: RiseFallMarketAnalysis }) {
   );
 }
 
-export function RiseFallTool() {
+export function RiseFallTool({ onPrepare }: { onPrepare: (handoff: ResearchHandoff) => void }) {
   const trading = useDerivTrading();
   const feed = useMarketFeed();
   const scan = useSignalScan<RiseFallMarketAnalysis, RiseFallRunMeta>('rise-fall');
   const [scope, setScope] = useState<string>(ALL_MARKETS);
   const [viewSymbol, setViewSymbol] = useState<string | null>(null);
   const [draftMarketCode, setDraftMarketCode] = useState<string | null>(() => scan.run?.results[0]?.symbol ?? null);
-  const [draftExpiry, setDraftExpiry] = useState<number | null>(1);
-  const [applyRequest, setApplyRequest] = useState(0);
   const markets = feed.markets;
   const run = scan.run;
 
@@ -198,28 +182,6 @@ export function RiseFallTool() {
   const chartTicks = chartEntry?.ticks ?? [];
   const liveAnalysis = useMemo(() => analyzeRiseFall(chartTicks.slice(-500), 5), [chartTicks]);
   const priceContext = useMemo(() => analyzePriceContext(chartTicks), [chartTicks]);
-  const recommendation = selectedResult && signal ? recommendationFor(selectedResult, signal) : null;
-  // Passed to the trade dock so it can pop open and offer Load and Run.
-  const analysis = selectedResult && signal
-    ? {
-        runId: run?.id ?? 0,
-        confidence: signal.confidence,
-        strength: signal.strength,
-        marketName: selectedResult.name,
-        ranAt: run?.ranAt ?? 0,
-        entry: signal.entry,
-        master: signal.master,
-        researchDecision: signal.researchDecision,
-        research: signal.research,
-        confirmation: {
-          status: signal.deep.confirmation.status,
-          edgePts: signal.deep.confirmation.edgePts,
-          decisive: signal.deep.confirmation.decisive,
-        },
-      }
-    : null;
-  const draftMarket = draftMarketCode ?? chartSymbol ?? null;
-
   async function handleRunAnalysis() {
     if (scan.scanning) return;
     const symbols = scope === ALL_MARKETS ? feed.getSnapshot().map((entry) => entry.symbol) : [scope];
@@ -363,7 +325,8 @@ export function RiseFallTool() {
                   hint: `The entry stays valid for ${effectiveWindowTicks(signal.entry)} ticks — the shorter of the plan's window and the measured edge validity; ${signal.entry.reachRate === null ? 'the reach rate is measured live' : `${Math.round(signal.entry.reachRate * 100)}% of replayed signals got there`}.`,
                 },
               ]}
-              onUse={() => { setDraftMarketCode(selectedResult.symbol); setApplyRequest((value) => value + 1); }}
+              useLabel="Prepare XML bot"
+              onUse={() => onPrepare({ run, family: 'rise-fall', duration: 1, symbol: selectedResult.symbol })}
             />
             <ConfirmationPanel report={signal.deep.confirmation} />
             {signal.precision ? <PrecisionPanel block={signal.precision} candidates={selectedResult.precisionFit?.candidates} fair={0.5} /> : null}
@@ -434,23 +397,10 @@ export function RiseFallTool() {
 
       <div className="flex items-start gap-2 rounded-lg border border-border bg-background/45 p-3 text-[11px] leading-relaxed text-muted-foreground">
         <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-500" />
-        <span>Engine weights come from accuracy on one held-out slice and the backtest from a later one, so the score is never graded on data it was tuned on. Minute durations have less validation data than tick durations, which lowers their confidence. Volatility indices are random walks: confidence is evidence strength, not a guaranteed result. Orders are only placed from the trade ticket after you confirm a live Deriv price.</span>
+        <span>Engine weights come from accuracy on one held-out slice and the backtest from a later one, so the score is never graded on data it was tuned on. Minute durations have less validation data than tick durations, which lowers their confidence. Volatility indices are random walks: confidence is evidence strength, not a guaranteed result. Prepare the selected signal in the Copilot to review its XML bot and risk limits before running.</span>
       </div>
 
-      <TradeDock
-        family="rise-fall"
-        recommendation={recommendation}
-        analysis={analysis}
-        applyRequest={applyRequest}
-        marketCode={draftMarket}
-        marketName={markets.find(({ symbol }) => symbol === draftMarket)?.name ?? null}
-        marketChoices={markets.map((entry) => ({ code: entry.symbol, name: entry.name }))}
-        onMarketChange={setDraftMarketCode}
-        expiry={draftExpiry}
-        expiryOptions={DRAFT_TICK_EXPIRIES}
-        onExpiryChange={setDraftExpiry}
-        expiryVerified={false}
-      />
+
     </div>
   );
 }

@@ -1,3 +1,6 @@
+import { RiseFallTool } from '@/components/rise-fall-tool';
+import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
+import { supportsResearchContract, type ResearchHandoff } from '@/components/signal/research-handoff';
 import {
   useCallback,
   useEffect,
@@ -22,6 +25,7 @@ import {
   Minus,
   Play,
   Send,
+  Search,
   ShieldAlert,
   Sparkles,
   X,
@@ -74,6 +78,7 @@ type Viewport = { width: number; height: number };
 type LauncherPosition = { left: number; top: number };
 
 type DbotAiCopilotProps = {
+  researchRequest?: number;
   ready: boolean;
   accountConnected: boolean;
   accountType: "demo" | "real" | "unknown";
@@ -83,6 +88,7 @@ type DbotAiCopilotProps = {
   runNotice: string;
   onClearAnalysis: () => void;
   onLoadStrategy: (xml: string, name: string) => void;
+  onLoadAnalysis: (xml: string, name: string, analysis: DbotAiAnalysisSnapshot) => void;
   onLoadAndRun: (
     xml: string,
     name: string,
@@ -483,7 +489,7 @@ function answerBotQuestion(prompt: string): string | null {
   if (/\b(comprehensive|all-in-one|ai[-\s]?(?:based|powered) bot|ai bot)\b/.test(text))
     return "Two stacked builds: a COMPREHENSIVE bot combines the all-markets scan (stand on the strongest market), the Markov transition gate on digit families (or slope-agreement on Rise/Fall and Higher/Lower), loss/profit guard blocks AND the standard risk gate with martingale — every layer has to agree before an entry. An AI-BASED bot lets the analysis decide entries: on Over/Under it wires the Vision AI entry signal (the same pricing engine as the AI Vision bot in the store); on the other families the Signal Lab all-markets analysis picks the market each cycle. Try: “comprehensive over under bot barrier 5” or “AI based even bot that scans all markets”.";
   if (/\bhedg/.test(text))
-    return "Hedging means opening both sides at the same time (Rise+Fall, Over+Under, Higher+Lower, Touch+No Touch, Ends Between+Ends Outside). The “Purchase hedge (both sides)” block — right next to Purchase in Purchase conditions — is the Purchase block doubled: pick the main contract and its opposite and both buy requests go out together, so the two positions are open in the same second. Both legs stake the Trade options amount — the block has no separate second-leg stake. The block is two rows, “Purchase 1” and “Purchase 2”, and on prediction/barrier contracts each row carries its own configuration right on the row: a Prediction on Over/Under and Matches/Differs, a Barrier offset on Higher/Lower and Touch/No Touch, High/Low barriers on the In/Out contracts — so Over 2 can be hedged with Under 7, or Higher and Lower can share one barrier level (the classic complementary hedge — exactly one leg wins) or carry different offsets per row. Fresh rows default to the barrier Deriv itself suggests for the market. Set barriers on those two rows only: when a workspace buys only through the hedge block, Trade options hides its own barrier/prediction inputs, so exactly two leg configurations exist and nothing can conflict. One pricing rule to know: Higher/Lower is only offered from 5 ticks up — a 1–4 tick barrier contract comes back as “Invalid barrier”, so bots I build floor Higher/Lower at 5 ticks (and the engine raises any shorter barrier buy to 5 rather than sending a shape Deriv cannot price). Ask me for one any time: “hedge bot, buy both rise and fall on R_100, martingale x2”. After purchase runs once BOTH legs have settled, and win/loss checks read the main leg. A plain equal-stake hedge usually locks in a small loss unless one side is priced rich. The Hedging blocks (Signal Lab → Hedging) count open legs/pairs and open profit, and Tools has a full Hedging bot that manages pairs.";
+    return "Hedging means opening both sides at the same time (Rise+Fall, Over+Under, Higher+Lower, Touch+No Touch, Ends Between+Ends Outside). The “Purchase hedge (both sides)” block — right next to Purchase in Purchase conditions — is the Purchase block doubled: pick the main contract and its opposite and both buy requests go out together, so the two positions are open in the same second. Both legs stake the Trade options amount — the block has no separate second-leg stake. The block is two rows, “Purchase 1” and “Purchase 2”, and on prediction/barrier contracts each row carries its own configuration right on the row: a Prediction on Over/Under and Matches/Differs, a Barrier offset on Higher/Lower and Touch/No Touch, High/Low barriers on the In/Out contracts — so Over 2 can be hedged with Under 7, or Higher and Lower can share one barrier level (the classic complementary hedge — exactly one leg wins) or carry different offsets per row. Fresh rows default to the barrier Deriv itself suggests for the market. Set barriers on those two rows only: when a workspace buys only through the hedge block, Trade options hides its own barrier/prediction inputs, so exactly two leg configurations exist and nothing can conflict. One pricing rule to know: Higher/Lower is only offered from 5 ticks up — a 1–4 tick barrier contract comes back as “Invalid barrier”, so bots I build floor Higher/Lower at 5 ticks (and the engine raises any shorter barrier buy to 5 rather than sending a shape Deriv cannot price). Ask me for one any time: “hedge bot, buy both rise and fall on R_100, martingale x2”. After purchase runs once BOTH legs have settled, and win/loss checks read the main leg. A plain equal-stake hedge usually locks in a small loss unless one side is priced rich. The Hedging blocks (Signal Lab → Hedging) count open legs/pairs and open profit, and Premium bots has a full Hedging bot that manages pairs.";
   if (/\bvirtual|paper\b/.test(text))
     return "Virtual blocks paper-trade: “Virtual trade” records a position at the live quote, “Settle virtual positions” books the win/loss on a 10,000 paper balance, and the profit/runs/wins/balance blocks report the rehearsal. Nothing is sent to Deriv. Ask for a bot “in virtual mode” and I generate the settle-then-buy pattern for you.";
   if (/\bscan\b|\bbest market\b|\ball markets\b/.test(text))
@@ -513,9 +519,9 @@ function answerBotQuestion(prompt: string): string | null {
   if (/\b(chance|probability|odds|win rate|how often)\b/.test(text) && /\b(over|under|match|differ|even|odd|digit)\b/.test(text))
     return "True digit probabilities (each last digit is ~10% over time): Matches wins 1 in 10 (10%), Differs 9 in 10 (90%), Even/Odd 5 in 10 (50% — 0 counts as even). Over barrier b wins on (9 − b) digits: Over 2 = 70%, Over 5 = 40%. Under b wins on b digits: Under 7 = 70%, Under 4 = 40%. Equality always loses on Over/Under. Payouts shrink as probability rises, and Deriv's margin means every contract's expected value starts slightly negative — strategies manage variance, they don't repeal the maths.";
   if (/\b(expected value|ev|breakeven|break even|house edge|margin)\b/.test(text))
-    return "Expected value per trade = win probability × profit − loss probability × stake. With net payout ratio r (profit per unit staked), EV/stake = p × (1 + r) − 1, and you break even at win rate 1 / (1 + r) — a 95% payout needs 51.3% wins just to stand still; Even/Odd's true rate is 50%, so EV is about −2.5% of stake per trade before any analysis edge. AI Analysis exists to measure whether recent digit/price behaviour is leaning far enough to matter — Signals and the digit Tools show that lean, and the journal of the AI Vision bot prints its EV estimate on every entry.";
+    return "Expected value per trade = win probability × profit − loss probability × stake. With net payout ratio r (profit per unit staked), EV/stake = p × (1 + r) − 1, and you break even at win rate 1 / (1 + r) — a 95% payout needs 51.3% wins just to stand still; Even/Odd's true rate is 50%, so EV is about −2.5% of stake per trade before any analysis edge. AI Analysis exists to measure whether recent digit/price behaviour is leaning far enough to matter — Signal Copilot research show that lean, and the journal of the AI Vision bot prints its EV estimate on every entry.";
   if (/\b(digit (frequency|distribution|analysis|stats)|analyse digits|analyze digits|most frequent digit|cold digit|hot digit)\b/.test(text))
-    return "Digit analysis counts how often each last digit 0–9 appeared over a window of recent ticks, then groups it the way contracts settle: single-digit frequency (Matches/Differs), digits over/under a barrier, and the even/odd split. Each digit is 10% in the long run; over 100–1000 ticks the counts wander a few percent either way, and that wander is what digit strategies read. Signal Lab: Tools → digit analysers show the live distribution per market; AI Analysis scores the lean against the payout (t-stat/EV) for you; DBot blocks like “last digit”, tick list and the Signal Lab scan read the same stream inside a bot. A digit that has not appeared for 40 ticks is still a 10% draw next tick — “due” digits are not a thing, whatever the window says.";
+    return "Digit analysis counts how often each last digit 0–9 appeared over a window of recent ticks, then groups it the way contracts settle: single-digit frequency (Matches/Differs), digits over/under a barrier, and the even/odd split. Each digit is 10% in the long run; over 100–1000 ticks the counts wander a few percent either way, and that wander is what digit strategies read. Signal Lab: Signal Copilot → Research digit analysers show the live distribution per market; AI Analysis scores the lean against the payout (t-stat/EV) for you; DBot blocks like “last digit”, tick list and the Signal Lab scan read the same stream inside a bot. A digit that has not appeared for 40 ticks is still a 10% draw next tick — “due” digits are not a thing, whatever the window says.";
   if (/\b(rsi|macd|bollinger|moving average|ema|sma|stochastic|indicator)\b/.test(text))
     return "DBot has indicator blocks under Indicators in the toolbox — SMA, EMA, RSI (classic 14 period; >70 overbought, <30 oversold), MACD and Bollinger Bands (20, 2) among them — computed on the candle/tick list you feed them, plus the Vision Lab quant blocks (RSI, regression slope, streaks, change over N ticks). Two indicator shapes I DO wire for you: the reversal archetype fades RSI extremes (>70 → Fall, <30 → Rise) and the momentum archetype follows the tick slope — try “reversal bot fading RSI extremes”. Custom rules (MACD crossovers, EMA pairs, an RSI midline cross) I flag instead of faking; after loading a bot I built, drag those blocks into Purchase conditions inside an If. Note volume-based indicators mean nothing on synthetic indices — there is no volume, only a constant tick rate.";
   if (/\b(crash|boom|jump|step index|dex)\b/.test(text))
@@ -532,6 +538,7 @@ function answerBotQuestion(prompt: string): string | null {
 }
 
 export function DbotAiCopilot({
+  researchRequest = 0,
   ready,
   accountConnected,
   accountType,
@@ -541,6 +548,7 @@ export function DbotAiCopilot({
   runNotice,
   onClearAnalysis,
   onLoadStrategy,
+  onLoadAnalysis,
   onLoadAndRun,
 }: DbotAiCopilotProps) {
   const trading = useDerivTrading();
@@ -548,7 +556,9 @@ export function DbotAiCopilot({
   const [open, setOpen] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [activeTab, setActiveTab] = useState<"builder" | "analysis">("builder");
+  const [activeTab, setActiveTab] = useState<"builder" | "analysis" | "research">("builder");
+  const [researchFamily, setResearchFamily] = useState<DbotAiFamily>("rise-fall");
+  const [handoff, setHandoff] = useState<ResearchHandoff | null>(null);
   const [viewport, setViewport] = useState<Viewport>(currentViewport);
   const [position, setPosition] =
     useState<LauncherPosition>(readLauncherPosition);
@@ -597,7 +607,29 @@ export function DbotAiCopilot({
   const analysis = useSignalScan<ScanJobResult, DbotAiRunMeta>(
     "dbot-ai-analysis",
   );
-  const currentRun =
+  useEffect(() => {
+    if (researchRequest > 0) {
+      setOpen(true);
+      setMinimized(false);
+      setExpanded(true);
+      setActiveTab("research");
+    }
+  }, [researchRequest]);
+
+  function prepareResearch(next: ResearchHandoff) {
+    if (!botRunning) onClearAnalysis();
+    setHandoff(next);
+    setFamily(next.family);
+    setDuration(next.duration);
+    setScope(next.run.meta.scope);
+    setSelectedSymbol(next.symbol);
+    setScanRequestAt(null);
+    setActiveTab("analysis");
+  }
+
+  const currentRun = handoff && handoff.family === family && handoff.duration === duration && handoff.run.meta.scope === scope
+    ? { ...handoff.run, meta: { ...handoff.run.meta, family: handoff.family, duration: handoff.duration } }
+    :
     (scanRequestAt === null || (analysis.run?.ranAt ?? 0) >= scanRequestAt) &&
     analysis.run?.meta.family === family &&
     analysis.run.meta.duration === duration &&
@@ -683,12 +715,12 @@ export function DbotAiCopilot({
   }, [botRunning, loadingRun, runNotice]);
 
   const panelWidth = Math.min(
-    expanded ? 720 : 448,
+    activeTab === "research" ? 1100 : expanded ? 720 : 448,
     Math.max(300, viewport.width - 24),
   );
   const panelHeight = minimized
     ? 60
-    : Math.min(expanded ? 790 : 640, Math.max(330, viewport.height - 112));
+    : Math.min(activeTab === "research" ? viewport.height - 100 : expanded ? 790 : 640, Math.max(330, viewport.height - 112));
   const panelLeft = clamp(
     position.left + 58 - panelWidth,
     12,
@@ -754,6 +786,7 @@ export function DbotAiCopilot({
 
   const runAnalysis = useCallback(async () => {
     if (analysis.scanning) return;
+    setHandoff(null);
     setScanRequestAt(Date.now());
     if (!botRunning) onClearAnalysis();
     const symbols =
@@ -1064,7 +1097,14 @@ export function DbotAiCopilot({
       selectedMarket,
     );
   }, [currentResult, currentRun, duration, family, selectedMarket]);
+  const contractVerified = !handoff || currentResult?.kind !== "digit" || Boolean(
+    selectedMarket && supportsResearchContract(
+      currentResult.best.contract,
+      contractsFor(selectedMarket, currentResult.family as DigitFamily, duration).contracts,
+    ),
+  );
   const snapshotReady = Boolean(
+    contractVerified &&
     currentResult?.fresh &&
     selectedMarket?.fresh &&
     selectedAnalysisSnapshot &&
@@ -1088,7 +1128,7 @@ export function DbotAiCopilot({
       botRunning ||
       loadingRun ||
       analysis.scanning ||
-      analysis.error
+      (!handoff && analysis.error)
     )
       return;
     if (!registryReady) return;
@@ -1120,6 +1160,7 @@ export function DbotAiCopilot({
     accountReady,
     accountType,
     analysis.error,
+    handoff,
     analysis.scanning,
     analysisXml,
     botRunning,
@@ -1217,7 +1258,7 @@ export function DbotAiCopilot({
           {!minimized && (
             <>
               <div
-                className="flex h-11 items-stretch gap-1 border-b border-white/[.08] px-3 pt-1"
+                className="flex h-11 items-stretch gap-1 overflow-x-auto border-b border-white/[.08] px-3 pt-1"
                 role="tablist"
                 aria-label="AI Copilot tools"
               >
@@ -1225,6 +1266,7 @@ export function DbotAiCopilot({
                   [
                     { id: "builder", label: "Bot Builder", icon: Sparkles },
                     { id: "analysis", label: "AI Analysis", icon: Activity },
+                    { id: "research", label: "Research", icon: Search },
                   ] as const
                 ).map(({ id, label, icon: Icon }) => (
                   <button
@@ -1240,12 +1282,28 @@ export function DbotAiCopilot({
                     {label}
                   </button>
                 ))}
-                <span className="ml-auto inline-flex items-center gap-1 self-center text-[9px] text-slate-500">
+                <span className="ml-auto hidden items-center gap-1 self-center whitespace-nowrap text-[9px] text-slate-500 sm:inline-flex">
                   <Grip size={12} /> drag launcher to move
                 </span>
               </div>
-              <div className="h-[calc(100%-104px)] overflow-y-auto overscroll-contain p-3.5 sm:p-4">
-                {activeTab === "builder" ? (
+              <div key={activeTab} className="h-[calc(100%-104px)] overflow-y-auto overscroll-contain p-3.5 sm:p-4">
+                {activeTab === "research" ? (
+                  <section className="rounded-xl bg-background p-3 text-foreground sm:p-5" data-testid="copilot-research">
+                    <div className="mb-3">
+                      <h2 className="text-lg font-bold">Signal research</h2>
+                      <p className="mt-1 text-xs text-muted-foreground">Run an analysis, select a market, then prepare its exact signal as an editable DBot XML strategy. Review the risk settings before loading and running.</p>
+                    </div>
+                    <div role="tablist" aria-label="Research contract family" className="flex gap-1 overflow-x-auto border-b border-border">
+                      {FAMILY_OPTIONS.map((option) => (
+                        <button key={option.value} type="button" role="tab" aria-selected={researchFamily === option.value}
+                          onClick={() => setResearchFamily(option.value)}
+                          className={`shrink-0 border-b-2 px-3 py-3 text-xs font-bold ${researchFamily === option.value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}
+                          data-testid={`copilot-research-${option.value}`}>{option.label}</button>
+                      ))}
+                    </div>
+                    {researchFamily === "rise-fall" ? <RiseFallTool onPrepare={prepareResearch} /> : researchFamily === "over-under" ? <OverUnderTool onPrepare={prepareResearch} /> : researchFamily === "even-odd" ? <EvenOddTool onPrepare={prepareResearch} /> : <MatchesTool onPrepare={prepareResearch} />}
+                  </section>
+                ) : activeTab === "builder" ? (
                   <section
                     className="flex h-full min-h-0 flex-col"
                     data-testid="dbot-ai-builder"
@@ -1430,12 +1488,14 @@ export function DbotAiCopilot({
                         it.
                       </p>
                     </div>
+                    {handoff && <div role="status" className="mb-3 rounded-lg border border-cyan-300/25 bg-cyan-300/10 p-3 text-xs text-cyan-100" data-testid="copilot-research-handoff">Research signal selected: {handoff.symbol}. Review the stake and limits below, then load and run this exact scan in the block workspace.</div>}
                     <div className="grid grid-cols-2 gap-2">
                       <label className="text-[9px] font-bold uppercase tracking-[.08em] text-slate-500">
                         Contract family
                         <select
                           value={family}
                           onChange={(event) => {
+                            setHandoff(null);
                             setFamily(event.target.value as DbotAiFamily);
                             setSelectedSymbol(null);
                           }}
@@ -1455,6 +1515,7 @@ export function DbotAiCopilot({
                         <select
                           value={scope}
                           onChange={(event) => {
+                            setHandoff(null);
                             setScope(event.target.value);
                             setSelectedSymbol(null);
                           }}
@@ -1477,9 +1538,10 @@ export function DbotAiCopilot({
                           Digit contract expiry
                           <select
                             value={duration}
-                            onChange={(event) =>
-                              setDuration(Number(event.target.value))
-                            }
+                            onChange={(event) => {
+                              setHandoff(null);
+                              setDuration(Number(event.target.value));
+                            }}
                             disabled={analysis.scanning}
                             className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-[#0b1827] px-2 text-[10px] font-semibold normal-case tracking-normal text-slate-100 outline-none focus:border-cyan-200/40"
                             data-testid="dbot-ai-duration"
@@ -1619,7 +1681,7 @@ export function DbotAiCopilot({
                         </div>
                       </div>
                     )}
-                    {analysis.error && !analysis.scanning && (
+                    {!handoff && analysis.error && !analysis.scanning && (
                       <div
                         className="rounded-xl border border-rose-300/15 bg-rose-300/[.05] p-3 text-[9px] leading-4 text-rose-100"
                         role="alert"
@@ -1766,6 +1828,11 @@ export function DbotAiCopilot({
                             trade limit.
                           </div>
                         )}
+                        {!contractVerified && (
+                          <div role="status" className="rounded-lg border border-amber-200/15 bg-amber-200/[.04] px-3 py-2 text-[10px] text-amber-100" data-testid="copilot-contract-unverified">
+                            Waiting for Deriv to verify this contract, barrier and duration. If it is not offered, run a new analysis.
+                          </div>
+                        )}
                         {!accountReady && (
                           <div className="rounded-lg border border-amber-200/15 bg-amber-200/[.04] px-3 py-2 text-[9px] text-amber-100">
                             Link a Deriv account in DBot Space before using Load
@@ -1781,6 +1848,16 @@ export function DbotAiCopilot({
                             {runNotice}
                           </div>
                         )}
+                        <button type="button"
+                          onClick={() => {
+                            if (!currentResult || !selectedAnalysisSnapshot || !snapshotReady || !ready || !registryReady || botRunning || analysis.scanning) return;
+                            onLoadAnalysis(analysisXml, `AI ${dbotAiFamilyLabel(family)} · ${currentResult.symbol}`, selectedAnalysisSnapshot);
+                          }}
+                          disabled={!ready || !registryReady || !snapshotReady || botRunning || loadingRun || analysis.scanning || Boolean(!handoff && analysis.error)}
+                          className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-cyan-200/30 px-4 text-[11px] font-bold text-cyan-100 hover:bg-cyan-200/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          data-testid="dbot-ai-load-analysis">
+                          <ArrowDownToLine size={14} /> Load blocks for editing
+                        </button>
                         <button
                           type="button"
                           onClick={handleLoadAndRun}
@@ -1789,7 +1866,7 @@ export function DbotAiCopilot({
                             !registryReady ||
                             !accountReady ||
                             !snapshotReady ||
-                            Boolean(analysis.error) ||
+                            Boolean(!handoff && analysis.error) ||
                             botRunning ||
                             loadingRun ||
                             analysis.scanning
@@ -1808,7 +1885,9 @@ export function DbotAiCopilot({
                             ? "Loading strategy…"
                             : botRunning
                               ? "DBot strategy running"
-                              : !snapshotReady
+                              : !contractVerified
+                                ? "Contract not verified"
+                                : !snapshotReady
                                 ? "Run a fresh analysis to load"
                                 : "Load and Run"}
                         </button>

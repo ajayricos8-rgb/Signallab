@@ -62,6 +62,7 @@ export type DbotWorkspace = {
   loadBot: (xml: string, name: string) => boolean;
   /** Load a bot and start it with an exact analysis snapshot. */
   loadAndRunBot: (xml: string, name: string, analysis: unknown) => boolean;
+  loadAnalysisBot: (xml: string, name: string, analysis: unknown) => boolean;
   /** Open Deriv's own Quick strategy wizard. */
   openQuickStrategy: (strategy: string) => void;
   clearAnalysis: () => void;
@@ -520,6 +521,12 @@ export function useDbotWorkspace({
     return true;
   }, [post]);
 
+  const loadAnalysisBot = useCallback((xml: string, name: string, analysis: unknown) => {
+    if (!readyRef.current) return false;
+    post(hostLoadBot({ xml, name, analysisSnapshot: analysis }));
+    return true;
+  }, [post]);
+
   const loadAndRunBot = useCallback((xml: string, name: string, analysis: unknown) => {
     if (!readyRef.current) return false;
     post(hostLoadBot({ xml, name, runAfterLoad: true, analysisSnapshot: analysis }));
@@ -589,6 +596,7 @@ export function useDbotWorkspace({
     showTab,
     loadBot,
     loadAndRunBot,
+    loadAnalysisBot,
     openQuickStrategy,
     clearAnalysis,
     connectAccount,

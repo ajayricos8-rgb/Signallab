@@ -1,8 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { RiseFallTool } from '@/components/rise-fall-tool';
-import { EvenOddTool, MatchesTool, OverUnderTool } from '@/components/digit-contract-tools';
 import { DerivTradingProvider, useDerivTrading } from '@/components/deriv-trading-provider';
 import { SignalBotProvider } from '@/components/signal-bot-provider';
 import { MarketFeedProvider } from '@/components/market-feed-provider';
@@ -17,22 +15,14 @@ import { DbotSpace } from '@/components/dbot-space';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Activity, Bot, Boxes, BrainCircuit, Clock3, Menu, Moon, Settings, Sun, Wrench, X } from 'lucide-react';
+import { Activity, Bot, Boxes, BrainCircuit, Clock3, Menu, Moon, Settings, Sun, X } from 'lucide-react';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 
 const queryClient = new QueryClient();
 
 type Theme = 'light' | 'dark';
-type WorkspaceTab = 'tools' | 'base' | 'trade-history' | 'premium-bots' | 'dbot-space' | 'settings';
-type ToolsMiniTab = 'rise-fall' | 'over-under' | 'even-odd' | 'matches';
+type WorkspaceTab = 'base' | 'trade-history' | 'premium-bots' | 'dbot-space' | 'settings';
 type PremiumBotTab = 'digit-ai' | 'rise-fall' | 'hedging-high-low' | 'mafia';
-
-const toolsMiniTabs: { id: ToolsMiniTab; label: string }[] = [
-  { id: 'rise-fall', label: 'Rise/Fall' },
-  { id: 'over-under', label: 'Over/Under' },
-  { id: 'even-odd', label: 'Even/Odd' },
-  { id: 'matches', label: 'Matches' },
-];
 
 const premiumBotTabs: { id: PremiumBotTab; label: string; blurb: string }[] = [
   { id: 'digit-ai', label: 'Digit AI engine', blurb: 'Even/Odd, Over/Under and Matches, ranked by walk-forward-validated models.' },
@@ -42,7 +32,6 @@ const premiumBotTabs: { id: PremiumBotTab; label: string; blurb: string }[] = [
 ];
 
 const workspaceTabs = [
-  { id: 'tools', label: 'Tools', icon: Wrench },
   { id: 'base', label: 'The Base', icon: BrainCircuit },
   { id: 'trade-history', label: 'Trade history', icon: Clock3 },
   { id: 'premium-bots', label: 'Premium bots', icon: Bot },
@@ -69,16 +58,16 @@ function readSavedBotTab(): PremiumBotTab {
 
 function Home() {
   const [mobileNav, setMobileNav] = useState(false);
-  const [activeToolsMiniTab, setActiveToolsMiniTab] = useState<ToolsMiniTab>('rise-fall');
   const [activeBotTab, setActiveBotTab] = useState<PremiumBotTab>(readSavedBotTab);
   const [theme, setTheme] = useState<Theme>(readSavedTheme);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>('tools');
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('dbot-space');
+  const [researchRequest, setResearchRequest] = useState(0);
   const [dbotMounted, setDbotMounted] = useState(false);
   useEffect(() => { if (activeTab === 'dbot-space') setDbotMounted(true); }, [activeTab]);
   const trading = useDerivTrading();
   const openPositions = trading.openPositions.length;
   const selectedTab = workspaceTabs.find(({ id }) => id === activeTab);
-  const tabLabel = selectedTab?.label ?? 'Tools';
+  const tabLabel = selectedTab?.label ?? 'DBot Space';
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -121,7 +110,7 @@ function Home() {
             <div className="eyebrow px-3 pb-2">Workspace</div>
             {workspaceTabs.map(({ id, label, icon: Icon }) => {
               const active = activeTab === id;
-              const testId = id === 'tools' ? 'button-dashboard-nav' : id === 'base' ? 'button-base-nav' : id === 'trade-history' ? 'button-history-nav' : id === 'settings' ? 'button-settings-nav' : id === 'dbot-space' ? 'button-dbot-space-nav' : 'button-premium-bots-nav';
+              const testId = id === 'base' ? 'button-base-nav' : id === 'trade-history' ? 'button-history-nav' : id === 'settings' ? 'button-settings-nav' : id === 'dbot-space' ? 'button-dbot-space-nav' : 'button-premium-bots-nav';
               return (
                 <button
                   key={id}
@@ -158,19 +147,17 @@ function Home() {
             </button>
           </header>
 
-          <div className={`min-h-[calc(100dvh-76px)] px-4 pt-5 sm:px-6 sm:pt-7 lg:px-8 ${activeTab === 'tools' ? 'pb-[340px] lg:pb-[230px]' : 'pb-24'}`}>
-            {dbotMounted && <div hidden={activeTab !== 'dbot-space'}><DbotSpace onOpenSettings={() => setActiveTab('settings')} /></div>}
+          <div className="min-h-[calc(100dvh-76px)] px-4 pt-5 pb-24 sm:px-6 sm:pt-7 lg:px-8">
+            {dbotMounted && <div hidden={activeTab !== 'dbot-space'}><DbotSpace onOpenSettings={() => setActiveTab('settings')} researchRequest={researchRequest} /></div>}
             {activeTab === 'dbot-space' ? null : activeTab === 'base' ? (
-              <ForgeBaseWorkspace onOpenTools={() => setActiveTab('tools')} />
+              <ForgeBaseWorkspace onOpenTools={() => { setActiveTab('dbot-space'); setResearchRequest((value) => value + 1); }} />
             ) : activeTab === 'trade-history' ? (
               <TradeHistoryPanel />
             ) : activeTab === 'premium-bots' ? (
               <PremiumBotsWorkspace activeTab={activeBotTab} onTabChange={setActiveBotTab} />
             ) : activeTab === 'settings' ? (
               <SettingsPanel />
-            ) : (
-              <ToolsWorkspace activeTab={activeToolsMiniTab} onTabChange={setActiveToolsMiniTab} />
-            )}
+            ) : null}
           </div>
         </main>
       </div>
@@ -202,42 +189,6 @@ function Home() {
         </div>
       </nav>
     </div>
-  );
-}
-
-function ToolsWorkspace({
-  activeTab,
-  onTabChange,
-}: {
-  activeTab: ToolsMiniTab;
-  onTabChange: (tab: ToolsMiniTab) => void;
-}) {
-  return (
-    <section className="mx-auto w-full max-w-[1500px]" data-testid="tools-workspace">
-      <div role="group" aria-label="Tool categories" className="flex w-full items-center gap-1 overflow-x-auto border-b border-border">
-        {toolsMiniTabs.map(({ id, label }) => {
-          const active = activeTab === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => onTabChange(id)}
-              aria-pressed={active}
-              className={`focus-ring -mb-px shrink-0 border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${active ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'}`}
-              data-testid={`tools-mini-tab-${id}`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
-      {/* One shared multi-market feed for all four tools. It is mounted app-wide
-          (see App below) so the loaded history, and the ticks the signal bot
-          waits on for its entry, survive switching tools or workspace tabs. */}
-      <div className="min-h-[45vh]" data-testid={`tools-mini-panel-${activeTab}`}>
-        {activeTab === 'rise-fall' ? <RiseFallTool /> : activeTab === 'over-under' ? <OverUnderTool /> : activeTab === 'even-odd' ? <EvenOddTool /> : <MatchesTool />}
-      </div>
-    </section>
   );
 }
 
