@@ -26,7 +26,7 @@ defineValueBlock({
             [localize('EV margin over the other side'), 'ev-margin'], [localize('market DNA score'), 'dna-score'],
             [localize('walk-forward skill'), 'skill'], [localize('stand down (0/1)'), 'stand-down'],
             [localize('certainty 0-100'), 'certainty'], [localize('EV floor the gate uses'), 'ev-lower'],
-            [localize('lean in sigma'), 't-stat'], [localize('break-even'), 'break-even']]),
+            [localize('lean in sigma'), 't-stat'], [localize('break-even'), 'break-even'], [localize('both quotes fresh (0/1)'), 'payout-live']]),
         { type: 'input_value', name: 'PLAN', check: 'Array', default: '[]' }],
     output: 'Number', colour, category,
     tooltip: localize('Read one component of an Even/Odd decision.'), display_name: localize('Parity decision component'),

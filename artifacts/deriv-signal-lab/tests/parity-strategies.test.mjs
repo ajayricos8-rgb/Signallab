@@ -122,6 +122,18 @@ test('selective mode buys a fairly-priced underdog', () => {
   assert.ok(decision.evTable[1].ev > decision.evTable[0].ev);
 });
 
+test('selective decisions can switch in both directions', () => {
+  // Deliberately artificial quotes make both selections pass the EV gate;
+  // this tests the switch, not the existence of a real-world edge.
+  const options = { requireEdge: true, minEv: 0.005, entrySlip: 1 };
+  const even = parityDecision(fair(), 5, 0, { ...options, payoutEven: 2.5, payoutOdd: 1.5 });
+  const odd = parityDecision(fair(), 5, 0, { ...options, payoutEven: 1.5, payoutOdd: 2.5 });
+  assert.equal(even.ready, true);
+  assert.equal(even.side, 1);
+  assert.equal(odd.ready, true);
+  assert.equal(odd.side, -1);
+});
+
 test('the probability floor is unconditional; edge and EV gates need selective mode', () => {
   assert.equal(parityDecision(fair(), 5, 0.6, CADENCE).ready, false, 'floor binds in cadence');
   assert.equal(parityDecision(fair(), 5, 0.5, CADENCE).ready, true, 'floor passes under the read');

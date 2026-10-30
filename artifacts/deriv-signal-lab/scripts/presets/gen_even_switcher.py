@@ -11,12 +11,9 @@ with the price presets (`gen_presets.py`) so the switcher can never disagree
 with them about XML shape; only the decision blocks, the trade type and the
 journal cadence are parity-specific.
 
-The v2 bot in one paragraph: sixteen experts forecast P(even) at the settling
-tick, both sides are priced against the live DIGITEVEN/DIGITODD quotes, and the
-better expected value wins — the bot buys Even or Odd on every readable cycle
-(the side switch the v1 bot only allowed itself in loss-recovery), sized by
-tenth-Kelly down to the exchange minimum, roaming fourteen digit markets under
-a score floor and a dwell time, and journaling every number behind every entry.
+The preset scores Even and Odd with a sixteen-model statistical ensemble,
+selects the better modelled value, and waits for selective entry and session
+risk gates. It does not promise an edge or rewrite itself.
 """
 
 import importlib.util
@@ -170,6 +167,7 @@ def build_parity(spec, emitter_cls):
         ("ai max drawdown", "15"),
         ("ai skip count", "0"),
         ("ai contracts", "0"),
+        ("ai max contracts", "100"),
         ("baseline profit", "0"),
         ("ai dna floor", spec.get("dna_floor", "35")),
         ("ai skill floor", spec.get("skill_floor", "-1")),
@@ -263,15 +261,10 @@ def build_parity(spec, emitter_cls):
     ]
 
     # ---- purchase conditions -----------------------------------------------
-    # Confidence is gated inside the engine, so what is left here is the part
-    # that depends on the session: a losing streak cools entries off instead
-    # of stopping the bot dead (a hard stop with no entries can never see the
-    # win that would reset it).
-    streak_ok = e.logic(
-        "OR",
-        e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop")),
-        e.compare("GTE", parity_part(e, "confidence", e.get(plan)), e.arith("ADD", e.get("ai min confidence"), e.num("5"))),
-    )
+    # Confidence is gated inside the engine; a losing streak is a session stop
+    # and requires an explicit restart, rather than a confidence-based bypass.
+    # A losing streak is a hard session stop, never bypassed by model confidence.
+    streak_ok = e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop"))
     risk_ok = e.logic(
         "AND",
         streak_ok,
@@ -307,7 +300,15 @@ def build_parity(spec, emitter_cls):
     entry_gate = e.logic(
         "AND",
         e.compare("EQ", e.get("ai ready"), e.num("1")),
-        risk_ok,
+        e.logic(
+            "AND",
+            risk_ok,
+            e.logic(
+                "AND",
+                e.compare("EQ", parity_part(e, "payout-live", e.get(plan)), e.num("1")),
+                e.compare("LT", e.get("ai contracts"), e.get("ai max contracts")),
+            ),
+        ),
     )
 
     # The side switch: Even while the ensemble's better-EV side is Even, Odd
@@ -359,12 +360,16 @@ def build_parity(spec, emitter_cls):
         ),
     )
     after = [
-        # The cool-off counter follows the settled contract, not the session
-        # balance: a win resets it, a loss counts once.
+        e.set_("baseline profit", e.arith("MINUS", e.block("x_session_profit"), e.get("ai baseline"))),
+        # The loss streak follows the settled contract: a win resets it,
+        # a loss counts once, and another outcome does neither.
         e.if_(
             e.block("contract_check_result", fields={"CHECK_RESULT": "win"}),
             [e.set_("ai loss streak", e.num("0"))],
-            [e.set_("ai loss streak", e.arith("ADD", e.get("ai loss streak"), e.num("1")))],
+            [e.if_(
+                e.block("contract_check_result", fields={"CHECK_RESULT": "loss"}),
+                [e.set_("ai loss streak", e.arith("ADD", e.get("ai loss streak"), e.num("1")))],
+            )],
         ),
         e.set_("ai contracts", e.arith("ADD", e.get("ai contracts"), e.num("1"))),
         # The two-sided read and the live quotes it was priced against, every
@@ -402,7 +407,13 @@ def build_parity(spec, emitter_cls):
             e.notify("info", e.block("x_parity_reverse")),
         ),
         e.if_(
-            brakes,
+            e.logic("AND", brakes, e.logic("AND",
+                e.compare("LT", e.get("ai loss streak"), e.get("ai loss streak stop")),
+                e.logic("AND",
+                    e.compare("LT", e.get("ai contracts"), e.get("ai max contracts")),
+                    e.compare("GT", e.get("baseline profit"), e.arith("MULTIPLY", e.num("-1"), e.get("ai max drawdown"))),
+                ),
+            )),
             [e.block("trade_again")],
             [e.notify("warn", e.text(spec["stopped"]))],
         ),
@@ -429,10 +440,10 @@ EVEN_SWITCHER = {
     "market": "volidx",
     "submarket": "random_index",
     "symbol": "R_100",
-    "require": "always",
+    "require": "edge",
     "floor": "0",
     "min_edge": "0",
-    "min_ev": "0",
+    "min_ev": "0.005",
     "agreement": "0",
     "confidence": "0",
     "payout": "1.95",
@@ -446,112 +457,41 @@ EVEN_SWITCHER = {
     "scout_mode": "suitable",
     "ids": {"tick": "parityTick01", "before": "parityBefore01", "after": "parityAfter01"},
     "armed": (
-        "AI Even Switcher v2 armed — Even/Odd on a 5-tick contract, cadence mode. Sixteen experts forecast "
-        "P(even) at the settling tick, both sides are priced against the live DIGITEVEN/DIGITODD quotes, and "
-        "the better expected value wins: the bot buys Even or Odd on every cycle it can read, switching sides "
-        "when the measurement switches, sizing thin reads down to the exchange minimum. Every skip names its "
-        "gate; every fifth settlement prints the two-sided forecast and the live quotes, every tenth the "
-        "self-audit, every twenty-fifth the expert league, the market DNA, the AI core and the reverse "
-        "engineering. Demo first: estimates are not guarantees."
+        "AI Even/Odd Switcher armed — 5 ticks, selective entry. An internal statistical ensemble "
+        "scores both sides and switches between Even and Odd when its estimate changes. "
+        "Entries require fresh quotes for both sides and a positive one-sigma modelled EV floor. "
+        "Quotes and estimates can be wrong; execution may differ. Test on demo first."
     ),
     "held": (
-        "AI is ready but the entry gate held it — a losing-streak cool-off, the DNA floor, the skill floor, "
-        "the rule's own graded record, the drawdown pause, the balance percentage, the loss limit or the "
-        "profit target blocked this entry."
+        "Entry held: check the quote freshness, session limits, stake percentage, record, "
+        "market readability and trade cap. The journal's decision is a model, not a guarantee."
     ),
-    "stopped": "Session brake — loss limit or profit target reached. Review the journal before restarting.",
-    "comment": """AI Even Switcher v2 — Even/Odd, sixteen experts, both sides
-============================================================
+    "stopped": "Session brake: loss, target, drawdown, loss streak or trade limit reached. Review before restarting.",
+    "comment": """AI Even/Odd Switcher — selective statistical ensemble
+=======================================================
+Even wins on 0, 2, 4, 6, 8 and Odd wins on 1, 3, 5, 7, 9.
+Both sides are scored each cycle; the model selects the better estimated EV,
+not a loss-recovery side. Sixteen statistical experts, including small online
+nets, are walk-forward scored. This is not a self-rewriting or predictive
+AI guarantee; the market fingerprint and forecasts are descriptive estimates.
 
-The v1 bot bought Even only and touched Odd solely in loss-recovery: half the
-contract family, gated by red ink. This bot scores both sides every cycle and
-buys whichever the measurement favours — the side switch is the strategy.
+The preset requires an estimated one-sigma EV floor of 0.5% and separate,
+recent proposals for both sides; fallback prices cannot authorize entry.
+The freshness window is five minutes, not a guarantee of the execution price.
+The model may wait indefinitely. Backtest out of sample and use demo first.
 
-THE CONTRACT
-Even wins when the last digit of the last tick is 0, 2, 4, 6 or 8; Odd wins
-on 1, 3, 5, 7 or 9. There is no third outcome: parity cannot tie. Durations
-are 1-10 ticks on fourteen synthetics (the ten Volatility indices plus Jump
-10/25/50/100); both sides pay the same multiple, about 1.95x, read live from
-Deriv's own proposals. The full mechanics, mathematics and strategy survey
-are in docs/even-odd-research.md — read it before running this for real.
+The forecast record grades hypothetical tick outcomes, not actual fills. Entry
+slip is an adjustable approximation, not a measurement of execution latency.
+The preset scouts a fixed list of candidate synthetic symbols, not every Deriv
+market. Availability, minimum stake and payout depend on the account, symbol,
+currency and contract: verify them with Deriv before trading.
 
-THE ENSEMBLE
-Sixteen experts forecast P(even) at the settling tick. Eight are inherited
-from the proven vision digit engine (fair anchor, long-run and recent digit
-histograms, the Markov row, analog replay, the analytical price-to-digit
-mapping, an online softmax net, the regime forecast), each summed to P(even);
-eight are parity-native (long-run and recent even share, first- and
-second-order parity Markov powered to the horizon, the 10-bin digit row, run
-continuation, the parity-autocorrelation projector, an online parity
-perceptron). Every expert is scored walk-forward with Brier loss against the
-0.5 anchor over the settled past and mixed by measured skill, so an expert
-that cannot read this market loses its vote on its own. The blend is shrunk
-toward 50% by its effective sample size (256 pseudo-ticks of fair coin).
-
-CADENCE, NOT VIGIL
-This preset keeps a trading cadence: the better-EV side is bought on every
-cycle the bot can read (about one position per contract length — five ticks
-plus re-entry), because a fair market is a reason to trade the minimum stake,
-not a reason to sit out. Tenth-Kelly sizes thin reads to the 0.35 exchange
-minimum; the journal prints the probability, quote, EV, sigma and record
-behind every entry so the cost of the cadence is visible, not hidden. To
-restore the selective sniper: entry "only with a measured edge" plus
-"ai min ev" above zero (and optionally "ai min edge" / "ai min agreement").
-
-SELF-REVERSE-ENGINEERING
-Before the ensemble speaks, the engine fingerprints the digit stream: even
-share, runs z-score, parity-Markov dependence, alternation, entropy, repeat
-rate and sample warmth, rolled into a 0-100 readability score. The DNA floor
-(35) refuses markets the bot cannot measure; the reverse-engineering line
-prints the deep diagnosis (phase, regime, memory, auto-tuning) every 25
-settlements. Descriptive, never predictive. A frozen quote feed — one
-price repeated, a phantom edge at a towering t-stat — is refused outright
-before a single expert speaks, and the scout scores the dead tape 0.
-
-CALIBRATION AND STAND-DOWN
-Every published decision is filed with its quote and graded against the
-settling tick, per side. After 20 graded decisions the estimate is pulled
-toward 50% by the reliability ratio (realised / predicted); after 40, a
-Wilson bound still under break-even sets stand-down and the bot stops buying
-until the record recovers. The journal says so explicitly.
-
-THE SCOUT
-Even/Odd is quoted on fourteen synthetics and they neither pay nor read the
-same. The scout scores the market the bot stands on (measured EV, certainty,
-readability, sample, skill) and moves under the score floor — never more
-often than the 90-second dwell, because every switch trades a warm tick
-stream for a cold one.
-
-RISK
-Tenth-Kelly sizing, floored at 0.35, capped by max stake and the balance
-percent, divided down while the session loses. No martingale, no recovery
-ladder: a loss lowers the next stake, never raises it. The loss limit and
-profit target read the trade engine's own session profit; the drawdown pause
-and the losing-streak cool-off sit beside them. All of it is in "Run once at
-start"; all of it announces in the journal.
-
-Tuning, all of it in the "Run once at start" block:
-
-    ai base stake        0.35  the first stake; Kelly moves it from here
-    ai duration          5     ticks per contract (1-10); forecast aims +1
-    ai probability floor 0     unconditional side-probability floor (off)
-    ai min edge          0     selective: edge over break-even (off)
-    ai min agreement     0     selective: model agreement 0-1 (off)
-    ai min confidence    0     selective: confidence floor (off)
-    ai payout            1.95  fallback multiple before live quotes arrive
-    ai min ev            0     selective: one-sigma EV floor (off)
-    ai entry slip        1     forecast ticks past the contract length
-    ai loss limit        30    stop entering after this much session loss
-    ai profit target     50    stop entering after this much session profit
-    ai max drawdown      15    pause entries past this session loss
-    ai loss streak stop  4     cool entries off past this many straight losses
-    ai stake percent     2     never stake more than this % of the balance
-    ai max stake         1.5   never stake more than this
-    ai kelly fraction    0.1   tenth-Kelly sizing
-    ai dna floor         35    refuse markets reading below this
-    ai skill floor       -1    refuse blends below this skill (off)
-    ai scout floor       15    move markets under this score
-    ai scout dwell       90    seconds between market moves, minimum
+Risk defaults: base 0.35, max 1.5, max 2% of balance (strict), 30 loss limit,
+50 target, 15 session-loss pause, 4 consecutive losses and 100 contracts.
+No martingale. A failed price, balance or safety gate blocks entry. Limits
+cannot protect against disconnections or other execution/settlement anomalies.
+Controls are editable in Run once at start. Research and limitations:
+docs/even-odd-research.md.
 """,
 }
 
