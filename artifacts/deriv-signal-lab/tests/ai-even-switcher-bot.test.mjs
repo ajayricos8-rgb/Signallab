@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 
 const XML_PATH = new URL("../src/lib/bot-store/bots/ai-even-switcher.xml", import.meta.url);
 // Normalise the serialised formatting: these assertions are about wiring,
@@ -134,4 +135,28 @@ test("the session brakes stop the cycle on ruin or target", () => {
   assert.match(after, />ai max contracts<\//);
   assert.match(after, />ai loss streak stop<\//);
   assert.match(after, />ai max drawdown<\//);
+});
+
+
+test("every ELSE branch has the Blockly mutation needed to deserialize it", () => {
+  const xmlPath = new URL("../src/lib/bot-store/bots/ai-even-switcher.xml", import.meta.url);
+  // ElementTree checks direct children, including nested conditionals, rather
+  // than matching raw text across unrelated blocks.
+  const script = `import xml.etree.ElementTree as ET, sys
+root = ET.parse(sys.argv[1]).getroot()
+ns = {"x": "http://www.w3.org/1999/xhtml"}
+for block in root.findall(".//x:block[@type='controls_if']", ns):
+    if block.find("x:statement[@name='ELSE']", ns) is not None:
+        mutation = block.find("x:mutation", ns)
+        assert mutation is not None and mutation.get("else") == "1", block.get("id")
+`;
+  assert.doesNotThrow(() => execFileSync('python3', ['-c', script, xmlPath.pathname]));
+});
+
+test("parity decision label has exactly one placeholder for each input", async () => {
+  const path = new URL('../../../vendor/deriv-bot/src/external/bot-skeleton/scratch/blocks/Vision%20Lab/parity-strategies.js', import.meta.url);
+  const source = await readFile(path, 'utf8');
+  const message = source.match(/type: 'x_parity_decision', message: localize\('([^']+)'\)/)?.[1];
+  assert.ok(message, 'the decision block must exist');
+  assert.deepEqual([...message.matchAll(/%(\d+)/g)].map(match => Number(match[1])), [1,2,3,4,5,6,7,8,9,10]);
 });

@@ -5,7 +5,7 @@ import { visionColours } from './colour';
 const colour = visionColours().analysis;
 const category = window.Blockly.Categories.Vision_Analysis;
 defineValueBlock({
-    type: 'x_parity_decision', message: localize('Even/Odd AI ensemble %1 ticks %2 horizon %3 probability floor %4 entry %5 min edge over break-even %6 payout %7 min confidence %8 min model agreement %9 min expected value %10 entry slip ticks %11'),
+    type: 'x_parity_decision', message: localize('Even/Odd AI ensemble ticks %1 horizon %2 probability floor %3 entry %4 min edge over break-even %5 payout %6 min confidence %7 min model agreement %8 min expected value %9 entry slip ticks %10'),
     args: [{ type: 'input_value', name: 'LIST', check: 'Array', default: '[]' }, numberInput('HORIZON', '5'), numberInput('THRESHOLD', '0'),
         dropdown('REQUIRE', [[localize('only with a measured edge'), 'edge'], [localize('on the best read available'), 'always']]),
         numberInput('MIN_EDGE', '0'), numberInput('PAYOUT', '1.95'), numberInput('MIN_CONFIDENCE', '0'),
