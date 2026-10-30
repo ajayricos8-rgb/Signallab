@@ -57,9 +57,9 @@ test("both sides are bought, and the side comes from the analysis", () => {
     "the side read comes first, Even on the == 1 branch, Odd on the else");
 });
 
-test("the ensemble is scored fresh every cycle in cadence mode", () => {
+test("the ensemble is scored fresh every cycle in selective mode", () => {
   assert.equal(count("x_parity_decision"), 2, "one score at arming, one per tick");
-  assert.equal((XML.match(/<field name="REQUIRE">always<\/field>/g) ?? []).length, 2);
+  assert.equal((XML.match(/<field name="REQUIRE">edge<\/field>/g) ?? []).length, 2);
   assert.match(tick, /x_parity_decision/, "the tick section re-scores before the gates run");
   assert.match(tick, />ai decision<\//, "the fresh plan is stored where the gates read it");
   assert.match(tick, /x_parity_decision_part/, "ready and side are unpacked from the plan");
@@ -67,10 +67,12 @@ test("the ensemble is scored fresh every cycle in cadence mode", () => {
 
 test("entries need a ready model, a record, a readable market and cool books", () => {
   assert.match(before, /x_parity_risk/, "the session risk block guards the entry");
+  assert.match(before, /PART">payout-live/, "both fresh proposals guard entry");
+  assert.match(before, />ai max contracts<\//, "the trade cap guards entry");
   assert.match(before, /PART">stand-down/, "a broken graded record vetoes the entry");
   assert.match(before, /PART">dna-score/, "unreadable markets are refused");
   assert.match(before, /PART">skill/, "a skill-less blend is refused");
-  assert.match(before, />ai loss streak<\//, "the losing-streak cool-off is wired");
+  assert.match(before, />ai loss streak<\//, "the losing-streak stop is wired");
   assert.match(before, />ai max drawdown<\//, "the drawdown pause is wired");
   assert.match(before, /x_parity_reason/, "entries journal why the model said yes");
 });
@@ -105,7 +107,7 @@ test("the shipped knobs match the documented defaults", () => {
   const knob = (name, value) => new RegExp(
     `${name}<\\/field><value name="VALUE"><block type="math_number"[^>]*><field name="NUM">${value}<\\/field>`);
   for (const [name, value] of [
-      ["ai duration", "5"], ["ai payout", "1.95"], ["ai entry slip", "1"],
+      ["ai duration", "5"], ["ai payout", "1.95"], ["ai min ev", "0.005"], ["ai max contracts", "100"], ["ai entry slip", "1"],
       ["ai loss streak stop", "4"], ["ai max drawdown", "15"], ["ai dna floor", "35"],
       ["ai scout floor", "15"], ["ai scout dwell", "90"], ["ai loss limit", "30"],
       ["ai profit target", "50"], ["ai stake percent", "2"], ["ai max stake", "1.5"],
@@ -113,8 +115,9 @@ test("the shipped knobs match the documented defaults", () => {
   ]) assert.match(init, knob(name, value), `knob ${name} ships as ${value}`);
 });
 
-test("the cool-off counter follows the settled contract, not the balance", () => {
-  assert.equal(count("contract_check_result"), 1);
+test("the loss-streak counter checks win and loss separately", () => {
+  assert.equal(count("contract_check_result"), 2);
+  assert.match(after, /<field name="CHECK_RESULT">loss<\/field>/);
   assert.match(after, /<field name="CHECK_RESULT">win<\/field>/);
   const resetAt = after.indexOf('CHECK_RESULT">win');
   const streakAt = after.indexOf('>ai loss streak</field>', resetAt);
@@ -128,4 +131,7 @@ test("the session brakes stop the cycle on ruin or target", () => {
   assert.ok(brakesAt > 0 && brakesAt < againAt, "the restart is gated on the risk block");
   assert.match(after, />ai loss limit<\//);
   assert.match(after, />ai profit target<\//);
+  assert.match(after, />ai max contracts<\//);
+  assert.match(after, />ai loss streak stop<\//);
+  assert.match(after, />ai max drawdown<\//);
 });

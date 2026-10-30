@@ -20,6 +20,7 @@ import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
 import { DEFAULT_LATENCY, aiBrainReport, forecastReport, labelFidelity, marketDna, priceDecision, reverseEngineerReport } from '../utils/price-strategies.mjs';
+import { parityQuotesFresh } from '../utils/parity-quote-safety.mjs';
 import { PARITY_FALLBACK_PAYOUT, parityAuditReport, parityBrainReport, parityDecision, parityDna, parityForecastReport, parityLeagueReport, parityReverseReport, scoreParityMarket } from '../utils/parity-strategies.mjs';
 import { adaptiveStake, priceRiskAllowed, resolvePriceContext } from '../utils/price-risk.mjs';
 import * as memory from '../utils/vision-memory.mjs';
@@ -147,6 +148,15 @@ const getVisionInterface = tradeEngine => {
 
     const tradeOptions = () => tradeEngine?.tradeOptions || {};
 
+    // Tick quotes arrive as numbers, so a trailing zero cannot be recovered
+    // without the exchange's pip_size metadata. Fail closed when absent.
+    const parityPipSize = () => {
+        try {
+            const pip = tradeEngine?.getPipSize?.();
+            return Number.isInteger(pip) && pip >= 0 && pip <= 8 ? pip : null;
+        } catch { return null; }
+    };
+
     /** The contract horizon in ticks, derived from whatever the strategy set. */
     const horizonTicks = () => {
         const options = tradeOptions();
@@ -210,7 +220,7 @@ const getVisionInterface = tradeEngine => {
     const parityDnaOf = async () => {
         const cached = lastParity.get(symbolOf())?.dna;
         if (cached) return cached;
-        return parityDna(await readTicks());
+        return parityDna(await readTicks(), { pipSize: parityPipSize() });
     };
 
     const readTicks = async () => {
@@ -387,14 +397,8 @@ const getVisionInterface = tradeEngine => {
         };
     };
 
-    /**
-     * Grade every published parity decision whose settling tick has printed.
-     *
-     * The contract settles on the `duration`-th tick after the decision — the
-     * +1 the forecast carries is processing slip, not contract length, so the
-     * grade uses the true duration. Digits are extracted from the whole stream
-     * with its inferred pip size (a trailing zero is a digit 0, never missing).
-     */
+    /** Grade hypothetical forecasts at their forecast horizon. These are not
+     * actual contract results: execution latency and skipped buys can differ. */
     const gradeParityForecasts = (symbol, list) => {
         const prices = math.toNumbers(list);
         const ledger = parityLedger.get(symbol) || [];
@@ -403,11 +407,12 @@ const getVisionInterface = tradeEngine => {
             const cell = () => ({ hits: 0, samples: 0, predicted: 0 });
             calibration.byOutcome = { even: cell(), odd: cell() };
         }
-        const pip = math.inferPipSize(prices);
+        const pip = parityPipSize();
+        if (pip === null) return { hits: 0, samples: 0, rate: 0, mean: 0, byOutcome: calibration.byOutcome };
         const digits = math.lastDigits(prices, pip);
         const pending = [];
         ledger.forEach(entry => {
-            const exitIndex = entry.index + Math.max(1, Math.round(num(entry.duration, 5)));
+            const exitIndex = entry.index + Math.max(1, Math.round(num(entry.forecastHorizon, 5)));
             if (exitIndex >= digits.length) {
                 pending.push(entry);
                 return;
@@ -446,7 +451,7 @@ const getVisionInterface = tradeEngine => {
             ledger.push({
                 index: prices.length - 1,
                 lastQuote: prices[prices.length - 1],
-                duration: Math.max(1, Math.round(num(duration, 5))),
+                forecastHorizon: Math.max(1, Math.round(num(result.forecastHorizon, duration))),
                 side: result.side,
                 winProbability: num(result.winProbability, 0),
             });
@@ -1157,6 +1162,7 @@ const getVisionInterface = tradeEngine => {
             const clock = tickClock();
             const result = priceDecision(list, mode === 'tick' ? 'tick' : 'rise', context.horizon, threshold, {
                 maxTie: num(maxTie, 0.2),
+                pipSize,
                 minAgreement: num(minAgreement, 0),
                 minEdge: num(minEdge, 0),
                 minConfidence: num(minConfidence, 0),
@@ -1619,14 +1625,20 @@ const getVisionInterface = tradeEngine => {
          */
         parityDecision: async (list, horizon, threshold, require, minEdge, payout, minConfidence, minAgreement, minEv, slip) => {
             const symbol = symbolOf();
+            const pipSize = parityPipSize();
+            if (pipSize === null) {
+                lastParity.set(symbol, { reason: 'waiting for market pip size — cannot safely identify last digits' });
+                return [];
+            }
             const calibration = gradeParityForecasts(symbol, list);
             // Live Even/Odd quotes first: the payout table's two slots, then
             // the running trade options' own proposals, then the fallback.
             const table = peekPayouts(payoutOptions());
             const quoted = quotedPayout(['DIGITEVEN', 'DIGITODD']);
             const quotedMultiple = quoted > 0 ? quoted + 1 : 0;
-            const liveEven = table && table.even > 0 ? table.even : 0;
-            const liveOdd = table && table.odd > 0 ? table.odd : 0;
+            const freshQuotes = parityQuotesFresh(table);
+            const liveEven = freshQuotes ? table.even : 0;
+            const liveOdd = freshQuotes ? table.odd : 0;
             const assumed = num(payout, PARITY_FALLBACK_PAYOUT) || PARITY_FALLBACK_PAYOUT;
             const duration = clamp(Math.round(num(horizon, 5)) || 5, 1, 10);
             const result = parityDecision(list, duration, num(threshold, 0), {
@@ -1660,7 +1672,7 @@ const getVisionInterface = tradeEngine => {
             fileParityForecast(symbol, list, result, duration);
             lastParity.set(symbol, {
                 ...result,
-                payoutLive: liveEven || liveOdd || quotedMultiple ? 1 : 0,
+                payoutLive: freshQuotes ? 1 : 0,
             });
             return [
                 result.ready ? 1 : 0,
@@ -1688,7 +1700,7 @@ const getVisionInterface = tradeEngine => {
                 num(result.breakEven, 0.5),
                 Number.isFinite(result.ev) ? num(result.ev, 0) : 0,
                 num(result.hitSamples, 0),
-                liveEven || liveOdd || quotedMultiple ? 1 : 0,
+                freshQuotes ? 1 : 0,
             ];
         },
         parityDecisionPart: async (plan, part) => {
@@ -1839,6 +1851,9 @@ const getVisionInterface = tradeEngine => {
         parityRisk: async (stake, legs, baseline, loss, target, percent) => {
             let balance;
             try { balance = await tradeEngine.getBalance('NUM'); } catch { return false; }
+            // Unlike the shared price risk gate, never override the user's percentage
+            // cap merely to reach a presumed minimum stake.
+            if (!(Number(stake) * Number(legs) <= Number(balance) * Number(percent) / 100)) return false;
             return priceRiskAllowed({ stake, legs, baseline, loss, target, percent, balance,
                 sessionProfit: tradeEngine.sessionProfit, hedgeIncomplete: tradeEngine.hedgeIncomplete });
         },

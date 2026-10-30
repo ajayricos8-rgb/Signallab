@@ -231,7 +231,7 @@ export function parityDna(values, options = {}) {
     };
     if (ticks < PARITY_MIN_TICKS || prices.some(value => !Number.isFinite(value))) return empty;
 
-    const pipSize = inferPipSize(prices);
+    const pipSize = Number.isInteger(options.pipSize) && options.pipSize >= 0 && options.pipSize <= 8 ? options.pipSize : inferPipSize(prices);
     const digits = lastDigits(prices, pipSize);
     const n = digits.length;
     const par = digits.map(parityOf);
@@ -622,7 +622,7 @@ export function parityDecision(values, horizon = 5, threshold = 0, options = {})
     // of it is real — the contract settles on future ticks the dead tape
     // knows nothing about. Refuse before a single expert speaks; the refusal
     // is not model-ready, so it never pollutes the graded record either.
-    const dna = parityDna(prices);
+    const dna = parityDna(prices, { pipSize: options.pipSize });
     if (dna.phase === 'frozen') {
         return emptyDecision({
             horizon: duration,
@@ -633,7 +633,7 @@ export function parityDecision(values, horizon = 5, threshold = 0, options = {})
         });
     }
 
-    const pipSize = inferPipSize(prices);
+    const pipSize = Number.isInteger(options.pipSize) && options.pipSize >= 0 && options.pipSize <= 8 ? options.pipSize : inferPipSize(prices);
     const digits = lastDigits(prices, pipSize);
     const par = digits.map(parityOf);
     const prefix = buildParityPrefix(par);
@@ -645,7 +645,8 @@ export function parityDecision(values, horizon = 5, threshold = 0, options = {})
     const lastOrigin = n - 1 - forecastHorizon;
     const firstOrigin = Math.max(PARITY_MIN_TICKS - 1, lastOrigin - PARITY_REPLAY_WINDOW);
     const span = Math.max(0, lastOrigin - firstOrigin);
-    const step = Math.max(5, Math.floor(span / Math.max(1, PARITY_MAX_ORIGINS - 1)) || 5);
+    // Do not train on a target that was still in the future at the next origin.
+    const step = Math.max(forecastHorizon, 5, Math.floor(span / Math.max(1, PARITY_MAX_ORIGINS - 1)) || 5);
     const origins = [];
     for (let i = firstOrigin; i <= lastOrigin && origins.length < PARITY_MAX_ORIGINS; i += step) origins.push(i);
     if (!origins.length) {
@@ -752,7 +753,6 @@ export function parityDecision(values, horizon = 5, threshold = 0, options = {})
                 const rho = parityACF(prefix, par, Math.max(0, end - 499), end);
                 return {
                     pEven: clamp(0.5 + rho ** forecastHorizon * (par[end] - 0.5), 0.02, 0.98),
-                         pEven: clamp(0.5 + rho ** forecastHorizon * (par[end] - 0.5), 0.02, 0.98),
                     effective: Math.max(12, end + 1) / 2,
                 };
             }

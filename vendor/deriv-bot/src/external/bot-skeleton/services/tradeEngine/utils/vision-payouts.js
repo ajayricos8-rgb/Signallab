@@ -61,6 +61,7 @@ export class PayoutTable {
         // the parity engine. Old stored tables lack them and read as 0.
         this.even = 0;
         this.odd = 0;
+        this.parityAt = { even: 0, odd: 0 };
         this.filled = 0;
         this.live = false;
         this.at = 0;
@@ -90,6 +91,7 @@ export class PayoutTable {
         if (!(multiple > 0)) return;
         if (!this[key]) this.filled += 1;
         this[key] = multiple;
+        this.parityAt[key] = Date.now();
     }
 
     hasParity(side) {
@@ -125,6 +127,7 @@ export class PayoutTable {
             under: this.under,
             even: this.even,
             odd: this.odd,
+            parityAt: this.parityAt,
             filled: this.filled,
             live: this.live,
             at: this.at || Date.now(),
@@ -137,6 +140,8 @@ export class PayoutTable {
         if (Array.isArray(data?.under)) table.under = data.under.slice(0, 10);
         table.even = Number(data?.even) || 0;
         table.odd = Number(data?.odd) || 0;
+        // Old cache entries have no per-side timestamp and cannot authorize trades.
+        table.parityAt = { even: Number(data?.parityAt?.even) || 0, odd: Number(data?.parityAt?.odd) || 0 };
         table.filled =
             Number(data?.filled) ||
             table.over.filter(Boolean).length + table.under.filter(Boolean).length + (table.even ? 1 : 0) + (table.odd ? 1 : 0);
@@ -177,7 +182,7 @@ async function fetchTable(key, options) {
     }
     // Even/Odd needs no barrier: two proposals price the whole family.
     ['even', 'odd'].forEach(side => {
-        if (table.hasParity(side) && Date.now() - table.at < REFRESH_MS) return;
+        if (table.hasParity(side) && Date.now() - table.parityAt[side] < REFRESH_MS) return;
         jobs.push({ parity: side });
     });
     if (!jobs.length) return table;
