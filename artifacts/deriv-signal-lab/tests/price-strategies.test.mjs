@@ -22,6 +22,7 @@ import {
   priceRiskAllowed,
   resolvePriceContext,
 } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/price-risk.mjs';
+import { markovRead } from '../../../vendor/deriv-bot/src/external/bot-skeleton/services/tradeEngine/utils/markov-chain.mjs';
 
 const trend = Array.from({ length: 700 }, (_, i) => 100 + i * 0.01);
 
@@ -300,9 +301,12 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   const root = new URL('../src/lib/bot-store/bots/', import.meta.url);
   const tick = await readFile(new URL('high-low-tick-sniper.xml', root), 'utf8');
   const rise = await readFile(new URL('rise-fall-ensemble.xml', root), 'utf8');
-  const hedge = await readFile(new URL('step-rise-fall-hedge.xml', root), 'utf8');
+  const hedge = await readFile(new URL('step-markov-hedge.xml', root), 'utf8');
 
-  for (const xml of [tick, rise, hedge]) {
+  // The ensemble presets. The Step Index Markov hedge is a different program
+  // (four ticks, a chain gate and a user-owned ladder) and is pinned by its own
+  // test below.
+  for (const xml of [tick, rise]) {
     for (const name of ['trade_definition', 'before_purchase', 'after_purchase', 'x_price_decision', 'x_price_risk', 'trade_again']) {
       assert.ok(xml.includes(`type="${name}"`), name);
     }
@@ -357,12 +361,12 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   };
   assert.equal(shippedDuration(tick), '5', 'High/Low Tick is a five-tick contract');
   assert.equal(shippedDuration(rise), '5', 'Rise/Fall stays on the odd, tie-free horizon');
-  assert.equal(shippedDuration(hedge), '5', 'the hedge ships the odd, tie-free horizon too');
-  // Five ticks ties about one window in a hundred on a measured stream, so the
-  // tie gate ships tight: it refuses a shape rather than paying for one. Anyone
-  // who wants the four-tick contract can set the duration to 4 and the cap to
-  // 0.5, and the entry line will print the tie rate they are paying.
-  assert.match(hedge, /<field name="VAR" id="vai_max_tie">ai max tie<\/field>[\s\S]*?<field name="NUM">0\.2<\/field>/);
+  // The Markov hedge ships the four-tick contract on purpose: its gate is the
+  // chain's own projection of that shape, tie included, and the tie ceiling is
+  // 0.45 rather than 0.2 so measurement noise around the structural 0.375
+  // cannot stall a cycle.
+  assert.equal(shippedDuration(hedge), '4', 'the Markov hedge is a four-tick contract');
+  assert.match(hedge, /<field name="VAR" id="vai_max_tie">ai max tie<\/field>[\s\S]*?<field name="NUM">0\.45<\/field>/);
 
   // The two Step Index presets keep a cadence: they publish the best read on
   // every tick they can read, and the session brakes — not the edge estimate —
@@ -398,7 +402,7 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   // The multi-market scan replaced the one-market scout: every preset reads
   // every market with its own model, then stands on the most suitable one, and
   // the once-a-minute cadence keeps the quality gates from parking the bot.
-  for (const [xml, family] of [[tick, 'high-low-tick'], [rise, 'rise-fall'], [hedge, 'rise-fall']]) {
+  for (const [xml, family] of [[tick, 'high-low-tick'], [rise, 'rise-fall']]) {
     assert.match(xml, /type="x_market_scan"/, 'the AI scan reads every market');
     assert.match(xml, new RegExp(`<field name="FAMILY">${family}</field>`), `the scan runs the ${family} model`);
     assert.match(xml, /type="x_scan_switch_best"/, 'the scan chooses the market to trade');
@@ -432,7 +436,7 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   assert.match(tick, /High\/Low Tick AI Sniper v6/, 'the sniper reports its version');
   // The other two presets keep the EV gate off (their quotes are a single
   // multiple) but still declare the slip, and neither gains the tick-only knobs.
-  for (const xml of [rise, hedge]) {
+  for (const xml of [rise]) {
     assert.match(xml, /<field name="VAR" id="vai_entry_slip">ai entry slip<\/field>/);
     assert.doesNotMatch(xml, /ai dna floor/, 'the DNA gate is a High/Low Tick knob');
     assert.doesNotMatch(xml, /x_price_auto_market/, 'the one-market scout is gone everywhere');
@@ -446,19 +450,12 @@ test('store presets trade an odd horizon, gate on evidence and explain their ski
   assert.match(rise, /<field name="SUBMARKET_LIST">step_index<\/field>/);
   assert.match(rise, /<field name="SYMBOL_LIST">stpRNG<\/field>/);
 
-  assert.match(hedge, /<field name="SYMBOL_LIST">stpRNG<\/field>/);
   assert.match(hedge, /<field name="MODE">step-hedge<\/field>/);
-  assert.match(hedge, /<field name="PURCHASE_LIST">CALL<\/field>/);
-  assert.match(hedge, /<field name="HEDGE_LIST">PUT<\/field>/);
-  // The hedge is partial, so the risk gate takes the pair's exposure multiplier
-  // (main leg + "ai hedge ratio" of it) rather than a hard-coded 2.
-  assert.match(hedge, /<value name="LEGS">[\s\S]{0,160}?id="vai_legs">ai legs<\/field>/, 'the pair risk-checks both legs');
-  assert.match(hedge, /id="vai_legs">ai legs<\/field>[\s\S]{0,200}?<field name="NUM">1\.25<\/field>/, 'both legs are inside the exposure multiplier');
-  assert.match(hedge, /<value name="HEDGE_STAKE">[\s\S]{0,160}?id="vai_hedge_ratio">ai hedge ratio<\/field>/, 'the hedge leg is ratio-sized, not equal-staked');
 
   // The shipped shapes must pass the context gate the bots rely on.
   assert.equal(priceContextAllowed('rise', 5, { symbol: 'stpRNG', duration: 5, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), true);
-  assert.equal(priceContextAllowed('step-hedge', 5, { symbol: 'stpRNG', duration: 5, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), true);
+  assert.equal(priceContextAllowed('step-hedge', 4, { symbol: 'stpRNG', duration: 4, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), true);
+  assert.equal(priceContextAllowed('step-hedge', 4, { symbol: 'R_100', duration: 4, duration_unit: 't' }, { contractTypes: ['CALL', 'PUT'] }), false, 'the step hedge stays on the Step index family');
   assert.equal(priceContextAllowed('tick', 5, { symbol: 'R_100', duration: 5, duration_unit: 't' }, { contractTypes: ['TICKHIGH', 'TICKLOW'] }), true);
 });
 
@@ -650,6 +647,139 @@ test('cadence mode keeps every readable tick readable, so a hedged pair re-enter
 // v5 — the tie-aware structural prior, the EV scan, market DNA and the
 // integrity of the walk-forward replay
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The shipped Step Index Markov hedge
+// ---------------------------------------------------------------------------
+
+/**
+ * The preset's cycle, replayed.
+ *
+ * `decisions` is the ensemble's own read, precomputed once per stream because
+ * it is the expensive half of the cycle. The chain is then fitted per tick, the
+ * preset's gates are applied in order, and the stake climbs the user's ladder —
+ * four-tick wins only in the direction of the window, ties lose both legs.
+ */
+function runMarkovHedge(
+  prices,
+  decisions,
+  { baseStake = 0.35, multiplier = 1.8, steps = 2, maxStake = 2, minZ = 0.75, minLift = 0.01, maxTie = 0.45, agreement = true } = {}
+) {
+  let stake = baseStake;
+  let ladder = 0;
+  let entries = 0;
+  let resets = 0;
+  let highestStake = 0;
+  decisions.forEach((plan, offset) => {
+    const t = offset + 500;
+    const window = prices.slice(Math.max(0, t - 399), t + 1);
+    const chain = markovRead(window, { order: 3, memory: 400, horizon: 4, payout: 0.95, minSamples: 120, maxTie });
+    const gate =
+      Boolean(plan.ready) &&
+      chain.ready === 1 &&
+      chain.tieOk === 1 &&
+      chain.z >= minZ &&
+      chain.lift >= minLift &&
+      chain.ev >= -1 &&
+      (!agreement || chain.side === plan.side);
+    if (!gate) return;
+    entries += 1;
+    highestStake = Math.max(highestStake, stake);
+    const move = prices[t + 4] - prices[t];
+    if (plan.side === 1 ? move > 0 : move < 0) {
+      ladder = 0;
+      stake = baseStake;
+    } else {
+      ladder += 1;
+      if (ladder >= steps) {
+        ladder = 0;
+        stake = baseStake;
+        resets += 1;
+      } else {
+        stake = Math.min(maxStake, Number((stake * multiplier).toFixed(2)));
+      }
+    }
+  });
+  return { entries, considered: decisions.length, resets, highestStake };
+}
+
+/** The ensemble's read for every tick the replay considers. */
+function ensembleReads(prices) {
+  const out = [];
+  for (let t = 500; t + 4 < prices.length; t++) {
+    out.push(
+      priceDecision(prices.slice(Math.max(0, t - 399), t + 1), 'step-hedge', 4, 0, {
+        maxTie: 0.45,
+        minAgreement: 0,
+        minEdge: 0,
+        payout: 0.95,
+        requireEdge: false,
+      })
+    );
+  }
+  return out;
+}
+
+/** A step walk whose *direction* persists: the structure a chain can learn. */
+function chainStream(length, persist, seed) {
+  let state = seed >>> 0;
+  const random = () => {
+    state = (state + 0x9e3779b9) >>> 0;
+    let z = state;
+    z = Math.imul(z ^ (z >>> 16), 0x21f0aaad) >>> 0;
+    z = Math.imul(z ^ (z >>> 15), 0x735a2d97) >>> 0;
+    return ((z ^ (z >>> 15)) >>> 0) / 4294967296;
+  };
+  let price = 1000;
+  let direction = 1;
+  const out = [price];
+  for (let index = 0; index < length; index++) {
+    direction = random() < persist ? direction : -direction;
+    price += direction * 0.1;
+    out.push(Number(price.toFixed(2)));
+  }
+  return out;
+}
+
+const FAIR = chainStream(1000, 0.5, 63);
+const TRENDING = chainStream(1000, 0.74, 63);
+const fairReads = ensembleReads(FAIR);
+const trendReads = ensembleReads(TRENDING);
+
+test('the Markov hedge opens where the chain can justify it and holds on a fair tape', () => {
+  const fair = runMarkovHedge(FAIR, fairReads);
+  const trending = runMarkovHedge(TRENDING, trendReads);
+
+  // The chain is not decoration: on tape with no structure the bot stands
+  // aside for most cycles, and on a persistent tape it finds states worth
+  // buying instead of trading the unconditioned shape.
+  assert.ok(fair.entries < fair.considered, `fair tape: ${fair.entries}/${fair.considered}`);
+  assert.ok(fair.entries / Math.max(1, fair.considered) < 0.5, 'a fair four-tick tape is not traded every cycle');
+  assert.ok(trending.entries > fair.entries, `structure is traded more (${trending.entries} vs ${fair.entries})`);
+  assert.ok(trending.entries > 20, 'a persistent tape produces entries');
+});
+
+test('the hedge gates are real: the z floor, the tie ceiling and the agreement rule all bite', () => {
+  const shipped = runMarkovHedge(TRENDING, trendReads);
+  const noAgreement = runMarkovHedge(TRENDING, trendReads, { agreement: false });
+  const impossibleZ = runMarkovHedge(TRENDING, trendReads, { minZ: 99 });
+  const tightTie = runMarkovHedge(TRENDING, trendReads, { maxTie: 0.2 });
+
+  assert.ok(shipped.entries > 0, 'the shipped gates let the bot trade structure');
+  assert.ok(noAgreement.entries >= shipped.entries, 'requiring both models to agree can only cut entries');
+  assert.equal(impossibleZ.entries, 0, 'an unreachable z floor stops every entry');
+  assert.ok(tightTie.entries < noAgreement.entries, 'a tie ceiling under the structural rate refuses the shape');
+});
+
+test('the stake ladder climbs after a loss, resets after a win and never passes its cap', () => {
+  const run = runMarkovHedge(TRENDING, trendReads, { baseStake: 0.35, multiplier: 1.8, steps: 2, maxStake: 2 });
+  assert.ok(run.entries > 10, 'the ladder needs entries to climb');
+  assert.ok(run.highestStake > 0.35, `the ladder climbed (highest ${run.highestStake})`);
+  assert.ok(run.highestStake <= 2 + 1e-9, 'the ladder never passes the max stake');
+  assert.ok(run.resets > 0, 'a ladder that reaches its step limit is abandoned');
+  const tight = runMarkovHedge(TRENDING, trendReads, { baseStake: 0.35, multiplier: 2, steps: 1, maxStake: 10 });
+  assert.ok(tight.highestStake <= 0.35 + 1e-9, 'steps = 1 abandons the ladder on the first loss');
+});
 
 test('the grid-walk prior is enumerated, not guessed, and the market picks its own structure', () => {
   // A Step Index moves exactly one quote increment per tick, so the strict

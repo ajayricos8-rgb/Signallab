@@ -20,6 +20,7 @@ import { observer as globalObserver } from '../../../utils/observer';
 import * as ai from '../utils/vision-ai.mjs';
 import * as math from '../utils/vision-math.mjs';
 import { DEFAULT_LATENCY, aiBrainReport, forecastReport, labelFidelity, marketDna, priceDecision, reverseEngineerReport } from '../utils/price-strategies.mjs';
+import { MARKOV_PLAN_PARTS, markovPlan, markovRead, markovReport } from '../utils/markov-chain.mjs';
 import { parityQuotesFresh } from '../utils/parity-quote-safety.mjs';
 import { PARITY_FALLBACK_PAYOUT, parityAuditReport, parityBrainReport, parityDecision, parityDna, parityForecastReport, parityLeagueReport, parityReverseReport, scoreParityMarket } from '../utils/parity-strategies.mjs';
 import { adaptiveStake, priceRiskAllowed, resolvePriceContext } from '../utils/price-risk.mjs';
@@ -91,6 +92,8 @@ const lastPrice = new Map();
  */
 const priceLedger = new Map();
 const priceCalibration = new Map();
+/** The last Markov read, with its inputs, per market. */
+const lastMarkov = new Map();
 /** The last parity decision, with its reason, per market. */
 const lastParity = new Map();
 /**
@@ -2129,6 +2132,47 @@ const getVisionInterface = tradeEngine => {
         /** Contracts this run has bought, from the engine's own run counter. */
         priceTrades: async () => num(tradeEngine.getTotalRuns?.(), 0),
         priceSessionProfit: async () => num(tradeEngine.sessionProfit, 0),
+        /**
+         * The Markov-chain read of this market, as a plan the `Markov part`
+         * block reads.
+         *
+         * The chain is fitted on the tick directions (order k, default three)
+         * and projected over the contract horizon by carrying (state, net
+         * displacement) forward one tick at a time, so what comes back is the
+         * settlement distribution of the contract — including the tie, which a
+         * strict Rise/Fall loses on both sides. The payout is read from the
+         * live proposals, exactly like the ensemble's break-even, so the edge
+         * is measured against what a win actually pays.
+         *
+         * Nothing here opens an order. It is a read a strategy can gate on.
+         */
+        priceMarkov: async (list, order, horizon, memory, payout, minSamples, maxTie) => {
+            const symbol = symbolOf();
+            const quoted = quotedPayout(['CALL', 'PUT']);
+            const assumed = num(payout, DEFAULT_PRICE_PAYOUT);
+            const options = tradeOptions();
+            const read = markovRead(math.toNumbers(list), {
+                order: num(order, 3),
+                horizon: num(horizon, num(options.duration, 4)),
+                memory: num(memory, 400),
+                payout: quoted > 0 ? quoted : assumed,
+                minSamples: num(minSamples, 120),
+                maxTie: num(maxTie, 0.45),
+            });
+            lastMarkov.set(symbol, { ...read, live: quoted > 0 });
+            return markovPlan(read);
+        },
+        /** One numeric field of a Markov plan, read by name. */
+        priceMarkovPart: async (plan, part) => {
+            const index = MARKOV_PLAN_PARTS[String(part)];
+            // The interpreter hands an array back as an array-like object, so a
+            // slot is read by index either way; a missing plan reads as 0 rather
+            // than throwing a gate open.
+            const value = index === undefined || plan == null ? undefined : plan[index];
+            return num(value, 0);
+        },
+        /** The whole Markov read as one journal line. */
+        priceMarkovReport: async () => markovReport(lastMarkov.get(symbolOf())),
         priceRisk: async (stake, legs, baseline, loss, target, percent) => {
             let balance;
             try { balance = await tradeEngine.getBalance('NUM'); } catch { return false; }

@@ -56,7 +56,7 @@ BOTS = ROOT / "src" / "lib" / "bot-store" / "bots"
 
 DEFAULT_TARGETS = [
     ("rise", BOTS / "rise-fall-ensemble.xml"),
-    ("hedge", BOTS / "step-rise-fall-hedge.xml"),
+    ("hedge", BOTS / "step-markov-hedge.xml"),
     ("tick", BOTS / "high-low-tick-sniper.xml"),
 ]
 
@@ -75,7 +75,7 @@ def load_writer():
 
 def main(argv):
     writer = load_writer()
-    specs = {"rise": writer.RISE_FALL, "hedge": writer.STEP_HEDGE, "tick": writer.TICK_SNIPER}
+    specs = {"rise": writer.RISE_FALL, "hedge": writer.STEP_MARKOV, "tick": writer.TICK_SNIPER}
 
     if len(argv) in (3, 4):
         # Legacy call shape: <rise.xml> [<hedge.xml>] <tick.xml>
@@ -92,7 +92,9 @@ def main(argv):
 
     for kind, path in targets:
         path.parent.mkdir(parents=True, exist_ok=True)
-        xml = writer.build(specs[kind])
+        # The Markov hedge is its own program (a ladder, a per-cycle side and a
+        # chain gate), not a variant of the rise/fall builder.
+        xml = writer.build_markov(specs[kind]) if kind == "hedge" else writer.build(specs[kind])
         path.write_text(xml, encoding="utf-8")
         print("wrote", path)
     return 0

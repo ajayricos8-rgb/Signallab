@@ -1058,7 +1058,46 @@ export const ToolboxItems = () =>
                             </Shadow>
                         </Value>
                     </Block>
-                    <Block type='x_price_decision_part' />
+                    <Block type='x_price_decision_part' />                    {/* The Markov chain: an order-k direction chain projected over
+                        the contract horizon, ties included. One model, one exact
+                        answer, readable piece by piece. */}
+                    <Block type='x_price_markov'>
+                        <Value name='LIST'>
+                            <Block type='ticks' />
+                        </Value>
+                        <Value name='ORDER'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>3</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='HORIZON'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>4</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MEMORY'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>400</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='PAYOUT'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.95</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MIN_SAMPLES'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>120</Field>
+                            </Shadow>
+                        </Value>
+                        <Value name='MAX_TIE'>
+                            <Shadow type='math_number'>
+                                <Field name='NUM'>0.45</Field>
+                            </Shadow>
+                        </Value>
+                    </Block>
+                    <Block type='x_price_markov_part' />
+                    <Block type='x_price_markov_report' />
                     {/* v5: the market's measured structure, the live ten-outcome
                         ladder it is priced against, the expert league, the
                         self-audit and the market scout. */}
