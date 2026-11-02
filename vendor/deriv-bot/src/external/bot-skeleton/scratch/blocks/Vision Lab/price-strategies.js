@@ -49,7 +49,7 @@ defineValueBlock({
  */
 defineValueBlock({
     type: 'x_price_markov',
-    message: localize('Markov chain order %1 horizon ticks %2 memory %3 payout %4 min samples %5 max tie rate %6'),
+    message: localize('Markov chain order %1 horizon ticks %2 memory %3 payout %4 min samples %5 max tie rate %6 ticks %7'),
     args: [
         numberInput('ORDER', '3'),
         numberInput('HORIZON', '4'),

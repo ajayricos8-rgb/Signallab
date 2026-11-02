@@ -194,6 +194,15 @@ python3 scripts/presets/gen_presets.py \
     src/lib/bot-store/bots/high-low-tick-sniper.xml
 ```
 
+`tests/preset-wiring.test.mjs` is the guard that keeps the file loadable: it
+checks that every block type a preset uses exists, that **every factory block's
+label references all of its args** (Blockly throws
+`Message does not reference all N arg(s)` while loading, and DBot reports any
+load throw as "XML file contains unsupported elements"), that every `<value>` /
+`<statement>` / `<field>` a preset writes is an input the block actually
+declares, that dropdown values are legal, and that every `Bot.*` call the blocks
+generate exists at runtime.
+
 `tests/price-strategies.test.mjs` replays the preset's cycle — ensemble side,
 chain gates, ladder — on a fair tape and on a persistent one, and asserts that
 structure is traded more than noise, that an unreachable `z` floor stops every
