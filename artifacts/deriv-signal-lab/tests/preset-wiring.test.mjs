@@ -312,6 +312,17 @@ test('the Markov blocks the hedge gates on are wired end to end', () => {
   }
 });
 
+test('a held Step Index hedge yields until the next tick instead of hot-spinning its before-purchase gate', () => {
+  const hedge = BOT_XML['step-markov-hedge.xml'];
+  const before = hedge.indexOf('<block type="before_purchase"');
+  const after = hedge.indexOf('<block type="after_purchase"', before);
+  assert.ok(before >= 0 && after > before, 'the preset has a before-purchase gate');
+  const beforePurchase = hedge.slice(before, after);
+  assert.match(beforePurchase, /<block type="x_wait_ticks"[\s\S]*?<field name="NUM">1<\/field>/);
+  assert.match(blockSource, /type:\s*'x_wait_ticks'[\s\S]*?call: input => `Bot\.xWaitTicks\(/);
+  assert.ok(runtimeMethods.has('xWaitTicks'), 'Bot.xWaitTicks is exposed by the runtime');
+});
+
 test('every Bot.* call in the block library has a runtime method', () => {
   const missing = [...botMethods].filter(method => !runtimeMethods.has(method));
   assert.deepEqual(missing, [], 'blocks calling a runtime method that does not exist fail at run time, silently');
