@@ -1,0 +1,683 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">
+  <variables>
+    <variable type="" id="vbase_stake">base stake</variable>
+    <variable type="" id="vstake">stake</variable>
+    <variable type="" id="vhedge_ratio">hedge ratio</variable>
+    <variable type="" id="vtake_profit">take profit</variable>
+    <variable type="" id="vstop_loss">stop loss</variable>
+    <variable type="" id="vmax_stake">max stake</variable>
+    <variable type="" id="vmartingale_multiplier">martingale multiplier</variable>
+    <variable type="" id="vmartingale_steps">martingale steps</variable>
+    <variable type="" id="vai_duration">ai duration</variable>
+    <variable type="" id="vai_min_confidence">ai min confidence</variable>
+    <variable type="" id="vai_ladder_step">ai ladder step</variable>
+    <variable type="" id="vai_baseline">ai baseline</variable>
+    <variable type="" id="vbaseline_profit">baseline profit</variable>
+    <variable type="" id="vai_decision">ai decision</variable>
+    <variable type="" id="vai_ready">ai ready</variable>
+    <variable type="" id="vai_side">ai side</variable>
+    <variable type="" id="vai_confidence">ai confidence</variable>
+  </variables>
+  <block type="trade_definition" id="rfh_trade_def" x="0" y="0">
+    <statement name="TRADE_OPTIONS">
+      <block type="trade_definition_market" id="rfh_market">
+        <field name="MARKET_LIST">volidx</field>
+        <field name="SUBMARKET_LIST">random_index</field>
+        <field name="SYMBOL_LIST">1HZ10V</field>
+        <next>
+          <block type="trade_definition_tradetype" id="rfh_tradetype">
+            <field name="TRADETYPECAT_LIST">callput</field>
+            <field name="TRADETYPE_LIST">callput</field>
+            <next>
+              <block type="trade_definition_contracttype" id="rfh_contracttype">
+                <field name="TYPE_LIST">both</field>
+                <next>
+                  <block type="trade_definition_candleinterval" id="rfh_candle">
+                    <field name="CANDLEINTERVAL_LIST">60</field>
+                    <next>
+                      <block type="trade_definition_restartbuysell" id="rfh_restart_buysell">
+                        <field name="TIME_MACHINE_ENABLED">FALSE</field>
+                        <next>
+                          <block type="trade_definition_restartonerror" id="rfh_restart_err">
+                            <field name="RESTARTONERROR">FALSE</field>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <statement name="INITIALIZATION">
+      <block type="variables_set" id="b_init_01">
+        <field name="VAR" id="vbase_stake">base stake</field>
+        <value name="VALUE">
+          <block type="math_number" id="num_01">
+            <field name="NUM">0.5</field>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="b_init_02">
+            <field name="VAR" id="vstake">stake</field>
+            <value name="VALUE">
+              <block type="variables_get" id="get_base_01">
+                <field name="VAR" id="vbase_stake">base stake</field>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="b_init_03">
+                <field name="VAR" id="vhedge_ratio">hedge ratio</field>
+                <value name="VALUE">
+                  <block type="math_number" id="num_02">
+                    <field name="NUM">0.35</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="b_init_04">
+                    <field name="VAR" id="vtake_profit">take profit</field>
+                    <value name="VALUE">
+                      <block type="math_number" id="num_03">
+                        <field name="NUM">10</field>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="b_init_05">
+                        <field name="VAR" id="vstop_loss">stop loss</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="num_04">
+                            <field name="NUM">10</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="b_init_06">
+                            <field name="VAR" id="vmax_stake">max stake</field>
+                            <value name="VALUE">
+                              <block type="math_number" id="num_05">
+                                <field name="NUM">5</field>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="b_init_07">
+                                <field name="VAR" id="vmartingale_multiplier">martingale multiplier</field>
+                                <value name="VALUE">
+                                  <block type="math_number" id="num_06">
+                                    <field name="NUM">1.5</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="b_init_08">
+                                    <field name="VAR" id="vmartingale_steps">martingale steps</field>
+                                    <value name="VALUE">
+                                      <block type="math_number" id="num_07">
+                                        <field name="NUM">2</field>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="variables_set" id="b_init_09">
+                                        <field name="VAR" id="vai_duration">ai duration</field>
+                                        <value name="VALUE">
+                                          <block type="math_number" id="num_08">
+                                            <field name="NUM">5</field>
+                                          </block>
+                                        </value>
+                                        <next>
+                                          <block type="variables_set" id="b_init_10">
+                                            <field name="VAR" id="vai_min_confidence">ai min confidence</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="num_09">
+                                                <field name="NUM">52</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="b_init_11">
+                                                <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="num_10">
+                                                    <field name="NUM">0</field>
+                                                  </block>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="b_init_12">
+                                                    <field name="VAR" id="vai_baseline">ai baseline</field>
+                                                    <value name="VALUE">
+                                                      <block type="x_session_profit" id="sess_profit_01" />
+                                                    </value>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </next>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <statement name="SUBMARKET">
+      <block type="trade_definition_tradeoptions" id="rfh_trade_opts">
+        <field name="DURATIONTYPE_LIST">t</field>
+        <field name="CURRENCY_LIST">USD</field>
+        <field name="AMOUNT_LIMITS"></field>
+        <value name="DURATION">
+          <block type="variables_get" id="get_dur_01">
+            <field name="VAR" id="vai_duration">ai duration</field>
+          </block>
+        </value>
+        <value name="AMOUNT">
+          <block type="variables_get" id="get_stake_01">
+            <field name="VAR" id="vstake">stake</field>
+          </block>
+        </value>
+      </block>
+    </statement>
+  </block>
+
+  <block type="before_purchase" id="rfh_before_purchase" x="0" y="820">
+    <statement name="BEFOREPURCHASE_STACK">
+      <block type="variables_set" id="b_set_decision">
+        <field name="VAR" id="vai_decision">ai decision</field>
+        <value name="VALUE">
+          <block type="x_price_decision" id="rfh_price_dec">
+            <field name="MODE">rise-fall</field>
+            <field name="REQUIRE">always</field>
+            <value name="LIST">
+              <block type="ticks" id="rfh_ticks_01" />
+            </value>
+            <value name="HORIZON">
+              <block type="variables_get" id="get_dur_02">
+                <field name="VAR" id="vai_duration">ai duration</field>
+              </block>
+            </value>
+            <value name="THRESHOLD">
+              <block type="math_number" id="num_thresh_01">
+                <field name="NUM">0</field>
+              </block>
+            </value>
+            <value name="SLIP">
+              <block type="math_number" id="num_slip_01">
+                <field name="NUM">1</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="b_set_ready">
+            <field name="VAR" id="vai_ready">ai ready</field>
+            <value name="VALUE">
+              <block type="x_price_decision_part" id="rfh_dec_ready">
+                <field name="PART">ready</field>
+                <value name="PLAN">
+                  <block type="variables_get" id="get_dec_01">
+                    <field name="VAR" id="vai_decision">ai decision</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="b_set_side">
+                <field name="VAR" id="vai_side">ai side</field>
+                <value name="VALUE">
+                  <block type="x_price_decision_part" id="rfh_dec_side">
+                    <field name="PART">side</field>
+                    <value name="PLAN">
+                      <block type="variables_get" id="get_dec_02">
+                        <field name="VAR" id="vai_decision">ai decision</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="b_set_conf">
+                    <field name="VAR" id="vai_confidence">ai confidence</field>
+                    <value name="VALUE">
+                      <block type="x_price_decision_part" id="rfh_dec_conf">
+                        <field name="PART">confidence</field>
+                        <value name="PLAN">
+                          <block type="variables_get" id="get_dec_03">
+                            <field name="VAR" id="vai_decision">ai decision</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="controls_if" id="b_check_ai_gate">
+                        <mutation else="1"></mutation>
+                        <value name="IF0">
+                          <block type="logic_operation" id="b_logic_gate_and">
+                            <field name="OP">AND</field>
+                            <value name="A">
+                              <block type="logic_compare" id="b_cmp_ready">
+                                <field name="OP">EQ</field>
+                                <value name="A">
+                                  <block type="variables_get" id="get_ready_01">
+                                    <field name="VAR" id="vai_ready">ai ready</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="num_ready_one">
+                                    <field name="NUM">1</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="logic_compare" id="b_cmp_conf">
+                                <field name="OP">GTE</field>
+                                <value name="A">
+                                  <block type="variables_get" id="get_conf_01">
+                                    <field name="VAR" id="vai_confidence">ai confidence</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="get_min_conf_01">
+                                    <field name="VAR" id="vai_min_confidence">ai min confidence</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <statement name="DO0">
+                          <block type="controls_if" id="b_direction_choice">
+                            <mutation else="1"></mutation>
+                            <value name="IF0">
+                              <block type="logic_compare" id="b_cmp_side_call">
+                                <field name="OP">EQ</field>
+                                <value name="A">
+                                  <block type="variables_get" id="get_side_01">
+                                    <field name="VAR" id="vai_side">ai side</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="num_side_call_val">
+                                    <field name="NUM">1</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <statement name="DO0">
+                              <block type="notify" id="notif_call_hedge">
+                                <field name="NOTIFICATION_TYPE">success</field>
+                                <field name="NOTIFICATION_SOUND">silent</field>
+                                <value name="MESSAGE">
+                                  <block type="text" id="txt_call_hedge">
+                                    <field name="TEXT">AI Bias: RISE [CALL]. Executing primary Rise with Put hedge cover.</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="hedge_purchase" id="rfh_buy_call_hedge">
+                                    <field name="PURCHASE_LIST">CALL</field>
+                                    <field name="HEDGE_LIST">PUT</field>
+                                    <value name="HEDGE_STAKE">
+                                      <block type="variables_get" id="get_hedge_ratio_01">
+                                        <field name="VAR" id="vhedge_ratio">hedge ratio</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </next>
+                              </block>
+                            </statement>
+                            <statement name="ELSE">
+                              <block type="notify" id="notif_put_hedge">
+                                <field name="NOTIFICATION_TYPE">warn</field>
+                                <field name="NOTIFICATION_SOUND">silent</field>
+                                <value name="MESSAGE">
+                                  <block type="text" id="txt_put_hedge">
+                                    <field name="TEXT">AI Bias: FALL [PUT]. Executing primary Fall with Call hedge cover.</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="hedge_purchase" id="rfh_buy_put_hedge">
+                                    <field name="PURCHASE_LIST">PUT</field>
+                                    <field name="HEDGE_LIST">CALL</field>
+                                    <value name="HEDGE_STAKE">
+                                      <block type="variables_get" id="get_hedge_ratio_02">
+                                        <field name="VAR" id="vhedge_ratio">hedge ratio</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </next>
+                              </block>
+                            </statement>
+                          </block>
+                        </statement>
+                        <statement name="ELSE">
+                          <block type="notify" id="notif_gate_waiting">
+                            <field name="NOTIFICATION_TYPE">info</field>
+                            <field name="NOTIFICATION_SOUND">silent</field>
+                            <value name="MESSAGE">
+                              <block type="text" id="txt_gate_waiting">
+                                <field name="TEXT">AI analyzing market regime — awaiting statistical confidence threshold before opening hedge pair.</field>
+                              </block>
+                            </value>
+                          </block>
+                        </statement>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="after_purchase" id="rfh_after_purchase" x="0" y="1500">
+    <statement name="AFTERPURCHASE_STACK">
+      <block type="variables_set" id="b_set_base_pnl">
+        <field name="VAR" id="vbaseline_profit">baseline profit</field>
+        <value name="VALUE">
+          <block type="math_arithmetic" id="math_pnl_sub">
+            <field name="OP">MINUS</field>
+            <value name="A">
+              <block type="x_session_profit" id="sess_pnl_02" />
+            </value>
+            <value name="B">
+              <block type="variables_get" id="get_base_pnl_ref">
+                <field name="VAR" id="vai_baseline">ai baseline</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="controls_if" id="b_check_pnl_outcome">
+            <mutation else="1"></mutation>
+            <value name="IF0">
+              <block type="contract_check_result" id="chk_win_res">
+                <field name="CHECK_RESULT">win</field>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="variables_set" id="b_reset_ladder">
+                <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                <value name="VALUE">
+                  <block type="math_number" id="num_ladder_zero">
+                    <field name="NUM">0</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="b_reset_stake">
+                    <field name="VAR" id="vstake">stake</field>
+                    <value name="VALUE">
+                      <block type="variables_get" id="get_base_stake_after_win">
+                        <field name="VAR" id="vbase_stake">base stake</field>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="notify" id="notif_win_log">
+                        <field name="NOTIFICATION_TYPE">success</field>
+                        <field name="NOTIFICATION_SOUND">silent</field>
+                        <value name="MESSAGE">
+                          <block type="text" id="txt_win_log">
+                            <field name="TEXT">Hedge cycle closed in profit! Resetting stake to base level.</field>
+                          </block>
+                        </value>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </statement>
+            <statement name="ELSE">
+              <block type="variables_set" id="b_inc_ladder">
+                <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                <value name="VALUE">
+                  <block type="math_arithmetic" id="math_ladder_add">
+                    <field name="OP">ADD</field>
+                    <value name="A">
+                      <block type="variables_get" id="get_ladder_cur">
+                        <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_number" id="num_ladder_one">
+                        <field name="NUM">1</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <next>
+                  <block type="controls_if" id="b_chk_max_ladder">
+                    <mutation else="1"></mutation>
+                    <value name="IF0">
+                      <block type="logic_compare" id="b_cmp_ladder_limit">
+                        <field name="OP">GTE</field>
+                        <value name="A">
+                          <block type="variables_get" id="get_ladder_val_chk">
+                            <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="get_ladder_limit_val">
+                            <field name="VAR" id="vmartingale_steps">martingale steps</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <statement name="DO0">
+                      <block type="variables_set" id="b_reset_ladder_limit">
+                        <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="num_ladder_reset_val">
+                            <field name="NUM">0</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="b_reset_stake_limit">
+                            <field name="VAR" id="vstake">stake</field>
+                            <value name="VALUE">
+                              <block type="variables_get" id="get_base_stake_ladder_limit">
+                                <field name="VAR" id="vbase_stake">base stake</field>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="notify" id="notif_ladder_limit_msg">
+                                <field name="NOTIFICATION_TYPE">warn</field>
+                                <field name="NOTIFICATION_SOUND">silent</field>
+                                <value name="MESSAGE">
+                                  <block type="text" id="txt_ladder_limit_msg">
+                                    <field name="TEXT">Hedge ladder reached max progression steps. Resetting stake to base to protect balance.</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </statement>
+                    <statement name="ELSE">
+                      <block type="controls_if" id="b_chk_max_stake_cap">
+                        <mutation else="1"></mutation>
+                        <value name="IF0">
+                          <block type="logic_compare" id="b_cmp_max_stake_cap">
+                            <field name="OP">GT</field>
+                            <value name="A">
+                              <block type="math_arithmetic" id="math_mult_stake_check">
+                                <field name="OP">MULTIPLY</field>
+                                <value name="A">
+                                  <block type="variables_get" id="get_stake_cur_mult">
+                                    <field name="VAR" id="vstake">stake</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="get_mart_mult_val">
+                                    <field name="VAR" id="vmartingale_multiplier">martingale multiplier</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="variables_get" id="get_max_stake_cap_val">
+                                <field name="VAR" id="vmax_stake">max stake</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <statement name="DO0">
+                          <block type="variables_set" id="b_cap_stake_val">
+                            <field name="VAR" id="vstake">stake</field>
+                            <value name="VALUE">
+                              <block type="variables_get" id="get_max_stake_val_as_cur">
+                                <field name="VAR" id="vmax_stake">max stake</field>
+                              </block>
+                            </value>
+                          </block>
+                        </statement>
+                        <statement name="ELSE">
+                          <block type="variables_set" id="b_apply_mult_stake">
+                            <field name="VAR" id="vstake">stake</field>
+                            <value name="VALUE">
+                              <block type="math_arithmetic" id="math_calc_mult_stake">
+                                <field name="OP">MULTIPLY</field>
+                                <value name="A">
+                                  <block type="variables_get" id="get_stake_cur_for_mult">
+                                    <field name="VAR" id="vstake">stake</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="get_mult_for_cur_stake">
+                                    <field name="VAR" id="vmartingale_multiplier">martingale multiplier</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                          </block>
+                        </statement>
+                        <next>
+                          <block type="notify" id="notif_recovery_log">
+                            <field name="NOTIFICATION_TYPE">warn</field>
+                            <field name="NOTIFICATION_SOUND">silent</field>
+                            <value name="MESSAGE">
+                              <block type="text" id="txt_recovery_log">
+                                <field name="TEXT">Net cycle loss covered by hedge. Adjusting stake for disciplined recovery.</field>
+                              </block>
+                            </value>
+                          </block>
+                        </next>
+                      </block>
+                    </statement>
+                  </block>
+                </next>
+              </block>
+            </statement>
+            <next>
+              <block type="controls_if" id="b_session_risk_bounds">
+                <mutation else="1"></mutation>
+                <value name="IF0">
+                  <block type="logic_operation" id="b_logic_risk_and">
+                    <field name="OP">AND</field>
+                    <value name="A">
+                      <block type="logic_compare" id="b_cmp_stop_loss_limit">
+                        <field name="OP">GT</field>
+                        <value name="A">
+                          <block type="variables_get" id="get_base_pnl_for_sl">
+                            <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_arithmetic" id="math_neg_stop_loss">
+                            <field name="OP">MULTIPLY</field>
+                            <value name="A">
+                              <block type="math_number" id="num_neg_one">
+                                <field name="NUM">-1</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="variables_get" id="get_sl_threshold_val">
+                                <field name="VAR" id="vstop_loss">stop loss</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="logic_compare" id="b_cmp_take_profit_limit">
+                        <field name="OP">LT</field>
+                        <value name="A">
+                          <block type="variables_get" id="get_base_pnl_for_tp">
+                            <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="get_tp_threshold_val">
+                            <field name="VAR" id="vtake_profit">take profit</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <statement name="DO0">
+                  <block type="trade_again" id="rfh_trade_again_action" />
+                </statement>
+                <statement name="ELSE">
+                  <block type="controls_if" id="b_chk_tp_reached">
+                    <mutation else="1"></mutation>
+                    <value name="IF0">
+                      <block type="logic_compare" id="b_cmp_tp_done">
+                        <field name="OP">GTE</field>
+                        <value name="A">
+                          <block type="variables_get" id="get_pnl_for_tp_done">
+                            <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="get_tp_goal_val">
+                            <field name="VAR" id="vtake_profit">take profit</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <statement name="DO0">
+                      <block type="notify" id="notif_tp_reached_success">
+                        <field name="NOTIFICATION_TYPE">success</field>
+                        <field name="NOTIFICATION_SOUND">silent</field>
+                        <value name="MESSAGE">
+                          <block type="text" id="txt_tp_reached_msg">
+                            <field name="TEXT">Take Profit Target reached! AI Rise/Fall Hedge strategy concluded successfully.</field>
+                          </block>
+                        </value>
+                      </block>
+                    </statement>
+                    <statement name="ELSE">
+                      <block type="notify" id="notif_sl_reached_halt">
+                        <field name="NOTIFICATION_TYPE">error</field>
+                        <field name="NOTIFICATION_SOUND">silent</field>
+                        <value name="MESSAGE">
+                          <block type="text" id="txt_sl_reached_msg">
+                            <field name="TEXT">Session Stop Loss reached. Bot halted to preserve account capital.</field>
+                          </block>
+                        </value>
+                      </block>
+                    </statement>
+                  </block>
+                </statement>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+</xml>
