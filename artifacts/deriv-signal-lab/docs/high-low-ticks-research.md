@@ -777,7 +777,7 @@ python3 scripts/presets/validate_presets.py src/lib/bot-store/bots/*.xml
 # regenerate the presets from their single source of truth, then re-validate
 python3 scripts/presets/gen_presets.py \
     src/lib/bot-store/bots/rise-fall-ensemble.xml \
-    src/lib/bot-store/bots/step-rise-fall-hedge.xml \
+    src/lib/bot-store/bots/step-markov-hedge.xml \
     src/lib/bot-store/bots/high-low-tick-sniper.xml
 
 # mocked browser run (needs the app served and Playwright installed)

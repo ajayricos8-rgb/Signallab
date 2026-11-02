@@ -2,7 +2,7 @@
 
     python3 artifacts/deriv-signal-lab/scripts/presets/gen_presets.py \
         artifacts/deriv-signal-lab/src/lib/bot-store/bots/rise-fall-ensemble.xml \
-        artifacts/deriv-signal-lab/src/lib/bot-store/bots/step-rise-fall-hedge.xml \
+        artifacts/deriv-signal-lab/src/lib/bot-store/bots/step-markov-hedge.xml \
         artifacts/deriv-signal-lab/src/lib/bot-store/bots/high-low-tick-sniper.xml
 
 Run `validate_presets.py` afterwards, then the preset tests.
@@ -160,6 +160,12 @@ class Emitter:
 
     def part(self, name, plan):
         return self.block("x_price_decision_part", fields={"PART": name}, values={"PLAN": plan})
+
+    def mpart(self, name, plan):
+        # The Markov plan has its own reader: the decision block's part list is
+        # a different set of names, and Blockly drops a field value that is not
+        # in a dropdown instead of failing.
+        return self.block("x_price_markov_part", fields={"PART": name}, values={"PLAN": plan})
 
     def stake(self, plan, base, fraction, percent, max_stake):
         return self.block(
@@ -671,8 +677,332 @@ def build(spec):
     return e.document(spec["comment"], blocks)
 
 
+
 # ==========================================================================
-# the three presets
+# the Markov hedge builder
+# ==========================================================================
+def build_markov(spec):
+    """Step Index, four ticks, one exact Markov read, a partial hedge and a ladder.
+
+    Deliberately not the same program as `build()`:
+
+      * the four-tick window is the contract, not a knob to be talked out of,
+        so the tie is priced rather than avoided — a strict Rise/Fall loses the
+        stake when the exit prints equal to the entry, and on a fixed-step index
+        that is 6 of the 16 four-step paths;
+      * the side is the *main leg*, chosen per cycle. A hedge block names its
+        two contracts in fields, so "buy the model's side and cover it" can only
+        be true if the two directions are two blocks, one per side;
+      * the stake is a user-owned ladder (base stake, multiplier, steps, cap)
+        rather than a Kelly sizing. The user asked for it, so the bot prints
+        what the ladder is doing instead of hiding it behind a fraction.
+    """
+    e = Emitter()
+    plan = "ai decision"
+    markov = "ai markov"
+
+    # ---- the decision and the chain, both re-read on every tick ----------
+    def dec(em):
+        return em.decision(
+            "step-hedge",
+            em.get("ai duration"),
+            em.num("0"),                      # no absolute probability floor
+            em.get("ai max tie"),
+            em.num("0"),                      # no agreement floor: the Markov gate is sharper
+            em.get("ai min edge"),
+            em.get("ai payout"),
+            em.get("ai min confidence"),
+            "always",                         # cadence: the gates below decide, not this one
+            em.num("0"),
+            em.get("ai entry slip"),
+        )
+
+    def mk(em):
+        return em.block(
+            "x_price_markov",
+            values={
+                "LIST": em.block("ticks"),
+                "ORDER": em.get("ai markov order"),
+                "HORIZON": em.get("ai duration"),
+                "MEMORY": em.get("ai markov memory"),
+                "PAYOUT": em.get("ai payout"),
+                "MIN_SAMPLES": em.get("ai markov min samples"),
+                "MAX_TIE": em.get("ai max tie"),
+            },
+        )
+
+    def part(name):
+        return e.mpart(name, e.get(markov))
+
+
+    knobs = [
+        # ---- the user's money knobs (edit these) -------------------------
+        ("base stake", spec.get("base_stake", "0.35")),
+        ("martingale multiplier", spec.get("multiplier", "1.8")),
+        ("martingale steps", spec.get("steps", "2")),
+        ("max stake", spec.get("max_stake", "2")),
+        ("stake percent", spec.get("stake_percent", "5")),
+        ("take profit", spec.get("take_profit", "5")),
+        ("stop loss", spec.get("stop_loss", "5")),
+        ("hedge ratio", spec.get("hedge_ratio", "0.3")),
+        ("hedge legs", spec.get("legs", "1.3")),
+        ("ai duration", spec.get("duration", "4")),
+        # ---- the read ------------------------------------------------------
+        ("ai payout", spec.get("payout", "0.95")),
+        ("ai max tie", spec.get("max_tie", "0.45")),
+        ("ai min edge", spec.get("min_edge", "0")),
+        ("ai min confidence", spec.get("confidence", "0")),
+        ("ai entry slip", spec.get("slip", "1")),
+        ("ai markov order", spec.get("markov_order", "3")),
+        ("ai markov memory", spec.get("markov_memory", "400")),
+        ("ai markov min samples", spec.get("markov_samples", "120")),
+        ("ai markov min z", spec.get("markov_z", "0.75")),
+        ("ai markov min lift", spec.get("markov_lift", "0.01")),
+        # Ships off (-1): the tie tax makes the unconditional four-tick shape
+        # negative-EV, and a bot that refuses every entry teaches nothing. Set
+        # 0 to refuse any entry whose modelled expected value is negative.
+        ("ai markov min ev", spec.get("markov_ev", "-1")),
+        # 1 = the ensemble and the chain must name the same side. Two models
+        # that were fitted differently agreeing is the sharpest filter here.
+        ("ai markov agreement", spec.get("markov_agreement", "1")),
+    ]
+    init = []
+    for name, value in knobs:
+        init.append(e.set_(name, e.num(value)))
+    init.append(e.set_("stake", e.get("base stake")))
+    init.append(e.set_("ai ladder step", e.num("0")))
+    init.append(e.set_("ai ladder resets", e.num("0")))
+    init.append(e.set_("ai contracts", e.num("0")))
+    init.append(e.set_("ai skip count", e.num("0")))
+    init.append(e.set_("ai baseline", e.block("x_session_profit")))
+    init.append(e.set_("baseline profit", e.num("0")))
+    init.append(e.set_(plan, dec(e)))
+    init.append(e.set_(markov, mk(e)))
+    init.append(e.set_("ai ready", e.part("ready", e.get(plan))))
+    init.append(e.set_("ai side", e.part("side", e.get(plan))))
+    init.append(e.set_("ai markov side", e.mpart("side", e.get(markov))))
+    init.append(e.notify("info", e.text(spec["armed"])))
+    init.append(e.notify("info", e.block("x_price_dna")))
+    init.append(e.notify("info", e.block("x_price_clock")))
+
+    tick = [
+        e.set_(
+            "baseline profit",
+            e.arith("MINUS", e.block("x_session_profit"), e.get("ai baseline")),
+        ),
+        e.set_(plan, dec(e)),
+        e.set_("ai ready", e.part("ready", e.get(plan))),
+        e.set_("ai side", e.part("side", e.get(plan))),
+        e.set_(markov, mk(e)),
+        e.set_("ai markov side", e.mpart("side", e.get(markov))),
+    ]
+
+    # ---- the entry gates --------------------------------------------------
+    def markov_ok():
+        """The chain has to be readable, decisive and inside the tie budget."""
+        return e.logic(
+            "AND",
+            e.logic(
+                "AND",
+                e.compare("EQ", part("ready"), e.num("1")),
+                e.compare("EQ", part("tie-ok"), e.num("1")),
+            ),
+            e.logic(
+                "AND",
+                e.logic(
+                    "AND",
+                    e.compare("GTE", part("z"), e.get("ai markov min z")),
+                    e.compare("GTE", part("lift"), e.get("ai markov min lift")),
+                ),
+                e.logic(
+                    "AND",
+                    e.compare("GTE", part("ev"), e.get("ai markov min ev")),
+                    e.compare("GTE", part("edge"), e.get("ai min edge")),
+                ),
+            ),
+        )
+
+    def agrees():
+        """Optional: both models must name the same side."""
+        return e.logic(
+            "OR",
+            e.compare("EQ", e.get("ai markov agreement"), e.num("0")),
+            e.compare("EQ", e.get("ai markov side"), e.get("ai side")),
+        )
+
+    def risk_ok(stake=None, legs=None):
+        """The pair's combined exposure against the balance and the session brakes."""
+        return e.block(
+            "x_price_risk",
+            values={
+                "STAKE": stake or e.get("stake"),
+                "LEGS": legs or e.get("hedge legs"),
+                "BASELINE": e.get("ai baseline"),
+                "LOSS": e.get("stop loss"),
+                "TARGET": e.get("take profit"),
+                "PERCENT": e.get("stake percent"),
+            },
+        )
+
+    def entry_gate():
+        return e.logic(
+            "AND",
+            e.compare("EQ", e.get("ai ready"), e.num("1")),
+            e.logic("AND", markov_ok(), e.logic("AND", agrees(), risk_ok())),
+        )
+
+    def buy():
+        """Buy the model's side as the main leg, cover it with the opposite.
+
+        The hedge block names both contracts in dropdown fields, so a single
+        block cannot follow a decision that flips side. Two blocks, one per
+        direction, is what makes `hedge ratio` describe a hedge *of the
+        decision* rather than a permanent long-rise position.
+        """
+        def leg(em, main, cover):
+            return em.block(
+                "hedge_purchase",
+                fields={"PURCHASE_LIST": main, "HEDGE_LIST": cover},
+                values={"HEDGE_STAKE": em.get("hedge ratio")},
+            )
+
+        return e.if_(
+            e.compare("EQ", e.get("ai side"), e.num("1")),
+            [leg(e, "CALL", "PUT")],
+            [leg(e, "PUT", "CALL")],
+        )
+
+    before = [
+        e.if_(
+            entry_gate(),
+            [
+                e.set_("ai skip count", e.num("0")),
+                e.notify("success", e.block("x_price_reason")),
+                buy(),
+            ],
+            [
+                e.set_("ai skip count", e.arith("ADD", e.get("ai skip count"), e.num("1"))),
+                # A held cycle explains itself with the chain's own numbers: the
+                # journal shows the probability, the tie, the z and the gate
+                # rather than a bot that simply waits.
+                e.if_(
+                    e.compare("EQ", e.get("ai ready"), e.num("1")),
+                    e.if_(
+                        e.compare("EQ", e.mod(e.get("ai skip count"), e.num("10")), e.num("1")),
+                        [
+                            e.notify("info", e.block("x_price_markov_report")),
+                            e.notify("warn", e.text(spec["held"])),
+                        ],
+                    ),
+                    e.if_(
+                        e.compare("EQ", e.mod(e.get("ai skip count"), e.num("20")), e.num("1")),
+                        e.notify("info", e.block("x_price_reason")),
+                    ),
+                ),
+            ],
+        )
+    ]
+
+    # ---- settlement, the ladder and the session brakes -------------------
+    def ladder():
+        """A loss multiplies the next stake; a win, or a full ladder, resets it.
+
+        Both the cap and the ladder length are the user's: `max stake` is a hard
+        ceiling the multiplication can never pass, and `martingale steps` is how
+        many times the ladder may climb before it is abandoned and the base
+        stake is restored. A reset is announced, because a ladder that has been
+        running is something the operator should see.
+        """
+        climb = e.if_(
+            e.compare(
+                "GT",
+                e.arith("MULTIPLY", e.get("stake"), e.get("martingale multiplier")),
+                e.get("max stake"),
+            ),
+            [e.set_("stake", e.get("max stake"))],
+            [e.set_("stake", e.arith("MULTIPLY", e.get("stake"), e.get("martingale multiplier")))],
+        )
+        return e.if_(
+            e.block("contract_check_result", fields={"CHECK_RESULT": "win"}),
+            [
+                e.set_("ai ladder step", e.num("0")),
+                e.set_("stake", e.get("base stake")),
+            ],
+            [
+                e.set_("ai ladder step", e.arith("ADD", e.get("ai ladder step"), e.num("1"))),
+                e.if_(
+                    e.compare("GTE", e.get("ai ladder step"), e.get("martingale steps")),
+                    [
+                        e.set_("ai ladder step", e.num("0")),
+                        e.set_("stake", e.get("base stake")),
+                        e.set_(
+                            "ai ladder resets",
+                            e.arith("ADD", e.get("ai ladder resets"), e.num("1")),
+                        ),
+                        e.notify("warn", e.text(spec["reset"])),
+                    ],
+                    [climb],
+                ),
+            ],
+        )
+
+    # The brakes are entry checks, not guaranteed exits: an open pair can settle
+    # through them, and a ladder can put the next stake above what remains.
+    brakes = e.logic(
+        "AND",
+        e.logic(
+            "AND",
+            e.compare(
+                "GT",
+                e.get("baseline profit"),
+                e.arith("MULTIPLY", e.num("-1"), e.get("stop loss")),
+            ),
+            e.compare("LT", e.get("baseline profit"), e.get("take profit")),
+        ),
+        risk_ok(stake=e.get("base stake")),
+    )
+
+    after = [
+        ladder(),
+        e.set_("ai contracts", e.arith("ADD", e.get("ai contracts"), e.num("1"))),
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("5")), e.num("0")),
+            e.notify("info", e.block("x_price_calibration")),
+        ),
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("10")), e.num("0")),
+            [e.notify("info", e.block("x_price_markov_report")), e.notify("info", e.block("x_price_audit"))],
+        ),
+        e.if_(
+            e.compare("EQ", e.mod(e.get("ai contracts"), e.num("25")), e.num("0")),
+            [
+                e.notify("info", e.block("x_price_model_weights")),
+                e.notify("info", e.block("x_price_dna")),
+            ],
+        ),
+        e.if_(brakes, [e.block("trade_again")], [e.notify("warn", e.text(spec["stopped"]))]),
+    ]
+
+    blocks = [
+        e.trade_definition(
+            spec["market"],
+            spec["submarket"],
+            spec["symbol"],
+            spec["tradetype_cat"],
+            spec["tradetype"],
+            e.get("ai duration"),
+            e.get("stake"),
+            init,
+        ),
+        e.section("tick_analysis", spec["ids"]["tick"], tick, 0, 1500, "TICKANALYSIS_STACK"),
+        e.section("before_purchase", spec["ids"]["before"], before, 0, 760, "BEFOREPURCHASE_STACK"),
+        e.section("after_purchase", spec["ids"]["after"], after, 760, 760, "AFTERPURCHASE_STACK"),
+    ]
+    return e.document(spec["comment"], blocks)
+
+
+# ==========================================================================
+# the presets
 # ==========================================================================
 RISE_FALL = {
     "mode": "rise",
@@ -757,97 +1087,139 @@ Estimates are historical and conditional, not calibrated odds. Test on demo firs
 """,
 }
 
-STEP_HEDGE = {
+STEP_MARKOV = {
+    # Step Index, four ticks, a hedge whose main leg is the model's side.
     "mode": "step-hedge",
     "market": "volidx",
     "submarket": "step_index",
     "symbol": "stpRNG",
     "tradetype_cat": "callput",
     "tradetype": "callput",
-    "hedge_ratio": "0.25",
-    "legs": "1.25",
+    # ---- the user's money knobs -----------------------------------------
+    "base_stake": "0.35",
+    "multiplier": "1.8",
+    "steps": "2",
     "max_stake": "2",
-    # Five ticks, odd, so no window can tie. This is not a cosmetic choice: a
-    # four-tick window on a fixed-step index returns to its entry price 6 times
-    # in 16 (37.5 %) and a tie loses both legs, which measured as a -16 point
-    # hit rate against the break-even. The cadence this preset was asked for
-    # comes from the entry mode below, not from a shorter contract — five ticks
-    # still re-enters on the tick after each settlement.
-    "duration": "5",
-    "max_tie": "0.2",
-    # Keep the cadence. The ensemble still names the side and the Kelly stake
-    # still sizes the position, but a fair market is a reason to trade small,
-    # not a reason to stop: this preset re-enters after every settlement.
-    "require": "always",
+    "stake_percent": "5",
+    "take_profit": "5",
+    "stop_loss": "5",
+    "hedge_ratio": "0.3",
+    "legs": "1.3",
+    # ---- the read -------------------------------------------------------
+    "duration": "4",
+    "payout": "0.95",
+    "max_tie": "0.45",
     "min_edge": "0",
-    "agreement": "0",
     "confidence": "0",
-    "ids": {"tick": "shTick01", "before": "shBefore01", "after": "shAfter01"},
+    "slip": "1",
+    "markov_order": "3",
+    "markov_memory": "400",
+    "markov_samples": "120",
+    "markov_z": "0.75",
+    "markov_lift": "0.01",
+    # Off by default: the strict four-tick shape pays a 37.5 % tie tax, so an
+    # EV floor of 0 would refuse nearly every window and the bot would never
+    # trade. Raise it to 0 to demand a positive modelled edge.
+    "markov_ev": "-1",
+    "markov_agreement": "1",
+    "ids": {"tick": "smTick01", "before": "smBefore01", "after": "smAfter01"},
     "armed": (
-        "Step Index AI hedge armed — Step Index 100, four ticks. The ensemble names the side on "
-        "every readable tick and the Kelly stake sizes it; when the stake is large enough the "
-        "opposite leg is bought at \"ai hedge ratio\" of it, so the pair keeps most of a measured "
-        "edge while it caps the swing. Every entry is risk-checked at the pair's combined "
-        "exposure before either order is sent."
+        "Step Index Markov hedge armed — Step Index 100, four ticks. An order-three Markov chain on "
+        "the tick directions is projected over the whole contract (ties included, because a strict "
+        "Rise/Fall loses on them) and the sixteen-expert ensemble reads the same tape; the bot buys "
+        "the model\'s side as the main leg and covers it with a fraction-sized opposite leg, on every "
+        "tick both models agree and the chain clears its tie ceiling, z and lift gates. Stake ladder: "
+        "base stake x martingale multiplier, capped by max stake and abandoned after martingale steps "
+        "losses. Take profit and stop loss are session brakes."
     ),
     "held": (
-        "AI is ready but the entry gate held it — the pair's combined exposure against the "
-        "balance percentage, the loss limit or the profit target blocked this cycle."
+        "Markov hedge held this cycle — the gate that stopped it is printed above: a thin chain, a "
+        "four-tick tie rate over the ceiling, a lean too weak for its own sample (z), no lift over "
+        "the unconditional read, a negative modelled expected value, the ensemble naming the other "
+        "side, the stake ladder over the balance percent or the remaining loss budget."
+    ),
+    "reset": (
+        "Step Index Markov hedge: the stake ladder reached its step limit and was abandoned — the next "
+        "stake is the base stake again. The ladder is a recovery ladder, not a promise: on this shape "
+        "it is paid for by the four-tick tie."
     ),
     "stopped": (
-        "AI session stop — the loss limit, the profit target or the balance rule was reached. "
-        "Open contracts still settle; restart the bot to begin a new session."
+        "Step Index Markov hedge stopped — the take profit, the stop loss or the balance rule was "
+        "reached. Open contracts still settle; restart the bot to begin a new session."
     ),
     "comment": """
-Step Index AI hedge — Step Index 100, four ticks, both legs priced from the same decision.
+Step Index Markov hedge — Step Index 100, four ticks, one exact chain instead of a vote.
 
-This preset is built to keep trading. It re-enters on the tick after every settlement, and
-the ensemble names the side on every tick it can read rather than waiting for a fair market
-to become favourable — the pause after a closed contract is one tick (about two seconds on
-Step Index), not the gate-and-wait cycle this bot used to sit in.
+THE CONTRACT
+Four ticks. The window is the contract, so the shape is the shape: of the sixteen +1/-1
+four-step paths, five finish up, five finish down and six finish back at the entry. A strict
+Rise/Fall loses the stake on that sixth case — Deriv's own contract type for "win on equal" is
+CALLE/PUTE, not CALL/PUT — so P(tie) is a cost of the shape and this bot prices it instead of
+hoping it away. At a 0.95 payout a win pays 1.95x, so a contract needs 1/(1+0.95) = 51.3 % to
+break even, and the unconditioned four-tick shape offers 31.25 % on either side. The bot
+therefore does not trade the shape unconditioned; it trades *states* where the chain's projection
+is better than that, and it stands aside when it is not.
 
-Five ticks, odd, so no window can tie. That is deliberate: a four-tick window on a fixed-step
-index returns to its entry price 6 times in 16 (37.5 %), and a returning window loses both
-Rise and Fall, which measured as a -16 point hit rate against the 51.3 % break-even a 0.95
-payout needs. No amount of modelling fixes a shape that cannot settle a winner. If you want
-the four-tick contract anyway, set "ai duration" to 4 and "ai max tie" to 0.5 — the bot will
-trade it, and the entry line will print the tie rate it is paying.
+THE CHAIN
+An order-three Markov chain is fitted on the tick directions (up / flat / down) over the last
+"ai markov memory" steps, with every state pulled toward the market's own base rate by a small
+Dirichlet prior so a state seen twice cannot speak for it. The forecast is not "the one-step
+probability raised to the fourth power": the module carries a distribution over (chain state,
+net displacement) forward one tick at a time, so the last layer is the exact settlement
+distribution of a four-tick contract — P(up), P(down) and P(tie), with the tie charged as a loss.
+Everything the gate reads is measured on that distribution:
 
-Sixteen experts, mixed by their measured walk-forward skill and gated by the live market
-regime, decide the side, with a deep online brain learning from settled windows; the stake is
-tenth-Kelly on the calibrated probability, and the calibration comes from the rule's own
-graded record (per outcome, not just overall), so a run of losses shrinks the stake rather
-than parking the bot.
+  ready          the chain has fitted "ai markov min samples" transitions and the current state
+                 has been seen often enough (at least 1/8 of that) to speak for itself;
+  tie-ok         P(tie) is under "ai max tie". This is the gate the shape needs: an even horizon
+                 on a fixed-step index ties 37.5 % unconditionally, and a persistent stretch of
+                 tape is the only thing that lowers it;
+  z              how many standard errors the chosen side's probability sits above its own
+                 unconditional read, on the state's own sample count — a lean from twelve
+                 transitions is not a lean;
+  lift           the same difference as a probability, so a thin state with a big z cannot pass;
+  ev             p(1 + payout) - 1 for the chosen side, with the tie charged. Ships off (-1);
+                 set "ai markov min ev" to 0 to refuse every negative-expectation entry;
+  agreement      the ensemble and the chain must name the same side. They are fitted on the same
+                 tape with different mathematics, so agreement is the sharpest filter here.
 
-What each part does:
+THE HEDGE
+The main leg is the model's side and the cover is "hedge ratio" of the main stake on the
+opposite side. Two hedge blocks, one per direction, because a hedge block names its two
+contracts in fields: with a single block the main leg would always be Rise whatever the models
+said. Two equal legs would lock in the spread on every cycle, so the cover is deliberately
+partial — it caps the swing without turning the trade into a guaranteed loss. At the 0.35 base
+stake a 0.3 cover rounds to 0.11, under Deriv's own minimum, so the first cycles buy the model's
+side alone and the journal says so; the pair appears once the ladder carries enough stake. Both legs are
+risk-checked at the pair's combined exposure ("hedge legs" = 1 + ratio) before either order is
+sent, and After purchase waits for both to settle.
 
-  1. The decision is "on the best read available": the ensemble's measured probability picks
-     the side, and the Kelly stake sizes the position. A thin read is traded *small* — at the
-     exchange minimum — instead of not at all. Set the decision block's entry field to "only
-     with a measured edge" to restore the old behaviour, where a read under the payout
-     break-even was skipped.
-  2. The hedge is partial: "ai hedge ratio" sizes the opposite leg as a fraction of the main
-     stake. At the 0.35 exchange minimum the second leg would round below Deriv's own minimum,
-     so the preset buys the model's side alone and says so in the journal; the pair appears
-     once the stake is large enough to carry it. Two equal legs are never bought, because that
-     locks in a loss of the spread every cycle.
-  3. The risk gate checks the *pair's* combined exposure (main stake x (1 + ratio)) against the
-     balance percent, the loss limit and the remaining budget before either order is sent, and
-     After purchase waits for both legs to settle before the next cycle.
+THE LADDER AND THE BRAKES
+After a losing cycle the stake is multiplied by "martingale multiplier", up to "max stake", and
+"martingale steps" says how many rungs the ladder may climb before it is abandoned and the base
+stake restored; a win always restores it. A ladder is a recovery device, not an edge: on a shape
+whose expectation is negative it turns a slow loss into a fast one, which is why the cap, the
+step limit, the balance percent and the stop loss all exist and why every reset is announced.
+"take profit" and "stop loss" measure the bot's own session profit from the equity it started
+with, and are entry checks — an open pair can settle through them.
 
-THE MARKET
-One Deriv contract is one market, but every market can be read. Every "ai scan every" seconds
-this bot's own ensemble scores every market Signal Lab shares, all at the same moment, on one
-comparable scale, and stands on the most suitable one: only when that market clears
-"ai scan floor", beats the market it is on by "ai scan margin", and "ai scan dwell" seconds have
-passed. The scan never opens an order — the hedged purchase below still buys, on the market the
-scan chose. If a whole "ai cadence" minute passes without a purchase, the quality gates stand
-aside so the bot still trades at least once a minute; the risk gate and the session brakes are
-never relaxed.
+THE CADENCE
+There is no dwell, no cooldown and no market scan: the bot stands on Step Index, re-reads on the
+tick after each settlement, and buys on every cycle that clears its gates. On a fair tape that is
+a minority of cycles, and that is the point — this bot is built to open many positions per
+minute only while the chain has something to say. The physical ceiling is the contract: four
+ticks on a two-second market is eight seconds open, so about seven cycles a minute, fourteen
+contracts if both legs count. To trade more of those cycles, lower "ai markov min z" and
+"ai markov min lift" toward zero — the bot will buy on almost every readable tick and the entry
+line will show exactly what each read was worth. The journal prints the chain's numbers on every
+held cycle (every tenth) and on every tenth settlement, so "why did it not trade" is answered with
+figures rather than a shrug.
 
-Session brakes still stop the bot: the loss limit, the profit target and the balance rule are
-entry checks, not guarantees, and open contracts can settle beyond them. Estimates are
-historical and conditional, not calibrated odds. Test on demo first.
+HONESTY
+These are conditional frequencies measured on this market's own ticks, not calibrated odds, and a
+positive modelled edge means only "this read beat the price", which is often false. The four-tick
+strict shape is a losing shape unless the chain finds real structure; no staking plan changes
+that. Test on demo first.
 """,
 }
 
@@ -1031,10 +1403,10 @@ record and the gate that stopped it. Test on demo first.
 if __name__ == "__main__":
     outputs = {
         "rise": (RISE_FALL, sys.argv[1]),
-        "hedge": (STEP_HEDGE, sys.argv[2]),
+        "hedge": (STEP_MARKOV, sys.argv[2]),
         "tick": (TICK_SNIPER, sys.argv[3]),
     }
-    for _, (spec, path) in outputs.items():
+    for kind, (spec, path) in outputs.items():
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write(build(spec))
+            handle.write(build_markov(spec) if kind == "hedge" else build(spec))
         print("wrote", path)

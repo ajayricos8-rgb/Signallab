@@ -1,10 +1,15 @@
-// Structural checks on the AI multi-market scan, for every shipped bot.
+// Structural checks on the AI multi-market scan, for every bot that ships it.
 //
-// The requirement is one sentence: every bot reads *all* markets at the same
-// moment and trades the most suitable one, without changing its trading logic,
-// and never goes a minute without a trade. Those four claims are wiring, so
-// they are pinned here against all five store presets at once — a new preset,
-// or a regenerated one, cannot quietly ship without the scan.
+// The requirement is one sentence: a bot with the scan reads *all* markets at
+// the same moment and trades the most suitable one, without changing its
+// trading logic, and never goes a minute without a trade. Those claims are
+// wiring, so they are pinned here against every store preset that carries the
+// scan — a regenerated preset cannot quietly ship without it.
+//
+// The Step Index Markov hedge is the one deliberate exception and is pinned by
+// its own test at the bottom: it is a Step-index-only strategy (its decision
+// mode refuses any other family), so a scan that could move it to R_100 would
+// only park it. It spends the dwell and switch budget on cadence instead.
 //
 // What the scan must *not* do is as important: it may pick where the bot
 // stands, it may not size a stake, choose a side or relax a money gate. The
@@ -21,7 +26,6 @@ const BOT_XMLS = [
     'ai-vision-over-under.xml',
     'high-low-tick-sniper.xml',
     'rise-fall-ensemble.xml',
-    'step-rise-fall-hedge.xml',
 ];
 
 /**
@@ -35,7 +39,6 @@ const FAMILY = {
     'ai-vision-over-under.xml': 'over-under',
     'high-low-tick-sniper.xml': 'high-low-tick',
     'rise-fall-ensemble.xml': 'rise-fall',
-    'step-rise-fall-hedge.xml': 'rise-fall',
 };
 
 /** The model block each bot decides with — the scan has to run before it. */
@@ -44,7 +47,6 @@ const DECISION = {
     'ai-vision-over-under.xml': 'vision_analyse',
     'high-low-tick-sniper.xml': 'x_price_decision',
     'rise-fall-ensemble.xml': 'x_price_decision',
-    'step-rise-fall-hedge.xml': 'x_price_decision',
 };
 
 const read = name => readFile(new URL(name, BOTS), 'utf8');
@@ -140,4 +142,17 @@ test('the scan never trades: every bot still owns its purchase', () => {
         assert.match(xml, /type="purchase"|type="hedge_purchase"|type="x_tick_decision_purchase"/, `${name}: the strategy still buys`);
         assert.match(xml, /type="trade_again"/, `${name}: the cycle still restarts`);
     }
+});
+
+test('the Step Index Markov hedge is pinned to its market and says so', async () => {
+    const xml = await readFile(new URL('step-markov-hedge.xml', BOTS), 'utf8');
+    // One market, one chain, no scan: a switch would cost the dwell and the
+    // switch itself, and `step-hedge` refuses any family but Step index.
+    assert.ok(!xml.includes('x_market_scan'), 'no scan: the bot stays on Step index');
+    assert.ok(!xml.includes('x_scan_switch_best'), 'no market switching');
+    assert.match(xml, /<field name="SYMBOL_LIST">stpRNG<\/field>/);
+    assert.match(xml, /<field name="MODE">step-hedge<\/field>/);
+    // It still owns its purchase and its cycle, exactly like the others.
+    assert.match(xml, /type="hedge_purchase"/);
+    assert.match(xml, /type="trade_again"/);
 });

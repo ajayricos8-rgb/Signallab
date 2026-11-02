@@ -36,6 +36,92 @@ defineValueBlock({
     description: localize('Ready is 1 or 0, side is 1 for high/rise and -1 for low/fall, tick is 1–5. Probability, tie rate, edge and agreement explain the decision; samples and horizon show the evidence behind it.'),
     call: (input, field) => `Bot.priceDecisionPart(${input.PLAN}, ${field.PART})`,
 });
+/*
+ * The Markov chain.
+ *
+ * The ensemble mixes sixteen experts; this is one model answering the same
+ * question exactly. An order-k chain on the tick directions is projected over
+ * the contract horizon by carrying (state, net displacement) forward tick by
+ * tick, which makes the result the contract's settlement distribution — the
+ * tie included, because a strict Rise/Fall loses the stake on it. A strategy
+ * reads the plan with the Markov component block and prints the whole read
+ * with the report block.
+ */
+defineValueBlock({
+    type: 'x_price_markov',
+    message: localize('Markov chain order %1 horizon ticks %2 memory %3 payout %4 min samples %5 max tie rate %6'),
+    args: [
+        numberInput('ORDER', '3'),
+        numberInput('HORIZON', '4'),
+        numberInput('MEMORY', '400'),
+        numberInput('PAYOUT', '0.95'),
+        numberInput('MIN_SAMPLES', '120'),
+        numberInput('MAX_TIE', '0.45'),
+        { type: 'input_value', name: 'LIST', check: 'Array', default: '[]' },
+    ],
+    inputsInline: false,
+    output: 'Array',
+    colour,
+    category,
+    tooltip: localize('An order-k Markov chain on tick directions, fitted on the last `memory` steps and projected over the contract horizon by enumerating (state, net displacement) one tick at a time. Returns the conditional P(up), P(down) and P(tie) of the settlement, the break-even the live payout needs, the edge, the significance of the conditioning (z), the lift over the unconditional read, a chi-square readability and the current state. A tie loses a strict Rise/Fall, so it is priced as a loss, not ignored. Historical conditional frequencies, not calibrated odds.'),
+    display_name: localize('Markov chain read'),
+    description: localize('The exact settlement read of a tick contract from a direction chain: probabilities, tie, edge over the payout break-even, z, lift and readability. Gate on it with the Markov component block; print it with the Markov report.'),
+    call: input =>
+        `Bot.priceMarkov(${input.LIST}, ${input.ORDER}, ${input.HORIZON}, ${input.MEMORY}, ${input.PAYOUT}, ${input.MIN_SAMPLES}, ${input.MAX_TIE})`,
+});
+defineValueBlock({
+    type: 'x_price_markov_part',
+    message: localize('Markov %1 from %2'),
+    args: [
+        dropdown('PART', [
+            [localize('ready 0/1'), 'ready'],
+            [localize('side (1 rise, -1 fall)'), 'side'],
+            [localize('probability up'), 'up'],
+            [localize('probability down'), 'down'],
+            [localize('probability tie'), 'tie'],
+            [localize('edge over break-even'), 'edge'],
+            [localize('expected value'), 'ev'],
+            [localize('break-even the payout needs'), 'break-even'],
+            [localize('chain transitions fitted'), 'samples'],
+            [localize('transitions from this state'), 'state-samples'],
+            [localize('conditioning significance z'), 'z'],
+            [localize('lift over the unconditional read'), 'lift'],
+            [localize('readability 0-100'), 'readability'],
+            [localize('chi-square'), 'chi'],
+            [localize('chi-square p-value'), 'chi-p'],
+            [localize('entropy 0-1'), 'entropy'],
+            [localize('persistence -1..1'), 'persistence'],
+            [localize('tie under the ceiling 0/1'), 'tie-ok'],
+            [localize('stationary P(up)'), 'stationary'],
+            [localize('expected displacement (ticks)'), 'displacement'],
+            [localize('unconditional P(up)'), 'base-up'],
+            [localize('unconditional P(down)'), 'base-down'],
+            [localize('unconditional P(tie)'), 'base-tie'],
+            [localize('horizon ticks'), 'horizon'],
+        ]),
+        { type: 'input_value', name: 'PLAN', check: 'Array', default: '[]' },
+    ],
+    output: 'Number',
+    colour,
+    category,
+    tooltip: localize('Read one measured field of a Markov read. Ready is 1 only when the chain has fitted enough transitions and the current state has been seen often enough to speak for it.'),
+    display_name: localize('Markov component'),
+    description: localize('Ready, side, probabilities, tie, edge, EV, break-even, samples, z, lift, readability, chi-square, entropy, persistence and the unconditional read — the numbers the strategy gates on, one at a time.'),
+    call: (input, field) => `Bot.priceMarkovPart(${input.PLAN}, ${field.PART})`,
+});
+defineValueBlock({
+    type: 'x_price_markov_report',
+    message: localize('Markov chain report'),
+    args: [],
+    output: 'String',
+    colour,
+    category,
+    tooltip: localize('One journal line for the last Markov read: order, horizon, state and how often it was seen, P(up/down/tie), break-even, edge, EV, z, lift, readability and persistence.'),
+    display_name: localize('Markov report'),
+    description: localize('What the chain saw, in one line. Print it at start-up and on a cadence so a bot that stands aside can show the numbers it stood aside on.'),
+    call: () => 'Bot.priceMarkovReport()',
+});
+
 defineValueBlock({
     type: 'x_session_profit', message: localize('session profit'), args: [], output: 'Number', colour, category,
     tooltip: localize('Realised profit reported by this trade engine, including both hedge legs.'), display_name: localize('Session profit'),

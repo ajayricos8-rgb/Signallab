@@ -110,7 +110,7 @@ try {
   const presets = [
     ['HIGH_LOW_TICK_SNIPER','tick', 'highlowticks', 'x_tick_decision_purchase'],
     ['RISE_FALL_ENSEMBLE','rise', 'callput', 'purchase'],
-    ['STEP_RISE_FALL_HEDGE','step-hedge', 'callput', 'hedge_purchase'],
+    ['STEP_MARKOV_HEDGE','step-hedge', 'callput', 'hedge_purchase'],
   ];
   for (const [id, mode, family, buy] of presets) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
@@ -145,7 +145,13 @@ try {
     if (mode === 'tick') assert.match(result.code, /Bot.purchaseTickDecision\(/);
     if (mode === 'step-hedge') {
       assert.equal(result.symbol, 'stpRNG');
+      // The Markov hedge buys the model's side as the main leg, so both
+      // directions exist in the generated code: a single block would always
+      // lean Rise whatever the chain said.
       assert.match(result.code, /Bot.purchaseHedge\('CALL', 'PUT'/);
+      assert.match(result.code, /Bot.purchaseHedge\('PUT', 'CALL'/);
+      assert.match(result.code, /Bot.priceMarkov\(/, 'the chain read reaches the engine');
+      assert.ok(result.types.includes('x_price_markov_part'), 'the strategy gates on the chain');
     }
     // The websocket mock rejects every buy. Running verifies request shape,
     // without allowing any order to reach Deriv.
@@ -166,9 +172,10 @@ try {
       assert.equal(params.duration, 5);
     } else {
       assert.ok(['CALL','PUT'].includes(params.contract_type));
-      // Five ticks: odd, so a fixed-step market cannot tie, and the same
-      // horizon the models replay.
-      assert.equal(params.duration, 5);
+      // The contract length is the one the strategy ships: five ticks for the
+      // ensemble presets, four for the Markov hedge, and always the horizon the
+      // models replay.
+      assert.equal(params.duration, mode === 'step-hedge' ? 4 : 5);
     }
     if (mode === 'step-hedge') assert.deepEqual(new Set(buys.map(b => b.parameters.contract_type)), new Set(['CALL','PUT']));
     await page.close();
