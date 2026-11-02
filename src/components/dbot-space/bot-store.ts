@@ -38,6 +38,20 @@ export const STRATEGIES: Strategy[] = [
   { id: 'REVERSE_D_ALEMBERT', name: 'Reverse D’Alembert', category: 'Reverse progression', short: 'Step the stake up after a win and down after a loss.', detail: 'The reverse version of D’Alembert, using a configurable unit to adjust the stake after each result.', risk: 'Changing stake does not create a trading edge.', accent: 'rose', icon: ChartNoAxesCombined },
   { id: 'STRATEGY_1_3_2_6', name: '1-3-2-6', category: 'Sequence', short: 'Follow a four-step staking sequence across winning trades.', detail: 'A four-stage progression based on stake multiples of 1, 3, 2, and 6. Review the sequence and exit rules before use.', risk: 'The sequence can end in loss at any stage.', accent: 'indigo', icon: Sparkles },
   {
+    id: 'STEP_INDEX_4T_HEDGE',
+    name: 'Step Index 4-Tick Hedge AI',
+    category: 'AI',
+    icon: BrainCircuit,
+    accent: 'teal',
+    short:
+      'Four ticks on Step Index 100, read by the AI pricing engine and covered by a fixed-ratio opposite-side hedge. A 20-second cadence keeps the bot trading at least three times a minute while every money gate stays on.',
+    detail:
+      'A small, professional Rise/Fall hedge for Step Index 100. The contract is four ticks — the horizon the bot actually models — and the AI pricing block reads the tick list, projects the four-tick settlement distribution and returns the model\u2019s side, confidence and ready flag. The bot buys that side as the main leg and covers it with a fixed 35% opposite-side hedge, so a whipsaw does not take the whole cycle. The entry gate is deliberately simple: the model\u2019s read, or the 20-second cadence clock, AND the risk block. The cadence only stands aside the quality gate; it never bypasses the risk gate. The risk block enforces max stake, stake percent, the remaining loss budget, take profit and stop loss before every entry, and the after-purchase brake stops new cycles when either session limit is reached. The journal prints the market DNA and execution clock on the first tick and the engine\u2019s own reason on every tenth held tick, so a skip is explained. No martingale, no grid, no averaging down. The base stake is 1.00 so the 35% cover clears the exchange minimum; on a very small balance the risk block refuses the pair rather than sending a partial hedge.',
+    risk:
+      'A four-tick strict Rise/Fall can tie and lose the stake, and Step Index is close to a fair random walk: the model\u2019s probabilities are conditional frequencies, not calibrated odds. The hedge reduces the swing but costs part of every win, and the cadence can force an entry when the model is not ready — that is the price of the pace, and the risk gate is the only thing that can stop it. Start on demo, keep the base stake small, and read the journal before risking more.',
+    xml: stepIndex4THedgeXml,
+  },
+  {
     id: 'AI_VISION_OVER_UNDER',
     name: 'AI Vision — Over/Under',
     category: 'AI',
@@ -86,20 +100,6 @@ export const STRATEGIES: Strategy[] = [
     risk:
       'A four-tick strict Rise/Fall is a losing shape unless the chain finds real structure: 37.5 % of windows return to the entry and lose the stake on both sides, and at a 0.95 payout the unconditioned expectation is about \u221239 % of the stake. Martingale does not fix that \u2014 on a negative-expectation game it turns a slow loss into a fast one, which is why the multiplier, the step limit, the max-stake ceiling, the balance percent and the stop loss all exist and why every ladder reset is announced. The probabilities are conditional frequencies measured on this market\u2019s own ticks, not calibrated odds, and a positive modelled edge means only that this read beat the price. Run it on demo first, keep the base stake at the exchange minimum until the scorecard has graded at least fifty entries, and prefer a strictly positive \u201cai markov min ev\u201d if you want the bot to trade only on a measured edge.',
     xml: stepMarkovHedgeXml,
-  },
-  {
-    id: 'STEP_INDEX_4T_HEDGE',
-    name: 'Step Index 4-Tick Hedge AI',
-    category: 'AI',
-    icon: BrainCircuit,
-    accent: 'teal',
-    short:
-      'Four ticks on Step Index 100, read by the AI pricing engine and covered by a fixed-ratio opposite-side hedge. A 20-second cadence keeps the bot trading at least three times a minute while every money gate stays on.',
-    detail:
-      'A small, professional Rise/Fall hedge for Step Index 100. The contract is four ticks — the horizon the bot actually models — and the AI pricing block reads the tick list, projects the four-tick settlement distribution and returns the model\u2019s side, confidence and ready flag. The bot buys that side as the main leg and covers it with a fixed 35% opposite-side hedge, so a whipsaw does not take the whole cycle. The entry gate is deliberately simple: the model\u2019s read, or the 20-second cadence clock, AND the risk block. The cadence only stands aside the quality gate; it never bypasses the risk gate. The risk block enforces max stake, stake percent, the remaining loss budget, take profit and stop loss before every entry, and the after-purchase brake stops new cycles when either session limit is reached. The journal prints the market DNA and execution clock on the first tick and the engine\u2019s own reason on every tenth held tick, so a skip is explained. No martingale, no grid, no averaging down. The base stake is 1.00 so the 35% cover clears the exchange minimum; on a very small balance the risk block refuses the pair rather than sending a partial hedge.',
-    risk:
-      'A four-tick strict Rise/Fall can tie and lose the stake, and Step Index is close to a fair random walk: the model\u2019s probabilities are conditional frequencies, not calibrated odds. The hedge reduces the swing but costs part of every win, and the cadence can force an entry when the model is not ready — that is the price of the pace, and the risk gate is the only thing that can stop it. Start on demo, keep the base stake small, and read the journal before risking more.',
-    xml: stepIndex4THedgeXml,
   },
   {
     id: 'AI_RISE_FALL_HEDGE',
