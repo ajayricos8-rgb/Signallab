@@ -137,7 +137,13 @@ is gone. The workspace UI now lives in `src/components/dbot-space/`:
 - `workspace-panel.tsx` — frame chrome/status plus the always-mounted iframe (hiding it keeps a
   running bot alive when the store or Digits & risk tab is open).
 - `store-view.tsx` + `bot-store.ts` — the bot store. The catalog was moved byte-for-byte; the six
-  Deriv quick strategies and all five AI preset XML imports are unchanged.
+  Deriv quick strategies and all six AI preset XML imports are unchanged. The
+  sixth is `step-index-4t-hedge.xml` (`STEP_INDEX_4T_HEDGE`): four ticks on
+  `stpRNG`, `x_price_decision` in `rise-fall` mode, a fixed 35% opposite-side
+  `hedge_purchase` pair, `x_price_risk` on the combined 1.35 legs, and
+  `x_trade_due(ai cadence)` ORed into the quality gate so a 20-second cadence
+  keeps at least three entries a minute while the risk block stays on. The
+  after-purchase brake stops new cycles at take profit or stop loss.
 
 **Watch out for:** the data bridge in `lib/dbot-bridge.ts` is wire-only and its feed/account frames
 carry **no** `source` field, while the frame drops anything that is not tagged `signal-lab`. Every
