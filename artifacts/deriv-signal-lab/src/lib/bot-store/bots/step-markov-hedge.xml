@@ -63,9 +63,10 @@
   ticks on a two-second market is eight seconds open, so about seven cycles a minute, fourteen
   contracts if both legs count. To trade more of those cycles, lower "ai markov min z" and
   "ai markov min lift" toward zero — the bot will buy on almost every readable tick and the entry
-  line will show exactly what each read was worth. The journal prints the chain's numbers on every
-  held cycle (every tenth) and on every tenth settlement, so "why did it not trade" is answered with
-  figures rather than a shrug.
+  line will show exactly what each read was worth. A held entry waits for one fresh tick before
+  checking again, so DBot yields to its market feed instead of spinning on the same read. The journal
+  prints the chain's numbers on every tenth held tick and on every tenth settlement, so "why did it
+  not trade" is answered with figures rather than a shrug.
 
   HONESTY
   These are conditional frequencies measured on this market's own ticks, not calibrated odds, and a
@@ -1200,6 +1201,15 @@
                       </value>
                     </block>
                   </statement>
+                  <next>
+                    <block type="x_wait_ticks" id="b0315">
+                      <value name="COUNT">
+                        <block type="math_number" id="b0316">
+                          <field name="NUM">1</field>
+                        </block>
+                      </value>
+                    </block>
+                  </next>
                 </block>
               </statement>
             </block>
