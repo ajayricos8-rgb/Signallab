@@ -1,0 +1,7 @@
+# Compatibility for deployment build commands left over from the old pnpm
+# monorepo. The app itself builds at the repository root with Vite; these
+# packages only forward their build to that single bundle and publish a copy.
+packages:
+  - 'artifacts/deriv-signal-lab'
+  - 'artifacts/api-server'
+  - 'artifacts/mockup-sandbox'
