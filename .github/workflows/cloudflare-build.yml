@@ -33,6 +33,14 @@ jobs:
           npm run lint
           npm run check:deploy
 
+      # Workers Builds can start in a production-only dependency environment.
+      # Build from an empty node_modules directory to prove the dashboard's
+      # common `npm run build` command restores Vite before invoking it.
+      - name: Verify the production dependency build path
+        run: |
+          rm -rf node_modules
+          NODE_ENV=production npm run build
+
       # This runs Wrangler's configured custom build and verifies that its
       # complete static assets directory can be packaged without credentials.
       - name: Package the Cloudflare Worker

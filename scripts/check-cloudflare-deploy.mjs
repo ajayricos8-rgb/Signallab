@@ -18,17 +18,19 @@ assert.equal(
 );
 assert.equal(packageLock.lockfileVersion, 3, 'commit the npm lockfile used by the Cloudflare build');
 assert.equal(packageLock.packages?.['']?.name, packageJson.name, 'package-lock.json must describe this app');
-assert.equal(
-  packageJson.scripts?.['build:cloudflare'],
-  'node scripts/cloudflare-build.mjs',
-  'Cloudflare must use the reproducible build entrypoint',
-);
+for (const script of ['build', 'build:cloudflare']) {
+  assert.equal(
+    packageJson.scripts?.[script],
+    'node scripts/cloudflare-build.mjs',
+    `${script} must restore the locked dependency graph before running Vite`,
+  );
+}
 await access(path.join(root, 'scripts/cloudflare-build.mjs'));
 for (const legacyRoot of ['deriv-signal-lab', 'api-server', 'mockup-sandbox']) {
   assert.match(
-    packageJson.scripts?.build ?? '',
+    packageJson.scripts?.['build:app'] ?? '',
     new RegExp(`artifacts/${legacyRoot}/dist`),
-    `the root build must also publish to the legacy ${legacyRoot} path`,
+    `the root application build must also publish to the legacy ${legacyRoot} path`,
   );
 }
 

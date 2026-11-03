@@ -48,13 +48,14 @@ both build paths:
 `wrangler preview` command, plus an explicit `env.production` with the same
 Worker name, assets directory, and build command. That covers integrations
 that invoke Wrangler with `--env production` instead of the default config.
-The custom `build.command` calls
-`scripts/cloudflare-build.mjs`, which runs `npm ci --include=dev` from the
-committed `package-lock.json` before building. This makes the build repeatable
-and keeps Vite available even when the build host sets `NODE_ENV=production`.
+Both the custom `build.command` and the public `npm run build` command call
+`scripts/cloudflare-build.mjs`. It runs `npm ci --include=dev` from the
+committed `package-lock.json` before handing off to the internal Vite build.
+This makes the build repeatable and keeps Vite available even when the build
+host sets `NODE_ENV=production` or starts with production-only dependencies.
 Wrangler therefore produces `dist` itself before an upload even if the
-dashboard's optional build command is empty or stale; leaving the dashboard
-build command as `npm run build` is also fine. The minimal
+dashboard's optional build command is empty or stale; a dashboard command of
+`npm run build` now follows the same safe path. The minimal
 `pnpm-workspace.yaml` keeps the old
 `pnpm --filter @workspace/deriv-signal-lab build` command working as a thin
 wrapper around that same root build. `npm run check:deploy` validates these
