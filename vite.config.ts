@@ -14,19 +14,6 @@ export default defineConfig({
     },
     dedupe: ['react', 'react-dom'],
   },
-  build: {
-    rollupOptions: {
-      onwarn(warning, defaultHandler) {
-        if (
-          warning.code === 'SOURCEMAP_ERROR' ||
-          warning.message?.includes("Can't resolve original location of error")
-        ) {
-          return;
-        }
-        defaultHandler(warning);
-      },
-    },
-  },
   server: {
     port: 3000,
     strictPort: true,

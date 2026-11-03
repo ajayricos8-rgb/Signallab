@@ -10,6 +10,7 @@ import {
   FALLBACK_SCAN_MARKETS, FEED_HISTORY_LIMIT, historyToTicks, marketFreshness, mergeTicks, resolvePipSize, selectScanMarkets, toFeedTick,
   type FeedTick, type ScanMarket,
 } from '@/lib/market-feed';
+import { DERIV_APP_ID, USING_TEST_APP_ID } from '@/lib/deriv-app-id';
 
 type WireMessage = {
   msg_type?: string;
@@ -60,10 +61,6 @@ export type MarketFeedValue = {
   memory: Map<string, unknown>;
 };
 
-// Deriv market-data WebSocket. The app ID identifies this client to Deriv; live
-// ticks, history and contract metadata are public data and need no account token.
-const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim() || '1089';
-const USING_TEST_APP_ID = !import.meta.env.VITE_DERIV_APP_ID?.trim();
 const REQUEST_SPACING_MS = 110;
 const ACTIVE_SYMBOLS_TIMEOUT_MS = 6_000;
 

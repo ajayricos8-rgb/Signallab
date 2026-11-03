@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { extractFinalDigit, precisionFromPipSize, type DigitObservation } from '@/lib/digit-analysis';
 import { normalizeActiveSymbols, normalizeContractSupport, normalizeResponsePipSize, parseFiniteNumber, parseInteger, type DigitMarketSymbol, type DigitContractSupport } from '@/lib/deriv-digit-metadata';
+import { DERIV_APP_ID, USING_TEST_APP_ID } from '@/lib/deriv-app-id';
 
 type WireMessage = {
   msg_type?: string;
@@ -24,12 +25,6 @@ type PendingRequest = { kind: 'history' | 'contracts'; symbol: string };
 
 const HISTORY_LIMIT = 2_000;
 const STALE_AFTER_MS = 15_000;
-// Deriv market-data WebSocket. The app ID identifies this client to Deriv; live
-// ticks, history and contract metadata are public data and need no account token.
-// The identifier travels in the query string because browsers cannot set custom
-// headers on WebSocket connections. Unset falls back to Deriv's public test ID 1089.
-const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim() || '1089';
-const USING_TEST_APP_ID = !import.meta.env.VITE_DERIV_APP_ID?.trim();
 
 
 

@@ -1,35 +1,152 @@
-import { BrainCircuit, Cpu, Flame, KeyRound, Lock, Radio, ShieldCheck, Sparkles, Timer } from 'lucide-react';
+import { useState } from 'react';
+import {
+  Activity,
+  BrainCircuit,
+  Check,
+  Cpu,
+  Flame,
+  Globe,
+  KeyRound,
+  Lock,
+  Radio,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
+  Timer,
+} from 'lucide-react';
 import { DerivConnectionCard } from '@/components/deriv-connection-card';
-import { DERIV_APP_ID, USING_TEST_APP_ID } from '@/lib/deriv-app-id';
+import { DERIV_APP_ID, DEFAULT_DERIV_APP_ID, USING_TEST_APP_ID, persistAppId } from '@/lib/deriv-app-id';
 
 const FLOW_STEPS = [
   {
     icon: KeyRound,
     title: '1 · Personal Access Token',
-    body: 'You create a PAT in the Deriv dashboard with the trade scope and paste it here. The app never asks for your Deriv password.',
+    body: 'Create a PAT in your Deriv dashboard with the "trade" scope and paste it here. The app connects directly to Deriv and never asks for your password.',
   },
   {
     icon: ShieldCheck,
-    title: '2 · Accounts resolved',
-    body: 'The token is sent to Deriv as Authorization: Bearer plus the Deriv-App-ID header, and the accounts it can trade are listed.',
+    title: '2 · Accounts Resolved',
+    body: 'The token is sent to Deriv with Authorization: Bearer plus the Deriv-App-ID header, resolving all available demo and real accounts.',
   },
   {
     icon: Timer,
     title: '3 · Single-use OTP',
-    body: 'Each account mints a one-time password (valid 120 seconds, usable once) from POST /trading/v1/options/accounts/{id}/otp.',
+    body: 'Each selected account mints a temporary 120-second one-time credential via POST /trading/v1/options/accounts/{id}/otp.',
   },
   {
     icon: Radio,
-    title: '4 · Authenticated socket',
-    body: 'That OTP opens this account’s demo or real trading channel for balance, portfolio, profit table, quotes and orders.',
+    title: '4 · Authenticated Socket',
+    body: 'The OTP establishes an encrypted account socket for live balance updates, open portfolio positions, quote proposals, and trade execution.',
   },
 ];
 
 export function SettingsPanel() {
+  const [appIdInput, setAppIdInput] = useState(DERIV_APP_ID);
+  const [savedSuccess, setSavedSuccess] = useState(false);
+
+  function handleSaveAppId() {
+    persistAppId(appIdInput);
+    setSavedSuccess(true);
+    setTimeout(() => {
+      setSavedSuccess(false);
+      window.location.reload();
+    }, 800);
+  }
+
+  function handleResetAppId() {
+    persistAppId(DEFAULT_DERIV_APP_ID);
+    setAppIdInput(DEFAULT_DERIV_APP_ID);
+    setSavedSuccess(true);
+    setTimeout(() => {
+      setSavedSuccess(false);
+      window.location.reload();
+    }, 800);
+  }
+
   return (
     <div className="mx-auto w-full max-w-[1100px] space-y-4" data-testid="settings-panel">
+      {/* Deriv App ID and Environment Configuration Card */}
+      <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Activity size={16} />
+            </span>
+            <div>
+              <div className="eyebrow">Deriv API Specification</div>
+              <h2 className="text-sm font-bold tracking-tight">Alphanumeric App ID & Live Connection</h2>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] text-emerald-500">
+            <Radio size={11} className="animate-pulse" /> Active App ID: {DERIV_APP_ID}
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-lg border border-border bg-background/50 p-3">
+            <div className="flex items-center justify-between text-xs font-bold text-foreground">
+              <span>Alphanumeric App ID</span>
+              <span className="text-[10px] font-normal text-muted-foreground">Deriv Developers Portal</span>
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="text"
+                value={appIdInput}
+                onChange={(e) => setAppIdInput(e.target.value)}
+                placeholder="Enter Deriv App ID"
+                className="mono h-8 flex-1 rounded border border-border bg-background px-2.5 text-xs text-foreground outline-none focus:border-primary"
+                data-testid="settings-appid-input"
+              />
+              <button
+                type="button"
+                onClick={handleSaveAppId}
+                className="inline-flex h-8 items-center gap-1 rounded bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                data-testid="settings-appid-save"
+              >
+                {savedSuccess ? <Check size={13} /> : 'Save'}
+              </button>
+              {appIdInput !== DEFAULT_DERIV_APP_ID && (
+                <button
+                  type="button"
+                  onClick={handleResetAppId}
+                  title="Reset to default App ID"
+                  className="inline-flex h-8 items-center justify-center rounded border border-border px-2 text-muted-foreground hover:text-foreground"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              )}
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
+              Default: <span className="mono text-foreground">{DEFAULT_DERIV_APP_ID}</span>
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-border bg-background/50 p-3">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+              <Globe size={13} className="text-primary" />
+              <span>Cloudflare Published Host</span>
+            </div>
+            <div className="mono mt-2 rounded border border-border/80 bg-background/80 px-2.5 py-1.5 text-[11px] text-foreground">
+              https://signallab.ajayricos8.workers.dev/
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
+              Public production worker URL with edge deployment routing and immutable hashed static caching.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-border bg-background/30 p-2.5 text-[10px] leading-relaxed text-muted-foreground">
+          <span className="font-semibold text-foreground">Live WebSocket Endpoint:</span>{' '}
+          <span className="mono break-all text-primary">
+            wss://api.derivws.com/trading/v1/options/ws/public?app_id={DERIV_APP_ID}
+          </span>
+        </div>
+      </section>
+
+      {/* PAT Connection Card */}
       <DerivConnectionCard />
 
+      {/* Neural AI Architecture Card */}
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5" data-testid="settings-neural-model">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -75,16 +192,6 @@ export function SettingsPanel() {
             published probability (up to 25% of the edge) only after a positive Brier skill with a paired z ≥ 2 on at least 60
             unseen ticks. Otherwise it is shown on the tool page with zero weight and cannot move a signal.
           </li>
-          <li>
-            <strong className="text-foreground">Where to see it:</strong> the <em>Layer 7 · free embedded neural model</em> card
-            on every tool, the <em>Neural</em> row in the master decision’s source table, and the model card with its
-            parameters, seed, epochs, temperature and holdout score.
-          </li>
-          <li>
-            <strong className="text-foreground">Licence:</strong> the model code and the weights it generates at runtime are
-            MIT-licensed like the rest of the app — nothing pretrained is downloaded, so there is no third-party licence or
-            telemetry to accept.
-          </li>
         </ul>
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
           <Sparkles size={11} className="mr-1 inline" />
@@ -93,6 +200,7 @@ export function SettingsPanel() {
         </p>
       </section>
 
+      {/* Connection Flow Section */}
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
         <div className="eyebrow">Connection flow</div>
         <h2 className="mt-1 text-lg font-bold tracking-tight">How a Deriv connection is established</h2>
@@ -108,13 +216,14 @@ export function SettingsPanel() {
           ))}
         </div>
         <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">
-          The research feed keeps its own public market-data connection
-          (<span className="mono">wss://api.derivws.com/trading/v1/options/ws/public?app_id={DERIV_APP_ID}</span>). The
+          The research feed keeps its own public market-data connection (
+          <span className="mono">wss://api.derivws.com/trading/v1/options/ws/public?app_id={DERIV_APP_ID}</span>). The
           trading socket is separate and account-scoped; nothing about the public feed, its URL or the application ID
           changes when you connect.
         </p>
       </section>
 
+      {/* Storage and Scopes */}
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
         <div className="flex items-center gap-2">
           <Lock size={16} className="text-primary" />
@@ -142,11 +251,12 @@ export function SettingsPanel() {
         </ul>
         {USING_TEST_APP_ID && (
           <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
-            No VITE_DERIV_APP_ID is configured, so the public test application ID 1089 is in use. Registered PAT
-            applications normally require their own app ID on the Deriv-App-ID header.
+            The fallback test application ID 1089 is currently in use. Enter your registered alphanumeric App ID above for production trading.
           </p>
         )}
-      
+      </section>
+
+      {/* Forge Model Specification */}
       <section className="rounded-xl border border-card-border bg-card/90 p-4 panel-glow sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -158,41 +268,10 @@ export function SettingsPanel() {
           </span>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-          Forge is the model used first in each AI Analysis summary for the selected contract and duration—not an extra model card beside
-          the signal. It learns how the family-weighted engines, causal AI, independent research, horizon-matched neural forecasts,
-          analysis prior, rolling baseline and market calculations fit together on this market. Replay inputs are aligned to their
-          origin and horizon, and a source forecast is included only when it was out of sample at that origin. The model is fitted
-          locally against realised outcomes and audited teachers, with the versioned Deriv knowledge base as its syllabus.
+          Forge is the model used first in each AI Analysis summary for the selected contract and duration. It learns how the family-weighted engines, causal AI, independent research, horizon-matched neural forecasts, analysis prior, rolling baseline and market calculations fit together on this market.
         </p>
         <div className="mono mt-2 text-xs font-semibold">31 → 24 → 12 → 2 · 1,094 params · distillation + residual correction</div>
-        <ul className="mt-3 space-y-1.5 text-[11px] leading-relaxed text-muted-foreground">
-          <li>
-            <strong className="text-foreground">What it is trained on:</strong> 31 frozen inputs for the selected outcome: the
-            engines’ replayed values and weights, AI and research probabilities, an untouched neural holdout forecast when aligned,
-            causal market structure, calculations, and Deriv contract, feed and payout rules. Missing forecasts are explicitly masked.
-          </li>
-          <li>
-            <strong className="text-foreground">How it is measured:</strong> a purged chronological 50/20/30 Forge split; AI,
-            research and neural inputs keep their own earlier-phase or untouched-holdout provenance. The residual correction is
-            shrunk on validation, then the final Forge holdout is scored once against the contract’s fair rate.
-          </li>
-          <li>
-            <strong className="text-foreground">When it votes:</strong> only after positive Brier and log-loss skill and a paired
-            z above the selection-adjusted bar. A validated Forge can confirm, trim or veto the published estimate. A weak master verdict is shown
-            before starting. Load and Run starts immediately, and Forge itself never places an order.
-          </li>
-          <li>
-            <strong className="text-foreground">Where to see it:</strong> AI Analysis incorporates the Forge estimate when it has passed its validation gates;
-            the selected signal reflects the combined model and its decision. <em>The Base</em> below includes an exploratory transition probe, not this trained model.
-          </li>
-        </ul>
-        <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
-          <Flame size={11} className="mr-1 inline" />
-          A unified model is still a model. On a fair synthetic index it scores at chance, fails its gate and stays inert — the
-          point of the gate is that the tool says so instead of inventing a signal.
-        </p>
       </section>
-</section>
     </div>
   );
 }
