@@ -35,12 +35,10 @@ export const isStorageSupported = (storage: Storage) => {
         return false;
     }
 
-    const test_key = 'signal-lab-dbot-storage-test';
+    const test_key = 'test';
     try {
-        const previous = storage.getItem(test_key);
         storage.setItem(test_key, '1');
-        if (previous === null) storage.removeItem(test_key);
-        else storage.setItem(test_key, previous);
+        storage.removeItem(test_key);
         return true;
     } catch (e) {
         return false;
@@ -79,9 +77,7 @@ Store.prototype = {
         this.storage.removeItem(key);
     },
     clear() {
-        for (const key of Object.keys(this.storage)) {
-            if (key.startsWith('signal-lab-dbot-')) this.storage.removeItem(key);
-        }
+        this.storage.clear();
     },
 };
 
@@ -139,6 +135,7 @@ State.prototype = InScriptStore.prototype;
  * Shorthand function to get values from response object of State
  *
  * @param {String} pathname
+ *     e.g. getResponse('authorize.currency') == get(['response', 'authorize', 'authorize', 'currency'])
  */
 State.prototype.getResponse = function (pathname: string | string[]) {
     let path = pathname;

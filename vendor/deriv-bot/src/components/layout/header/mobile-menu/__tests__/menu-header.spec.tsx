@@ -15,12 +15,6 @@ jest.mock('@deriv-com/translations', () => ({
     useTranslations: jest.fn(),
 }));
 
-// [AI] Mock BrandLogo component
-jest.mock('@/components/layout/app-logo/BrandLogo', () => ({
-    BrandLogo: () => <div data-testid="brand-logo">Brand Logo</div>,
-}));
-// [/AI]
-
 describe('MenuHeader component', () => {
     beforeEach(() => {
         (useTranslations as jest.Mock).mockReturnValue({
@@ -29,18 +23,16 @@ describe('MenuHeader component', () => {
         });
     });
 
-    // [AI] Updated tests to check for brand logo instead of "Menu" text
-    it('renders brand logo in mobile view', () => {
+    it('renders "Menu" with "lg" text size in mobile view', () => {
         render(<MenuHeader hideLanguageSetting={false} openLanguageSetting={mockOpenLanguageSetting} />);
-        expect(screen.getByTestId('brand-logo')).toBeInTheDocument();
+        expect(screen.getByText('Menu')).toHaveClass('derivs-text__size--lg');
     });
 
-    it('renders brand logo in desktop view', () => {
+    it('renders "Menu" with "md" text size in desktop view', () => {
         (useDevice as jest.Mock).mockReturnValue({ isDesktop: true });
         render(<MenuHeader hideLanguageSetting={false} openLanguageSetting={mockOpenLanguageSetting} />);
-        expect(screen.getByTestId('brand-logo')).toBeInTheDocument();
+        expect(screen.getByText('Menu')).toHaveClass('derivs-text__size--md');
     });
-    // [/AI]
 
     it('does not render language setting button when hideLanguageSetting is true', () => {
         render(<MenuHeader hideLanguageSetting openLanguageSetting={mockOpenLanguageSetting} />);

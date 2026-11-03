@@ -3,51 +3,49 @@ import { observer } from 'mobx-react-lite';
 import { useStore } from '@/hooks/useStore';
 import { LegacyChevronRight1pxIcon } from '@deriv/quill-icons/Legacy';
 import { MenuItem, Text, useDevice } from '@deriv-com/ui';
+import PlatformSwitcher from '../platform-switcher';
 import useMobileMenuConfig from './use-mobile-menu-config';
 
 type TMenuContentProps = {
-    enableThemeToggle?: boolean;
     onOpenSubmenu?: (submenu: string) => void;
-    onLogout?: () => void;
 };
 
-const MenuContent = observer(({ enableThemeToggle = true, onOpenSubmenu, onLogout }: TMenuContentProps) => {
+const MenuContent = observer(({ onOpenSubmenu }: TMenuContentProps) => {
     const { isDesktop } = useDevice();
     const { client } = useStore();
     const textSize = isDesktop ? 'sm' : 'md';
-    // Pass enableThemeToggle to control theme toggle visibility
-    const { config } = useMobileMenuConfig(client, onLogout, enableThemeToggle);
+    const { config } = useMobileMenuConfig(client);
 
     return (
         <div className='mobile-menu__content'>
+            <div className='mobile-menu__content__platform'>
+                <PlatformSwitcher />
+            </div>
+
             <div className='mobile-menu__content__items'>
                 {config.map((item, index) => {
                     const removeBorderBottom = item.find(({ removeBorderBottom }) => removeBorderBottom);
-                    const isLastSection = index === config.length - 1;
 
                     return (
                         <div
                             className={clsx('mobile-menu__content__items--padding', {
-                                'mobile-menu__content__items--bottom-border': !removeBorderBottom && !isLastSection,
+                                'mobile-menu__content__items--bottom-border': !removeBorderBottom,
                             })}
                             data-testid='dt_menu_item'
                             key={index}
                         >
                             {item.map(
-                                (
-                                    {
-                                        LeftComponent,
-                                        RightComponent,
-                                        as,
-                                        href,
-                                        label,
-                                        onClick,
-                                        submenu,
-                                        target,
-                                        isActive,
-                                    },
-                                    itemIndex
-                                ) => {
+                                ({
+                                    LeftComponent,
+                                    RightComponent,
+                                    as,
+                                    href,
+                                    label,
+                                    onClick,
+                                    submenu,
+                                    target,
+                                    isActive,
+                                }) => {
                                     const is_deriv_logo = label === 'Deriv.com';
                                     if (as === 'a') {
                                         return (
@@ -59,7 +57,7 @@ const MenuContent = observer(({ enableThemeToggle = true, onOpenSubmenu, onLogou
                                                 })}
                                                 disableHover
                                                 href={href}
-                                                key={`${index}-${itemIndex}-${label}`}
+                                                key={label}
                                                 leftComponent={
                                                     <LeftComponent
                                                         className='mobile-menu__content__items--right-margin'
@@ -81,7 +79,7 @@ const MenuContent = observer(({ enableThemeToggle = true, onOpenSubmenu, onLogou
                                                 'mobile-menu__content__items__item--active': isActive,
                                             })}
                                             disableHover
-                                            key={`${index}-${itemIndex}-${label}`}
+                                            key={label}
                                             leftComponent={
                                                 <LeftComponent
                                                     className='mobile-menu__content__items--right-margin'

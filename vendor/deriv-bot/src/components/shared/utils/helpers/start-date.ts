@@ -17,9 +17,8 @@ export const buildForwardStartingConfig = (
 ) => {
     const forward_starting_config: TConfig = [];
 
-    // forward_starting_options field may not be available in API response anymore
-    if (contract.forward_starting_options && contract.forward_starting_options.length) {
-        contract.forward_starting_options.forEach(option => {
+    if ((contract.forward_starting_options || []).length) {
+        (contract.forward_starting_options ?? []).forEach(option => {
             const duplicated_option = forward_starting_config.find(opt => opt.value === parseInt(option.date ?? ''));
             const current_session = { open: toMoment(option.open), close: toMoment(option.close) };
             if (duplicated_option) {

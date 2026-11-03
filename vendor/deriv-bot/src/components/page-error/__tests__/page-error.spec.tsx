@@ -1,5 +1,6 @@
 import React from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { createMemoryHistory } from 'history';
+import { Router } from 'react-router-dom';
 import { useDevice } from '@deriv-com/ui';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -16,7 +17,12 @@ jest.mock('@deriv-com/ui', () => ({
 
 describe('<PageError/>', () => {
     const renderWithRouter = (component: React.ReactElement) => {
-        return render(<MemoryRouter>{component}</MemoryRouter>);
+        const history = createMemoryHistory();
+        return render(
+            <Router location={history.location} navigator={history}>
+                {component}
+            </Router>
+        );
     };
 
     const mockSetError = jest.fn();

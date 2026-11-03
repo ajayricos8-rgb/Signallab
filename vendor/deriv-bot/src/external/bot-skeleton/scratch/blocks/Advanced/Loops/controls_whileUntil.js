@@ -13,8 +13,8 @@ window.Blockly.Blocks.controls_whileUntil = {
                     type: 'field_dropdown',
                     name: 'MODE',
                     options: [
-                        ['while', 'WHILE'],
-                        ['until', 'UNTIL'],
+                        [localize('while'), 'WHILE'],
+                        [localize('until'), 'UNTIL'],
                     ],
                 },
                 {

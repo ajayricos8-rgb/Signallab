@@ -94,12 +94,6 @@
             border: 1px solid var(--brand-blue, $color-green);
         }
     }
-
-    // Hide flag SVG icons in language modal buttons - icons are intentionally not shown,
-    // only language names are displayed
-    &-button svg {
-        display: none;
-    }
 }
 
 @keyframes blink {

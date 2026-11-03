@@ -6,9 +6,9 @@
 
     &__trailing-icon {
         position: absolute;
-        inset-inline-end: 0;
+        right: 0;
         pointer-events: none;
-        margin-inline-end: 1.1rem;
+        margin-right: 1.1rem;
         cursor: text;
         transition: transform 0.2s ease;
         transform: rotate(0deg);

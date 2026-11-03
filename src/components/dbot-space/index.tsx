@@ -265,6 +265,7 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
         view={view}
         frameRef={workspace.frameRef}
         frameRevision={workspace.frameRevision}
+        frameLoaded={workspace.frameLoaded}
         ready={ready}
         workspaceError={workspace.workspaceError}
         shared={shared}

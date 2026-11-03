@@ -4,13 +4,14 @@
 // The iframe is mounted for the whole life of the Space (the store and the
 // Market tools simply hide it), because unmounting it would stop a running bot.
 import type { RefObject } from 'react';
-import { Boxes, CircleHelp, Maximize2, Signal } from 'lucide-react';
+import { Boxes, CircleHelp, LoaderCircle, Maximize2, Signal } from 'lucide-react';
 import { sharedTicksLabel, type LinkSnapshot, type SharedData, type SpaceView } from './protocol';
 
 type WorkspacePanelProps = {
   view: SpaceView;
   frameRef: RefObject<HTMLIFrameElement | null>;
   frameRevision: number;
+  frameLoaded: boolean;
   ready: boolean;
   workspaceError: string;
   shared: SharedData;
@@ -27,6 +28,7 @@ export function WorkspacePanel({
   view,
   frameRef,
   frameRevision,
+  frameLoaded,
   ready,
   workspaceError,
   shared,
@@ -93,18 +95,43 @@ export function WorkspacePanel({
             </button>
           </div>
         </div>
-        <iframe
-          key={frameRevision}
-          ref={frameRef}
-          src={`${import.meta.env.BASE_URL}dbot/index.html#bot_builder`}
-          title="Deriv Bot workspace"
-          allow="fullscreen"
-          allowFullScreen
-          className="block w-full bg-white"
-          style={{ height: 'min(850px, calc(100dvh - 160px))', minHeight: 480 }}
-          data-testid="dbot-frame"
-          onLoad={onFrameLoad}
-        />
+        <div className="relative">
+          <iframe
+            key={frameRevision}
+            ref={frameRef}
+            src={`${import.meta.env.BASE_URL}dbot/index.html#bot_builder`}
+            title="Deriv Bot workspace"
+            allow="fullscreen"
+            allowFullScreen
+            className="block w-full bg-white"
+            style={{ height: 'min(850px, calc(100dvh - 160px))', minHeight: 480 }}
+            data-testid="dbot-frame"
+            onLoad={onFrameLoad}
+          />
+          {!ready && (
+            <div
+              className={`absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-white px-6 text-center text-slate-700 ${workspaceError ? '' : 'pointer-events-none'}`}
+              role={workspaceError ? 'alert' : 'status'}
+              aria-live="polite"
+              data-testid="dbot-initializing"
+            >
+              {workspaceError ? (
+                <>
+                  <p className="max-w-md text-sm font-semibold">{workspaceError}</p>
+                  <button type="button" onClick={onReload} className="rounded-md bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700">
+                    Reload workspace
+                  </button>
+                </>
+              ) : (
+                <>
+                  <LoaderCircle size={24} className="animate-spin text-indigo-600" />
+                  <p className="text-sm font-semibold">{frameLoaded ? 'Initializing DBot workspace…' : 'Starting DBot workspace…'}</p>
+                  <p className="max-w-md text-xs text-slate-500">Loading the bot builder and connecting it to Signal Lab.</p>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
         <p className="flex max-w-3xl items-start gap-2 text-[11px] leading-5 text-muted-foreground">

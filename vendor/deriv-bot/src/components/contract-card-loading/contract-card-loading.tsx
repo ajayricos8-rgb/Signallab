@@ -1,4 +1,4 @@
-// Removed unused React import - React 17+ JSX transform doesn't require it
+import React from 'react';
 import ContentLoader from 'react-content-loader';
 import { contract_stages } from '@/constants/contract-stage';
 import ContractCardRunningBot from './contract-card-running-bot';

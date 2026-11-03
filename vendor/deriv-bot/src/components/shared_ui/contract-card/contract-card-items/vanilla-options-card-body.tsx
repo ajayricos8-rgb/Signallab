@@ -25,7 +25,8 @@ const VanillaOptionsCardBody: React.FC<TVanillaOptionsCardBodyProps> = ({
     is_sold,
     progress_slider,
 }) => {
-    const { buy_price, bid_price, entry_spot, barrier, sell_price, profit }: TContractInfo = contract_info;
+    const { buy_price, bid_price, entry_spot_display_value, barrier, sell_price, profit }: TContractInfo =
+        contract_info;
     const contract_value = is_sold ? sell_price : bid_price;
     const { CONTRACT_VALUE, ENTRY_SPOT, STAKE, STRIKE, TOTAL_PROFIT_LOSS } = getCardLabels();
 
@@ -54,7 +55,9 @@ const VanillaOptionsCardBody: React.FC<TVanillaOptionsCardBodyProps> = ({
                         )}
                     </ContractCardItem>
 
-                    <ContractCardItem header={ENTRY_SPOT}>{entry_spot && addComma(entry_spot)}</ContractCardItem>
+                    <ContractCardItem header={ENTRY_SPOT}>
+                        {entry_spot_display_value && addComma(entry_spot_display_value)}
+                    </ContractCardItem>
 
                     <ContractCardItem header={STRIKE}>{barrier && addComma(barrier)}</ContractCardItem>
                 </div>
@@ -76,7 +79,9 @@ const VanillaOptionsCardBody: React.FC<TVanillaOptionsCardBodyProps> = ({
                             <Money amount={buy_price} currency={currency} />
                         </ContractCardItem>
 
-                        <ContractCardItem header={ENTRY_SPOT}>{entry_spot && addComma(entry_spot)}</ContractCardItem>
+                        <ContractCardItem header={ENTRY_SPOT}>
+                            {entry_spot_display_value && addComma(entry_spot_display_value)}
+                        </ContractCardItem>
                     </div>
 
                     <div className='dc-contract-card-items-wrapper-group'>

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import Cookies from 'js-cookie';
 import { observer } from 'mobx-react-lite';
-import { toMoment } from '@/components/shared';
+import { getDecimalPlaces, toMoment } from '@/components/shared';
 import { FORM_ERROR_MESSAGES } from '@/components/shared/constants/form-error-messages';
 import { initFormErrorMessages } from '@/components/shared/utils/validation/declarative-validation-rules';
 import { api_base } from '@/external/bot-skeleton';
+import { CONNECTION_STATUS } from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
+import { useOauth2 } from '@/hooks/auth/useOauth2';
 import { useApiBase } from '@/hooks/useApiBase';
-import { useLogout } from '@/hooks/useLogout';
 import { useStore } from '@/hooks/useStore';
-import { TSocketResponseData } from '@/types/api-types';
-import { clearInvalidTokenParams } from '@/utils/url-utils';
+import useTMB from '@/hooks/useTMB';
+import { TLandingCompany, TSocketResponseData } from '@/types/api-types';
 import { useTranslations } from '@deriv-com/translations';
 
 type TClientInformation = {
@@ -21,6 +22,7 @@ type TClientInformation = {
     last_name?: string;
     preferred_language?: string | null;
     user_id?: number | string;
+    landing_company_shortcode?: string;
 };
 const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ children }) => {
     const currentDomain = useMemo(() => '.' + window.location.hostname.split('.').slice(-2).join('.'), []);
@@ -34,7 +36,22 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
 
     const { currentLang } = useTranslations();
 
-    const handleLogout = useLogout();
+    const { oAuthLogout } = useOauth2({ handleLogout: async () => client.logout(), client });
+
+    const { is_tmb_enabled: tmb_enabled_from_hook } = useTMB();
+
+    const is_tmb_enabled = useMemo(
+        () => window.is_tmb_enabled === true || tmb_enabled_from_hook,
+        [tmb_enabled_from_hook]
+    );
+
+    const isLoggedOutCookie = Cookies.get('logged_state') === 'false' && !is_tmb_enabled;
+
+    useEffect(() => {
+        if (isLoggedOutCookie && client?.is_logged_in) {
+            oAuthLogout();
+        }
+    }, [isLoggedOutCookie, oAuthLogout, client?.is_logged_in]);
 
     const activeAccount = useMemo(
         () => accountList?.find(account => account.loginid === activeLoginid),
@@ -42,15 +59,22 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
     );
 
     useEffect(() => {
-        if (client && activeAccount && isAuthorized) {
+        const currentBalanceData = client?.all_accounts_balance?.accounts?.[activeAccount?.loginid ?? ''];
+        if (currentBalanceData) {
+            client?.setBalance(currentBalanceData.balance.toFixed(getDecimalPlaces(currentBalanceData.currency)));
+            client?.setCurrency(currentBalanceData.currency);
+        }
+
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeAccount?.loginid, client?.all_accounts_balance]);
+
+    useEffect(() => {
+        if (client && activeAccount) {
             client?.setLoginId(activeLoginid);
             client?.setAccountList(accountList);
             client?.setIsLoggedIn(true);
-        } else if (client && !isAuthorized) {
-            // Ensure client shows as not logged in until authorization is complete
-            client?.setIsLoggedIn(false);
         }
-    }, [accountList, activeAccount, activeLoginid, client, isAuthorized]);
+    }, [accountList, activeAccount, activeLoginid, client]);
 
     useEffect(() => {
         initFormErrorMessages(FORM_ERROR_MESSAGES());
@@ -68,17 +92,9 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
         }
     }, [currentLang, common]);
 
-    // Type-safe interface for API with time() method
-    interface ApiWithTime {
-        time(): Promise<TSocketResponseData<'time'>>;
-    }
-
     useEffect(() => {
         const updateServerTime = () => {
-            // Fixed type safety: replaced 'as any' with proper interface and runtime check
-            // Ensures time() method exists before calling it
-            if (!api_base.api || !('time' in api_base.api)) return;
-            (api_base.api as ApiWithTime)
+            api_base.api
                 .time()
                 .then((res: TSocketResponseData<'time'>) => {
                     common.setServerTime(toMoment(res.time), false);
@@ -94,9 +110,14 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
             timeInterval.current = null;
         }
 
-        if (client && !appInitialization.current) {
-            if (!api_base?.api) return;
-            appInitialization.current = true;
+        // Only setup the interval if the connection is open and we have access to the API
+        if (client && connectionStatus === CONNECTION_STATUS.OPENED && api_base?.api) {
+            if (!appInitialization.current) {
+                appInitialization.current = true;
+                api_base.api?.websiteStatus().then((res: TSocketResponseData<'website_status'>) => {
+                    client.setWebsiteStatus(res.website_status);
+                });
+            }
 
             // Initial time update
             updateServerTime();
@@ -112,51 +133,50 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
                 timeInterval.current = null;
             }
         };
-    }, [client, common]);
+    }, [client, common, is_tmb_enabled, connectionStatus]);
 
     const handleMessages = useCallback(
-        // Changed parameter type from Record<string, unknown> to unknown to match onMessage signature
-        async (res: unknown) => {
+        async (res: Record<string, unknown>) => {
             if (!res) return;
-            const data = (res as Record<string, unknown>).data as TSocketResponseData<'balance'>;
+            const data = res.data as TSocketResponseData<'balance'>;
             const { msg_type, error } = data;
 
-            // Handle auth errors by calling client.logout() directly instead of useLogout hook
-            // This prevents redundant logout operations since useLogout internally calls client.logout()
             if (
                 error?.code === 'AuthorizationRequired' ||
                 error?.code === 'DisabledClient' ||
                 error?.code === 'InvalidToken'
             ) {
-                // Clear all URL query parameters for these auth errors
-                clearInvalidTokenParams();
-                // Call client store logout directly to avoid double logout
-                await client?.logout();
+                await oAuthLogout();
             }
 
             if (msg_type === 'balance' && data && !error) {
                 const balance = data.balance;
-                if (balance && typeof balance.balance === 'number') {
-                    client.setBalance(balance.balance.toString());
+                if (balance?.accounts) {
+                    client.setAllAccountsBalance(balance);
+                } else if (balance?.loginid) {
+                    if (!client?.all_accounts_balance?.accounts || !balance?.loginid) return;
+                    const accounts = { ...client.all_accounts_balance.accounts };
+                    const currentLoggedInBalance = { ...accounts[balance.loginid] };
+                    currentLoggedInBalance.balance = balance.balance;
 
-                    if (balance.currency) {
-                        client.setCurrency(balance.currency);
-                    }
+                    const updatedAccounts = {
+                        ...client.all_accounts_balance,
+                        accounts: {
+                            ...client.all_accounts_balance.accounts,
+                            [balance.loginid]: currentLoggedInBalance,
+                        },
+                    };
+                    client.setAllAccountsBalance(updatedAccounts);
                 }
             }
         },
-        // Fixed memory leak: removed handleLogout from deps as it's not used in function body
-        // Only client is actually referenced (line 129), preventing unnecessary re-subscriptions
-        [client]
+        [client, oAuthLogout]
     );
 
     useEffect(() => {
         if (!isAuthorizing && client) {
             const subscription = api_base?.api?.onMessage().subscribe(handleMessages);
-            // Fixed unsubscribe type - only store if subscription exists
-            if (subscription) {
-                msg_listener.current = { unsubscribe: subscription.unsubscribe };
-            }
+            msg_listener.current = { unsubscribe: subscription?.unsubscribe };
         }
 
         return () => {
@@ -169,27 +189,38 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
     useEffect(() => {
         if (!isAuthorizing && isAuthorized && !accountInitialization.current && client) {
             accountInitialization.current = true;
-            const client_information: TClientInformation = {
-                loginid: activeAccount?.loginid,
-                email: '',
-                currency: client?.currency,
-                residence: '',
-                first_name: '',
-                last_name: '',
-                preferred_language: '',
-                user_id:
-                    (api_base.account_info &&
-                    typeof api_base.account_info === 'object' &&
-                    'user_id' in api_base.account_info
-                        ? (api_base.account_info as { user_id: number }).user_id
-                        : null) || activeLoginid,
-            };
+            api_base.api.getSettings().then((settingRes: TSocketResponseData<'get_settings'>) => {
+                client?.setAccountSettings(settingRes.get_settings);
+                const client_information: TClientInformation = {
+                    loginid: activeAccount?.loginid,
+                    email: settingRes.get_settings?.email,
+                    currency: client?.currency,
+                    residence: settingRes.get_settings?.residence,
+                    first_name: settingRes.get_settings?.first_name,
+                    last_name: settingRes.get_settings?.last_name,
+                    preferred_language: settingRes.get_settings?.preferred_language,
+                    user_id: ((api_base.account_info as any)?.user_id as number) || activeLoginid,
+                    landing_company_shortcode: activeAccount?.landing_company_name,
+                };
 
-            Cookies.set('client_information', JSON.stringify(client_information), {
-                domain: currentDomain,
+                Cookies.set('client_information', JSON.stringify(client_information), {
+                    domain: currentDomain,
+                });
+
+                api_base.api
+                    .landingCompany({
+                        landing_company: settingRes.get_settings?.country_code,
+                    })
+                    .then((res: TSocketResponseData<'landing_company'>) => {
+                        client?.setLandingCompany(res.landing_company as unknown as TLandingCompany);
+                    });
+            });
+
+            api_base.api.getAccountStatus().then((res: TSocketResponseData<'get_account_status'>) => {
+                client?.setAccountStatus(res.get_account_status);
             });
         }
-    }, [isAuthorizing, isAuthorized, client, activeAccount?.loginid, activeLoginid, currentDomain]);
+    }, [isAuthorizing, isAuthorized, client]);
 
     return <>{children}</>;
 });

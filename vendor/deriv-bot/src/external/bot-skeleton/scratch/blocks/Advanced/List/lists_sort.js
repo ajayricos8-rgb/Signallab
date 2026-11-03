@@ -17,16 +17,16 @@ window.Blockly.Blocks.lists_sort = {
                     type: 'field_dropdown',
                     name: 'TYPE',
                     options: [
-                        ['numeric', 'NUMERIC'],
-                        ['alphabetic', 'TEXT'],
+                        [localize('numeric'), 'NUMERIC'],
+                        [localize('alphabetic'), 'TEXT'],
                     ],
                 },
                 {
                     type: 'field_dropdown',
                     name: 'DIRECTION',
                     options: [
-                        ['ascending', '1'],
-                        ['descending', '-1'],
+                        [localize('ascending'), '1'],
+                        [localize('descending'), '-1'],
                     ],
                 },
                 {

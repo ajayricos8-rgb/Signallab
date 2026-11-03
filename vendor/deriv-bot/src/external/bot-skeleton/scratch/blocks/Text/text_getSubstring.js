@@ -4,14 +4,14 @@ import { emptyTextValidator, modifyContextMenu } from '../../utils';
 window.Blockly.Blocks.text_getSubstring = {
     init() {
         this.WHERE_OPTIONS_1 = [
-            ['letter #', 'FROM_START'],
-            ['letter # from end', 'FROM_END'],
-            ['first', 'FIRST'],
+            [localize('letter #'), 'FROM_START'],
+            [localize('letter # from end'), 'FROM_END'],
+            [localize('first'), 'FIRST'],
         ];
         this.WHERE_OPTIONS_2 = [
-            ['letter #', 'FROM_START'],
-            ['letter # from end', 'FROM_END'],
-            ['last', 'LAST'],
+            [localize('letter #'), 'FROM_START'],
+            [localize('letter # from end'), 'FROM_END'],
+            [localize('last'), 'LAST'],
         ];
 
         this.jsonInit(this.definition());
@@ -23,14 +23,16 @@ window.Blockly.Blocks.text_getSubstring = {
     },
     definition() {
         return {
-            message0:
-                'in text %1 ' +
-                localize('get substring from {{ position1 }} {{ index1 }} to {{ position2 }} {{ index2 }}', {
+            message0: localize(
+                'in text {{ input_text }} get substring from {{ position1 }} {{ index1 }} to {{ position2 }} {{ index2 }}',
+                {
+                    input_text: '%1',
                     position1: '%2',
                     index1: '%3',
                     position2: '%4',
                     index2: '%5',
-                }),
+                }
+            ),
             args0: [
                 {
                     type: 'input_value',

@@ -3,9 +3,9 @@ import classNames from 'classnames';
 import { NavLink } from 'react-router-dom';
 import { useIsMounted } from 'usehooks-ts';
 import { useDebounce } from '@/hooks/useDebounce';
+import { TSource } from '../data-table/table-row';
 import { clickAndKeyEventHandler } from '../shared';
-// Fixed import path - TSource is now defined in common.types
-import { TPassThrough, TRow, TSource } from '../types/common.types';
+import { TPassThrough, TRow } from '../types/common.types';
 import { TColIndex, TDataListCell } from './data-list-cell';
 
 type TMobileRowRenderer = {
@@ -74,8 +74,12 @@ const DataListRow = ({
                 <NavLink
                     className='data-list__item--wrapper'
                     id={`dt_reports_contract_${row_key}`}
-                    to={destination_link}
-                    state={{ from_table_row: true }}
+                    to={{
+                        pathname: destination_link,
+                        state: {
+                            from_table_row: true,
+                        },
+                    }}
                 >
                     <div className='data-list__item'>{rowRenderer({ measure, ...other_props })}</div>
                 </NavLink>

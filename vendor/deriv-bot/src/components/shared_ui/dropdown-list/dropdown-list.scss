@@ -3,7 +3,7 @@
     margin-top: 4px;
     border-radius: 4px;
     z-index: 1;
-    box-shadow: 0 4px 6px 0 rgb(0 0 0 / 24%);
+    box-shadow: 0 4px 6px 0 rgba(0, 0, 0, 0.24);
     transform-origin: top;
     transition:
         transform 0.25s ease,
@@ -17,12 +17,10 @@
         transform: scale(1, 0);
         opacity: 0;
     }
-
     &--enter-done {
         transform: scale(1, 1);
         opacity: 1;
     }
-
     &__group {
         &-header {
             padding: 0.6rem;
@@ -35,7 +33,6 @@
             justify-content: center;
         }
     }
-
     &__item {
         min-height: 40px;
         display: flex;
@@ -47,21 +44,17 @@
         &:hover {
             background-color: var(--state-hover);
         }
-
         &--active {
             background-color: var(--state-active);
         }
-
         &-icon {
             margin-right: 8px;
         }
-
         &--disabled {
             color: var(--text-disabled);
             cursor: not-allowed;
         }
     }
-
     &__separator {
         display: flex;
         width: calc(100% - 3.2rem);

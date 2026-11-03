@@ -13,6 +13,12 @@ Quant signal intelligence, algorithmic strategy lab, and visual bot automation f
 
 ## Development
 
+The embedded DBot app is a separate bundle served from `/dbot/`. `npm run dev`
+builds that bundle before Vite starts, and production builds do the same before
+copying `public/dbot` into `dist`; this prevents the iframe URL from falling
+through to the Signal Lab page and appearing blank. Its dependency lock is kept
+under `vendor/deriv-bot/package-lock.json`.
+
 ```bash
 # Start development server on port 3000
 npm run dev

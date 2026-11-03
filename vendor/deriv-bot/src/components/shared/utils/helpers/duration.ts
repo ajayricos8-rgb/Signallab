@@ -5,7 +5,7 @@ type TContract = {
     max_contract_duration: string;
     min_contract_duration: string;
     expiry_type: string;
-    start_type?: string; // Field may not be available in API response anymore
+    start_type: string;
 };
 
 type TMaxMin = {
@@ -46,18 +46,14 @@ export const buildDurationConfig = (
     durations: TDurations = { min_max: { spot: {}, forward: {} }, units_display: {} }
 ) => {
     type TDurationMaps = keyof typeof duration_maps;
+    durations.units_display[contract.start_type as keyof typeof durations.units_display] =
+        durations.units_display[contract.start_type as keyof typeof durations.units_display] || [];
 
-    // Default to 'spot' if start_type is not available (field deprecated in API)
-    const start_type = contract.start_type || 'spot';
-
-    durations.units_display[start_type as keyof typeof durations.units_display] =
-        durations.units_display[start_type as keyof typeof durations.units_display] || [];
-
-    const duration_min_max = durations.min_max[start_type as keyof typeof durations.min_max];
+    const duration_min_max = durations.min_max[contract.start_type as keyof typeof durations.min_max];
     const obj_min = getDurationFromString(contract.min_contract_duration);
     const obj_max = getDurationFromString(contract.max_contract_duration);
 
-    durations.min_max[start_type as keyof typeof durations.min_max][
+    durations.min_max[contract.start_type as keyof typeof durations.min_max][
         contract.expiry_type as keyof typeof duration_min_max
     ] = {
         min: convertDurationUnit(obj_min.duration, obj_min.unit, 's') || 0,
@@ -65,7 +61,7 @@ export const buildDurationConfig = (
     };
 
     const arr_units: string[] = [];
-    durations?.units_display?.[start_type as keyof typeof durations.units_display]?.forEach?.(obj => {
+    durations?.units_display?.[contract.start_type as keyof typeof durations.units_display]?.forEach?.(obj => {
         arr_units.push(obj.value);
     });
 
@@ -88,7 +84,7 @@ export const buildDurationConfig = (
         });
     }
 
-    durations.units_display[start_type as keyof typeof durations.units_display] = arr_units
+    durations.units_display[contract.start_type as keyof typeof durations.units_display] = arr_units
         .sort((a, b) => (duration_maps[a as TDurationMaps].order > duration_maps[b as TDurationMaps].order ? 1 : -1))
         .reduce((o, c) => [...o, { text: duration_maps[c as TDurationMaps].display, value: c }], [] as TUnit[]);
     return durations;

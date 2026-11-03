@@ -4,8 +4,9 @@ import { tabs_title } from '@/constants/load-modal';
 import { useStore } from '@/hooks/useStore';
 import { localize } from '@deriv-com/translations';
 import { useDevice } from '@deriv-com/ui';
-/* [AI] - Analytics event tracking removed - see migrate-docs/MONITORING_PACKAGES.md for re-implementation guide */
-/* [/AI] */
+import { rudderStackSendSwitchLoadStrategyTabEvent } from '../../analytics/rudderstack-bot-builder';
+import { rudderStackSendCloseEvent } from '../../analytics/rudderstack-common-events';
+import { LOAD_MODAL_TABS } from '../../analytics/utils';
 import MobileFullPageModal from '../shared_ui/mobile-full-page-modal';
 import Modal from '../shared_ui/modal';
 import Tabs from '../shared_ui/tabs';
@@ -33,8 +34,9 @@ const LoadModal: React.FC = observer(() => {
 
     const handleTabItemClick = (active_index: number) => {
         setActiveTabIndex(active_index);
-        /* [AI] - Analytics event tracking removed - see migrate-docs/MONITORING_PACKAGES.md for re-implementation guide */
-        /* [/AI] */
+        rudderStackSendSwitchLoadStrategyTabEvent({
+            load_strategy_tab: LOAD_MODAL_TABS[active_index + (!isDesktop ? 1 : 0)],
+        });
     };
 
     if (!isDesktop) {
@@ -46,7 +48,10 @@ const LoadModal: React.FC = observer(() => {
                 onClickClose={() => {
                     setPreviewOnPopup(false);
                     toggleLoadModal();
-                    // Removed close event tracking as per V2 requirements
+                    rudderStackSendCloseEvent({
+                        subform_name: 'load_strategy',
+                        load_strategy_tab: LOAD_MODAL_TABS[active_index + 1],
+                    });
                 }}
                 height_offset='80px'
                 page_overlay
@@ -75,7 +80,10 @@ const LoadModal: React.FC = observer(() => {
             is_open={is_load_modal_open}
             toggleModal={() => {
                 toggleLoadModal();
-                // Removed close event tracking as per V2 requirements
+                rudderStackSendCloseEvent({
+                    subform_name: 'load_strategy',
+                    load_strategy_tab: LOAD_MODAL_TABS[active_index + (!isDesktop ? 1 : 0)],
+                });
             }}
             onEntered={onEntered}
             elements_to_ignore={[document.querySelector('.injectionDiv')]}

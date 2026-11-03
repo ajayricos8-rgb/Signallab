@@ -6,12 +6,6 @@ export const getDefaultError = () => ({
     cta_label: localize('Refresh'),
 });
 
-export const getAuthError = () => ({
-    header: localize('The token is invalid'),
-    description: localize('Please log in'),
-    cta_label: localize('Log in'),
-});
-
 export const STATUS_CODES = Object.freeze({
     NONE: 'none',
     PENDING: 'pending',
