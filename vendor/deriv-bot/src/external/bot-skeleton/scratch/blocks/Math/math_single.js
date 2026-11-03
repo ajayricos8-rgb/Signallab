@@ -13,8 +13,8 @@ window.Blockly.Blocks.math_single = {
                     type: 'field_dropdown',
                     name: 'OP',
                     options: [
-                        ['square root', 'ROOT'],
-                        ['absolute', 'ABS'],
+                        [localize('square root'), 'ROOT'],
+                        [localize('absolute'), 'ABS'],
                         ['-', 'NEG'],
                         ['ln', 'LN'],
                         ['log10', 'LOG10'],

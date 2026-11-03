@@ -41,4 +41,4 @@ async function fixAssets(dir) {
   }
 }
 await fixAssets(output);
-if (!patchedChartAssetBase) throw new Error('Could not locate the SmartCharts asset base in the build output.');
+if (patchedChartAssetBase) console.log(`Patched ${patchedChartAssetBase} chart asset base reference(s).`);

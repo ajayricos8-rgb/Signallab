@@ -7,9 +7,10 @@
     "node": ">=20"
   },
   "scripts": {
+    "predev": "node scripts/build-dbot.mjs",
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "node scripts/cloudflare-build.mjs",
-    "build:app": "vite build && node scripts/copy-dist.mjs artifacts/deriv-signal-lab/dist && node scripts/copy-dist.mjs artifacts/api-server/dist && node scripts/copy-dist.mjs artifacts/mockup-sandbox/dist",
+    "build:app": "node scripts/build-dbot.mjs && vite build && node scripts/copy-dist.mjs artifacts/deriv-signal-lab/dist && node scripts/copy-dist.mjs artifacts/api-server/dist && node scripts/copy-dist.mjs artifacts/mockup-sandbox/dist",
     "build:cloudflare": "node scripts/cloudflare-build.mjs",
     "deploy": "npm run build && wrangler deploy",
     "deploy:preview": "npm run build && wrangler preview",

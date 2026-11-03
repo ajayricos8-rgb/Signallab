@@ -1,6 +1,5 @@
 import React from 'react';
 import classNames from 'classnames';
-import { standalone_routes } from '@/components/shared';
 import { Button, useDevice } from '@deriv-com/ui';
 import ButtonLink from '../button-link/button-link';
 import DesktopWrapper from '../shared_ui/desktop-wrapper';
@@ -39,7 +38,11 @@ const PageError = ({
     const onClickHandler = () => {
         if (should_clear_error_on_click) {
             setError?.(false, null);
-            window.location.assign(standalone_routes.deriv_app);
+            if (window.location.hostname.includes('staging')) {
+                window.location.assign('https://staging-app.deriv.com');
+                return;
+            }
+            window.location.assign('https://app.deriv.com');
         } else {
             buttonOnClick?.();
         }

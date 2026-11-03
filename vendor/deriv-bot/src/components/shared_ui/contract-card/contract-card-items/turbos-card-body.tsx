@@ -37,7 +37,15 @@ const TurbosCardBody = ({
     progress_slider_mobile_el,
     ...toggle_card_dialog_props
 }: TTurbosCardBody) => {
-    const { bid_price, buy_price, profit, barrier, entry_spot, limit_order = {}, sell_price } = contract_info;
+    const {
+        bid_price,
+        buy_price,
+        profit,
+        barrier,
+        entry_spot_display_value,
+        limit_order = {},
+        sell_price,
+    } = contract_info;
     const { take_profit } = getLimitOrderAmount(contract_update || limit_order);
     const is_valid_to_sell = isValidToSell(contract_info);
     const contract_value = is_sold ? sell_price : bid_price;
@@ -74,7 +82,7 @@ const TurbosCardBody = ({
                     is_crypto={isCryptocurrency(currency)}
                     className='dc-contract-card__entry-spot'
                 >
-                    {addComma(entry_spot)}
+                    {addComma(entry_spot_display_value)}
                 </ContractCardItem>
 
                 <div className='dc-contract-card__limit-order-info'>

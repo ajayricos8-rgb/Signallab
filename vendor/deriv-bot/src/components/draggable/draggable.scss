@@ -5,12 +5,11 @@
     background: var(--general-main-2);
     border: 1px solid rgb(0 0 0 / 12%);
     border-radius: 8px;
-    box-shadow: 0 0 8px 4px var(--shadow-menu);
+    box-shadow: 0px 0px 8px 4px var(--shadow-menu);
     padding: 4px;
 
     .draggable-content {
         background: var(--general-main-1);
-
         &__header {
             cursor: move;
             display: flex;
@@ -18,21 +17,17 @@
             align-items: center;
             padding: 16px;
             width: 100%;
-
             &__title {
                 font-size: 16px;
                 font-weight: 700;
             }
-
             &__close {
                 cursor: pointer;
             }
-
             &-title {
                 width: 100%;
             }
         }
-
         &__body {
             padding: 2px;
             display: contents;
@@ -48,7 +43,6 @@
             left: 0;
             cursor: row-resize;
         }
-
         &__right {
             position: absolute;
             width: 10px;
@@ -57,7 +51,6 @@
             right: -5px;
             cursor: col-resize;
         }
-
         &__bottom {
             position: absolute;
             width: 100%;
@@ -66,7 +59,6 @@
             left: 0;
             cursor: row-resize;
         }
-
         &__left {
             position: absolute;
             width: 10px;
@@ -75,7 +67,6 @@
             left: -5px;
             cursor: col-resize;
         }
-
         &__top-left {
             position: absolute;
             width: 10px;
@@ -84,7 +75,6 @@
             left: -5px;
             cursor: nwse-resize;
         }
-
         &__top-right {
             position: absolute;
             width: 10px;
@@ -93,7 +83,6 @@
             right: -5px;
             cursor: nesw-resize;
         }
-
         &__bottom-right {
             position: absolute;
             width: 10px;
@@ -102,7 +91,6 @@
             right: -5px;
             cursor: nwse-resize;
         }
-
         &__bottom-left {
             position: absolute;
             width: 10px;

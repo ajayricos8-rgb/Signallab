@@ -1,78 +1,65 @@
-// Updated to use brand configuration for footer elements visibility
-// Controls language settings and theme toggle via brand.config.json
-import brandConfig from '@/../brand.config.json';
-import { useApiBase } from '@/hooks/useApiBase';
+import useRemoteConfig from '@/hooks/growthbook/useRemoteConfig';
 import useModalManager from '@/hooks/useModalManager';
 import { getActiveTabUrl } from '@/utils/getActiveTabUrl';
-import { FILTERED_LANGUAGES } from '@/utils/languages';
+import { LANGUAGES } from '@/utils/languages';
 import { useTranslations } from '@deriv-com/translations';
 import { DesktopLanguagesModal } from '@deriv-com/ui';
+import Livechat from '../../chat/Livechat';
+import AccountLimits from './AccountLimits';
 import ChangeTheme from './ChangeTheme';
+import Deriv from './Deriv';
+import Endpoint from './Endpoint';
 import FullScreen from './FullScreen';
+import HelpCentre from './HelpCentre';
 import LanguageSettings from './LanguageSettings';
-import LogoutFooter from './LogoutFooter';
 import NetworkStatus from './NetworkStatus';
+import ResponsibleTrading from './ResponsibleTrading';
 import ServerTime from './ServerTime';
+import WhatsApp from './WhatsApp';
 import './footer.scss';
 
 const Footer = () => {
     const { currentLang = 'EN', localize, switchLanguage } = useTranslations();
     const { hideModal, isModalOpenFor, showModal } = useModalManager();
-    const { isAuthorized } = useApiBase();
-
-    // Get footer configuration from brand.config.json
-    const enableLanguageSettings = brandConfig.platform.footer?.enable_language_settings ?? true;
-    const enableThemeToggle = brandConfig.platform.footer?.enable_theme_toggle ?? true;
 
     const openLanguageSettingModal = () => showModal('DesktopLanguagesModal');
+
+    const { data } = useRemoteConfig(true);
+    const { cs_chat_whatsapp } = data;
+
     return (
         <footer className='app-footer'>
             <FullScreen />
-            {isAuthorized && <LogoutFooter />}
-            {/* [AI] Conditionally render language settings based on brand config */}
-            {enableLanguageSettings && (
-                <>
-                    <LanguageSettings openLanguageSettingModal={openLanguageSettingModal} />
-                    <div className='app-footer__vertical-line' />
-                </>
-            )}
-            {/* [/AI] */}
-            {/* [AI] Conditionally render theme toggle based on brand config */}
-            {enableThemeToggle && (
-                <>
-                    <ChangeTheme />
-                    <div className='app-footer__vertical-line' />
-                </>
-            )}
-            {/* [/AI] */}
+            <LanguageSettings openLanguageSettingModal={openLanguageSettingModal} />
+            <HelpCentre />
+            <div className='app-footer__vertical-line' />
+            <ChangeTheme />
+            <AccountLimits />
+            <ResponsibleTrading />
+            <Deriv />
+            <Livechat />
+            {cs_chat_whatsapp && <WhatsApp />}
+            <div className='app-footer__vertical-line' />
             <ServerTime />
             <div className='app-footer__vertical-line' />
             <NetworkStatus />
+            <Endpoint />
 
-            {/* [AI] Only show language modal if language settings are enabled */}
-            {enableLanguageSettings && isModalOpenFor('DesktopLanguagesModal') && (
+            {isModalOpenFor('DesktopLanguagesModal') && (
                 <DesktopLanguagesModal
                     headerTitle={localize('Select Language')}
                     isModalOpen
-                    languages={FILTERED_LANGUAGES}
+                    languages={LANGUAGES}
                     onClose={hideModal}
                     onLanguageSwitch={code => {
-                        try {
-                            switchLanguage(code);
-                            hideModal();
-                            // Page reload is necessary because Blockly is outside React lifecycle
-                            // and won't re-render with new language without full page refresh
-                            // Use replace() to navigate to the active tab URL which will reload the page
-                            window.location.replace(getActiveTabUrl());
-                        } catch (error) {
-                            console.error('Failed to switch language:', error);
-                            hideModal();
-                        }
+                        switchLanguage(code);
+                        hideModal();
+                        window.location.replace(getActiveTabUrl());
+                        window.location.reload();
                     }}
                     selectedLanguage={currentLang}
                 />
             )}
-            {/* [/AI] */}
         </footer>
     );
 };

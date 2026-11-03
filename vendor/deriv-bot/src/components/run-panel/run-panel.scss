@@ -214,6 +214,11 @@
             bottom: env(safe-area-inset-bottom, 0);
             padding-bottom: env(safe-area-inset-bottom, 0);
         }
+
+        &--ios-pwa {
+            bottom: 0 !important;
+            padding-bottom: unset !important;
+        }
     }
 
     &__buttons {
@@ -446,8 +451,6 @@
     &__button {
         @include mobile-or-tablet-screen {
             flex-basis: 100%;
-            white-space: normal;
-            word-break: break-word;
         }
     }
 }

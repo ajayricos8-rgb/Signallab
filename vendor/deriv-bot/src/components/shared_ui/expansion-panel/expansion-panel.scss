@@ -6,22 +6,18 @@
             justify-content: space-between;
             font-weight: bold;
         }
-
         &-chevron-icon {
             cursor: pointer;
             transition: transform 0.3s ease;
             transform: rotate(0deg);
         }
-
         &-active &-chevron-icon {
             transform: rotate(180deg);
         }
-
         &-active {
             margin-bottom: 1.6rem;
         }
     }
-
     &__content {
         &-array {
             display: flex;
@@ -30,7 +26,6 @@
             font-size: var(--text-size-xxs);
             line-height: 1.5;
         }
-
         &-chevron-icon {
             margin-left: 4px;
             margin-right: 4px;
@@ -38,11 +33,9 @@
             transition: transform 0.3s ease;
             transform: rotate(0deg);
         }
-
         &-active &-chevron-icon {
             transform: rotate(90deg);
         }
-
         &-array-item-index {
             margin-right: 4px;
         }

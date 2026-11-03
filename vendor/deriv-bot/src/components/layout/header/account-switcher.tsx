@@ -1,188 +1,212 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import classNames from 'classnames';
+import React, { useEffect } from 'react';
+import { lazy, Suspense, useMemo } from 'react';
 import { observer } from 'mobx-react-lite';
-import { addComma, getCurrencyDisplayCode, getDecimalPlaces } from '@/components/shared';
-import Text from '@/components/shared_ui/text';
-import { api_base } from '@/external/bot-skeleton/services/api/api-base';
+import { CurrencyIcon } from '@/components/currency/currency-icon';
+import { addComma, getDecimalPlaces } from '@/components/shared';
+import Popover from '@/components/shared_ui/popover';
+import { api_base } from '@/external/bot-skeleton';
+import { useOauth2 } from '@/hooks/auth/useOauth2';
 import { useApiBase } from '@/hooks/useApiBase';
 import { useStore } from '@/hooks/useStore';
-import { isDemoAccount } from '@/utils/account-helpers';
-import { Localize } from '@deriv-com/translations';
-import { TAccountSwitcher } from './common/types';
-import AccountInfoWrapper from './account-info-wrapper';
+import { waitForDomElement } from '@/utils/dom-observer';
+import { Analytics } from '@deriv-com/analytics';
+import { localize } from '@deriv-com/translations';
+import { AccountSwitcher as UIAccountSwitcher, Loader, useDevice } from '@deriv-com/ui';
+import DemoAccounts from './common/demo-accounts';
+import RealAccounts from './common/real-accounts';
+import { TAccountSwitcher, TAccountSwitcherProps, TModifiedAccount } from './common/types';
+import { LOW_RISK_COUNTRIES } from './utils';
 import './account-switcher.scss';
 
-const AccountSwitcher = observer(({ activeAccount }: TAccountSwitcher) => {
-    const [isOpen, setIsOpen] = useState(false);
-    const wrapperRef = useRef<HTMLDivElement>(null);
-    const { accountList, activeLoginid } = useApiBase();
-    const { client, run_panel } = useStore() ?? {};
+const AccountInfoWallets = lazy(() => import('./wallets/account-info-wallets'));
 
-    const is_bot_running = run_panel?.is_running || api_base.is_running;
-    const isSingleAccount = !accountList || accountList.length <= 1;
+const tabs_labels = {
+    demo: localize('Demo'),
+    real: localize('Real'),
+};
+
+const RenderAccountItems = ({
+    isVirtual,
+    modifiedCRAccountList,
+    modifiedMFAccountList,
+    modifiedVRTCRAccountList,
+    switchAccount,
+    activeLoginId,
+    client,
+}: TAccountSwitcherProps) => {
+    const { oAuthLogout } = useOauth2({ handleLogout: async () => client.logout(), client });
+    const is_low_risk_country = LOW_RISK_COUNTRIES().includes(client.account_settings?.country_code ?? '');
+    const is_virtual = !!isVirtual;
+    const residence = client.residence;
 
     useEffect(() => {
-        const handleClickOutside = (e: MouseEvent) => {
-            if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
-                setIsOpen(false);
-            }
-        };
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') setIsOpen(false);
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        document.addEventListener('keydown', handleKeyDown);
-        return () => {
-            document.removeEventListener('mousedown', handleClickOutside);
-            document.removeEventListener('keydown', handleKeyDown);
-        };
-    }, []);
+        // Update the max-height from the accordion content set from deriv-com/ui
+        const parent_container = document.getElementsByClassName('account-switcher-panel')?.[0] as HTMLDivElement;
+        if (!isVirtual && parent_container) {
+            parent_container.style.maxHeight = '70vh';
+            waitForDomElement('.deriv-accordion__content', parent_container)?.then((accordionElement: unknown) => {
+                const element = accordionElement as HTMLDivElement;
+                if (element) {
+                    element.style.maxHeight = '70vh';
+                }
+            });
+        }
+    }, [isVirtual]);
 
-    const toggleDropdown = useCallback(() => {
-        if (is_bot_running || isSingleAccount) return;
-        setIsOpen(prev => !prev);
-    }, [is_bot_running, isSingleAccount]);
+    if (is_virtual) {
+        return (
+            <>
+                <DemoAccounts
+                    modifiedVRTCRAccountList={modifiedVRTCRAccountList as TModifiedAccount[]}
+                    switchAccount={switchAccount}
+                    activeLoginId={activeLoginId}
+                    isVirtual={is_virtual}
+                    tabs_labels={tabs_labels}
+                    oAuthLogout={oAuthLogout}
+                    is_logging_out={client.is_logging_out}
+                />
+            </>
+        );
+    } else {
+        return (
+            <RealAccounts
+                modifiedCRAccountList={modifiedCRAccountList as TModifiedAccount[]}
+                modifiedMFAccountList={modifiedMFAccountList as TModifiedAccount[]}
+                switchAccount={switchAccount}
+                isVirtual={is_virtual}
+                tabs_labels={tabs_labels}
+                is_low_risk_country={is_low_risk_country}
+                oAuthLogout={oAuthLogout}
+                loginid={activeLoginId}
+                is_logging_out={client.is_logging_out}
+                upgradeable_landing_companies={client?.landing_companies?.all_company ?? null}
+                residence={residence}
+            />
+        );
+    }
+};
 
-    const handleAccountSelect = useCallback(
-        (loginid: string) => {
-            sessionStorage.setItem('signal-lab-dbot-active_loginid', loginid);
-            client?.checkAndRegenerateWebSocket();
-            setIsOpen(false);
-        },
-        [client]
-    );
+const AccountSwitcher = observer(({ activeAccount }: TAccountSwitcher) => {
+    const { isDesktop } = useDevice();
+    const { accountList } = useApiBase();
+    const { ui, run_panel, client } = useStore();
+    const { accounts } = client;
+    const { toggleAccountsDialog, is_accounts_switcher_on, account_switcher_disabled_message } = ui;
+    const { is_stop_button_visible } = run_panel;
+    const has_wallet = Object.keys(accounts).some(id => accounts[id].account_category === 'wallet');
 
-    const formattedAccounts = useMemo(() => {
-        if (!accountList) return [];
-        return accountList
-            .map(account => ({
-                loginid: account.loginid,
-                currency: account.currency,
-                balance: addComma(Number(account.balance ?? 0).toFixed(getDecimalPlaces(account.currency))),
-                isVirtual: isDemoAccount(account.loginid),
-                isActive: account.loginid === activeLoginid,
-            }))
-            .sort((a, b) => (a.isActive ? -1 : b.isActive ? 1 : 0));
-    }, [accountList, activeLoginid]);
+    const modifiedAccountList = useMemo(() => {
+        return accountList?.map(account => {
+            return {
+                ...account,
+                balance: addComma(
+                    client.all_accounts_balance?.accounts?.[account?.loginid]?.balance?.toFixed(
+                        getDecimalPlaces(account.currency)
+                    ) ?? '0'
+                ),
+                currencyLabel: account?.is_virtual
+                    ? tabs_labels.demo
+                    : (client.website_status?.currencies_config?.[account?.currency]?.name ?? account?.currency),
+                icon: (
+                    <CurrencyIcon
+                        currency={account?.currency?.toLowerCase()}
+                        isVirtual={Boolean(account?.is_virtual)}
+                    />
+                ),
+                isVirtual: Boolean(account?.is_virtual),
+                isActive: account?.loginid === activeAccount?.loginid,
+            };
+        });
+    }, [
+        accountList,
+        client.all_accounts_balance?.accounts,
+        client.website_status?.currencies_config,
+        activeAccount?.loginid,
+    ]);
+    const modifiedCRAccountList = useMemo(() => {
+        return modifiedAccountList?.filter(account => account?.loginid?.includes('CR')) ?? [];
+    }, [modifiedAccountList]);
 
-    if (!activeAccount) return null;
+    const modifiedMFAccountList = useMemo(() => {
+        return modifiedAccountList?.filter(account => account?.loginid?.includes('MF')) ?? [];
+    }, [modifiedAccountList]);
 
-    const { currency, isVirtual, balance } = activeAccount;
-    const showChevron = !isSingleAccount && !is_bot_running;
+    const modifiedVRTCRAccountList = useMemo(() => {
+        return modifiedAccountList?.filter(account => account?.loginid?.includes('VRT')) ?? [];
+    }, [modifiedAccountList]);
+
+    const switchAccount = async (loginId: number) => {
+        if (loginId.toString() === activeAccount?.loginid) return;
+        const account_list = JSON.parse(localStorage.getItem('accountsList') ?? '{}');
+        const token = account_list[loginId];
+        if (!token) return;
+        localStorage.setItem('authToken', token);
+        localStorage.setItem('active_loginid', loginId.toString());
+        const account_type =
+            loginId
+                .toString()
+                .match(/[a-zA-Z]+/g)
+                ?.join('') || '';
+
+        Analytics.setAttributes({
+            account_type,
+        });
+        await api_base?.init(true);
+        const search_params = new URLSearchParams(window.location.search);
+        const selected_account = modifiedAccountList.find(acc => acc.loginid === loginId.toString());
+        if (!selected_account) return;
+        const account_param = selected_account.is_virtual ? 'demo' : selected_account.currency;
+        search_params.set('account', account_param);
+        sessionStorage.setItem('query_param_currency', account_param);
+        window.history.pushState({}, '', `${window.location.pathname}?${search_params.toString()}`);
+    };
 
     return (
-        <div className='acc-info__wrapper' ref={wrapperRef}>
-            <AccountInfoWrapper>
-                <div
-                    data-testid='dt_acc_info'
-                    id='dt_core_account-info_acc-info'
-                    role={showChevron ? 'button' : undefined}
-                    tabIndex={showChevron ? 0 : -1}
-                    aria-expanded={showChevron ? isOpen : undefined}
-                    aria-haspopup={showChevron ? 'listbox' : undefined}
-                    className={classNames('acc-info', {
-                        'acc-info--is-virtual': isVirtual,
-                        'acc-info--interactive': showChevron,
-                    })}
-                    onClick={toggleDropdown}
-                    onKeyDown={e => {
-                        if (showChevron && (e.key === 'Enter' || e.key === ' ')) {
-                            e.preventDefault();
-                            toggleDropdown();
-                        }
+        activeAccount &&
+        (has_wallet ? (
+            <Suspense fallback={<Loader />}>
+                <AccountInfoWallets is_dialog_on={is_accounts_switcher_on} toggleDialog={toggleAccountsDialog} />
+            </Suspense>
+        ) : (
+            <Popover
+                className='run-panel__info'
+                classNameBubble='run-panel__info--bubble'
+                alignment='bottom'
+                message={account_switcher_disabled_message}
+                zIndex='5'
+            >
+                <UIAccountSwitcher
+                    activeAccount={activeAccount}
+                    isDisabled={is_stop_button_visible}
+                    tabsLabels={tabs_labels}
+                    modalContentStyle={{
+                        content: {
+                            top: isDesktop ? '30%' : '50%',
+                            borderRadius: '10px',
+                        },
                     }}
                 >
-                    <span className='acc-info__id' aria-hidden='true'></span>
-                    <div className='acc-info__content'>
-                        <div className='acc-info__account-type-header'>
-                            <Text as='p' size='xs' className='acc-info__account-type'>
-                                {isVirtual ? (
-                                    <Localize i18n_default_text='Demo account' />
-                                ) : (
-                                    <Localize i18n_default_text='Real account' />
-                                )}
-                            </Text>
-                            {showChevron && (
-                                <span
-                                    className={classNames('acc-info__select-arrow', {
-                                        'acc-info__select-arrow--invert': isOpen,
-                                    })}
-                                >
-                                    <svg width='12' height='12' viewBox='0 0 12 12' fill='none'>
-                                        <path
-                                            d='M2 4L6 8L10 4'
-                                            stroke='currentColor'
-                                            strokeWidth='1.5'
-                                            strokeLinecap='round'
-                                            strokeLinejoin='round'
-                                        />
-                                    </svg>
-                                </span>
-                            )}
-                        </div>
-                        {(typeof balance !== 'undefined' || !currency) && (
-                            <div className='acc-info__balance-section'>
-                                <p
-                                    data-testid='dt_balance'
-                                    className={classNames('acc-info__balance', {
-                                        'acc-info__balance--no-currency': !currency && !isVirtual,
-                                    })}
-                                >
-                                    {!currency ? (
-                                        <Localize i18n_default_text='No currency assigned' />
-                                    ) : (
-                                        `${balance} ${getCurrencyDisplayCode(currency)}`
-                                    )}
-                                </p>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            </AccountInfoWrapper>
-            {isOpen && (
-                <div className='acc-dropdown' role='listbox'>
-                    {formattedAccounts.map(account => (
-                        <div
-                            key={account.loginid}
-                            role='option'
-                            aria-selected={account.isActive}
-                            tabIndex={0}
-                            className={classNames('acc-dropdown__account', {
-                                'acc-dropdown__account--selected': account.isActive,
-                                'acc-dropdown__account--virtual': account.isVirtual,
-                            })}
-                            onClick={() => !account.isActive && handleAccountSelect(account.loginid)}
-                            onKeyDown={e => {
-                                if (!account.isActive && (e.key === 'Enter' || e.key === ' ')) {
-                                    e.preventDefault();
-                                    handleAccountSelect(account.loginid);
-                                }
-                            }}
-                        >
-                            <Text
-                                size='xxxs'
-                                className={classNames('acc-dropdown__account-type', {
-                                    'acc-dropdown__account-type--virtual': account.isVirtual,
-                                })}
-                            >
-                                {account.isVirtual ? (
-                                    <Localize i18n_default_text='Demo account' />
-                                ) : (
-                                    <Localize i18n_default_text='Real account' />
-                                )}
-                            </Text>
-                            <Text size='xs' weight='bold' className='acc-dropdown__balance'>
-                                {account.currency ? (
-                                    `${account.balance} ${getCurrencyDisplayCode(account.currency)}`
-                                ) : (
-                                    <Localize i18n_default_text='No currency assigned' />
-                                )}
-                            </Text>
-                        </div>
-                    ))}
-                </div>
-            )}
-        </div>
+                    <UIAccountSwitcher.Tab title={tabs_labels.real}>
+                        <RenderAccountItems
+                            modifiedCRAccountList={modifiedCRAccountList as TModifiedAccount[]}
+                            modifiedMFAccountList={modifiedMFAccountList as TModifiedAccount[]}
+                            switchAccount={switchAccount}
+                            activeLoginId={activeAccount?.loginid}
+                            client={client}
+                        />
+                    </UIAccountSwitcher.Tab>
+                    <UIAccountSwitcher.Tab title={tabs_labels.demo}>
+                        <RenderAccountItems
+                            modifiedVRTCRAccountList={modifiedVRTCRAccountList as TModifiedAccount[]}
+                            switchAccount={switchAccount}
+                            isVirtual
+                            activeLoginId={activeAccount?.loginid}
+                            client={client}
+                        />
+                    </UIAccountSwitcher.Tab>
+                </UIAccountSwitcher>
+            </Popover>
+        ))
     );
 });
 

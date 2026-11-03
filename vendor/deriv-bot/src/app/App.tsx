@@ -1,14 +1,15 @@
+import { initSurvicate } from '../public-path';
 import { lazy, Suspense } from 'react';
 import React from 'react';
 import { createBrowserRouter, createRoutesFromElements, Route, RouterProvider } from 'react-router-dom';
 import ChunkLoader from '@/components/loader/chunk-loader';
-import LocalStorageSyncWrapper from '@/components/localStorage-sync-wrapper';
 import RoutePromptDialog from '@/components/route-prompt-dialog';
-import { useAccountSwitching } from '@/hooks/useAccountSwitching';
-import { useLanguageFromURL } from '@/hooks/useLanguageFromURL';
-import { useOAuthCallback } from '@/hooks/useOAuthCallback';
+import { crypto_currencies_display_order, fiat_currencies_display_order } from '@/components/shared';
+import { useOfflineDetection } from '@/hooks/useOfflineDetection';
 import { StoreProvider } from '@/hooks/useStore';
-import { OAuthTokenExchangeService } from '@/services/oauth-token-exchange.service';
+import CallbackPage from '@/pages/callback';
+import Endpoint from '@/pages/endpoint';
+import { TAuthData } from '@/types/api-types';
 import { initializeI18n, localize, TranslationProvider } from '@deriv-com/translations';
 import CoreStoreProvider from './CoreStoreProvider';
 import './app-root.scss';
@@ -16,17 +17,21 @@ import './app-root.scss';
 const Layout = lazy(() => import('../components/layout'));
 const AppRoot = lazy(() => import('./app-root'));
 
-// Translations CDN is optional — requires TRANSLATIONS_CDN_URL, R2_PROJECT_NAME, and CROWDIN_BRANCH_NAME env vars.
-// Without these, the app defaults to English. See user-guide/03-white-labeling.md#translations for setup instructions.
-const i18nInstance = initializeI18n({ cdnUrl: (process.env.DBOT_BASE_PATH || '/dbot/').replace(/\/$/, '') });
+const { TRANSLATIONS_CDN_URL, R2_PROJECT_NAME, CROWDIN_BRANCH_NAME } = process.env;
+const i18nInstance = initializeI18n({
+    cdnUrl: `${TRANSLATIONS_CDN_URL}/${R2_PROJECT_NAME}/${CROWDIN_BRANCH_NAME}`,
+});
 
-/**
- * Component wrapper to handle language URL parameter
- * Uses the useLanguageFromURL hook to process language switching
- */
-const LanguageHandler = ({ children }: { children: React.ReactNode }) => {
-    useLanguageFromURL();
-    return <>{children}</>;
+// Simple Suspense wrapper without timeout that causes dark landing page
+const SuspenseWrapper = ({ children }: { children: React.ReactNode }) => {
+    const { isOnline } = useOfflineDetection();
+
+    const getLoadingMessage = () => {
+        if (!isOnline) return localize('Loading offline dashboard...');
+        return localize('Please wait while we connect to the server...');
+    };
+
+    return <Suspense fallback={<ChunkLoader message={getLoadingMessage()} />}>{children}</Suspense>;
 };
 
 const router = createBrowserRouter(
@@ -34,73 +39,92 @@ const router = createBrowserRouter(
         <Route
             path='/'
             element={
-                <Suspense
-                    fallback={<ChunkLoader message={localize('Please wait while we connect to the server...')} />}
-                >
+                <SuspenseWrapper>
                     <TranslationProvider defaultLang='EN' i18nInstance={i18nInstance}>
-                        <LanguageHandler>
-                            <StoreProvider>
-                                <LocalStorageSyncWrapper>
-                                    <RoutePromptDialog />
-                                    <CoreStoreProvider>
-                                        <Layout />
-                                    </CoreStoreProvider>
-                                </LocalStorageSyncWrapper>
-                            </StoreProvider>
-                        </LanguageHandler>
+                        <StoreProvider>
+                            <RoutePromptDialog />
+                            <CoreStoreProvider>
+                                <Layout />
+                            </CoreStoreProvider>
+                        </StoreProvider>
                     </TranslationProvider>
-                </Suspense>
+                </SuspenseWrapper>
             }
         >
             {/* All child routes will be passed as children to Layout */}
             <Route index element={<AppRoot />} />
-            <Route path="index.html" element={<AppRoot />} />
+            <Route path='endpoint' element={<Endpoint />} />
+            <Route path='callback' element={<CallbackPage />} />
         </Route>
-    ),
-    { basename: (process.env.DBOT_BASE_PATH || '/dbot/').replace(/\/$/, '') }
+    )
 );
 
-/**
- * Main App component
- *
- * Responsibilities:
- * 1. OAuth callback handling (via useOAuthCallback hook)
- * 2. Account switching from URL (via useAccountSwitching hook)
- * 3. Router provider setup
- *
- * All complex logic has been extracted into custom hooks for better maintainability
- */
 function App() {
-    // Handle OAuth callback flow (CSRF validation + code extraction)
-    const { isProcessing, isValid, params, error, cleanupURL } = useOAuthCallback();
-
-    // Handle account switching via URL parameter
-    useAccountSwitching();
-
-    // Process the authorization code when OAuth callback is valid
     React.useEffect(() => {
-        if (!isProcessing && isValid && params.code) {
-            // Exchange authorization code for access token
-            OAuthTokenExchangeService.exchangeCodeForToken(params.code)
-                .then(response => {
-                    if (response.access_token) {
-                        cleanupURL();
-                    } else if (response.error) {
-                        console.error('❌ Token exchange failed:', response.error);
-                        console.error('Error description:', response.error_description);
-                        // Clean up URL even on error
-                        cleanupURL();
+        // Use the invalid token handler hook to automatically retrigger OIDC authentication
+        // when an invalid token is detected and the cookie logged state is true
+
+        initSurvicate();
+        window?.dataLayer?.push({ event: 'page_load' });
+        return () => {
+            // Clean up the invalid token handler when the component unmounts
+            const survicate_box = document.getElementById('survicate-box');
+            if (survicate_box) {
+                survicate_box.style.display = 'none';
+            }
+        };
+    }, []);
+
+    React.useEffect(() => {
+        const accounts_list = localStorage.getItem('accountsList');
+        const client_accounts = localStorage.getItem('clientAccounts');
+        const url_params = new URLSearchParams(window.location.search);
+        const account_currency = url_params.get('account');
+        const validCurrencies = [...fiat_currencies_display_order, ...crypto_currencies_display_order];
+
+        const is_valid_currency = account_currency && validCurrencies.includes(account_currency?.toUpperCase());
+
+        if (!accounts_list || !client_accounts) return;
+
+        try {
+            const parsed_accounts = JSON.parse(accounts_list);
+            const parsed_client_accounts = JSON.parse(client_accounts) as TAuthData['account_list'];
+
+            const updateLocalStorage = (token: string, loginid: string) => {
+                localStorage.setItem('authToken', token);
+                localStorage.setItem('active_loginid', loginid);
+            };
+
+            // Handle demo account
+            if (account_currency?.toUpperCase() === 'DEMO') {
+                const demo_account = Object.entries(parsed_accounts).find(([key]) => key.startsWith('VR'));
+
+                if (demo_account) {
+                    const [loginid, token] = demo_account;
+                    updateLocalStorage(String(token), loginid);
+                    return;
+                }
+            }
+
+            // Handle real account with valid currency
+            if (account_currency?.toUpperCase() !== 'DEMO' && is_valid_currency) {
+                const real_account = Object.entries(parsed_client_accounts).find(
+                    ([loginid, account]) =>
+                        !loginid.startsWith('VR') && account.currency.toUpperCase() === account_currency?.toUpperCase()
+                );
+
+                if (real_account) {
+                    const [loginid, account] = real_account;
+                    if ('token' in account) {
+                        updateLocalStorage(String(account?.token), loginid);
                     }
-                })
-                .catch(error => {
-                    console.error('❌ Token exchange request failed:', error);
-                    // Clean up URL even on error
-                    cleanupURL();
-                });
-        } else if (!isProcessing && error) {
-            console.error('OAuth callback error:', error);
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('Error', e); // eslint-disable-line no-console
         }
-    }, [isProcessing, isValid, params.code, error, cleanupURL]);
+    }, []);
 
     return <RouterProvider router={router} />;
 }

@@ -4,17 +4,13 @@
 /** @define acc-info */
 .acc-info {
     align-items: center;
-    cursor: default;
+    cursor: pointer;
     display: flex;
     flex-direction: row;
     height: 100%;
     justify-content: center;
-    padding: 8px 1.6rem;
+    padding: 0 1.6rem 0 1.7rem;
     width: max-content;
-
-    &:hover {
-        background: transparent !important;
-    }
 
     &__preloader {
         position: absolute;
@@ -121,72 +117,28 @@
         -webkit-tap-highlight-color: transparent;
     }
 
-    &__content {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        margin-inline-start: 1rem;
-    }
-
-    &__account-type-header {
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-        margin-bottom: 0.2rem;
-    }
-
-    &__account-type {
-        @include typeface(--xxsmall-left-normal-green);
-
-        line-height: 1;
-        margin: 0;
-        font-size: var(--text-size-xxs);
-    }
-
-    &--is-virtual {
-        .acc-info__account-type {
-            color: $color-yellow;
-        }
-    }
-
-    &__balance-section {
-        display: flex;
-        align-items: center;
-    }
-
-    &__balance {
-        @include typeface(--paragraph-left-bold-black);
-
-        line-height: 1.4;
-        pointer-events: none;
-        margin: 0;
-        font-size: 1.4rem;
-        color: var(--status-success);
-
-        &--no-currency {
-            @include typeface(--small-left-normal-grey);
-
-            white-space: nowrap;
-        }
-    }
-
     &__id {
         pointer-events: none;
-        display: flex;
-        align-items: center;
 
         &-icon {
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            vertical-align: middle;
             margin-right: 0.8rem;
         }
     }
 
     &__separator {
         border-right: 1px solid var(--general-section-1);
+        width: 2rem;
         height: 3.2rem;
         margin-right: -0.1rem;
+    }
+
+    &__balance {
+        @include typeface(--title-center-bold-green, default);
+
+        line-height: 2.4rem;
+        pointer-events: none;
+        margin-right: 0.8rem;
     }
 
     &__account-type-and-balance {
@@ -199,15 +151,15 @@
 
     &__select-arrow {
         pointer-events: none;
-        display: flex;
-        align-items: center;
         transform: rotate(0);
-        transform-origin: 50% 50%;
+        transform-origin: 50% 45%;
         transition: transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
 
-        svg path {
-            stroke: var(--text-general);
+        svg {
+            fill: var(--text-general);
         }
+
+        // @extend %inline-icon;
 
         &--invert {
             transform: rotate(180deg);
@@ -237,19 +189,23 @@
         }
     }
 
-    .acc-info__balance {
-        @include typeface(--paragraph-left-bold-black);
+    &--is-virtual {
+        .acc-info__balance {
+            color: var(--text-profit-success);
+        }
     }
 
     &--is-disabled {
         cursor: not-allowed;
     }
 
-    &--interactive {
-        cursor: pointer !important;
+    &--show {
+        .acc-info__select-arrow {
+            transform: rotate(180deg);
+        }
 
-        &:hover {
-            background: var(--state-hover) !important;
+        .acc-info__select-arrow--invert {
+            transform: rotate(0deg);
         }
     }
 
@@ -702,87 +658,5 @@
         inset-inline: 0;
         max-width: 60rem;
         margin: auto;
-    }
-}
-
-.account-switcher-fixed {
-    pointer-events: none !important;
-    cursor: default !important;
-    border-inline-end: 1px solid var(--general-section-1);
-}
-
-// AccountInfoWrapper styles
-.account-info-wrapper {
-    display: contents;
-
-    &--disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-}
-
-/** @define acc-dropdown */
-.acc-dropdown {
-    position: absolute;
-    top: calc(100% + 4px);
-    right: 0;
-    z-index: 3;
-    min-width: 16rem;
-    background-color: var(--general-main-2);
-    border-radius: $BORDER_RADIUS;
-    box-shadow: 0 8px 16px 0 var(--shadow-menu);
-    overflow: hidden;
-
-    &__account {
-        display: flex;
-        flex-direction: column;
-        padding: .8rem 1.6rem;
-        cursor: pointer;
-        background: var(--general-main-2);
-
-        &:not(:last-child) {
-            border-bottom: 1px solid var(--general-section-1);
-        }
-
-        &:hover:not(.acc-dropdown__account--selected) {
-            background: var(--state-hover);
-        }
-
-        &--selected {
-            background: var(--state-active);
-            cursor: default;
-        }
-    }
-
-    &__account-type {
-        color: var(--status-success);
-        margin-bottom: 0.1rem;
-        line-height: 1.2;
-        font-size: 1.4rem;
-
-        &--virtual {
-            color: $color-yellow;
-        }
-    }
-
-    &__balance {
-        color: var(--text-prominent);
-        line-height: 1.4;
-        font-size: 1.2rem;
-    }
-}
-
-.header {
-    &__logout-button {
-        margin-right: 0.8rem;
-        margin-left: 1.6rem;
-
-        &:hover {
-            background: transparent !important;
-        }
-
-        .dc-text {
-            color: var(--text-general) !important;
-        }
     }
 }

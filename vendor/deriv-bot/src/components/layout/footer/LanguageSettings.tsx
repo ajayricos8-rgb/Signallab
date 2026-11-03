@@ -1,5 +1,6 @@
+import { useMemo } from 'react';
 import Text from '@/components/shared_ui/text';
-import { LabelPairedGlobeSmRegularIcon } from '@deriv/quill-icons';
+import { LANGUAGES } from '@/utils/languages';
 import { useTranslations } from '@deriv-com/translations';
 import { Tooltip } from '@deriv-com/ui';
 
@@ -10,17 +11,19 @@ type TLanguageSettings = {
 const LanguageSettings = ({ openLanguageSettingModal }: TLanguageSettings) => {
     const { currentLang, localize } = useTranslations();
 
+    const countryIcon = useMemo(
+        () => LANGUAGES.find(({ code }: { code: string }) => code == currentLang)?.placeholderIcon,
+        [currentLang]
+    );
+
     return (
         <Tooltip
             as='button'
             className='app-footer__language'
             onClick={openLanguageSettingModal}
             tooltipContent={localize('Language')}
-            aria-label={`${localize('Change language')} - ${localize('Current language')}: ${currentLang}`}
-            aria-expanded='false'
-            aria-haspopup='dialog'
         >
-            <LabelPairedGlobeSmRegularIcon />
+            {countryIcon}
             <Text size='xs' weight='bold'>
                 {currentLang}
             </Text>

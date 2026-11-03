@@ -53,7 +53,7 @@ const ContractCardHeader = ({
     const current_tick = contract_info.tick_count ? getCurrentTick(contract_info) : null;
     const {
         growth_rate,
-        underlying_symbol,
+        underlying,
         multiplier,
         contract_type,
         shortcode,
@@ -113,7 +113,7 @@ const ContractCardHeader = ({
                         'dc-contract-card__underlying-name--accumulator': is_accumulator,
                     })}
                 >
-                    <MarketIcon type={underlying_symbol ?? ''} size='md' />
+                    <MarketIcon type={underlying ?? ''} size='md' />
                     <Text
                         size='xxs'
                         className={classNames('dc-contract-card__symbol', {

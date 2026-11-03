@@ -62,9 +62,7 @@ export const getTradeURLParams = ({ active_symbols = [], contract_types_list = {
         const validInterval = tradeURLParamsConfig.interval.find(item => item.text === interval);
         const validChartType = tradeURLParamsConfig.chartType.find(item => item.text === chart_type);
         const chartTypeParam = Number(validInterval?.value) === 0 ? 'line' : validChartType?.value;
-        const isSymbolValid = active_symbols.some(
-            item => (item as any).underlying_symbol === symbol || item.symbol === symbol
-        );
+        const isSymbolValid = active_symbols.some(item => item.symbol === symbol);
         const contractList = Object.keys(contract_types_list).reduce<string[]>((acc, key) => {
             const categories: TTradeTypesCategories['Ups & Downs']['categories'] =
                 contract_types_list[key]?.categories || [];
