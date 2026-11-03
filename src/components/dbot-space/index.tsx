@@ -7,7 +7,7 @@
 import { useCallback, useState, type ComponentType } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity, Boxes, BrainCircuit, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, X,
+  Activity, Boxes, BrainCircuit, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, Wrench, X,
   type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
@@ -26,6 +26,7 @@ const VIEWS: Array<{ id: SpaceView; label: string; icon: ComponentType<LucidePro
   { id: 'chart', label: 'Charts', icon: ChartNoAxesCombined },
   { id: 'store', label: 'Bot store', icon: Library },
   { id: 'tools', label: 'Digits & risk', icon: Activity },
+  { id: 'pro-tool', label: 'PRO -tool', icon: Wrench },
 ];
 
 export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSettings: () => void; analysisRequest?: number }) {
@@ -277,6 +278,7 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
 
       {view === 'tools' && <DbotMarketTools />}
       {view === 'store' && <StoreView onUse={useStrategy} />}
+      {view === 'pro-tool' && <div data-testid="dbot-pro-tool" />}
 
       <DbotAiCopilot
         analysisRequest={analysisRequest + localAnalysisRequest}

@@ -37,7 +37,7 @@ export function WorkspacePanel({
   onReload,
   onNotice,
 }: WorkspacePanelProps) {
-  const hidden = view === 'store' || view === 'tools';
+  const hidden = view === 'store' || view === 'tools' || view === 'pro-tool';
   const status = ready ? 'Workspace ready' : workspaceError ? 'Workspace needs reload' : 'Connecting workspace';
   const dot = ready ? 'bg-emerald-400' : workspaceError ? 'bg-rose-400' : 'bg-amber-400';
 
