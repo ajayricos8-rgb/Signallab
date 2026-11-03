@@ -25,15 +25,21 @@
 
   Risk defaults: base 0.35, max 1.5, max 2% of balance (strict), 30 loss limit,
   50 target, 15 session-loss pause, 4 consecutive losses and 100 contracts.
-  No martingale. A failed price, balance or safety gate blocks entry. Limits
-  cannot protect against disconnections or other execution/settlement anomalies.
-  Controls are editable in Run once at start. Research and limitations:
-  docs/even-odd-research.md.
+  Martingale recovery ladder: base stake x martingale multiplier, capped by max stake
+  and reset after martingale steps or take profit / stop loss session brakes.
+  Journal notifications report win/loss result, ladder progression, take profit,
+  and stop loss events. A failed price, balance or safety gate blocks entry.
+  Controls are editable in Run once at start.
 -->
 <xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">
   <variables>
     <variable type="" id="vbase_stake">base stake</variable>
     <variable type="" id="vstake">stake</variable>
+    <variable type="" id="vmartingale_multiplier">martingale multiplier</variable>
+    <variable type="" id="vmartingale_steps">martingale steps</variable>
+    <variable type="" id="vai_ladder_step">ai ladder step</variable>
+    <variable type="" id="vtake_profit">take profit</variable>
+    <variable type="" id="vstop_loss">stop loss</variable>
     <variable type="" id="vai_loss_limit">ai loss limit</variable>
     <variable type="" id="vai_profit_target">ai profit target</variable>
     <variable type="" id="vai_stake_percent">ai stake percent</variable>
@@ -88,7 +94,47 @@
             </block>
           </value>
           <next>
-            <block type="variables_set" id="b0006">
+            <block type="variables_set" id="b0362">
+              <field name="VAR" id="vmartingale_multiplier">martingale multiplier</field>
+              <value name="VALUE">
+                <block type="math_number" id="b0363">
+                  <field name="NUM">2</field>
+                </block>
+              </value>
+              <next>
+                <block type="variables_set" id="b0364">
+                  <field name="VAR" id="vmartingale_steps">martingale steps</field>
+                  <value name="VALUE">
+                    <block type="math_number" id="b0365">
+                      <field name="NUM">3</field>
+                    </block>
+                  </value>
+                  <next>
+                    <block type="variables_set" id="b0366">
+                      <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                      <value name="VALUE">
+                        <block type="math_number" id="b0367">
+                          <field name="NUM">0</field>
+                        </block>
+                      </value>
+                      <next>
+                        <block type="variables_set" id="b0368">
+                          <field name="VAR" id="vtake_profit">take profit</field>
+                          <value name="VALUE">
+                            <block type="math_number" id="b0369">
+                              <field name="NUM">50</field>
+                            </block>
+                          </value>
+                          <next>
+                            <block type="variables_set" id="b0370">
+                              <field name="VAR" id="vstop_loss">stop loss</field>
+                              <value name="VALUE">
+                                <block type="math_number" id="b0371">
+                                  <field name="NUM">30</field>
+                                </block>
+                              </value>
+                              <next>
+                                <block type="variables_set" id="b0006">
               <field name="VAR" id="vai_loss_limit">ai loss limit</field>
               <value name="VALUE">
                 <block type="math_number" id="b0005">
@@ -514,6 +560,16 @@
         </block>
       </next>
     </block>
+                                  </next>
+                                </block>
+                              </next>
+                            </block>
+                          </next>
+                        </block>
+                      </next>
+                    </block>
+                  </next>
+                </block>
   </statement>
   <statement name="SUBMARKET">
     <block type="trade_definition_tradeoptions" id="td0368"><mutation has_first_barrier="false" has_second_barrier="false" has_prediction="false"></mutation><field name="DURATIONTYPE_LIST">t</field><field name="CURRENCY_LIST">USD</field>  <value name="DURATION">
@@ -1360,6 +1416,37 @@
                   <field name="NUM">0</field>
                 </block>
               </value>
+              <next>
+                <block type="variables_set" id="b0372">
+                  <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                  <value name="VALUE">
+                    <block type="math_number" id="b0373">
+                      <field name="NUM">0</field>
+                    </block>
+                  </value>
+                  <next>
+                    <block type="variables_set" id="b0374">
+                      <field name="VAR" id="vstake">stake</field>
+                      <value name="VALUE">
+                        <block type="variables_get" id="b0375">
+                          <field name="VAR" id="vbase_stake">base stake</field>
+                        </block>
+                      </value>
+                      <next>
+                        <block type="notify" id="b0376">
+                          <field name="NOTIFICATION_TYPE">success</field>
+                          <field name="NOTIFICATION_SOUND">silent</field>
+                          <value name="MESSAGE">
+                            <block type="text" id="b0377">
+                              <field name="TEXT">Trade won! Martingale ladder reset to base stake.</field>
+                            </block>
+                          </value>
+                        </block>
+                      </next>
+                    </block>
+                  </next>
+                </block>
+              </next>
             </block>
           </statement>
           <statement name="ELSE">
@@ -1387,6 +1474,159 @@
                       </value>
                     </block>
                   </value>
+                  <next>
+                    <block type="variables_set" id="b0378">
+                      <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                      <value name="VALUE">
+                        <block type="math_arithmetic" id="b0379">
+                          <field name="OP">ADD</field>
+                          <value name="A">
+                            <block type="variables_get" id="b0380">
+                              <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                            </block>
+                          </value>
+                          <value name="B">
+                            <block type="math_number" id="b0381">
+                              <field name="NUM">1</field>
+                            </block>
+                          </value>
+                        </block>
+                      </value>
+                      <next>
+                        <block type="controls_if" id="b0382">
+                          <mutation else="1"></mutation>
+                          <value name="IF0">
+                            <block type="logic_compare" id="b0383">
+                              <field name="OP">GTE</field>
+                              <value name="A">
+                                <block type="variables_get" id="b0384">
+                                  <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                                </block>
+                              </value>
+                              <value name="B">
+                                <block type="variables_get" id="b0385">
+                                  <field name="VAR" id="vmartingale_steps">martingale steps</field>
+                                </block>
+                              </value>
+                            </block>
+                          </value>
+                          <statement name="DO0">
+                            <block type="variables_set" id="b0386">
+                              <field name="VAR" id="vai_ladder_step">ai ladder step</field>
+                              <value name="VALUE">
+                                <block type="math_number" id="b0387">
+                                  <field name="NUM">0</field>
+                                </block>
+                              </value>
+                              <next>
+                                <block type="variables_set" id="b0388">
+                                  <field name="VAR" id="vstake">stake</field>
+                                  <value name="VALUE">
+                                    <block type="variables_get" id="b0389">
+                                      <field name="VAR" id="vbase_stake">base stake</field>
+                                    </block>
+                                  </value>
+                                  <next>
+                                    <block type="notify" id="b0390">
+                                      <field name="NOTIFICATION_TYPE">warn</field>
+                                      <field name="NOTIFICATION_SOUND">silent</field>
+                                      <value name="MESSAGE">
+                                        <block type="text" id="b0391">
+                                          <field name="TEXT">Martingale ladder reached max progression steps and reset to base stake.</field>
+                                        </block>
+                                      </value>
+                                    </block>
+                                  </next>
+                                </block>
+                              </next>
+                            </block>
+                          </statement>
+                          <statement name="ELSE">
+                            <block type="controls_if" id="b0392">
+                              <mutation else="1"></mutation>
+                              <value name="IF0">
+                                <block type="logic_compare" id="b0393">
+                                  <field name="OP">GT</field>
+                                  <value name="A">
+                                    <block type="math_arithmetic" id="b0394">
+                                      <field name="OP">MULTIPLY</field>
+                                      <value name="A">
+                                        <block type="variables_get" id="b0395">
+                                          <field name="VAR" id="vstake">stake</field>
+                                        </block>
+                                      </value>
+                                      <value name="B">
+                                        <block type="variables_get" id="b0396">
+                                          <field name="VAR" id="vmartingale_multiplier">martingale multiplier</field>
+                                        </block>
+                                      </value>
+                                    </block>
+                                  </value>
+                                  <value name="B">
+                                    <block type="variables_get" id="b0397">
+                                      <field name="VAR" id="vai_max_stake">ai max stake</field>
+                                    </block>
+                                  </value>
+                                </block>
+                              </value>
+                              <statement name="DO0">
+                                <block type="variables_set" id="b0398">
+                                  <field name="VAR" id="vstake">stake</field>
+                                  <value name="VALUE">
+                                    <block type="variables_get" id="b0399">
+                                      <field name="VAR" id="vai_max_stake">ai max stake</field>
+                                    </block>
+                                  </value>
+                                  <next>
+                                    <block type="notify" id="b0400">
+                                      <field name="NOTIFICATION_TYPE">warn</field>
+                                      <field name="NOTIFICATION_SOUND">silent</field>
+                                      <value name="MESSAGE">
+                                        <block type="text" id="b0401">
+                                          <field name="TEXT">Trade lost: next martingale stake capped at max stake ceiling.</field>
+                                        </block>
+                                      </value>
+                                    </block>
+                                  </next>
+                                </block>
+                              </statement>
+                              <statement name="ELSE">
+                                <block type="variables_set" id="b0402">
+                                  <field name="VAR" id="vstake">stake</field>
+                                  <value name="VALUE">
+                                    <block type="math_arithmetic" id="b0403">
+                                      <field name="OP">MULTIPLY</field>
+                                      <value name="A">
+                                        <block type="variables_get" id="b0404">
+                                          <field name="VAR" id="vstake">stake</field>
+                                        </block>
+                                      </value>
+                                      <value name="B">
+                                        <block type="variables_get" id="b0405">
+                                          <field name="VAR" id="vmartingale_multiplier">martingale multiplier</field>
+                                        </block>
+                                      </value>
+                                    </block>
+                                  </value>
+                                  <next>
+                                    <block type="notify" id="b0406">
+                                      <field name="NOTIFICATION_TYPE">warn</field>
+                                      <field name="NOTIFICATION_SOUND">silent</field>
+                                      <value name="MESSAGE">
+                                        <block type="text" id="b0407">
+                                          <field name="TEXT">Trade lost: multiplying stake for martingale recovery.</field>
+                                        </block>
+                                      </value>
+                                    </block>
+                                  </next>
+                                </block>
+                              </statement>
+                            </block>
+                          </statement>
+                        </block>
+                      </next>
+                    </block>
+                  </next>
                 </block>
               </statement>
             </block>
@@ -1733,16 +1973,66 @@
                                                             </block>
                                                           </value>
                                                           <value name="B">
-                                                            <block type="logic_compare" id="b0265">
-                                                              <field name="OP">LT</field>
+                                                            <block type="logic_operation" id="b0408">
+                                                              <field name="OP">AND</field>
                                                               <value name="A">
-                                                                <block type="variables_get" id="b0263">
-                                                                  <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                <block type="logic_compare" id="b0265">
+                                                                  <field name="OP">LT</field>
+                                                                  <value name="A">
+                                                                    <block type="variables_get" id="b0263">
+                                                                      <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                    </block>
+                                                                  </value>
+                                                                  <value name="B">
+                                                                    <block type="variables_get" id="b0264">
+                                                                      <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                                                    </block>
+                                                                  </value>
                                                                 </block>
                                                               </value>
                                                               <value name="B">
-                                                                <block type="variables_get" id="b0264">
-                                                                  <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                                                <block type="logic_operation" id="b0409">
+                                                                  <field name="OP">AND</field>
+                                                                  <value name="A">
+                                                                    <block type="logic_compare" id="b0410">
+                                                                      <field name="OP">LT</field>
+                                                                      <value name="A">
+                                                                        <block type="variables_get" id="b0411">
+                                                                          <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                        </block>
+                                                                      </value>
+                                                                      <value name="B">
+                                                                        <block type="variables_get" id="b0412">
+                                                                          <field name="VAR" id="vtake_profit">take profit</field>
+                                                                        </block>
+                                                                      </value>
+                                                                    </block>
+                                                                  </value>
+                                                                  <value name="B">
+                                                                    <block type="logic_compare" id="b0413">
+                                                                      <field name="OP">GT</field>
+                                                                      <value name="A">
+                                                                        <block type="variables_get" id="b0414">
+                                                                          <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                        </block>
+                                                                      </value>
+                                                                      <value name="B">
+                                                                        <block type="math_arithmetic" id="b0415">
+                                                                          <field name="OP">MULTIPLY</field>
+                                                                          <value name="A">
+                                                                            <block type="math_number" id="b0416">
+                                                                              <field name="NUM">-1</field>
+                                                                            </block>
+                                                                          </value>
+                                                                          <value name="B">
+                                                                            <block type="variables_get" id="b0417">
+                                                                              <field name="VAR" id="vstop_loss">stop loss</field>
+                                                                            </block>
+                                                                          </value>
+                                                                        </block>
+                                                                      </value>
+                                                                    </block>
+                                                                  </value>
                                                                 </block>
                                                               </value>
                                                             </block>
@@ -1823,14 +2113,136 @@
                                                 </block>
                                               </statement>
                                               <statement name="ELSE">
-                                                <block type="notify" id="b0358">
-                                                  <field name="NOTIFICATION_TYPE">warn</field>
-                                                  <field name="NOTIFICATION_SOUND">silent</field>
-                                                  <value name="MESSAGE">
-                                                    <block type="text" id="b0357">
-                                                      <field name="TEXT">Session brake: loss, target, drawdown, loss streak or trade limit reached. Review before restarting.</field>
+                                                <block type="controls_if" id="b0418">
+                                                  <mutation else="1"></mutation>
+                                                  <value name="IF0">
+                                                    <block type="logic_operation" id="b0419">
+                                                      <field name="OP">OR</field>
+                                                      <value name="A">
+                                                        <block type="logic_compare" id="b0420">
+                                                          <field name="OP">GTE</field>
+                                                          <value name="A">
+                                                            <block type="variables_get" id="b0421">
+                                                              <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                            </block>
+                                                          </value>
+                                                          <value name="B">
+                                                            <block type="variables_get" id="b0422">
+                                                              <field name="VAR" id="vtake_profit">take profit</field>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </value>
+                                                      <value name="B">
+                                                        <block type="logic_compare" id="b0423">
+                                                          <field name="OP">GTE</field>
+                                                          <value name="A">
+                                                            <block type="variables_get" id="b0424">
+                                                              <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                            </block>
+                                                          </value>
+                                                          <value name="B">
+                                                            <block type="variables_get" id="b0425">
+                                                              <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </value>
                                                     </block>
                                                   </value>
+                                                  <statement name="DO0">
+                                                    <block type="notify" id="b0426">
+                                                      <field name="NOTIFICATION_TYPE">success</field>
+                                                      <field name="NOTIFICATION_SOUND">silent</field>
+                                                      <value name="MESSAGE">
+                                                        <block type="text" id="b0427">
+                                                          <field name="TEXT">Take profit target reached! Bot session completed successfully.</field>
+                                                        </block>
+                                                      </value>
+                                                    </block>
+                                                  </statement>
+                                                  <statement name="ELSE">
+                                                    <block type="controls_if" id="b0428">
+                                                      <mutation else="1"></mutation>
+                                                      <value name="IF0">
+                                                        <block type="logic_operation" id="b0429">
+                                                          <field name="OP">OR</field>
+                                                          <value name="A">
+                                                            <block type="logic_compare" id="b0430">
+                                                              <field name="OP">LTE</field>
+                                                              <value name="A">
+                                                                <block type="variables_get" id="b0431">
+                                                                  <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                </block>
+                                                              </value>
+                                                              <value name="B">
+                                                                <block type="math_arithmetic" id="b0432">
+                                                                  <field name="OP">MULTIPLY</field>
+                                                                  <value name="A">
+                                                                    <block type="math_number" id="b0433">
+                                                                      <field name="NUM">-1</field>
+                                                                    </block>
+                                                                  </value>
+                                                                  <value name="B">
+                                                                    <block type="variables_get" id="b0434">
+                                                                      <field name="VAR" id="vstop_loss">stop loss</field>
+                                                                    </block>
+                                                                  </value>
+                                                                </block>
+                                                              </value>
+                                                            </block>
+                                                          </value>
+                                                          <value name="B">
+                                                            <block type="logic_compare" id="b0435">
+                                                              <field name="OP">LTE</field>
+                                                              <value name="A">
+                                                                <block type="variables_get" id="b0436">
+                                                                  <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                                </block>
+                                                              </value>
+                                                              <value name="B">
+                                                                <block type="math_arithmetic" id="b0437">
+                                                                  <field name="OP">MULTIPLY</field>
+                                                                  <value name="A">
+                                                                    <block type="math_number" id="b0438">
+                                                                      <field name="NUM">-1</field>
+                                                                    </block>
+                                                                  </value>
+                                                                  <value name="B">
+                                                                    <block type="variables_get" id="b0439">
+                                                                      <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                                                    </block>
+                                                                  </value>
+                                                                </block>
+                                                              </value>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </value>
+                                                      <statement name="DO0">
+                                                        <block type="notify" id="b0440">
+                                                          <field name="NOTIFICATION_TYPE">error</field>
+                                                          <field name="NOTIFICATION_SOUND">silent</field>
+                                                          <value name="MESSAGE">
+                                                            <block type="text" id="b0441">
+                                                              <field name="TEXT">Stop loss limit reached! Bot halted to protect capital.</field>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </statement>
+                                                      <statement name="ELSE">
+                                                        <block type="notify" id="b0358">
+                                                          <field name="NOTIFICATION_TYPE">warn</field>
+                                                          <field name="NOTIFICATION_SOUND">silent</field>
+                                                          <value name="MESSAGE">
+                                                            <block type="text" id="b0357">
+                                                              <field name="TEXT">Session brake: loss, target, drawdown, loss streak or trade limit reached. Review before restarting.</field>
+                                                            </block>
+                                                          </value>
+                                                        </block>
+                                                      </statement>
+                                                    </block>
+                                                  </statement>
                                                 </block>
                                               </statement>
                                             </block>
