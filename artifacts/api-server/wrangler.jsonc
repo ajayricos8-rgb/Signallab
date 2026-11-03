@@ -1,0 +1,14 @@
+{
+  "name": "signallab",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./dist"
+  },
+  "build": {
+    "command": "if [ -f vite.config.ts ]; then npm install --no-audit --no-fund --package-lock=false && npm run build; else npm --prefix ../.. install --no-audit --no-fund --package-lock=false && npm --prefix ../.. run build; fi"
+  },
+  "previews": {},
+  "observability": {
+    "enabled": true
+  }
+}

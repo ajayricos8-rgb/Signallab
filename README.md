@@ -38,15 +38,20 @@ strict JSON (no comments), pins Wrangler in `devDependencies`, and works with
 both build paths:
 
 - root directory `/`: deploy `npx wrangler deploy`, preview `npx wrangler preview`;
-- legacy root directory `artifacts/deriv-signal-lab`: the compatibility config
-  there builds from the repository root and serves the same root `dist`.
+- legacy root directories (`artifacts/deriv-signal-lab`, `artifacts/api-server`,
+  `artifacts/mockup-sandbox`): compatibility configs and package shims forward
+  to the single root Vite build. `npm run build` publishes a copy of `dist` to
+  each legacy path, so stale `--assets` or publish-directory settings cannot
+  upload an empty directory.
 
 `wrangler.jsonc` also declares `previews: {}` for the non-production
 `wrangler preview` command and a custom `build.command`. Wrangler therefore
 produces `dist` itself before an upload even if the dashboard's optional build
 command is empty or stale; leaving the dashboard build command as `npm run build`
-is also fine. `npm run check:deploy` validates these settings before a manual
-deploy.
+is also fine. The minimal `pnpm-workspace.yaml` keeps the old
+`pnpm --filter @workspace/deriv-signal-lab build` command working as a thin
+wrapper around that same root build. `npm run check:deploy` validates these
+settings before a manual deploy.
 
 `public/_headers` marks the fingerprinted files under `/assets` immutable and
 keeps `index.html` out of the cache, so a deployment is visible immediately.

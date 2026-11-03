@@ -14,8 +14,36 @@ assert.equal(
   '4.156.2',
   'pin Wrangler so Workers Builds cannot drift to an untested release',
 );
+for (const legacyRoot of ['deriv-signal-lab', 'api-server', 'mockup-sandbox']) {
+  assert.match(
+    packageJson.scripts?.build ?? '',
+    new RegExp(`artifacts/${legacyRoot}/dist`),
+    `the root build must also publish to the legacy ${legacyRoot} path`,
+  );
+}
 
-for (const configPath of ['wrangler.jsonc', 'artifacts/deriv-signal-lab/wrangler.jsonc']) {
+const legacyRoots = ['deriv-signal-lab', 'api-server', 'mockup-sandbox'];
+const configPaths = [
+  'wrangler.jsonc',
+  ...legacyRoots.map((directory) => `artifacts/${directory}/wrangler.jsonc`),
+];
+
+for (const directory of legacyRoots) {
+  const legacyPackage = JSON.parse(await read(`artifacts/${directory}/package.json`));
+  assert.match(
+    legacyPackage.scripts?.build ?? '',
+    /npm --prefix \.\.\/\.\. run build/,
+    `artifacts/${directory} must forward its build to the repository root`,
+  );
+}
+
+assert.match(
+  await read('pnpm-workspace.yaml'),
+  /artifacts\/deriv-signal-lab/,
+  'keep the legacy pnpm build command compatible',
+);
+
+for (const configPath of configPaths) {
   // Keep this strict: Workers Builds reads the config before Wrangler starts,
   // and JSONC-only comments have made that step fail on some builds.
   const config = JSON.parse(await read(configPath));
