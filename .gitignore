@@ -58,6 +58,13 @@ Thumbs.db
 /public/dbot/
 /vendor/deriv-bot/node_modules/
 
+# Vendored Deriv Bot source: upstream keeps a legacy icon shim in a directory
+# literally named `tmp`, which the generic `tmp` rule above would otherwise
+# ignore. It is source, not compiled output, and the /dbot/ bundle needs it;
+# Workers Builds checks out the repo, so an ignored shim breaks production builds.
+!vendor/deriv-bot/src/utils/tmp/
+!vendor/deriv-bot/src/utils/tmp/**
+
 # Python bytecode from the preset generator imports
 __pycache__/
 *.pyc
