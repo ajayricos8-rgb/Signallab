@@ -33,14 +33,24 @@ by editing a running deployment.
 ### Cloudflare Workers
 
 `wrangler.jsonc` deploys `dist` as a Workers static-assets project named
-`signallab`, the service the Cloudflare GitHub integration builds:
+`signallab`, the service the Cloudflare GitHub integration builds. The config is
+strict JSON (no comments), pins Wrangler in `devDependencies`, and works with
+both build paths:
 
-- build command: `npm run build`
-- deploy command: `npx wrangler deploy`
+- root directory `/`: deploy `npx wrangler deploy`, preview `npx wrangler preview`;
+- legacy root directory `artifacts/deriv-signal-lab`: the compatibility config
+  there builds from the repository root and serves the same root `dist`.
+
+`wrangler.jsonc` also declares `previews: {}` for the non-production
+`wrangler preview` command and a custom `build.command`. Wrangler therefore
+produces `dist` itself before an upload even if the dashboard's optional build
+command is empty or stale; leaving the dashboard build command as `npm run build`
+is also fine. `npm run check:deploy` validates these settings before a manual
+deploy.
 
 `public/_headers` marks the fingerprinted files under `/assets` immutable and
 keeps `index.html` out of the cache, so a deployment is visible immediately.
 Routing is deliberately not a single-page-application fallback: `/dbot/index.html`
 is a real file the embedded workspace loads, and a catch-all would answer a
-missing one with the host app. For a manual deploy, run `npm run deploy`
-(`wrangler` is fetched by `npx`; nothing needs to be installed globally).
+missing one with the host app. For a manual deploy, run `npm run deploy`; the
+pinned local Wrangler is used and nothing needs to be installed globally.

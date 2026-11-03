@@ -1,0 +1,14 @@
+{
+  "name": "@workspace/deriv-signal-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix ../.. install --no-audit --no-fund --package-lock=false && npm --prefix ../.. run build && node ../../scripts/copy-dist.mjs ./dist",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:preview": "npm run build && wrangler preview"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.2"
+  }
+}
