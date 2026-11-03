@@ -1,24 +1,13 @@
-/**
- * Cloudflare Workers deployment.
- *
- * The Vite build writes the whole app to `dist`, so the Worker is a static
- * assets Worker with no script of its own. `npx wrangler deploy` (which is what
- * Workers Builds runs after `npm run build`) needs this file: without it the
- * deploy step fails with "Missing entry-point to Worker script or to assets
- * directory" and the production site keeps serving the last successful build.
- *
- * Routing is deliberately *not* a single-page-application fallback. The app has
- * one real route (`/`), and the DBot workspace is an iframe pointed at
- * `/dbot/index.html`; an SPA fallback would answer that missing path with the
- * host app and nest the whole site inside its own frame.
- */
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "signallab",
   "compatibility_date": "2025-10-01",
   "assets": {
     "directory": "./dist"
   },
+  "build": {
+    "command": "npm install --no-audit --no-fund --package-lock=false && npm run build"
+  },
+  "previews": {},
   "observability": {
     "enabled": true
   }
