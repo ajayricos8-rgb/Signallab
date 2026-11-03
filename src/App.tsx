@@ -6,7 +6,6 @@ import { SignalBotProvider } from '@/components/signal-bot-provider';
 import { MarketFeedProvider } from '@/components/market-feed-provider';
 import { SettingsPanel } from '@/components/settings-panel';
 import { TradeHistoryPanel } from '@/components/trade-history-panel';
-import { ForgeBaseWorkspace } from '@/components/forge-base-workspace';
 import { DbotSpace } from '@/components/dbot-space';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -37,8 +36,7 @@ function Home() {
   const [theme, setTheme] = useState<Theme>(readSavedTheme);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('dbot-space');
   const [analysisRequest, setAnalysisRequest] = useState(0);
-  const [dbotMounted, setDbotMounted] = useState(false);
-  useEffect(() => { if (activeTab === 'dbot-space') setDbotMounted(true); }, [activeTab]);
+  const [dbotMounted] = useState(true);
   const trading = useDerivTrading();
   const openPositions = trading.openPositions.length;
   const selectedTab = workspaceTabs.find(({ id }) => id === activeTab);
@@ -127,9 +125,8 @@ function Home() {
             {activeTab === 'trade-history' ? (
               <TradeHistoryPanel />
             ) : activeTab === 'settings' ? (
-              <div className="space-y-8" data-testid="settings-workspace">
+              <div data-testid="settings-workspace">
                 <SettingsPanel />
-                <ForgeBaseWorkspace onOpenAnalysis={() => { setActiveTab('dbot-space'); setAnalysisRequest((value) => value + 1); }} />
               </div>
             ) : null}
           </div>

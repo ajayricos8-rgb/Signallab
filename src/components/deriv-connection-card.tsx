@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { BadgeCheck, CircleSlash, Eye, EyeOff, KeyRound, Link2, Loader2, RotateCw, ShieldCheck } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
-import { DERIV_APP_ID, USING_TEST_APP_ID } from '@/lib/deriv-app-id';
 import { readStoredPat } from '@/lib/deriv-rest';
 import { formatAmount } from '@/lib/deriv-trading';
 
@@ -204,12 +203,6 @@ export function DerivConnectionCard({ compact = false }: { compact?: boolean }) 
               <span aria-hidden="true">↗</span>
             </a>
           </div>
-
-          <p className="text-[10px] leading-relaxed text-muted-foreground">
-            Application ID in use: <span className="mono font-semibold text-foreground">{DERIV_APP_ID}</span>
-            {USING_TEST_APP_ID ? ' (Deriv test ID — set VITE_DERIV_APP_ID to register your own app)' : ''}. It travels as
-            the <span className="mono">Deriv-App-ID</span> header on REST calls, exactly as the market-data feed uses it.
-          </p>
         </div>
       ) : (
         <div className="mt-3 space-y-3">
