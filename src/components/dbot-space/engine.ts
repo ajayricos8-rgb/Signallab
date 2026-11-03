@@ -1,10 +1,10 @@
-// The DBot Space engine: iframe lifecycle, the automatic account link and the
-// Signal Lab → workspace data bridge.
+// Runtime engine of the rebuilt DBot Space shell.
 //
-// The frame is a separate application (vendor/deriv-bot). This hook owns every
-// conversation with it: it posts typed control messages, parses what comes back,
-// and keeps the link state machine in one place. Nothing here renders, so the
-// host page can stay a layout.
+// The frame is a separate application. This hook is the only place that talks
+// to it: it boots the iframe, keeps the automatic account-link state machine,
+// re-mints single-use sockets when the frame asks, and streams Signal Lab's own
+// ticks/account into the frame once a second. It renders nothing — the page,
+// header, frame chrome and store are independent components.
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { useMarketFeed } from '@/components/market-feed-provider';
@@ -15,14 +15,14 @@ import {
 import {
   hostClearAnalysis, hostConnectAccount, hostDisconnectAccount, hostHello, hostLoadBot, hostNavigate,
   hostOtpResponse, hostQuickStrategy, parseFrameMessage, tagHostPayload, viewForWorkspaceTab,
-  type LinkSnapshot, type SharedData, type SpaceView, type WorkspaceBlockInfo, type WorkspaceTab,
+  type LinkSnapshot, type LinkStatus, type SharedData, type SpaceView, type WorkspaceBlockInfo, type WorkspaceTab,
 } from './protocol';
 
 /** Consecutive automatic attempts before the shell stops and asks for a click. */
 export const MAX_AUTO_ATTEMPTS = 3;
 /** How long a link may sit in `connecting` before it is treated as failed. */
-const CONNECT_TIMEOUT_MS = 25_000;
-/** One bridge frame per second: enough to keep the workspace's ticks live. */
+const CONFIRM_TIMEOUT_MS = 25_000;
+/** One frame per second keeps the workspace's ticks live without flooding it. */
 const FEED_INTERVAL_MS = 1_000;
 /** A frame that never says hello is a broken bundle, not a slow one. */
 const BOOT_TIMEOUT_MS = 30_000;
@@ -31,9 +31,24 @@ const RETRY_CAP_MS = 18_000;
 
 const IDLE_LINK: LinkSnapshot = { status: 'idle', accountId: '', accountType: 'unknown' };
 
-export type { SharedData } from './protocol';
+export type SessionLimit = { reason: 'take-profit' | 'stop-loss'; profit: number; currency: string };
 
-export type DbotWorkspace = {
+/** Mutable values read by message handlers and timers, outside React renders. */
+type Runtime = {
+  ready: boolean;
+  /** Mirrors the rendered link status for handlers that run before a render. */
+  linkStatus: LinkStatus;
+  grant: string | null;
+  grantRevision: number;
+  autoFailures: number;
+  cursor: BridgeCursor;
+  accountSent: BridgeAccountMessage | null;
+  subscribed: boolean;
+  pendingLoad: { xml: string; name: string } | null;
+  pendingStrategy: string | null;
+};
+
+export type WorkspaceEngine = {
   /** Attach to the iframe. */
   frameRef: RefObject<HTMLIFrameElement | null>;
   /** Bumped by `reload`; also the iframe's React key. */
@@ -42,8 +57,8 @@ export type DbotWorkspace = {
   ready: boolean;
   workspaceError: string;
   botRunning: boolean;
-  sessionLimit: { reason: 'take-profit' | 'stop-loss'; profit: number; currency: string } | null;
-  setSessionLimit: (value: { reason: 'take-profit' | 'stop-loss'; profit: number; currency: string } | null) => void;
+  sessionLimit: SessionLimit | null;
+  setSessionLimit: (value: SessionLimit | null) => void;
   blockRegistry: WorkspaceBlockInfo[];
   aiRuntimeRegistered: boolean;
   shared: SharedData;
@@ -72,7 +87,9 @@ export type DbotWorkspace = {
   disconnectAccount: () => void;
 };
 
-export function useDbotWorkspace({
+export type { SharedData } from './protocol';
+
+export function useWorkspaceEngine({
   view,
   onOpenSettings,
   onFrameTab,
@@ -82,7 +99,7 @@ export function useDbotWorkspace({
   onOpenSettings: () => void;
   /** The user clicked a tab inside the frame. */
   onFrameTab: (tab: WorkspaceTab) => void;
-}): DbotWorkspace {
+}): WorkspaceEngine {
   const trading = useDerivTrading();
   const feed = useMarketFeed();
 
@@ -95,13 +112,15 @@ export function useDbotWorkspace({
   viewRef.current = view;
   const onFrameTabRef = useRef(onFrameTab);
   onFrameTabRef.current = onFrameTab;
+  const onOpenSettingsRef = useRef(onOpenSettings);
+  onOpenSettingsRef.current = onOpenSettings;
 
   const [frameRevision, setFrameRevision] = useState(0);
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [ready, setReady] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
   const [botRunning, setBotRunning] = useState(false);
-  const [sessionLimit, setSessionLimit] = useState<{ reason: 'take-profit' | 'stop-loss'; profit: number; currency: string } | null>(null);
+  const [sessionLimit, setSessionLimit] = useState<SessionLimit | null>(null);
   const [blockRegistry, setBlockRegistry] = useState<WorkspaceBlockInfo[]>([]);
   const [aiRuntimeRegistered, setAiRuntimeRegistered] = useState(false);
   const [shared, setShared] = useState<SharedData>({ markets: 0, ticks: 0 });
@@ -111,23 +130,22 @@ export function useDbotWorkspace({
   const [autoLink, setAutoLink] = useState(true);
   const [autoPaused, setAutoPaused] = useState(false);
 
-  // Refs mirror the state the message handlers and timers read. The frame's
-  // events arrive outside React's render cycle, so reading state directly there
-  // would act on a stale render.
-  const readyRef = useRef(false);
-  const linkRef = useRef<LinkSnapshot>(IDLE_LINK);
-  const grantRef = useRef<string | null>(null);
-  const grantRevisionRef = useRef(0);
-  const autoFailuresRef = useRef(0);
-  const cursorRef = useRef<BridgeCursor>({});
-  const accountSentRef = useRef<BridgeAccountMessage | null>(null);
-  const subscribedRef = useRef(false);
-  const pendingLoadRef = useRef<{ xml: string; name: string } | null>(null);
-  const pendingStrategyRef = useRef<string | null>(null);
+  const runtime = useRef<Runtime>({
+    ready: false,
+    linkStatus: 'idle',
+    grant: null,
+    grantRevision: 0,
+    autoFailures: 0,
+    cursor: {},
+    accountSent: null,
+    subscribed: false,
+    pendingLoad: null,
+    pendingStrategy: null,
+  });
 
-  /** State and ref move together, so no caller can observe a half-updated link. */
+  /** State and runtime move together, so no caller sees a half-updated link. */
   const setLinkState = useCallback((next: LinkSnapshot) => {
-    linkRef.current = next;
+    runtime.current.linkStatus = next.status;
     setLink(next);
   }, []);
 
@@ -145,11 +163,11 @@ export function useDbotWorkspace({
     }))
   ), []);
 
-  /** The account snapshot the workspace is allowed to see, or null. */
+  /** The account snapshot the workspace may see; null before the grant exists. */
   const currentAccountMessage = useCallback((): BridgeAccountMessage | null => {
     const session = tradingRef.current;
     const account = session.activeAccount;
-    if (!account || session.status !== 'connected' || grantRef.current !== account.accountId) return null;
+    if (!account || session.status !== 'connected' || runtime.current.grant !== account.accountId) return null;
     return buildAccountMessage({
       accountId: account.accountId,
       accountType: account.accountType === 'real' ? 'real' : account.accountType === 'demo' ? 'demo' : 'unknown',
@@ -162,42 +180,48 @@ export function useDbotWorkspace({
 
   const sendAccount = useCallback(() => {
     const account = currentAccountMessage();
-    if (!account || sameAccountState(accountSentRef.current, account)) return;
-    accountSentRef.current = account;
+    if (!account || sameAccountState(runtime.current.accountSent, account)) return;
+    runtime.current.accountSent = account;
     post(account);
   }, [currentAccountMessage, post]);
 
   /** Tell the workspace to forget the account when the link ends. */
   const clearSharedAccount = useCallback(() => {
-    if (!accountSentRef.current) return;
-    accountSentRef.current = null;
+    if (!runtime.current.accountSent) return;
+    runtime.current.accountSent = null;
     post({ type: 'signal-lab-account', accountId: '' });
   }, [post]);
 
   /** Count one automatic failure; after MAX_AUTO_ATTEMPTS stop retrying. */
   const failAutoLink = useCallback(() => {
-    autoFailuresRef.current += 1;
-    if (autoFailuresRef.current >= MAX_AUTO_ATTEMPTS) setAutoPaused(true);
+    runtime.current.autoFailures += 1;
+    if (runtime.current.autoFailures >= MAX_AUTO_ATTEMPTS) setAutoPaused(true);
   }, []);
 
   const sendSnapshot = useCallback(() => {
     const source = buildSource();
     const snapshot = buildBridgeSnapshot(source);
-    cursorRef.current = snapshot.cursor;
+    runtime.current.cursor = snapshot.cursor;
     if (snapshot.message) post(snapshot.message);
     sendAccount();
     const stats = bridgeStats(source);
     setShared({ markets: stats.markets, ticks: stats.ticks });
   }, [buildSource, post, sendAccount]);
 
+  /** Drop a local grant without expecting the frame to answer. */
+  const forgetGrant = useCallback(() => {
+    runtime.current.grant = null;
+    runtime.current.grantRevision += 1;
+  }, []);
+
   /** Claim the account, mint a single-use socket and hand it to the frame. */
   const linkAccount = useCallback(async (automatic: boolean) => {
-    if (!readyRef.current) return;
+    if (!runtime.current.ready) return;
     const session = tradingRef.current;
     const account = session.activeAccount;
-    if (session.status !== 'connected' || !account || grantRef.current) return;
-    grantRef.current = account.accountId;
-    const revision = ++grantRevisionRef.current;
+    if (session.status !== 'connected' || !account || runtime.current.grant) return;
+    runtime.current.grant = account.accountId;
+    const revision = ++runtime.current.grantRevision;
     setLinkState({
       status: 'connecting',
       accountId: account.accountId,
@@ -211,8 +235,8 @@ export function useDbotWorkspace({
       // The account may have changed while the OTP was in flight; a grant is
       // only ever valid for the exact account it was minted for.
       if (
-        grantRevisionRef.current !== revision
-        || grantRef.current !== socket.accountId
+        runtime.current.grantRevision !== revision
+        || runtime.current.grant !== socket.accountId
         || tradingRef.current.activeAccount?.accountId !== socket.accountId
         || tradingRef.current.status !== 'connected'
       ) return;
@@ -223,20 +247,13 @@ export function useDbotWorkspace({
         accountType: socket.accountType,
       }));
     } catch (error) {
-      if (grantRevisionRef.current !== revision) return;
-      grantRef.current = null;
-      grantRevisionRef.current += 1;
+      if (runtime.current.grantRevision !== revision) return;
+      forgetGrant();
       failAutoLink();
       setLinkState(IDLE_LINK);
       setNotice(error instanceof Error ? error.message : 'Could not connect DBot to this account.');
     }
-  }, [failAutoLink, post, setLinkState]);
-
-  /** Drop a local grant without expecting the frame to answer. */
-  const forgetGrant = useCallback(() => {
-    grantRef.current = null;
-    grantRevisionRef.current += 1;
-  }, []);
+  }, [failAutoLink, forgetGrant, post, setLinkState]);
 
   // ---- Messages from the frame -------------------------------------------
   useEffect(() => {
@@ -271,31 +288,31 @@ export function useDbotWorkspace({
           return;
         }
         case 'ready': {
-          readyRef.current = true;
+          runtime.current.ready = true;
           setReady(true);
           setWorkspaceError('');
           setNotice((current) => (current.startsWith('DBot ') ? '' : current));
           if (viewRef.current === 'builder' || viewRef.current === 'chart') post(hostNavigate(viewRef.current));
-          const pendingLoad = pendingLoadRef.current;
+          const pendingLoad = runtime.current.pendingLoad;
           if (pendingLoad) {
-            pendingLoadRef.current = null;
+            runtime.current.pendingLoad = null;
             post(hostLoadBot(pendingLoad));
           }
-          const pendingStrategy = pendingStrategyRef.current;
+          const pendingStrategy = runtime.current.pendingStrategy;
           if (pendingStrategy) {
-            pendingStrategyRef.current = null;
+            runtime.current.pendingStrategy = null;
             post(hostQuickStrategy(pendingStrategy));
           }
           // The frame asks for its own copy of Signal Lab's data on boot; answer
           // here too, in case that request raced the load event.
-          if (subscribedRef.current) sendSnapshot();
+          if (runtime.current.subscribed) sendSnapshot();
           return;
         }
         case 'feed-subscribe': {
           // Keep the 15-market history snapshot off Blockly's critical startup
           // path: deliver the first full snapshot once the workspace is ready.
-          subscribedRef.current = true;
-          if (readyRef.current) sendSnapshot();
+          runtime.current.subscribed = true;
+          if (runtime.current.ready) sendSnapshot();
           return;
         }
         case 'quick-strategy-open': {
@@ -317,8 +334,8 @@ export function useDbotWorkspace({
           return;
         }
         case 'account-connected': {
-          if (message.accountId !== grantRef.current || message.grantId !== grantRevisionRef.current) return;
-          autoFailuresRef.current = 0;
+          if (message.accountId !== runtime.current.grant || message.grantId !== runtime.current.grantRevision) return;
+          runtime.current.autoFailures = 0;
           setAutoPaused(false);
           setLinkState({
             status: 'connected',
@@ -330,7 +347,7 @@ export function useDbotWorkspace({
           return;
         }
         case 'account-disconnected': {
-          if (message.grantId !== grantRevisionRef.current) return;
+          if (message.grantId !== runtime.current.grantRevision) return;
           forgetGrant();
           clearSharedAccount();
           setLinkState(IDLE_LINK);
@@ -341,7 +358,7 @@ export function useDbotWorkspace({
           return;
         }
         case 'account-error': {
-          if (message.grantId !== grantRevisionRef.current) return;
+          if (message.grantId !== runtime.current.grantRevision) return;
           forgetGrant();
           clearSharedAccount();
           failAutoLink();
@@ -359,7 +376,7 @@ export function useDbotWorkspace({
         }
         case 'request-otp': {
           const session = tradingRef.current;
-          const valid = grantRef.current === message.accountId
+          const valid = runtime.current.grant === message.accountId
             && session.activeAccount?.accountId === message.accountId
             && session.status === 'connected';
           if (!valid) {
@@ -370,11 +387,11 @@ export function useDbotWorkspace({
             }));
             return;
           }
-          const revision = grantRevisionRef.current;
+          const revision = runtime.current.grantRevision;
           void session.createBotSocket().then((socket) => {
             if (
-              grantRevisionRef.current !== revision
-              || grantRef.current !== message.accountId
+              runtime.current.grantRevision !== revision
+              || runtime.current.grant !== message.accountId
               || tradingRef.current.activeAccount?.accountId !== message.accountId
               || tradingRef.current.status !== 'connected'
             ) {
@@ -419,12 +436,12 @@ export function useDbotWorkspace({
   // A grant belongs to one exact account. Switching or disconnecting in
   // Settings revokes it and stops the bot rather than quietly trading another.
   useEffect(() => {
-    if (!grantRef.current) return;
-    if (trading.activeAccount?.accountId !== grantRef.current || trading.status !== 'connected') {
-      post(hostDisconnectAccount(grantRevisionRef.current));
+    if (!runtime.current.grant) return;
+    if (trading.activeAccount?.accountId !== runtime.current.grant || trading.status !== 'connected') {
+      post(hostDisconnectAccount(runtime.current.grantRevision));
       clearSharedAccount();
       forgetGrant();
-      autoFailuresRef.current = 0;
+      runtime.current.autoFailures = 0;
       setAutoPaused(false);
       setLinkState(IDLE_LINK);
       setNotice('DBot was disconnected because the Signal Lab account changed or disconnected. Open contracts may still settle.');
@@ -436,17 +453,17 @@ export function useDbotWorkspace({
   useEffect(() => {
     if (!autoLink || !ready || link.status !== 'idle') return;
     if (trading.status !== 'connected' || !trading.activeAccount) return;
-    if (grantRef.current || autoFailuresRef.current >= MAX_AUTO_ATTEMPTS) return;
-    const delay = autoFailuresRef.current === 0
+    if (runtime.current.grant || runtime.current.autoFailures >= MAX_AUTO_ATTEMPTS) return;
+    const delay = runtime.current.autoFailures === 0
       ? 0
-      : Math.min(RETRY_BASE_MS * autoFailuresRef.current, RETRY_CAP_MS);
+      : Math.min(RETRY_BASE_MS * runtime.current.autoFailures, RETRY_CAP_MS);
     const timer = window.setTimeout(() => { void linkAccount(true); }, delay);
     return () => window.clearTimeout(timer);
   }, [autoLink, ready, link.status, trading.status, trading.activeAccount?.accountId, linkAccount]);
 
   // A different account gets a fresh set of automatic attempts.
   useEffect(() => {
-    autoFailuresRef.current = 0;
+    runtime.current.autoFailures = 0;
     setAutoPaused(false);
   }, [trading.activeAccount?.accountId]);
 
@@ -454,13 +471,13 @@ export function useDbotWorkspace({
   useEffect(() => {
     if (link.status !== 'connecting') return;
     const timer = window.setTimeout(() => {
-      post(hostDisconnectAccount(grantRevisionRef.current));
+      post(hostDisconnectAccount(runtime.current.grantRevision));
       clearSharedAccount();
       forgetGrant();
       failAutoLink();
       setLinkState(IDLE_LINK);
       setNotice('DBot did not confirm the account connection. Check the connection and try again.');
-    }, CONNECT_TIMEOUT_MS);
+    }, CONFIRM_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [link.status, post, clearSharedAccount, forgetGrant, failAutoLink, setLinkState]);
 
@@ -470,8 +487,8 @@ export function useDbotWorkspace({
     if (!ready) return;
     const timer = window.setInterval(() => {
       const source = buildSource();
-      const update = buildBridgeUpdate(source, cursorRef.current);
-      cursorRef.current = update.cursor;
+      const update = buildBridgeUpdate(source, runtime.current.cursor);
+      runtime.current.cursor = update.cursor;
       if (update.message) post(update.message);
       sendAccount();
       const stats = bridgeStats(source);
@@ -487,16 +504,16 @@ export function useDbotWorkspace({
   const handleFrameLoad = useCallback(() => {
     setFrameLoaded(true);
     setWorkspaceError('');
-    readyRef.current = false;
+    runtime.current.ready = false;
+    runtime.current.subscribed = false;
+    runtime.current.cursor = {};
+    runtime.current.accountSent = null;
     setReady(false);
     setBlockRegistry([]);
     setAiRuntimeRegistered(false);
     setBotRunning(false);
     setAiRunNotice('');
-    subscribedRef.current = false;
-    cursorRef.current = {};
-    accountSentRef.current = null;
-    if (grantRef.current) {
+    if (runtime.current.grant) {
       forgetGrant();
       setLinkState(IDLE_LINK);
       setNotice('The workspace reloaded and the account link ended. A running strategy has stopped; open contracts may still settle. Reconnecting…');
@@ -506,7 +523,7 @@ export function useDbotWorkspace({
 
   /** Boot a brand-new workspace: the frame starts on its default template. */
   const reload = useCallback(() => {
-    readyRef.current = false;
+    runtime.current.ready = false;
     setFrameLoaded(false);
     setWorkspaceError('');
     setReady(false);
@@ -515,12 +532,12 @@ export function useDbotWorkspace({
   }, []);
 
   const showTab = useCallback((next: SpaceView) => {
-    if ((next === 'builder' || next === 'chart') && readyRef.current) post(hostNavigate(next));
+    if ((next === 'builder' || next === 'chart') && runtime.current.ready) post(hostNavigate(next));
   }, [post]);
 
   const loadBot = useCallback((xml: string, name: string) => {
-    if (!readyRef.current) {
-      pendingLoadRef.current = { xml, name };
+    if (!runtime.current.ready) {
+      runtime.current.pendingLoad = { xml, name };
       setNotice('The bot will load as soon as the workspace connects.');
       return false;
     }
@@ -529,21 +546,21 @@ export function useDbotWorkspace({
   }, [post]);
 
   const loadAnalysisBot = useCallback((xml: string, name: string, analysis: unknown) => {
-    if (!readyRef.current) return false;
+    if (!runtime.current.ready) return false;
     post(hostLoadBot({ xml, name, analysisSnapshot: analysis }));
     return true;
   }, [post]);
 
   const loadAndRunBot = useCallback((xml: string, name: string, analysis: unknown) => {
-    if (!readyRef.current) return false;
+    if (!runtime.current.ready) return false;
     setSessionLimit(null);
     post(hostLoadBot({ xml, name, runAfterLoad: true, analysisSnapshot: analysis }));
     return true;
   }, [post]);
 
   const openQuickStrategy = useCallback((strategy: string) => {
-    if (!readyRef.current) {
-      pendingStrategyRef.current = strategy;
+    if (!runtime.current.ready) {
+      runtime.current.pendingStrategy = strategy;
       setNotice('The strategy form will open as soon as the workspace connects.');
       return;
     }
@@ -556,25 +573,25 @@ export function useDbotWorkspace({
 
   /** Manual link: resumes automatic linking after a pause. */
   const connectAccount = useCallback(async () => {
-    if (linkRef.current.status !== 'idle') return;
-    if (!readyRef.current) {
+    if (runtime.current.linkStatus !== 'idle') return;
+    if (!runtime.current.ready) {
       setNotice('Wait for the bot workspace to finish connecting before linking an account.');
       return;
     }
     const session = tradingRef.current;
     if (session.status !== 'connected' || !session.activeAccount) {
-      onOpenSettings();
+      onOpenSettingsRef.current();
       return;
     }
-    autoFailuresRef.current = 0;
+    runtime.current.autoFailures = 0;
     setAutoPaused(false);
     setAutoLink(true);
     await linkAccount(false);
-  }, [linkAccount, onOpenSettings]);
+  }, [linkAccount]);
 
   const disconnectAccount = useCallback(() => {
     if (!window.confirm('Stop the DBot link and pause automatic linking? Open contracts may continue to settle on Deriv.')) return;
-    post(hostDisconnectAccount(grantRevisionRef.current));
+    post(hostDisconnectAccount(runtime.current.grantRevision));
     clearSharedAccount();
     forgetGrant();
     setAutoLink(false);

@@ -1,10 +1,10 @@
-// The frame chrome around the embedded workspace: status, shared-data counter,
-// full screen and the reload that boots a fresh canvas.
+// Frame chrome of the rebuilt workspace: a compact toolbar, the always-mounted
+// iframe and the access rail underneath it.
 //
-// The iframe is mounted for the whole life of the Space (the store and the
-// Market tools simply hide it), because unmounting it would stop a running bot.
+// The iframe is mounted for the whole life of the Space (the store, tools and
+// PRO views simply hide it), because unmounting it would stop a running bot.
 import type { RefObject } from 'react';
-import { Boxes, CircleHelp, LoaderCircle, Maximize2, Signal } from 'lucide-react';
+import { Boxes, CircleHelp, LoaderCircle, Maximize2, RefreshCw, Signal } from 'lucide-react';
 import { sharedTicksLabel, type LinkSnapshot, type SharedData, type SpaceView } from './protocol';
 
 type WorkspacePanelProps = {
@@ -53,24 +53,20 @@ export function WorkspacePanel({
   }
 
   return (
-    <div className={hidden ? 'hidden' : 'mt-4'}>
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-        <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-3 py-2 sm:px-4">
-          <div className="flex items-center gap-2 text-[11px] font-bold">
-            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary"><Boxes size={13} /></span>
-            Deriv Bot workspace
-            <span className="hidden font-normal text-muted-foreground sm:inline">/ {view === 'chart' ? 'Charts' : 'Builder'}</span>
+    <div className={hidden ? 'hidden' : 'ws-panel-wrap'}>
+      <div className="ws-frame-card">
+        <div className="ws-frame-bar">
+          <div className="ws-frame-title">
+            <span className="ws-frame-icon"><Boxes size={14} /></span>
+            <strong>Deriv Bot workspace</strong>
+            <span className="ws-frame-crumb">/ {view === 'chart' ? 'Charts' : 'Builder'}</span>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <span
-              className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground"
-              data-testid="dbot-shared-data"
-              title="Ticks Signal Lab has collected and shares with the workspace"
-            >
+          <div className="ws-frame-actions">
+            <span className="ws-frame-metric" data-testid="dbot-shared-data" title="Ticks Signal Lab has collected and shares with the workspace">
               <Signal size={12} className={shared.ticks ? 'text-primary' : ''} />
               {sharedTicksLabel(shared)}
             </span>
-            <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="dbot-workspace-status">
+            <span className="ws-frame-status" data-testid="dbot-workspace-status">
               <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
               {status}
             </span>
@@ -78,16 +74,16 @@ export function WorkspacePanel({
               <button
                 type="button"
                 onClick={onReload}
-                className="text-[10px] font-bold text-primary hover:underline"
+                className="ws-frame-link"
                 data-testid="dbot-reload-workspace-header"
               >
-                Reload
+                <RefreshCw size={11} /> Reload
               </button>
             )}
             <button
               type="button"
               onClick={goFullscreen}
-              className="inline-flex items-center gap-1 text-[10px] font-bold text-primary hover:underline"
+              className="ws-frame-link"
               title="Expand this workspace without reloading it"
               data-testid="dbot-fullscreen"
             >
@@ -95,7 +91,8 @@ export function WorkspacePanel({
             </button>
           </div>
         </div>
-        <div className="relative">
+
+        <div className="ws-frame-stage">
           <iframe
             key={frameRevision}
             ref={frameRef}
@@ -103,48 +100,45 @@ export function WorkspacePanel({
             title="Deriv Bot workspace"
             allow="fullscreen"
             allowFullScreen
-            className="block w-full bg-white"
+            className="ws-frame"
             style={{ height: 'min(850px, calc(100dvh - 160px))', minHeight: 480 }}
             data-testid="dbot-frame"
             onLoad={onFrameLoad}
           />
           {!ready && (
             <div
-              className={`absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-white px-6 text-center text-slate-700 ${workspaceError ? '' : 'pointer-events-none'}`}
+              className={`ws-frame-overlay ${workspaceError ? '' : 'pointer-events-none'}`}
               role={workspaceError ? 'alert' : 'status'}
               aria-live="polite"
               data-testid="dbot-initializing"
             >
               {workspaceError ? (
                 <>
-                  <p className="max-w-md text-sm font-semibold">{workspaceError}</p>
-                  <button type="button" onClick={onReload} className="rounded-md bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700">
+                  <p className="ws-overlay-title">{workspaceError}</p>
+                  <button type="button" onClick={onReload} className="ws-overlay-button">
                     Reload workspace
                   </button>
                 </>
               ) : (
                 <>
-                  <LoaderCircle size={24} className="animate-spin text-indigo-600" />
-                  <p className="text-sm font-semibold">{frameLoaded ? 'Initializing DBot workspace…' : 'Starting DBot workspace…'}</p>
-                  <p className="max-w-md text-xs text-slate-500">Loading the bot builder and connecting it to Signal Lab.</p>
+                  <LoaderCircle size={26} className="animate-spin text-indigo-500" />
+                  <p className="ws-overlay-title">{frameLoaded ? 'Initializing DBot workspace…' : 'Starting DBot workspace…'}</p>
+                  <p className="ws-overlay-note">Loading the bot builder and connecting it to Signal Lab.</p>
                 </>
               )}
             </div>
           )}
         </div>
       </div>
-      <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
-        <p className="flex max-w-3xl items-start gap-2 text-[11px] leading-5 text-muted-foreground">
+
+      <div className="ws-rail">
+        <p className="ws-rail-help">
           <CircleHelp className="mt-0.5 shrink-0" size={13} />
           Drag blocks from the menu, connect them to your strategy, and use the builder&rsquo;s import and save
-          controls for XML files. The <strong className="font-semibold text-foreground">Signal Lab</strong> block
-          group reads the ticks, balance and positions this app already collected. A running bot needs this
-          browser tab to remain open.
+          controls for XML files. The <strong>Signal Lab</strong> block group reads the ticks, balance and
+          positions this app already collected. A running bot needs this browser tab to remain open.
         </p>
-        <div
-          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-card px-3 py-2 text-[10px] text-muted-foreground"
-          data-testid="dbot-access-summary"
-        >
+        <div className="ws-access" data-testid="dbot-access-summary">
           <span className={`h-1.5 w-1.5 rounded-full ${link.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
           {link.status === 'connected' ? (
             <>

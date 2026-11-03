@@ -1,18 +1,21 @@
-// Wire protocol between the DBot Space shell (this app) and the embedded
-// workspace (vendor/deriv-bot) running in a same-origin iframe.
+// Wire contract between the rebuilt DBot Space shell and the embedded workspace.
 //
-// Every message carries a `source` tag so neither side can mistake an unrelated
-// postMessage for its own, and the shell parses instead of trusting: the frame
-// is a separate application, so what it sends is untrusted input with a fixed
-// shape. Parsing lives here, away from React, so the shapes are unit-tested
-// without a browser (tests/dbot-space-protocol.test.mjs).
+// The frame (vendor/deriv-bot) is deliberately untouched by this rebuild, so
+// every shape below is a frozen protocol: renaming a field here makes the frame
+// stop answering. Two rules keep the boundary safe:
+//
+//   1. inbound data is untrusted — `parseFrameMessage` validates and clamps it
+//      before React ever sees it;
+//   2. outbound data is stamped with HOST_SOURCE *last* (`tagHostPayload`),
+//      because the pure bridge payloads in lib/dbot-bridge.ts carry no source
+//      field at all and the frame drops untagged messages.
 
 /** Tag on every message the shell posts into the frame. */
 export const HOST_SOURCE = 'signal-lab';
 /** Tag on every message the frame posts back to the shell. */
 export const FRAME_SOURCE = 'signal-lab-dbot';
 
-/** Blocks the workspace may report for the AI copilot; more is not useful. */
+/** Upper bound on blocks the frame may report to the AI copilot. */
 export const BLOCK_REGISTRY_LIMIT = 800;
 
 const NAME_LIMIT = 120;
@@ -44,7 +47,7 @@ export type LinkSnapshot = {
   accountType: AccountKind;
 };
 
-/** Everything the frame can say to the shell. */
+/** Everything the frame is allowed to say to the shell. */
 export type FrameMessage =
   | { type: 'ready' }
   | { type: 'workspace-error'; message: string }
@@ -70,42 +73,41 @@ export type LinkInput = {
   autoPaused: boolean;
 };
 
-function record(value: unknown): Record<string, unknown> | null {
+function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
 }
 
-function text(value: unknown, limit: number): string {
+function boundedText(value: unknown, limit: number): string {
   return typeof value === 'string' ? value.slice(0, limit) : '';
 }
 
-function number(value: unknown): number | null {
+function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function blocks(value: unknown): WorkspaceBlockInfo[] {
+function blockList(value: unknown): WorkspaceBlockInfo[] {
   if (!Array.isArray(value)) return [];
   const output: WorkspaceBlockInfo[] = [];
   for (const entry of value.slice(0, BLOCK_REGISTRY_LIMIT)) {
-    const block = record(entry);
+    const block = asRecord(entry);
     if (!block) continue;
-    const type = text(block.type, NAME_LIMIT);
-    const name = text(block.name, NAME_LIMIT);
-    const category = text(block.category, CATEGORY_LIMIT);
+    const type = boundedText(block.type, NAME_LIMIT);
+    const name = boundedText(block.name, NAME_LIMIT);
+    const category = boundedText(block.category, CATEGORY_LIMIT);
     if (!type || !name || !category) continue;
-    output.push({ type, name, category, description: text(block.description, DESCRIPTION_LIMIT) });
+    output.push({ type, name, category, description: boundedText(block.description, DESCRIPTION_LIMIT) });
   }
   return output;
 }
 
 /**
- * Validate and normalise one message from the frame. Returns null for anything
- * that is not ours, is malformed, or carries a field the shell cannot use —
- * callers can therefore ignore the result without any further checks.
+ * Validate and normalise one frame message. Anything foreign, malformed or
+ * missing a required field becomes null, so callers can ignore it safely.
  */
 export function parseFrameMessage(data: unknown): FrameMessage | null {
-  const raw = record(data);
+  const raw = asRecord(data);
   if (!raw || raw.source !== FRAME_SOURCE || typeof raw.type !== 'string') return null;
   switch (raw.type) {
     case 'ready':
@@ -117,65 +119,65 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case 'workspace-error':
       return {
         type: 'workspace-error',
-        message: text(raw.message, MESSAGE_LIMIT) || 'DBot could not finish loading.',
+        message: boundedText(raw.message, MESSAGE_LIMIT) || 'DBot could not finish loading.',
       };
     case 'block-registry':
       return {
         type: 'block-registry',
-        blocks: blocks(raw.blocks),
+        blocks: blockList(raw.blocks),
         aiRuntimeRegistered: raw.aiRuntimeRegistered === true,
       };
     case 'bot-status':
       return { type: 'bot-status', running: raw.running === true };
     case 'session-limit-hit': {
-      const profit = number(raw.profit);
-      const currency = text(raw.currency, 8).toUpperCase();
+      const profit = finiteNumber(raw.profit);
+      const currency = boundedText(raw.currency, 8).toUpperCase();
       if ((raw.reason !== 'take-profit' && raw.reason !== 'stop-loss') || profit === null || !/^[A-Z]{3,5}$/.test(currency)) return null;
       return { type: 'session-limit-hit', reason: raw.reason, profit, currency };
     }
     case 'bot-run-started':
       return {
         type: 'bot-run-started',
-        message: text(raw.message, MESSAGE_LIMIT) || 'DBot started the loaded strategy.',
+        message: boundedText(raw.message, MESSAGE_LIMIT) || 'DBot started the loaded strategy.',
       };
     case 'bot-loaded':
       return {
         type: 'bot-loaded',
-        name: text(raw.name, NAME_LIMIT) || 'The bot',
+        name: boundedText(raw.name, NAME_LIMIT) || 'The bot',
         runAfterLoad: raw.runAfterLoad === true,
       };
     case 'active-tab': {
-      const tab = number(raw.tab);
+      const tab = finiteNumber(raw.tab);
       return tab === null ? null : { type: 'active-tab', tab };
     }
     case 'account-connected': {
-      const grantId = number(raw.grantId);
-      const accountId = text(raw.accountId, ACCOUNT_LIMIT);
+      const grantId = finiteNumber(raw.grantId);
+      const accountId = boundedText(raw.accountId, ACCOUNT_LIMIT);
       return grantId === null || !accountId ? null : { type: 'account-connected', accountId, grantId };
     }
     case 'account-disconnected': {
-      const grantId = number(raw.grantId);
+      const grantId = finiteNumber(raw.grantId);
       return grantId === null
         ? null
         : { type: 'account-disconnected', grantId, connectionLost: raw.reason === 'connection-lost' };
     }
     case 'account-error': {
-      const grantId = number(raw.grantId);
+      const grantId = finiteNumber(raw.grantId);
       return grantId === null
         ? null
         : {
           type: 'account-error',
           grantId,
-          message: text(raw.message, MESSAGE_LIMIT) || 'DBot could not connect the account.',
+          message: boundedText(raw.message, MESSAGE_LIMIT) || 'DBot could not connect the account.',
         };
     }
     case 'request-otp': {
-      const requestId = number(raw.requestId);
-      const accountId = text(raw.accountId, ACCOUNT_LIMIT);
+      const requestId = finiteNumber(raw.requestId);
+      const accountId = boundedText(raw.accountId, ACCOUNT_LIMIT);
       return requestId === null || !accountId ? null : { type: 'request-otp', requestId, accountId };
     }
     case 'error':
-      return { type: 'error', message: text(raw.message, MESSAGE_LIMIT) || 'DBot could not complete that action.' };
+      return { type: 'error', message: boundedText(raw.message, MESSAGE_LIMIT) || 'DBot could not complete that action.' };
     default:
       return null;
   }
@@ -223,13 +225,9 @@ export type HostMessage =
   | OtpResponseMessage;
 
 /**
- * Stamp any payload as ours before it crosses the iframe boundary.
- *
- * The control messages below already carry their tag, but the data bridge
- * (`lib/dbot-bridge.ts`) is deliberately wire-only — its feed and account
- * frames have no `source` field — and the frame ignores anything that is not
- * tagged `signal-lab`. Tagging here, last, means a payload cannot be posted
- * untagged, and a payload cannot spoof a different source either.
+ * Stamp any payload as ours *after* it is built. The control builders below
+ * already carry their tag, but the data bridge is wire-only; tagging here means
+ * a payload can neither be posted untagged nor spoof a different source.
  */
 export function tagHostPayload<T extends object>(payload: T): T & { source: typeof HOST_SOURCE } {
   return { ...payload, source: HOST_SOURCE };
