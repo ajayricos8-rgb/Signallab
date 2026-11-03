@@ -23,10 +23,14 @@
   depend on the account, symbol, currency and contract: verify them with Deriv
   before trading.
 
-  Risk defaults: base 0.35, max 1.5, max 2% of balance (strict), 30 loss limit,
-  50 target, 15 session-loss pause, 4 consecutive losses and 100 contracts.
-  No martingale. A failed price, balance or safety gate blocks entry. Limits
-  cannot protect against disconnections or other execution/settlement anomalies.
+  Risk defaults: base 0.35, max 1.5, max 2% of balance (strict), 30 stop loss,
+  50 take profit, 15 session-loss pause, 4 consecutive losses and 100 contracts.
+  Martingale ladder: a losing trade multiplies the next stake by "martingale
+  multiplier" for up to "martingale steps" rungs, clamped by "ai max stake"; a win
+  resets the ladder and the step limit abandons it. Set the multiplier to 1, or
+  the steps to 0, to switch recovery off. "take profit" and "stop loss" stop the
+  session. A failed price, balance or safety gate blocks entry. Limits cannot
+  protect against disconnections or other execution/settlement anomalies.
   Controls are editable in Run once at start. Research and limitations:
   docs/even-odd-research.md.
 -->
@@ -34,8 +38,8 @@
   <variables>
     <variable type="" id="vbase_stake">base stake</variable>
     <variable type="" id="vstake">stake</variable>
-    <variable type="" id="vai_loss_limit">ai loss limit</variable>
-    <variable type="" id="vai_profit_target">ai profit target</variable>
+    <variable type="" id="vstop_loss">stop loss</variable>
+    <variable type="" id="vtake_profit">take profit</variable>
     <variable type="" id="vai_stake_percent">ai stake percent</variable>
     <variable type="" id="vai_max_stake">ai max stake</variable>
     <variable type="" id="vai_kelly_fraction">ai kelly fraction</variable>
@@ -66,13 +70,16 @@
     <variable type="" id="vai_decision">ai decision</variable>
     <variable type="" id="vai_ready">ai ready</variable>
     <variable type="" id="vai_side">ai side</variable>
+    <variable type="" id="vmartingale_multiplier">martingale multiplier</variable>
+    <variable type="" id="vmartingale_steps">martingale steps</variable>
+    <variable type="" id="vai_ladder_step">ai ladder step</variable>
   </variables>
 <block type="trade_definition" id="trade0369" x="0" y="0">
   <statement name="TRADE_OPTIONS">
     <block type="trade_definition_market" id="td0367"><field name="MARKET_LIST">volidx</field><field name="SUBMARKET_LIST">random_index</field><field name="SYMBOL_LIST">R_100</field><next><block type="trade_definition_tradetype" id="td0366"><field name="TRADETYPECAT_LIST">digits</field><field name="TRADETYPE_LIST">evenodd</field><next><block type="trade_definition_contracttype" id="td0365"><field name="TYPE_LIST">both</field><next><block type="trade_definition_candleinterval" id="td0364"><field name="CANDLEINTERVAL_LIST">60</field><next><block type="trade_definition_restartbuysell" id="td0363"><field name="TIME_MACHINE_ENABLED">FALSE</field><next><block type="trade_definition_restartonerror" id="td0362"><field name="RESTARTONERROR">FALSE</field></block></next></block></next></block></next></block></next></block></next></block>
   </statement>
   <statement name="INITIALIZATION">
-    <block type="variables_set" id="b0002">
+    <block type="variables_set" id="mg006"><field name="VAR" id="vmartingale_multiplier">martingale multiplier</field><value name="VALUE"><block type="math_number" id="mg001"><field name="NUM">2</field></block></value><next><block type="variables_set" id="mg005"><field name="VAR" id="vmartingale_steps">martingale steps</field><value name="VALUE"><block type="math_number" id="mg002"><field name="NUM">3</field></block></value><next><block type="variables_set" id="mg004"><field name="VAR" id="vai_ladder_step">ai ladder step</field><value name="VALUE"><block type="math_number" id="mg003"><field name="NUM">0</field></block></value><next><block type="variables_set" id="b0002">
       <field name="VAR" id="vbase_stake">base stake</field>
       <value name="VALUE">
         <block type="math_number" id="b0001">
@@ -89,7 +96,7 @@
           </value>
           <next>
             <block type="variables_set" id="b0006">
-              <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+              <field name="VAR" id="vstop_loss">stop loss</field>
               <value name="VALUE">
                 <block type="math_number" id="b0005">
                   <field name="NUM">30</field>
@@ -97,7 +104,7 @@
               </value>
               <next>
                 <block type="variables_set" id="b0008">
-                  <field name="VAR" id="vai_profit_target">ai profit target</field>
+                  <field name="VAR" id="vtake_profit">take profit</field>
                   <value name="VALUE">
                     <block type="math_number" id="b0007">
                       <field name="NUM">50</field>
@@ -437,7 +444,7 @@
                                                                                                                                                                 <block type="x_parity_reverse" id="b0088">
                                                                                                                                                                 </block>
                                                                                                                                                               </value>
-                                                                                                                                                            </block>
+                                                                                                                                                            <next><block type="notify" id="mg007"><field name="NOTIFICATION_TYPE">info</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="mg008"><field name="TEXT">Martingale ladder armed — a losing trade multiplies the next stake by the martingale multiplier for up to the configured martingale steps, capped by the max stake ceiling; a win resets it. Every laddered stake still passes the balance percentage, loss streak and session limits, and take profit and stop loss stop the session.</field></block></value></block></next></block>
                                                                                                                                                           </next>
                                                                                                                                                         </block>
                                                                                                                                                       </next>
@@ -513,7 +520,7 @@
           </next>
         </block>
       </next>
-    </block>
+    </block></next></block></next></block></next></block>
   </statement>
   <statement name="SUBMARKET">
     <block type="trade_definition_tradeoptions" id="td0368"><mutation has_first_barrier="false" has_second_barrier="false" has_prediction="false"></mutation><field name="DURATIONTYPE_LIST">t</field><field name="CURRENCY_LIST">USD</field>  <value name="DURATION">
@@ -720,7 +727,7 @@
                                   </value>
                                 </block>
                               </value>
-                            </block>
+                            <next><block type="controls_if" id="mg028"><value name="IF0"><block type="logic_compare" id="mg011"><field name="OP">GT</field><value name="A"><block type="variables_get" id="mg009"><field name="VAR" id="vai_ladder_step">ai ladder step</field></block></value><value name="B"><block type="math_number" id="mg010"><field name="NUM">0</field></block></value></block></value><statement name="DO0"><block type="controls_if" id="mg027"><mutation else="1"></mutation><value name="IF0"><block type="logic_compare" id="mg018"><field name="OP">GT</field><value name="A"><block type="math_arithmetic" id="mg016"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="mg012"><field name="VAR" id="vstake">stake</field></block></value><value name="B"><block type="math_arithmetic" id="mg015"><field name="OP">POWER</field><value name="A"><block type="variables_get" id="mg013"><field name="VAR" id="vmartingale_multiplier">martingale multiplier</field></block></value><value name="B"><block type="variables_get" id="mg014"><field name="VAR" id="vai_ladder_step">ai ladder step</field></block></value></block></value></block></value><value name="B"><block type="variables_get" id="mg017"><field name="VAR" id="vai_max_stake">ai max stake</field></block></value></block></value><statement name="DO0"><block type="variables_set" id="mg020"><field name="VAR" id="vstake">stake</field><value name="VALUE"><block type="variables_get" id="mg019"><field name="VAR" id="vai_max_stake">ai max stake</field></block></value></block></statement><statement name="ELSE"><block type="variables_set" id="mg026"><field name="VAR" id="vstake">stake</field><value name="VALUE"><block type="math_arithmetic" id="mg025"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="mg021"><field name="VAR" id="vstake">stake</field></block></value><value name="B"><block type="math_arithmetic" id="mg024"><field name="OP">POWER</field><value name="A"><block type="variables_get" id="mg022"><field name="VAR" id="vmartingale_multiplier">martingale multiplier</field></block></value><value name="B"><block type="variables_get" id="mg023"><field name="VAR" id="vai_ladder_step">ai ladder step</field></block></value></block></value></block></value></block></statement></block></statement></block></next></block>
                           </next>
                         </block>
                       </next>
@@ -879,12 +886,12 @@
                                   </value>
                                   <value name="LOSS">
                                     <block type="variables_get" id="b0139">
-                                      <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                      <field name="VAR" id="vstop_loss">stop loss</field>
                                     </block>
                                   </value>
                                   <value name="TARGET">
                                     <block type="variables_get" id="b0140">
-                                      <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                      <field name="VAR" id="vtake_profit">take profit</field>
                                     </block>
                                   </value>
                                   <value name="PERCENT">
@@ -1145,12 +1152,12 @@
                                       </value>
                                       <value name="LOSS">
                                         <block type="variables_get" id="b0171">
-                                          <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                          <field name="VAR" id="vstop_loss">stop loss</field>
                                         </block>
                                       </value>
                                       <value name="TARGET">
                                         <block type="variables_get" id="b0172">
-                                          <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                          <field name="VAR" id="vtake_profit">take profit</field>
                                         </block>
                                       </value>
                                       <value name="PERCENT">
@@ -1353,14 +1360,14 @@
             </block>
           </value>
           <statement name="DO0">
-            <block type="variables_set" id="b0274">
+            <block type="controls_if" id="mg034"><value name="IF0"><block type="logic_compare" id="mg031"><field name="OP">GT</field><value name="A"><block type="variables_get" id="mg029"><field name="VAR" id="vai_ladder_step">ai ladder step</field></block></value><value name="B"><block type="math_number" id="mg030"><field name="NUM">0</field></block></value></block></value><statement name="DO0"><block type="notify" id="mg032"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="mg033"><field name="TEXT">Trade won — the martingale ladder was reset to the base stake.</field></block></value></block></statement><next><block type="variables_set" id="mg036"><field name="VAR" id="vai_ladder_step">ai ladder step</field><value name="VALUE"><block type="math_number" id="mg035"><field name="NUM">0</field></block></value><next><block type="variables_set" id="b0274">
               <field name="VAR" id="vai_loss_streak">ai loss streak</field>
               <value name="VALUE">
                 <block type="math_number" id="b0273">
                   <field name="NUM">0</field>
                 </block>
               </value>
-            </block>
+            </block></next></block></next></block>
           </statement>
           <statement name="ELSE">
             <block type="controls_if" id="b0280">
@@ -1387,7 +1394,7 @@
                       </value>
                     </block>
                   </value>
-                </block>
+                <next><block type="variables_set" id="mg046"><field name="VAR" id="vai_ladder_step">ai ladder step</field><value name="VALUE"><block type="math_arithmetic" id="mg045"><field name="OP">ADD</field><value name="A"><block type="variables_get" id="mg043"><field name="VAR" id="vai_ladder_step">ai ladder step</field></block></value><value name="B"><block type="math_number" id="mg044"><field name="NUM">1</field></block></value></block></value><next><block type="controls_if" id="mg050"><mutation else="1"></mutation><value name="IF0"><block type="logic_compare" id="mg049"><field name="OP">GTE</field><value name="A"><block type="variables_get" id="mg047"><field name="VAR" id="vai_ladder_step">ai ladder step</field></block></value><value name="B"><block type="variables_get" id="mg048"><field name="VAR" id="vmartingale_steps">martingale steps</field></block></value></block></value><statement name="DO0"><block type="variables_set" id="mg038"><field name="VAR" id="vai_ladder_step">ai ladder step</field><value name="VALUE"><block type="math_number" id="mg037"><field name="NUM">0</field></block></value><next><block type="notify" id="mg039"><field name="NOTIFICATION_TYPE">warn</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="mg040"><field name="TEXT">Trade lost — the martingale ladder reached its step limit and was abandoned. The next entry is priced from the base stake again.</field></block></value></block></next></block></statement><statement name="ELSE"><block type="notify" id="mg041"><field name="NOTIFICATION_TYPE">info</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="mg042"><field name="TEXT">Trade lost — the martingale ladder stepped up: the next stake is the cycle stake times the martingale multiplier, capped by the max stake ceiling and still checked by the balance percentage and stop loss.</field></block></value></block></statement></block></next></block></next></block>
               </statement>
             </block>
           </statement>
@@ -1689,12 +1696,12 @@
                                                           </value>
                                                           <value name="LOSS">
                                                             <block type="variables_get" id="b0255">
-                                                              <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                                              <field name="VAR" id="vstop_loss">stop loss</field>
                                                             </block>
                                                           </value>
                                                           <value name="TARGET">
                                                             <block type="variables_get" id="b0256">
-                                                              <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                                              <field name="VAR" id="vtake_profit">take profit</field>
                                                             </block>
                                                           </value>
                                                           <value name="PERCENT">
@@ -1725,7 +1732,7 @@
                                                                   </value>
                                                                   <value name="B">
                                                                     <block type="variables_get" id="b0260">
-                                                                      <field name="VAR" id="vai_loss_limit">ai loss limit</field>
+                                                                      <field name="VAR" id="vstop_loss">stop loss</field>
                                                                     </block>
                                                                   </value>
                                                                 </block>
@@ -1742,7 +1749,7 @@
                                                               </value>
                                                               <value name="B">
                                                                 <block type="variables_get" id="b0264">
-                                                                  <field name="VAR" id="vai_profit_target">ai profit target</field>
+                                                                  <field name="VAR" id="vtake_profit">take profit</field>
                                                                 </block>
                                                               </value>
                                                             </block>
@@ -1823,7 +1830,7 @@
                                                 </block>
                                               </statement>
                                               <statement name="ELSE">
-                                                <block type="notify" id="b0358">
+                                                <block type="controls_if" id="mg064"><mutation else="1"></mutation><value name="IF0"><block type="logic_compare" id="mg057"><field name="OP">GTE</field><value name="A"><block type="variables_get" id="mg055"><field name="VAR" id="vbaseline_profit">baseline profit</field></block></value><value name="B"><block type="variables_get" id="mg056"><field name="VAR" id="vtake_profit">take profit</field></block></value></block></value><statement name="DO0"><block type="notify" id="mg051"><field name="NOTIFICATION_TYPE">success</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="mg052"><field name="TEXT">Take profit reached — the session finished at or above the configured take profit, so new entries are stopped. Open contracts still settle; restart the bot to begin a new session.</field></block></value></block></statement><statement name="ELSE"><block type="controls_if" id="mg063"><mutation else="1"></mutation><value name="IF0"><block type="logic_compare" id="mg062"><field name="OP">LTE</field><value name="A"><block type="variables_get" id="mg058"><field name="VAR" id="vbaseline_profit">baseline profit</field></block></value><value name="B"><block type="math_arithmetic" id="mg061"><field name="OP">MULTIPLY</field><value name="A"><block type="math_number" id="mg059"><field name="NUM">-1</field></block></value><value name="B"><block type="variables_get" id="mg060"><field name="VAR" id="vstop_loss">stop loss</field></block></value></block></value></block></value><statement name="DO0"><block type="notify" id="mg053"><field name="NOTIFICATION_TYPE">error</field><field name="NOTIFICATION_SOUND">silent</field><value name="MESSAGE"><block type="text" id="mg054"><field name="TEXT">Stop loss reached — the session finished at or below the configured stop loss, so new entries are stopped to protect the balance. Open contracts still settle; review the journal before restarting.</field></block></value></block></statement><statement name="ELSE"><block type="notify" id="b0358">
                                                   <field name="NOTIFICATION_TYPE">warn</field>
                                                   <field name="NOTIFICATION_SOUND">silent</field>
                                                   <value name="MESSAGE">
@@ -1831,7 +1838,7 @@
                                                       <field name="TEXT">Session brake: loss, target, drawdown, loss streak or trade limit reached. Review before restarting.</field>
                                                     </block>
                                                   </value>
-                                                </block>
+                                                </block></statement></block></statement></block>
                                               </statement>
                                             </block>
                                           </next>

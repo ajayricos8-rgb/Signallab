@@ -23,3 +23,24 @@ npm run lint
 # Build production bundle
 npm run build
 ```
+
+## Deployment
+
+`npm run build` writes the complete static app to `dist/`. The bot presets are
+imported into that bundle, so a strategy edit is published by a new build, not
+by editing a running deployment.
+
+### Cloudflare Workers
+
+`wrangler.jsonc` deploys `dist` as a Workers static-assets project named
+`signallab`, the service the Cloudflare GitHub integration builds:
+
+- build command: `npm run build`
+- deploy command: `npx wrangler deploy`
+
+`public/_headers` marks the fingerprinted files under `/assets` immutable and
+keeps `index.html` out of the cache, so a deployment is visible immediately.
+Routing is deliberately not a single-page-application fallback: `/dbot/index.html`
+is a real file the embedded workspace loads, and a catch-all would answer a
+missing one with the host app. For a manual deploy, run `npm run deploy`
+(`wrangler` is fetched by `npx`; nothing needs to be installed globally).
