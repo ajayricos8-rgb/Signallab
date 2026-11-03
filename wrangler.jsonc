@@ -5,7 +5,7 @@
     "directory": "./dist"
   },
   "build": {
-    "command": "npm install --no-audit --no-fund --package-lock=false && npm run build"
+    "command": "npm run build:cloudflare"
   },
   "previews": {},
   "observability": {

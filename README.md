@@ -45,17 +45,25 @@ both build paths:
   upload an empty directory.
 
 `wrangler.jsonc` also declares `previews: {}` for the non-production
-`wrangler preview` command and a custom `build.command`. Wrangler therefore
-produces `dist` itself before an upload even if the dashboard's optional build
-command is empty or stale; leaving the dashboard build command as `npm run build`
-is also fine. The minimal `pnpm-workspace.yaml` keeps the old
+`wrangler preview` command and a custom `build.command`. The command calls
+`scripts/cloudflare-build.mjs`, which runs `npm ci --include=dev` from the
+committed `package-lock.json` before building. This makes the build repeatable
+and keeps Vite available even when the build host sets `NODE_ENV=production`.
+Wrangler therefore produces `dist` itself before an upload even if the
+dashboard's optional build command is empty or stale; leaving the dashboard
+build command as `npm run build` is also fine. The minimal
+`pnpm-workspace.yaml` keeps the old
 `pnpm --filter @workspace/deriv-signal-lab build` command working as a thin
 wrapper around that same root build. `npm run check:deploy` validates these
 settings before a manual deploy.
 
-`public/_headers` marks the fingerprinted files under `/assets` immutable and
-keeps `index.html` out of the cache, so a deployment is visible immediately.
-Routing is deliberately not a single-page-application fallback: `/dbot/index.html`
-is a real file the embedded workspace loads, and a catch-all would answer a
-missing one with the host app. For a manual deploy, run `npm run deploy`; the
-pinned local Wrangler is used and nothing needs to be installed globally.
+Each root build replaces—not merely overlays—the compatibility publish folders.
+That removes obsolete hashed assets and ensures a legacy publish directory is
+an exact copy of the freshly built app. `public/_headers` marks the
+fingerprinted files under `/assets` immutable and keeps all non-fingerprinted
+files out of the cache, so a completed deployment serves the new HTML, public
+files, and hashed bundle immediately. Routing is deliberately not a
+single-page-application fallback: `/dbot/index.html` is a real file the
+embedded workspace loads, and a catch-all would answer a missing one with the
+host app. For a manual deploy, run `npm run deploy`; the pinned local Wrangler
+is used and nothing needs to be installed globally.

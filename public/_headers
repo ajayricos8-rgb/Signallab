@@ -1,15 +1,14 @@
 # Cloudflare serves this file from the root of the deployed assets.
 #
-# Vite fingerprints everything under /assets, so those files can be cached for
-# a year; index.html must not be, or a new deployment would keep handing clients
-# the previous bundle and none of the app's changes would appear.
+# Navigation HTML and every non-fingerprinted public file must be fetched again
+# after a deployment. Vite gives files below /assets a content hash, so that
+# narrow rule can safely use a long immutable cache lifetime instead.
+
+/*
+  Cache-Control: no-store, no-cache, must-revalidate
 
 /index.html
-  Cache-Control: no-store, no-cache, must-revalidate
   X-Content-Type-Options: nosniff
-
-/
-  Cache-Control: no-store, no-cache, must-revalidate
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
