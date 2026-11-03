@@ -1,14 +1,13 @@
-// DBot Space — the shell around Signal Lab's embedded bot workspace.
+// DBot Space — rebuilt from scratch as a control-deck shell.
 //
-// The page is deliberately thin: `useDbotWorkspace` owns the iframe, the
-// account link and the data bridge, `WorkspacePanel` draws the frame chrome, and
-// `StoreView` draws the bot store. This file is the layout, the account cluster
-// and the hand-offs to the AI copilot.
+// Composition only: `useWorkspaceEngine` owns the iframe, the automatic account
+// link and the data bridge; `WorkspaceHeader` draws the hero and account dock;
+// `WorkspacePanel` draws the frame chrome; `StoreView` draws the bot store;
+// `SessionLimitDialog` reports a session brake. This file owns the host view,
+// the section tabs, the notice and the four hand-offs to the AI copilot.
 import { useCallback, useState, type ComponentType } from 'react';
-import { createPortal } from 'react-dom';
 import {
-  Activity, Boxes, BrainCircuit, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, Wrench, X,
-  type LucideProps,
+  Activity, Boxes, BrainCircuit, ChartNoAxesCombined, Library, Wrench, X, type LucideProps,
 } from 'lucide-react';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { formatAmount } from '@/lib/deriv-trading';
@@ -17,9 +16,12 @@ import { DbotMarketTools } from '@/components/dbot-market-tools';
 import type { DbotAiAnalysisSnapshot } from '@/lib/dbot-ai';
 import type { Strategy } from './bot-store';
 import { linkSummary, type SpaceView } from './protocol';
-import { useDbotWorkspace } from './use-dbot-workspace';
-import { StoreView } from './store-view';
+import { useWorkspaceEngine } from './engine';
+import { StoreView } from './store';
 import { WorkspacePanel } from './workspace-panel';
+import { WorkspaceHeader } from './header';
+import { SessionLimitDialog } from './session-limit-dialog';
+import './workspace.css';
 
 const VIEWS: Array<{ id: SpaceView; label: string; icon: ComponentType<LucideProps> }> = [
   { id: 'builder', label: 'Bot builder', icon: Boxes },
@@ -34,7 +36,7 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
   const [view, setView] = useState<SpaceView>('builder');
   const [localAnalysisRequest, setLocalAnalysisRequest] = useState(0);
 
-  const workspace = useDbotWorkspace({
+  const workspace = useWorkspaceEngine({
     view,
     onOpenSettings,
     onFrameTab: setView,
@@ -109,116 +111,27 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
   }, [ready, link.status, hasAccount, botRunning, loadAndRunBot, setAiRunNotice]);
 
   return (
-    <section className="dbot-space mx-auto w-full max-w-[1700px]" data-testid="dbot-space">
-      {sessionLimit && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/80 p-5 backdrop-blur-md" role="presentation">
-          <div role="alertdialog" aria-modal="true" aria-labelledby="session-limit-title" aria-describedby="session-limit-profit" data-testid="dbot-session-limit-dialog"
-            className={`relative w-full max-w-md overflow-hidden rounded-[28px] border p-7 text-center text-white shadow-[0_25px_100px_rgba(0,0,0,.65)] ${sessionLimit.reason === 'take-profit' ? 'border-emerald-300/35 bg-gradient-to-br from-emerald-950 via-slate-950 to-slate-950' : 'border-rose-300/35 bg-gradient-to-br from-rose-950 via-slate-950 to-slate-950'}`}>
-            <div className={`mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border ${sessionLimit.reason === 'take-profit' ? 'border-emerald-300/40 bg-emerald-400/10 text-emerald-300 shadow-[0_0_40px_rgba(52,211,153,.2)]' : 'border-rose-300/40 bg-rose-400/10 text-rose-300 shadow-[0_0_40px_rgba(251,113,133,.2)]'}`}><Activity size={29} /></div>
-            <p className="text-[10px] font-bold uppercase tracking-[.3em] text-slate-400">Session complete</p>
-            <h2 id="session-limit-title" className={`mt-2 text-2xl font-black tracking-tight ${sessionLimit.reason === 'take-profit' ? 'text-emerald-300' : 'text-rose-300'}`}>{sessionLimit.reason === 'take-profit' ? 'Take profit hit' : 'Stop loss hit'}</h2>
-            <p className="mt-5 text-xs font-semibold uppercase tracking-widest text-slate-400">Total session profit / loss</p>
-            <p id="session-limit-profit" className="mt-2 text-3xl font-black tabular-nums">{sessionLimit.profit >= 0 ? '+' : '−'}{formatAmount(Math.abs(sessionLimit.profit), sessionLimit.currency)}</p>
-            <p className="mt-4 text-xs leading-relaxed text-slate-400">The bot has stopped opening new trades. Any other open contracts can still settle.</p>
-            <button type="button" autoFocus onClick={() => setSessionLimit(null)} className="mt-6 w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-bold transition hover:bg-white/20">Dismiss</button>
-          </div>
-        </div>, document.body,
-      )}
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <div className="mb-2 flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-[.16em] text-primary">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Build, test, automate
-          </div>
-          <h2 className="text-2xl font-extrabold tracking-[-.045em] sm:text-3xl">DBot Space</h2>
-          <p className="mt-1.5 max-w-2xl text-xs leading-5 text-muted-foreground sm:text-sm">
-            Build a strategy with visual blocks, explore live charts, or start with a bot from the store. DBot uses
-            the Signal Lab account automatically and shares the ticks, balance and positions collected there.
-          </p>
-        </div>
+    <section className="ws-shell" data-testid="dbot-space">
+      {sessionLimit && <SessionLimitDialog limit={sessionLimit} onDismiss={() => setSessionLimit(null)} />}
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => setLocalAnalysisRequest((value) => value + 1)} className="dbot-outline-button" data-testid="dbot-open-analysis">
-            <BrainCircuit size={14} /> Open AI Analysis
-          </button>
-          {/* Account cluster: the live balance with a Real/Demo switch. It drives
-              the same Signal Lab account selection the connection card uses, so
-              DBot re-links to whichever account is active. */}
-          <div className="inline-flex items-center gap-2.5 rounded-full border border-border bg-card py-1 pl-1 pr-3" data-testid="dbot-balance-toggle">
-            <div className="flex rounded-full bg-muted p-0.5" role="group" aria-label="Account type">
-              {(['demo', 'real'] as const).map((kind) => {
-                const account = trading.accounts.find((entry) => entry.accountType === kind);
-                const active = (trading.activeAccount?.accountType ?? link.accountType) === kind && Boolean(trading.activeAccount);
-                return (
-                  <button
-                    key={kind}
-                    type="button"
-                    aria-pressed={active}
-                    data-testid={`dbot-toggle-${kind}`}
-                    title={account
-                      ? `Trade on the ${kind} account (${account.accountId})`
-                      : `No ${kind} account connected yet — add one in Settings`}
-                    className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors ${
-                      active
-                        ? (kind === 'real' ? 'bg-emerald-500 text-white' : 'bg-sky-500 text-white')
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
-                    onClick={() => {
-                      if (active) return;
-                      if (botRunning) {
-                        setNotice('Stop the running bot before switching between demo and real accounts.');
-                        return;
-                      }
-                      if (!account) {
-                        setNotice(`No ${kind} account is connected. Connect a Deriv account with a ${kind} account in Settings, then use this toggle.`);
-                        return;
-                      }
-                      void trading.selectAccount(account.accountId);
-                      setNotice(kind === 'real'
-                        ? `Switched to your REAL account ${account.accountId}. Bots will trade real money — double-check stake and limits before running.`
-                        : `Switched to your demo account ${account.accountId}. Bots trade virtual funds here.`);
-                    }}
-                  >
-                    {kind}
-                  </button>
-                );
-              })}
-            </div>
-            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-foreground" data-testid="dbot-balance" title="Balance of the active account">
-              <Wallet size={13} className="text-primary" />
-              {balanceLabel}
-            </span>
-          </div>
+      <WorkspaceHeader
+        trading={trading}
+        link={link}
+        linkLabel={linkLabel}
+        balanceLabel={balanceLabel}
+        botRunning={botRunning}
+        autoLink={autoLink}
+        hasAccount={hasAccount}
+        ready={ready}
+        shared={shared}
+        onOpenAnalysis={() => setLocalAnalysisRequest((value) => value + 1)}
+        onNotice={setNotice}
+        onConnect={() => void workspace.connectAccount()}
+        onDisconnect={workspace.disconnectAccount}
+      />
 
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-[10px] font-semibold text-muted-foreground" data-testid="dbot-account-status">
-            <span className={`h-1.5 w-1.5 rounded-full ${
-              link.status === 'connected' ? 'bg-emerald-400' : link.status === 'connecting' ? 'bg-sky-400' : 'bg-amber-400'
-            }`} />
-            {linkLabel}
-          </span>
-
-          {link.status === 'connected' ? (
-            <button type="button" onClick={workspace.disconnectAccount} className="dbot-outline-button" data-testid="dbot-disconnect-account">
-              <Unlink size={14} /> Unlink
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void workspace.connectAccount()}
-              disabled={link.status === 'connecting'}
-              className="dbot-outline-button"
-              data-testid="dbot-connect-account"
-            >
-              {link.status === 'connecting' ? <LoaderCircle className="animate-spin" size={14} /> : <Link2 size={14} />}
-              {link.status === 'connecting'
-                ? 'Linking…'
-                : hasAccount ? (autoLink ? 'Link now' : 'Link account') : 'Connect account'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border">
-        <div className="flex flex-wrap gap-1" role="tablist" aria-label="DBot Space sections">
+      <nav className="ws-nav" role="tablist" aria-label="DBot Space sections">
+        <div className="ws-tabs">
           {VIEWS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -227,33 +140,25 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
               aria-selected={view === id}
               onClick={() => selectView(id)}
               data-testid={`dbot-view-${id}`}
-              className={`focus-ring -mb-px inline-flex items-center gap-2 border-b-2 px-3 py-3 text-xs font-bold transition-colors sm:px-4 sm:text-sm ${
-                view === id ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
+              className={`ws-tab ${view === id ? 'is-active' : ''}`}
             >
               <Icon size={15} />{label}
             </button>
           ))}
         </div>
-        <div className="hidden items-center gap-1.5 pb-2 text-[10px] font-medium text-muted-foreground sm:flex">
-          <LockKeyhole size={12} /> Keep this browser tab open while running
-        </div>
-      </div>
+      </nav>
 
       {notice && (
-        <div
-          role="status"
-          className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs leading-5 text-foreground"
-          data-testid="dbot-notice"
-        >
-          <span>{notice}</span>
-          <div className="flex shrink-0 items-center gap-3">
+        <div role="status" className="ws-notice" data-testid="dbot-notice">
+          <span className="ws-notice-mark"><BrainCircuit size={14} /></span>
+          <span className="ws-notice-text">{notice}</span>
+          <div className="ws-notice-actions">
             {workspace.workspaceError && (
-              <button type="button" onClick={workspace.reload} className="font-bold text-primary hover:underline" data-testid="dbot-reload-workspace">
+              <button type="button" onClick={workspace.reload} className="ws-notice-reload" data-testid="dbot-reload-workspace">
                 Reload workspace
               </button>
             )}
-            <button type="button" onClick={() => setNotice('')} aria-label="Dismiss message" className="text-muted-foreground">
+            <button type="button" onClick={() => setNotice('')} aria-label="Dismiss message" className="ws-notice-close">
               <X size={14} />
             </button>
           </div>

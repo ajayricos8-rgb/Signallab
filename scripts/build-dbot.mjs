@@ -30,7 +30,14 @@ try {
   // Install the separate DBot dependency tree below.
 }
 if (installedHash !== lockHash) {
-  run(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], vendorRoot);
+  // Workers Builds and the CI production-dependency check run with
+  // NODE_ENV=production, where npm omits devDependencies by default. Rsbuild,
+  // its plugins and Sass are devDependencies of the vendored app, so installing
+  // without --include=dev leaves no build binary and the /dbot/ bundle fails
+  // with a bare exit code 1. Always restore the full locked graph explicitly.
+  run(['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], vendorRoot);
+  // Only record a successful install; a partial one must be retried next time.
+  await access(path.join(vendorRoot, 'node_modules/.bin/rsbuild'));
   await writeFile(installedHashPath, lockHash);
 }
 

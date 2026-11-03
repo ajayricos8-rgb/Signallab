@@ -26,6 +26,29 @@ for (const script of ['build', 'build:cloudflare']) {
   );
 }
 await access(path.join(root, 'scripts/cloudflare-build.mjs'));
+
+// The vendored DBot app imports a legacy icon shim from `src/utils/tmp/dummy`,
+// a directory name the generic `tmp` ignore rule would otherwise swallow.
+// Workers Builds checks out the repository before running the custom build, so
+// an ignored shim makes every production build fail with unresolved imports.
+const dummyIcon = 'vendor/deriv-bot/src/utils/tmp/dummy.tsx';
+await access(path.join(root, dummyIcon));
+assert.match(
+  await read(dummyIcon),
+  /export const Icon/,
+  'the vendored DBot icon shim must export Icon for the /dbot/ bundle to build',
+);
+assert.match(
+  await read('.gitignore'),
+  /!vendor\/deriv-bot\/src\/utils\/tmp\//,
+  'un-ignore the vendored DBot source shim so Workers Builds checks it out',
+);
+assert.match(
+  await read('scripts/build-dbot.mjs'),
+  /['"]ci['"],\s*['"]--include=dev['"]/,
+  'the vendored /dbot/ build must install dev tools under NODE_ENV=production',
+);
+
 for (const legacyRoot of ['deriv-signal-lab', 'api-server', 'mockup-sandbox']) {
   assert.match(
     packageJson.scripts?.['build:app'] ?? '',
