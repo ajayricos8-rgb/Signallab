@@ -1,7 +1,8 @@
-// A small, dependency-free guard for the settings Workers Builds relies on.
-// It runs before a manual deploy and is safe to run in any CI image with Node.
+// A small, dependency-free guard for the settings Cloudflare Workers Builds
+// relies on. It deliberately validates every historical build root because the
+// production service may still be configured with one of them in the dashboard.
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,11 +10,20 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => readFile(path.join(root, relative), 'utf8');
 
 const packageJson = JSON.parse(await read('package.json'));
+const packageLock = JSON.parse(await read('package-lock.json'));
 assert.equal(
   packageJson.devDependencies?.wrangler,
   '4.156.2',
   'pin Wrangler so Workers Builds cannot drift to an untested release',
 );
+assert.equal(packageLock.lockfileVersion, 3, 'commit the npm lockfile used by the Cloudflare build');
+assert.equal(packageLock.packages?.['']?.name, packageJson.name, 'package-lock.json must describe this app');
+assert.equal(
+  packageJson.scripts?.['build:cloudflare'],
+  'node scripts/cloudflare-build.mjs',
+  'Cloudflare must use the reproducible build entrypoint',
+);
+await access(path.join(root, 'scripts/cloudflare-build.mjs'));
 for (const legacyRoot of ['deriv-signal-lab', 'api-server', 'mockup-sandbox']) {
   assert.match(
     packageJson.scripts?.build ?? '',
@@ -30,9 +40,9 @@ const configPaths = [
 
 for (const directory of legacyRoots) {
   const legacyPackage = JSON.parse(await read(`artifacts/${directory}/package.json`));
-  assert.match(
-    legacyPackage.scripts?.build ?? '',
-    /npm --prefix \.\.\/\.\. run build/,
+  assert.equal(
+    legacyPackage.scripts?.build,
+    'node ../../scripts/cloudflare-build.mjs',
     `artifacts/${directory} must forward its build to the repository root`,
   );
 }
@@ -51,9 +61,12 @@ for (const configPath of configPaths) {
   assert.ok(config.compatibility_date, `${configPath}: compatibility_date is required`);
   assert.ok(config.assets?.directory, `${configPath}: an assets directory is required`);
   assert.ok(config.build?.command, `${configPath}: Wrangler must build dist before upload`);
+  const usesReproducibleBuild = configPath === 'wrangler.jsonc'
+    ? config.build.command === 'npm run build:cloudflare'
+    : /cloudflare-build\.mjs/.test(config.build.command);
   assert.ok(
-    config.build.command.includes('npm run build'),
-    `${configPath}: the custom build must produce the Vite bundle`,
+    usesReproducibleBuild,
+    `${configPath}: the custom build must restore the locked dependency graph`,
   );
   assert.deepEqual(
     config.previews,
@@ -66,13 +79,8 @@ for (const configPath of configPaths) {
 const headers = await read('public/_headers');
 assert.match(
   headers,
-  /\/index\.html[\s\S]*Cache-Control:\s*no-store[^\n]*no-cache/,
-  'index.html must not be cached',
-);
-assert.match(
-  headers,
-  /\n\/[\s\S]*Cache-Control:\s*no-store[^\n]*no-cache/,
-  'the site root must not be cached',
+  /\/\*[\s\S]*Cache-Control:\s*no-store[^\n]*no-cache/,
+  'HTML and every non-fingerprinted public file must not be cached',
 );
 assert.match(headers, /\/assets\/\*[\s\S]*immutable/, 'fingerprinted assets should stay immutable');
 

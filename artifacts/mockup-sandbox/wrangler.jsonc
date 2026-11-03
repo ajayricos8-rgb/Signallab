@@ -5,7 +5,7 @@
     "directory": "./dist"
   },
   "build": {
-    "command": "if [ -f vite.config.ts ]; then npm install --no-audit --no-fund --package-lock=false && npm run build; else npm --prefix ../.. install --no-audit --no-fund --package-lock=false && npm --prefix ../.. run build; fi"
+    "command": "if [ -f scripts/cloudflare-build.mjs ]; then node scripts/cloudflare-build.mjs; else node ../../scripts/cloudflare-build.mjs; fi"
   },
   "previews": {},
   "observability": {
