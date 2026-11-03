@@ -1,7 +1,7 @@
 // The Bot store: Deriv's quick-strategy presets and the AI bots Signal Lab
 // ships. The catalog itself lives in ./bot-store.ts and is unchanged.
 import { useMemo, useState } from 'react';
-import { ArrowRight, BookOpen, CheckCircle2, Library, Search, ShieldAlert, Sparkles, X } from 'lucide-react';
+import { ArrowRight, BookOpen, BrainCircuit, CheckCircle2, Library, Search, ShieldAlert, Sparkles, X } from 'lucide-react';
 import { STRATEGIES, type Strategy, type StrategyCategory } from './bot-store';
 
 const CATEGORIES: Array<'All' | StrategyCategory> = ['All', 'AI', 'Progression', 'Reverse progression', 'Sequence'];
@@ -24,6 +24,8 @@ export function StoreView({ onUse }: { onUse: (strategy: Strategy) => void }) {
     onUse(strategy);
   }
 
+  const featured = STRATEGIES.find((strategy) => strategy.id === 'STEP_INDEX_4T_HEDGE');
+
   return (
     <div className="py-5" data-testid="dbot-store">
       <div className="dbot-store-intro flex flex-wrap items-center justify-between gap-5 rounded-xl border border-primary/20 p-5 sm:p-6">
@@ -40,6 +42,30 @@ export function StoreView({ onUse }: { onUse: (strategy: Strategy) => void }) {
           <span>{STRATEGIES.length} strategies</span>
         </div>
       </div>
+
+      {featured && (
+        <div
+          className="mt-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-teal-500/30 bg-teal-500/[.07] p-4 sm:p-5"
+          data-testid="dbot-store-featured"
+        >
+          <div className="flex items-start gap-3">
+            <span className="dbot-strategy-icon dbot-icon-teal"><BrainCircuit size={19} /></span>
+            <div>
+              <span className="dbot-kicker"><Sparkles size={12} /> NEW IN THE STORE</span>
+              <h4 className="mt-1 text-sm font-extrabold tracking-tight">{featured.name}</h4>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{featured.short}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => use(featured)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-[11px] font-bold text-primary-foreground hover:opacity-90"
+            data-testid="dbot-use-featured"
+          >
+            Use strategy <ArrowRight size={13} />
+          </button>
+        </div>
+      )}
 
       <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
         <div>
