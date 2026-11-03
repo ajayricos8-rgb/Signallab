@@ -31,4 +31,7 @@ function run(args) {
 }
 
 await run(['ci', '--include=dev', '--no-audit', '--no-fund']);
-await run(['run', 'build']);
+// Keep the real Vite/copy step separate from the public `build` script. The
+// dashboard may call `npm run build` with production-only dependencies, so that
+// script must always come through this installer instead of recursing here.
+await run(['run', 'build:app']);
