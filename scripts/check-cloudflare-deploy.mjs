@@ -74,6 +74,17 @@ for (const configPath of configPaths) {
     `${configPath}: an empty previews block keeps npx wrangler preview working`,
   );
   assert.equal(config.observability?.enabled, true, `${configPath}: keep observability on`);
+  assert.equal(config.env?.production?.name, 'signallab', `${configPath}: production must deploy the connected Worker`);
+  assert.deepEqual(
+    config.env?.production?.assets,
+    config.assets,
+    `${configPath}: production must explicitly include the static asset directory`,
+  );
+  assert.deepEqual(
+    config.env?.production?.build,
+    config.build,
+    `${configPath}: production must run the same reproducible build`,
+  );
 }
 
 const headers = await read('public/_headers');

@@ -45,7 +45,10 @@ both build paths:
   upload an empty directory.
 
 `wrangler.jsonc` also declares `previews: {}` for the non-production
-`wrangler preview` command and a custom `build.command`. The command calls
+`wrangler preview` command, plus an explicit `env.production` with the same
+Worker name, assets directory, and build command. That covers integrations
+that invoke Wrangler with `--env production` instead of the default config.
+The custom `build.command` calls
 `scripts/cloudflare-build.mjs`, which runs `npm ci --include=dev` from the
 committed `package-lock.json` before building. This makes the build repeatable
 and keeps Vite available even when the build host sets `NODE_ENV=production`.
