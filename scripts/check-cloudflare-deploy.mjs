@@ -43,6 +43,11 @@ assert.match(
   /!vendor\/deriv-bot\/src\/utils\/tmp\//,
   'un-ignore the vendored DBot source shim so Workers Builds checks it out',
 );
+assert.match(
+  await read('scripts/build-dbot.mjs'),
+  /['"]ci['"],\s*['"]--include=dev['"]/,
+  'the vendored /dbot/ build must install dev tools under NODE_ENV=production',
+);
 
 for (const legacyRoot of ['deriv-signal-lab', 'api-server', 'mockup-sandbox']) {
   assert.match(
