@@ -23,8 +23,8 @@ const ACCOUNT_LIMIT = 64;
 
 /** The two real tabs inside the vendored app. */
 export type WorkspaceTab = 'builder' | 'chart';
-/** Sections of the Space shell; the last two are rendered by the host. */
-export type SpaceView = WorkspaceTab | 'store' | 'tools';
+/** Sections of the Space shell; host-only views do not navigate the iframe. */
+export type SpaceView = WorkspaceTab | 'store' | 'tools' | 'pro-tool';
 export type AccountKind = 'demo' | 'real' | 'unknown';
 export type LinkStatus = 'idle' | 'connecting' | 'connected';
 
