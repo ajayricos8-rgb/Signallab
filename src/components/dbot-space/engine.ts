@@ -26,6 +26,13 @@ const CONFIRM_TIMEOUT_MS = 25_000;
 const FEED_INTERVAL_MS = 1_000;
 /** A frame that never says hello is a broken bundle, not a slow one. */
 const BOOT_TIMEOUT_MS = 30_000;
+/**
+ * A document that never even announces itself is not "slow": the browser ran
+ * something else, or a cached copy of the workspace replaced it. Waiting the
+ * full boot timeout for that just extends the cycle, so it gets a much shorter
+ * leash before the shell reloads the frame with a fresh URL.
+ */
+const DOCUMENT_TIMEOUT_MS = 12_000;
 /** How often the shell re-asks the frame for `ready` while it boots. */
 const HELLO_RETRY_MS = 2_000;
 const RETRY_BASE_MS = 6_000;
@@ -134,6 +141,10 @@ export function useWorkspaceEngine({
 
   /** One automatic reload per boot before the host reports a dead frame. */
   const autoReloaded = useRef(false);
+  /** The frame's document ran: `alive` arrived. Distinguishes slow from broken. */
+  const frameAlive = useRef(false);
+  /** When the current frame document started loading, for the boot watchdog. */
+  const frameBootedAt = useRef(0);
 
   const runtime = useRef<Runtime>({
     ready: false,
@@ -295,6 +306,12 @@ export function useWorkspaceEngine({
         case 'bot-run-started': {
           setBotRunning(true);
           setAiRunNotice(message.message);
+          return;
+        }
+        case 'alive': {
+          // The bundle reached the browser. The builder still has to paint, and
+          // `ready` remains the only signal that it did.
+          frameAlive.current = true;
           return;
         }
         case 'ready': {
@@ -514,7 +531,10 @@ export function useWorkspaceEngine({
 
   const handleFrameLoad = useCallback(() => {
     setFrameLoaded(true);
-    setWorkspaceError('');
+    // A reported boot failure is only cleared by an explicit `reload()`. A
+    // late `load` event must not wipe the error card and start the cycle again.
+    frameAlive.current = false;
+    frameBootedAt.current = Date.now();
     runtime.current.ready = false;
     runtime.current.subscribed = false;
     runtime.current.cursor = {};
@@ -542,23 +562,52 @@ export function useWorkspaceEngine({
     setNotice('Reloading the DBot workspace…');
   }, []);
 
+  /** A reload the user asked for gets its own automatic attempt back. */
+  const retryWorkspace = useCallback(() => {
+    autoReloaded.current = false;
+    reload();
+  }, [reload]);
+
   // A silent frame gets one clean retry before the host reports a failure: a
   // chunk that failed to fetch (flaky network, a deploy mid-session) is fixed by
   // loading the bundle again, and that is worth one automatic attempt.
+  // Every mount of the frame starts a new clock. It is deliberately not tied to
+  // the frame's load event: a document that never loads (a 404, a blocked or
+  // substituted response) fires no `load` at all, and waiting for one is what
+  // left the workspace on "Connecting workspace" with no way out.
   useEffect(() => {
-    if (!frameLoaded || ready || workspaceError) return;
-    const timer = window.setTimeout(() => {
+    frameBootedAt.current = Date.now();
+    frameAlive.current = false;
+  }, [frameRevision]);
+
+  useEffect(() => {
+    if (ready || workspaceError) return;
+    const timer = window.setInterval(() => {
+      // A document that never said `alive` failed to load, not to boot: reload
+      // it early (with a fresh URL — see `reload`) instead of sitting on a
+      // spinner for the whole boot timeout.
+      const silent = !frameAlive.current;
+      const elapsed = Date.now() - (frameBootedAt.current || Date.now());
+      if (elapsed < (silent ? DOCUMENT_TIMEOUT_MS : BOOT_TIMEOUT_MS)) return;
       if (!autoReloaded.current) {
         autoReloaded.current = true;
         reload();
-        setNotice('The DBot workspace did not answer, so it was reloaded once.');
+        setNotice(
+          silent
+            ? 'The workspace bundle did not load, so it was reloaded with a fresh copy.'
+            : 'The DBot workspace did not answer, so it was reloaded once.',
+        );
         return;
       }
-      setWorkspaceError('DBot did not become ready. The workspace bundle may not have loaded correctly.');
+      setWorkspaceError(
+        silent
+          ? 'The DBot workspace did not load. A cached copy may be blocking it — reload to fetch a fresh one.'
+          : 'DBot did not become ready. The workspace bundle may not have loaded correctly.',
+      );
       setNotice('DBot did not become ready. Reload the workspace to try again.');
-    }, BOOT_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [frameLoaded, ready, workspaceError, reload]);
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [ready, workspaceError, reload]);
 
   const showTab = useCallback((next: SpaceView) => {
     if ((next === 'builder' || next === 'chart') && runtime.current.ready) post(hostNavigate(next));
@@ -647,7 +696,7 @@ export function useWorkspaceEngine({
     setNotice,
     setAiRunNotice,
     handleFrameLoad,
-    reload,
+    reload: retryWorkspace,
     showTab,
     loadBot,
     loadAndRunBot,

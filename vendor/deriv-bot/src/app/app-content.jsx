@@ -69,8 +69,16 @@ const AppContent = observer(() => {
     React.useEffect(() => {
         if (!is_loading || boot_deadline_reached) return;
         const timer = window.setTimeout(() => {
-            if (!app.dbot_store) init();
-            setBootDeadlineReached(true);
+            // `init()` talks to stores that may not exist yet when Deriv's
+            // socket never opened; anything it throws must not swallow the
+            // deadline, or the loader below would never lift.
+            try {
+                if (!app.dbot_store) init();
+            } catch (error) {
+                console.error('[Boot] Workspace stores could not be prepared:', error);
+            } finally {
+                setBootDeadlineReached(true);
+            }
         }, BOOT_DEADLINE_MS);
         return () => window.clearTimeout(timer);
     }, [is_loading, boot_deadline_reached, app.dbot_store]);

@@ -33,6 +33,27 @@ type HostMessage = {
 let installed = false;
 let mounted = false;
 
+/**
+ * How long the shell may wait for `ready` before this frame reports the stall
+ * itself. The workspace boot has its own deadlines (a Deriv socket, the remote
+ * config check and the first paint each time out after a few seconds), so a
+ * frame that is still silent here is not booting any more — it is stuck, and
+ * saying so turns the shell's spinner into a Reload button.
+ */
+const BOOT_WATCHDOG_MS = 25_000;
+
+/** The bundle the browser actually loaded, for the shell's diagnostics. */
+function loadedBuild(): string {
+  try {
+    const script = Array.from(document.querySelectorAll('script[src]'))
+      .map((element) => (element as HTMLScriptElement).getAttribute('src') || '')
+      .find((src) => /\/static\/js\/index\.[\w-]+\.js/.test(src));
+    return script || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 function post(message: Record<string, unknown>) {
   if (typeof window === 'undefined' || window.parent === window) return;
   window.parent.postMessage({ source: FRAME_SOURCE, ...message }, window.location.origin);
@@ -131,6 +152,18 @@ export function installSignalLabHost() {
   if (installed || typeof window === 'undefined' || window.parent === window) return;
   installed = true;
   window.addEventListener('message', handleHostMessage);
+  // Announce the document before React exists: the shell can then tell "the
+  // workspace is still booting" apart from "the document never ran DBot at
+  // all" (a stale cached copy, or a host shell served in place of the frame).
+  post({ type: 'alive', build: loadedBuild() });
+  window.setTimeout(() => {
+    if (!mounted) {
+      post({
+        type: 'workspace-error',
+        message: 'The workspace did not finish starting. Reload it to try again.',
+      });
+    }
+  }, BOOT_WATCHDOG_MS);
   // Ticks are the workspace's only data source: subscribe before the builder
   // mounts so Signal Lab blocks have a cache to read on their first run.
   connectSignalLabBridge();

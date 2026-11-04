@@ -196,3 +196,19 @@ the point: an untagged bridge silently feeds the workspace nothing.
 The workspace boots on its default template (`scratch/xml/main.xml`: trade definition + purchase);
 the shell never primes a canvas of its own. With no bundler in the sandbox the quick check is
 `esbuild <file> --loader:.tsx=tsx --jsx=automatic` for syntax plus a `tsc` pass on the folder.
+
+**Boot watchdog (why the workspace can no longer "stay initializing"):** the frame posts `alive`
+from `main.tsx` before React exists, so the shell can tell "still booting" from "this document never
+ran DBot" (a stale cached copy, or a host shell served in place of the frame). The watchdog in
+`engine.ts` starts when the frame *mounts* — not on its `load` event, which never fires for a 404 —
+gives a silent document 12 s and a live one 30 s, reloads once with a *fresh* URL
+(`dbot/index.html?v=<revision>`, which no stale cache or leftover root-scoped service worker can
+answer) and then shows the "Workspace needs reload" card. A reported error is cleared only by an
+explicit reload, never by a late `load` event, so the overlay cannot flip back into the cycle.
+`src/main.tsx` also unregisters any service worker and drops its caches on boot: an early build
+registered one at scope `/`, and such a worker can keep replaying an old workspace forever.
+Verified with headless Chromium (`@sparticuz/chromium` + `puppeteer-core`, libs from
+`al2023.tar.br`) against `dist/` served by `python3 -m http.server`: ready at ~10 s with no Deriv
+network at all, and a missing `dbot/index.html` ends on the reload card after ~28 s instead of
+spinning. jsdom is useless here — it cannot resolve `import()`, so every lazy route hangs forever
+and looks exactly like this bug.

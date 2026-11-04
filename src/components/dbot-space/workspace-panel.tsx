@@ -93,10 +93,17 @@ export function WorkspacePanel({
         </div>
 
         <div className="ws-frame-stage">
+          {/*
+            `?v=` is the reload counter, not a cache key we read: every reload
+            gets a URL the browser and any leftover service worker have never
+            answered before, so a stale cached workspace document can never
+            shadow the current bundle. A plain repeat of the same URL was what
+            made an unlucky browser loop on the old copy forever.
+          */}
           <iframe
             key={frameRevision}
             ref={frameRef}
-            src={`${import.meta.env.BASE_URL}dbot/index.html#bot_builder`}
+            src={`${import.meta.env.BASE_URL}dbot/index.html?v=${frameRevision}#bot_builder`}
             title="Deriv Bot workspace"
             allow="fullscreen"
             allowFullScreen
