@@ -229,3 +229,20 @@ market dropdowns do not read "Not available" in an unlinked workspace.
 Verified with headless Chromium (probe kept outside the repo: `npm i --prefix /tmp/probe
 @sparticuz/chromium puppeteer-core`, AL2023 libs from `al2023.tar.br`, `LD_LIBRARY_PATH`): ready at
 8 s, **stable for 48 s**, one document load, no tour dialog, 121 Blockly nodes on screen.
+
+**Reload loop, round three — the one that mattered:** every "recover by reloading" path was
+unbounded in a way that turned a single failure into a cycle. `chunk-recovery` reset its one-shot
+guard on *every* successful mount, so "reload once" became "reload on every boot"; the shell reset its
+auto-reload counter on every `ready`, so a workspace that died right after painting reloaded forever.
+Now: the frame keeps a **budget of 2 restarts** in `sessionStorage` that only refills after the
+workspace has stayed up 60 s (`STABLE_AFTER_MS`), and the shell allows 2 automatic reloads plus a
+`MAX_FRAME_BOOTS = 3` counter on `alive` — past either bound the panel shows "Workspace needs reload"
+/ "The workspace keeps restarting". Separately, **no authentication path may reload an embedded
+frame**: `utils/auth-utils.ts` (`clearAuthData`, `handleOidcAuthFailure`), `api-base.authorizeAndSubscribe`
+(invalid token) and `useTMB.logout` all skip the reload when `isEmbeddedWorkspace()`, and
+`pwa-utils` no longer reloads on `controllerchange` inside the shell. A dropped Signal Lab socket now
+only means "not linked" — the shell re-links, nothing restarts.
+Verified in headless Chromium: ready at 12 s and flat for 48 s (one document, no dialogs); with every
+`/dbot/static/js/async/*` request aborted, the panel ends on the reload card at ~28 s instead of
+cycling; a forced `connect-account` with a dead socket produces `account-error` and **zero reloads**
+(the account module is statically imported, so there is no second chunk to fail).

@@ -1,4 +1,5 @@
 import { isFirefox, isSafari } from '@/components/shared/utils/browser/browser_detect';
+import { isEmbeddedWorkspace } from '@/services/embed';
 import { localize } from '@deriv-com/translations';
 
 // PWA Utilities for Deriv Bot
@@ -84,7 +85,10 @@ class PWAManager {
 
             // Handle controller change (new service worker activated)
             navigator.serviceWorker.addEventListener('controllerchange', () => {
-                window.location.reload();
+                // A newly activated worker reloads the page to pick up its cache.
+                // Embedded, that is a restart of a panel inside someone else's
+                // app — and with the shell's own cleanup racing it, a loop.
+                if (!isEmbeddedWorkspace()) window.location.reload();
             });
 
             return registration;
@@ -192,7 +196,7 @@ class PWAManager {
     async updateApp(): Promise<void> {
         if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
             navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
-        } else {
+        } else if (!isEmbeddedWorkspace()) {
             window.location.reload();
         }
     }

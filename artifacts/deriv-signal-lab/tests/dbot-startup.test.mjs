@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-const [pkg, app, panel, engine, shellMain, dbotApp, dbotContent, dbotRoot, builder, host, recovery, routeError] = await Promise.all([
+const [pkg, app, panel, engine, shellMain, dbotApp, dbotContent, dbotRoot, builder, host, recovery, routeError, authUtils, apiBase] = await Promise.all([
   read('../../../package.json'),
   read('../../../src/App.tsx'),
   read('../../../src/components/dbot-space/workspace-panel.tsx'),
@@ -17,6 +17,8 @@ const [pkg, app, panel, engine, shellMain, dbotApp, dbotContent, dbotRoot, build
   read('../../../vendor/deriv-bot/src/services/signallab-host.ts'),
   read('../../../vendor/deriv-bot/src/services/chunk-recovery.ts'),
   read('../../../vendor/deriv-bot/src/app/route-error.tsx'),
+  read('../../../vendor/deriv-bot/src/utils/auth-utils.ts'),
+  read('../../../vendor/deriv-bot/src/external/bot-skeleton/services/api/api-base.ts'),
 ]);
 
 test('DBot builds before dev/production and is the initial host tab', () => {
@@ -57,6 +59,25 @@ test('a stale chunk recovers instead of ending on a stack trace', () => {
   // A frame that fails after `ready` must lose the ready flag, so the shell's
   // overlay and its Reload button come back.
   assert.match(engine, /case 'workspace-error': \{[\s\S]{0,400}?setReady\(false\)/);
+});
+
+test('a workspace that keeps restarting is stopped, not watched', () => {
+  // Two bounds: the frame budgets its own reloads, and the shell counts frame
+  // boots. Whichever fires first, the panel ends on the Reload card instead of
+  // cycling. This is the regression the user hit twice.
+  assert.match(engine, /MAX_AUTO_RELOADS = 2/);
+  assert.match(engine, /MAX_FRAME_BOOTS = 3/);
+  assert.match(engine, /frameBoots\.current \+= 1;/);
+  assert.match(engine, /The workspace keeps restarting/);
+  // A restart only refills the frame's budget once the workspace has been up
+  // for the stable window — clearing it on every mount was the loop.
+  assert.match(recovery, /RELOAD_BUDGET = 2/);
+  assert.match(recovery, /STABLE_AFTER_MS = 60_000/);
+  assert.match(recovery, /isReloadBudgetExhausted/);
+  // Embedded, an authentication failure clears storage instead of reloading.
+  assert.match(authUtils, /const mayReload = \(\) => !isEmbeddedWorkspace\(\);/);
+  assert.match(authUtils, /if \(is_reload && mayReload\(\)\)/);
+  assert.match(apiBase, /!isEmbeddedWorkspace\(\) && Cookies\.get\('logged_state'\) === 'true'/);
 });
 
 test('a workspace document that never loads is reported, not looped', () => {

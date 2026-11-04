@@ -33,6 +33,16 @@ const BOOT_TIMEOUT_MS = 30_000;
  * leash before the shell reloads the frame with a fresh URL.
  */
 const DOCUMENT_TIMEOUT_MS = 12_000;
+/**
+ * Restarts are a recovery, not a way of life: two automatic attempts, and only
+ * after the workspace has proved it can stay up for a while does the count go
+ * back to zero. Before this the counter reset on every `ready`, so a workspace
+ * that kept dying right after painting reloaded itself forever.
+ */
+const MAX_AUTO_RELOADS = 2;
+const STABLE_RUN_MS = 60_000;
+/** Documents the frame may boot before the shell calls it a restart loop. */
+const MAX_FRAME_BOOTS = 3;
 /** How often the shell re-asks the frame for `ready` while it boots. */
 const HELLO_RETRY_MS = 2_000;
 const RETRY_BASE_MS = 6_000;
@@ -139,12 +149,15 @@ export function useWorkspaceEngine({
   const [autoLink, setAutoLink] = useState(true);
   const [autoPaused, setAutoPaused] = useState(false);
 
-  /** One automatic reload per boot before the host reports a dead frame. */
-  const autoReloaded = useRef(false);
+  /** Automatic restarts used inside the current run, and when it was stable. */
+  const autoReloads = useRef(0);
+  const stableSince = useRef(Date.now());
   /** The frame's document ran: `alive` arrived. Distinguishes slow from broken. */
   const frameAlive = useRef(false);
   /** When the current frame document started loading, for the boot watchdog. */
   const frameBootedAt = useRef(0);
+  /** How many times the frame document has booted; a frame reload loop shows here. */
+  const frameBoots = useRef(0);
 
   const runtime = useRef<Runtime>({
     ready: false,
@@ -312,11 +325,22 @@ export function useWorkspaceEngine({
           // The bundle reached the browser. The builder still has to paint, and
           // `ready` remains the only signal that it did.
           frameAlive.current = true;
+          frameBoots.current += 1;
+          // A frame that keeps restarting itself is a loop the shell must break,
+          // not watch: the page would otherwise stay on "Connecting workspace"
+          // for as long as the reloads keep coming.
+          if (frameBoots.current > MAX_FRAME_BOOTS && !runtime.current.ready) {
+            setWorkspaceError('The workspace keeps restarting. Reload it to try again.');
+            setNotice('The DBot workspace kept restarting, so it was stopped. Reload it to try again.');
+          }
           return;
         }
         case 'ready': {
           runtime.current.ready = true;
-          autoReloaded.current = false;
+          // Only a workspace that has been up for a while earns its restarts
+          // back; otherwise a boot crash loop keeps resetting its own budget.
+          if (Date.now() - stableSince.current > STABLE_RUN_MS) autoReloads.current = 0;
+          stableSince.current = Date.now();
           setReady(true);
           setWorkspaceError('');
           setNotice((current) => (current.startsWith('DBot ') ? '' : current));
@@ -564,7 +588,9 @@ export function useWorkspaceEngine({
 
   /** A reload the user asked for gets its own automatic attempt back. */
   const retryWorkspace = useCallback(() => {
-    autoReloaded.current = false;
+    autoReloads.current = 0;
+    frameBoots.current = 0;
+    stableSince.current = Date.now();
     reload();
   }, [reload]);
 
@@ -589,20 +615,20 @@ export function useWorkspaceEngine({
       const silent = !frameAlive.current;
       const elapsed = Date.now() - (frameBootedAt.current || Date.now());
       if (elapsed < (silent ? DOCUMENT_TIMEOUT_MS : BOOT_TIMEOUT_MS)) return;
-      if (!autoReloaded.current) {
-        autoReloaded.current = true;
+      if (autoReloads.current < MAX_AUTO_RELOADS) {
+        autoReloads.current += 1;
         reload();
         setNotice(
           silent
             ? 'The workspace bundle did not load, so it was reloaded with a fresh copy.'
-            : 'The DBot workspace did not answer, so it was reloaded once.',
+            : 'The DBot workspace did not answer, so it was reloaded again.',
         );
         return;
       }
       setWorkspaceError(
         silent
           ? 'The DBot workspace did not load. A cached copy may be blocking it — reload to fetch a fresh one.'
-          : 'DBot did not become ready. The workspace bundle may not have loaded correctly.',
+          : 'The DBot workspace keeps restarting. Reload it to try again.',
       );
       setNotice('DBot did not become ready. Reload the workspace to try again.');
     }, 1_000);
