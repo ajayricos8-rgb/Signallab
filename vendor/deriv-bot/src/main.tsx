@@ -1,5 +1,6 @@
 import ReactDOM from 'react-dom/client';
 import { AuthWrapper } from './app/AuthWrapper';
+import { installChunkRecovery } from './services/chunk-recovery';
 import { installSignalLabHost } from './services/signallab-host';
 import { AnalyticsInitializer } from './utils/analytics';
 import { registerPWA } from './utils/pwa-utils';
@@ -12,6 +13,9 @@ const isEmbedded = window.parent !== window;
 // `ready`, so installing this first is what stops a slow boot from surfacing as
 // "DBot did not become ready".
 installSignalLabHost();
+// A chunk from the previous deployment must not strand the workspace on a stack
+// trace: recover with a single reload (bounded, see services/chunk-recovery).
+installChunkRecovery();
 
 AnalyticsInitializer();
 
