@@ -100,6 +100,13 @@ const AppHeader = observer(() => {
     }, [setIsAuthorizing]);
 
     const handleLogin = useCallback(async () => {
+        // Embedded in Signal Lab, the host owns the account: redirecting this
+        // same-origin frame to Deriv OAuth is wrong. Ask the host to open the
+        // PAT connection dialog it already uses in Settings.
+        if (window.parent !== window) {
+            window.parent.postMessage({ source: 'signal-lab-dbot', type: 'login-request' }, window.location.origin);
+            return;
+        }
         try {
             // Set authorizing state immediately when login is clicked
             setIsAuthorizing(true);
@@ -225,7 +232,21 @@ const AppHeader = observer(() => {
 
     if (client?.should_hide_header) return null;
     if (window.parent !== window) {
-        return <div className='signallab-embedded-header'><span>Deriv Bot workspace</span><span>Account managed in Signal Lab</span></div>;
+        // Embedded: the host owns authentication. Until the Signal Lab account
+        // links, offer the same "Log in" action, which asks the host to open
+        // its PAT connection dialog instead of redirecting this frame to OAuth.
+        return (
+            <div className='signallab-embedded-header'>
+                <span>Deriv Bot workspace</span>
+                {activeLoginid && !is_account_regenerating ? (
+                    <span>Account managed in Signal Lab</span>
+                ) : (
+                    <Button tertiary onClick={handleLogin} data-testid='dbot-embedded-login'>
+                        <Localize i18n_default_text='Log in' />
+                    </Button>
+                )}
+            </div>
+        );
     }
 
     return (

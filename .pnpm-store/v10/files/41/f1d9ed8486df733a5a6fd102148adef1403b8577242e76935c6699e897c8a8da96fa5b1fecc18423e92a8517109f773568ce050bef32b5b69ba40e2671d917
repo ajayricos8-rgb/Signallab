@@ -1,0 +1,31 @@
+import "../crc32-BeCcwohL.js";
+import { L as s, D as c, A as o } from "../constants-HKuDWVkt.js";
+const p = () => {
+  const a = new URLSearchParams(window.location.search).get("lang");
+  let t = localStorage.getItem(s) ?? '"EN"';
+  /^".*"$/.test(t) || (localStorage.setItem(s, JSON.stringify(t)), t = localStorage.getItem(s));
+  const e = JSON.parse(t);
+  if (a) {
+    const r = a.toUpperCase();
+    return localStorage.setItem(s, JSON.stringify(r)), r;
+  }
+  return e || c;
+}, g = (n) => {
+  if (n.toUpperCase() === "ACH") {
+    const t = document.createElement("script");
+    t.type = "text/javascript", t.text = `
+            var _jipt = []; _jipt.push(['project', 'deriv-app']);
+            var crowdin = document.createElement("script");
+            crowdin.setAttribute('src', '//cdn.crowdin.com/jipt/jipt.js');
+            document.head.appendChild(crowdin);
+        `, document.head.appendChild(t);
+  }
+}, u = (n = []) => {
+  const a = ["ACH", ...n];
+  return Object.keys(o).filter((e) => !a.includes(e)).reduce((e, r) => (e[r] = o[r], e), {});
+};
+export {
+  u as getAllowedLanguages,
+  p as getInitialLanguage,
+  g as loadIncontextTranslation
+};

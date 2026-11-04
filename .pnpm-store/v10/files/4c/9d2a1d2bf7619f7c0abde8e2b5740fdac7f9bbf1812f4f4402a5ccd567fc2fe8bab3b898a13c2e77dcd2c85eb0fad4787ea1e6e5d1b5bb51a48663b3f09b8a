@@ -1,0 +1,21 @@
+import { useContext as i } from "react";
+import { TranslationContext as u } from "../provider/translation-provider.js";
+import { c } from "../crc32-BeCcwohL.js";
+import { u as l } from "../useTranslation-CZfO55Z-.js";
+function d() {
+  const t = i(u), { ready: r, t: a, i18n: o } = l(), e = (n, s = {}) => a(c.str(n).toString(), { defaultValue: n, ...s });
+  if (!t)
+    throw new Error(
+      "useTranslation has to be used within <TranslationContext.Provider>"
+    );
+  return {
+    ready: r,
+    localize: e,
+    instance: o,
+    switchLanguage: t.switchLanguage,
+    currentLang: t.currentLang
+  };
+}
+export {
+  d as default
+};

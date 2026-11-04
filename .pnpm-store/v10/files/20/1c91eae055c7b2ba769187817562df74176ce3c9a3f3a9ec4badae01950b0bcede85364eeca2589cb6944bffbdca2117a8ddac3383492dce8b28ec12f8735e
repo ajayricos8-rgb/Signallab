@@ -1,0 +1,14 @@
+import { default as e } from "./initialize-i18n.js";
+import { default as l } from "./localize.js";
+import { default as r } from "./otasdk.js";
+import { c as i } from "../constants-HKuDWVkt.js";
+import { getAllowedLanguages as d, getInitialLanguage as g, loadIncontextTranslation as x } from "./lang-utils.js";
+export {
+  r as OtaSdk,
+  i as constants,
+  d as getAllowedLanguages,
+  g as getInitialLanguage,
+  e as initializeI18n,
+  x as loadIncontextTranslation,
+  l as localize
+};

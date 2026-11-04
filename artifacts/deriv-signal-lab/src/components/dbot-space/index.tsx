@@ -4,11 +4,13 @@
 // account link and the data bridge, `WorkspacePanel` draws the frame chrome, and
 // `StoreView` draws the bot store. This file is the layout, the account cluster
 // and the hand-offs to the AI copilot.
-import { useCallback, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useState, type ComponentType } from 'react';
 import {
   Activity, Boxes, BrainCircuit, ChartNoAxesCombined, Library, Link2, LoaderCircle, LockKeyhole, Unlink, Wallet, X,
   type LucideProps,
 } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DerivConnectionCard } from '@/components/deriv-connection-card';
 import { useDerivTrading } from '@/components/deriv-trading-provider';
 import { formatAmount } from '@/lib/deriv-trading';
 import { DbotAiCopilot } from '@/components/dbot-ai-copilot';
@@ -31,11 +33,13 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
   const trading = useDerivTrading();
   const [view, setView] = useState<SpaceView>('builder');
   const [localAnalysisRequest, setLocalAnalysisRequest] = useState(0);
+  const [connectionOpen, setConnectionOpen] = useState(false);
 
   const workspace = useDbotWorkspace({
     view,
     onOpenSettings,
     onFrameTab: setView,
+    onLoginRequest: () => setConnectionOpen(true),
   });
   const {
     ready, link, autoLink, autoPaused, notice, botRunning, shared, blockRegistry, aiRuntimeRegistered,
@@ -47,6 +51,12 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
     ? formatAmount(trading.balance, trading.currency || trading.activeAccount.currency)
     : '—';
   const linkLabel = linkSummary({ link, hasAccount, autoLink, autoPaused });
+
+  // The dialog exists to connect an account; once the token is verified the
+  // frame links itself, so the popup has done its job.
+  useEffect(() => {
+    if (connectionOpen && trading.status === 'connected') setConnectionOpen(false);
+  }, [connectionOpen, trading.status]);
 
   function selectView(next: SpaceView) {
     setView(next);
@@ -277,6 +287,19 @@ export function DbotSpace({ onOpenSettings, analysisRequest = 0 }: { onOpenSetti
         onLoadAnalysis={loadAiAnalysis}
         onLoadAndRun={loadAndRunAiStrategy}
       />
+
+      <Dialog open={connectionOpen} onOpenChange={setConnectionOpen}>
+        <DialogContent className="max-h-[88dvh] overflow-y-auto sm:max-w-md" data-testid="dbot-login-dialog">
+          <DialogHeader>
+            <DialogTitle>Connect a Deriv account</DialogTitle>
+            <DialogDescription className="pt-1 leading-relaxed">
+              Paste a Personal Access Token with the trade scope — the same connection used in Settings. Once the
+              account is verified, DBot links itself and its ticks, balance and positions are shared.
+            </DialogDescription>
+          </DialogHeader>
+          <DerivConnectionCard compact />
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

@@ -74,12 +74,15 @@ export function useDbotWorkspace({
   view,
   onOpenSettings,
   onFrameTab,
+  onLoginRequest,
 }: {
   /** The host view; a freshly ready frame is told which tab to show. */
   view: SpaceView;
   onOpenSettings: () => void;
   /** The user clicked a tab inside the frame. */
   onFrameTab: (tab: WorkspaceTab) => void;
+  /** The frame's own "Log in" button was pressed; the host owns the account. */
+  onLoginRequest: () => void;
 }): DbotWorkspace {
   const trading = useDerivTrading();
   const feed = useMarketFeed();
@@ -93,6 +96,8 @@ export function useDbotWorkspace({
   viewRef.current = view;
   const onFrameTabRef = useRef(onFrameTab);
   onFrameTabRef.current = onFrameTab;
+  const onLoginRequestRef = useRef(onLoginRequest);
+  onLoginRequestRef.current = onLoginRequest;
 
   const [frameRevision, setFrameRevision] = useState(0);
   const [frameLoaded, setFrameLoaded] = useState(false);
@@ -307,6 +312,13 @@ export function useDbotWorkspace({
           if (viewRef.current !== 'builder' && viewRef.current !== 'chart') return;
           const tab = viewForWorkspaceTab(message.tab);
           if (tab) onFrameTabRef.current(tab);
+          return;
+        }
+        case 'login-request': {
+          // The embedded workspace's "Log in" button cannot redirect a
+          // same-origin iframe to Deriv OAuth; the host holds the account, so
+          // it opens the same PAT connection dialog Settings uses.
+          onLoginRequestRef.current();
           return;
         }
         case 'account-connected': {

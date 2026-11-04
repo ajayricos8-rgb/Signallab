@@ -1,0 +1,72 @@
+# Preview deployment workflow
+# Cancels previous deployments when new commits are pushed to PR
+
+name: Deploy Preview
+
+on:
+    pull_request:
+        branches:
+            - '**'
+        types: [opened, synchronize, reopened]
+
+# Cancel outdated deployments per PR
+concurrency:
+    group: deploy-preview-${{ github.event.number }}
+    cancel-in-progress: true
+
+env:
+    FLUTTER_VERSION: '3.24.1'
+    FLUTTER_WEB_RENDERER: 'html'
+    NODE_VERSION: '22.x'
+
+permissions:
+    contents: read
+    pull-requests: write
+
+jobs:
+    deploy-preview:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Verify user
+              uses: 'deriv-com/shared-actions/.github/actions/verify_user_in_organization@v3'
+              with:
+                  username: ${{ github.event.pull_request.user.login }}
+                  token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  # Pin to specific commit for security
+                  ref: ${{ github.event.pull_request.head.sha }}
+                  # Prevent checkout of untrusted code by limiting what gets checked out
+                  persist-credentials: false
+
+            - name: Generate branch slug
+              id: branch-slug
+              env:
+                  PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+                  PR_NUMBER: ${{ github.event.number }}
+              run: |
+                  # Sanitize branch name to prevent injection
+                  BRANCH_SLUG=$(echo "$PR_HEAD_REF" | sed 's|/|-|g' | sed 's|[^a-zA-Z0-9_-]||g' | tr '[:upper:]' '[:lower:]')
+                  # Ensure branch slug is not empty and has max length for Cloudflare
+                  if [ -z "$BRANCH_SLUG" ]; then
+                    BRANCH_SLUG="pr-$PR_NUMBER"
+                  fi
+                  BRANCH_SLUG=$(echo "$BRANCH_SLUG" | cut -c1-63)
+                  echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
+                  echo "Generated branch slug: $BRANCH_SLUG"
+
+            - name: Deploy to Cloudflare Pages
+              id: deploy
+              uses: './.github/actions/build-and-deploy'
+              with:
+                  cloudflare_api_token: ${{ secrets.CLOUDFLARE_TEST_LINKS_API_TOKEN }}
+                  cloudflare_account_id: ${{ secrets.CLOUDFLARE_TEST_LINKS_ACCOUNT_ID }}
+                  project_name: 'smartcharts-champion'
+                  branch_name: ${{ steps.branch-slug.outputs.branch_slug }}
+                  node_version: ${{ env.NODE_VERSION }}
+                  flutter_version: ${{ env.FLUTTER_VERSION }}
+                  flutter_web_renderer: ${{ env.FLUTTER_WEB_RENDERER }}
+                  environment: 'preview'
+                  commit_hash: ${{ github.event.pull_request.head.sha }}

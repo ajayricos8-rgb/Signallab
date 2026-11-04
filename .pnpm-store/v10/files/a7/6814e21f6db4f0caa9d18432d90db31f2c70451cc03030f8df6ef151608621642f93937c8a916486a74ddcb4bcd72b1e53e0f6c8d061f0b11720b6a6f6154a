@@ -1,0 +1,47 @@
+import { I as f, j as s } from "../jsx-runtime-oIKL5WiM.js";
+import { useMemo as g, createElement as m, createContext as d, useState as i, useEffect as x } from "react";
+import "../crc32-BeCcwohL.js";
+import { L } from "../constants-HKuDWVkt.js";
+function p(t) {
+  let {
+    i18n: e,
+    defaultNS: o,
+    children: a
+  } = t;
+  const n = g(() => ({
+    i18n: e,
+    defaultNS: o
+  }), [e, o]);
+  return m(f.Provider, {
+    value: n
+  }, a);
+}
+const v = d(null);
+function P({
+  defaultLang: t,
+  i18nInstance: e,
+  children: o
+}) {
+  const [a, n] = i(t || ""), [u, l] = i(!1), c = (r) => {
+    e.changeLanguage(r), n(r), localStorage.setItem(L, JSON.stringify(r));
+  };
+  return x(() => {
+    if (e) {
+      const r = e.language || t || "";
+      n(r), l(!0);
+    }
+  }, [e, t]), !e || !u ? null : /* @__PURE__ */ s.jsx(p, { i18n: e, children: /* @__PURE__ */ s.jsx(
+    v.Provider,
+    {
+      value: {
+        currentLang: a,
+        switchLanguage: c
+      },
+      children: o
+    }
+  ) });
+}
+export {
+  v as TranslationContext,
+  P as default
+};

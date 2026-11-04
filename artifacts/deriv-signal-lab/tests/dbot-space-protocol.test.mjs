@@ -35,6 +35,8 @@ test('only messages the frame tagged for the shell are parsed', () => {
   assert.equal(parseFrameMessage({ source: FRAME_SOURCE }), null);
   assert.equal(parseFrameMessage(frame('not-a-real-message')), null);
   assert.deepEqual(parseFrameMessage(frame('ready')), { type: 'ready' });
+  // The embedded workspace's own "Log in" button asks the host to connect.
+  assert.deepEqual(parseFrameMessage(frame('login-request')), { type: 'login-request' });
 });
 
 test('a block registry is sanitised, deduplicated by validity and capped', () => {

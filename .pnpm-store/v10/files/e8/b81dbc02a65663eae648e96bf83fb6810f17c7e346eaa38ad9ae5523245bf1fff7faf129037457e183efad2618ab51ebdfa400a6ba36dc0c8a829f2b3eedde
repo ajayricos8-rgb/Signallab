@@ -1,0 +1,21 @@
+class a {
+  type;
+  cdnUrl;
+  constructor(n) {
+    this.type = "backend", this.cdnUrl = n;
+  }
+  read(n, s, e) {
+    fetch(this.cdnUrl + "/translations/" + n.toLowerCase() + ".json").then((t) => {
+      if (!t.ok)
+        throw new Error("Failed to fetch translations");
+      return t.json();
+    }).then((t) => {
+      e(null, t);
+    }).catch(() => {
+      e(null, {});
+    });
+  }
+}
+export {
+  a as default
+};

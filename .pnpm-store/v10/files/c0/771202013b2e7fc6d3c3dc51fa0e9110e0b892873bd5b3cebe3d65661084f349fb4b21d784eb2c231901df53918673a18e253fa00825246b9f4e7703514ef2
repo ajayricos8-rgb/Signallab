@@ -1,0 +1,1250 @@
+declare const accountList = "client.account_list";
+
+declare const activeLoginid = "client.active_loginid";
+
+declare const appBrand = "deriv";
+
+declare namespace AppIDConstants {
+    export {
+        environments,
+        domainAppId,
+        appBrand
+    }
+}
+export { AppIDConstants }
+
+declare const baseDomain: (typeof supportedDomains)[number];
+
+declare const binaryBotProduction: "https://bot.deriv.com" | "https://bot.deriv.me" | "https://bot.deriv.be";
+
+declare const binaryBotStaging: "https://staging-bot.deriv.com" | "https://staging-bot.deriv.me" | "https://staging-bot.deriv.be";
+
+declare type BrandConfig = keyof typeof brandConfig;
+
+/** @type {BrandConfig} */
+declare const brandConfig: {
+    readonly brandName: "Deriv";
+    readonly domainName: "Deriv.com";
+};
+
+declare namespace BrandConstants {
+    export {
+        brandConfig,
+        landingCompanies,
+        platforms,
+        BrandConfig,
+        LandingCompanies,
+        Platforms
+    }
+}
+export { BrandConstants }
+
+declare namespace BrandUtils {
+    export {
+        getLegalLandingCompany,
+        getBrandWebsiteName,
+        getPlatformName
+    }
+}
+export { BrandUtils }
+
+declare const cloudflareTrace = "https://www.cloudflare.com/cdn-cgi/trace";
+
+/**
+ * Compress an image and return it as a Blob.
+ * @param {TCompressImage} params - The parameters for image compression.
+ * @param {string} params.src - The source image URL or data URI.
+ * @param {string} params.filename - The desired filename for the compressed image.
+ * @param {Object} [params.options] - Options for image compression.
+ * @param {number} [params.options.maxWidth=DEFAULT_IMAGE_WIDTH] - The maximum width for the compressed image.
+ * @param {number} [params.options.quality=DEFAULT_IMAGE_QUALITY] - The image quality (0 to 1) for compression.
+ * @returns {Promise<IExtendedBlob>} A Promise that resolves with the compressed image as a Blob.
+ */
+declare const compressImage: ({ src, filename, options }: TCompressImage) => Promise<IExtendedBlob>;
+
+/**
+ * Convert image to base64 and compress an image file if it is a supported image format.
+ *
+ * @param {File} file - The File object to compress.
+ * @returns {Promise<Blob>} A Promise that resolves with the compressed image as a Blob.
+ */
+declare const compressImageFile: (file: File) => Promise<Blob>;
+
+declare const configAppId = "config.app_id";
+
+declare const configServerURL = "config.server_url";
+
+/**
+ * Convert a File to a Base64 encoded image representation.
+ * @param {File} file - The File object to convert to Base64.
+ * @returns {Promise<TBase64Image>} A Promise that resolves with an object containing the Base64 image data and the filename.
+ */
+declare const convertToBase64: (file: File) => Promise<TBase64Image>;
+
+declare namespace CountryUtils {
+    export {
+        getCountry
+    }
+}
+export { CountryUtils }
+
+/**
+ * Creates a deferred promise along with its resolve and reject functions.
+ * This allows for the promise to be resolved or rejected at a later time
+ * outside of the promise constructor callback.
+ *
+ * @template T The type of the value with which the promise will be resolved. Defaults to `void` if not specified.
+ * @template U The type of the reason with which the promise will be rejected. Defaults to `unknown`.
+ * @returns An object containing:
+ * - `promise`: A Promise<T> that can be awaited or otherwise used.
+ * - `resolve`: A function that resolves the promise. If `T` is `void`, no arguments are required.
+ * - `reject`: A function that, when called with a reason of type U, rejects the promise.
+ */
+declare function createPromise(): {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (reason: unknown) => void;
+};
+
+declare function createPromise<T>(): {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+    reject: (reason: unknown) => void;
+};
+
+declare function createPromise<T, U = unknown>(): {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+    reject: (reason: U) => void;
+};
+
+declare type Currency = keyof typeof precision;
+
+declare namespace CurrencyConstants {
+    export {
+        precision,
+        Currency
+    }
+}
+export { CurrencyConstants }
+
+declare const deriv = "deriv.com";
+
+declare const derivAppProduction: "https://app.deriv.com" | "https://app.deriv.me" | "https://app.deriv.be";
+
+declare const derivAppStaging: "https://staging-app.deriv.com" | "https://staging-app.deriv.me" | "https://staging-app.deriv.be";
+
+declare const derivBe = "deriv.be";
+
+declare const derivComProduction: "https://deriv.com" | "https://deriv.me" | "https://deriv.be";
+
+declare const derivComProductionEU: "https://eu.deriv.com" | "https://eu.deriv.me" | "https://eu.deriv.be";
+
+declare const derivComStaging: "https://staging.deriv.com" | "https://staging.deriv.me" | "https://staging.deriv.be";
+
+declare const derivHost: "deriv.com" | "deriv.me" | "deriv.be";
+
+declare const derivMe = "deriv.me";
+
+declare const derivP2pProduction: "https://p2p.deriv.com" | "https://p2p.deriv.me" | "https://p2p.deriv.be";
+
+declare const derivP2pStaging: "https://staging-p2p.deriv.com" | "https://staging-p2p.deriv.me" | "https://staging-p2p.deriv.be";
+
+declare type DerivStaticURLOptions = {
+    isDocument?: boolean;
+    isEU?: boolean;
+};
+
+declare namespace DocumentConstants {
+    export {
+        supportedDocumentFormats,
+        DocumentFormats
+    }
+}
+export { DocumentConstants }
+
+declare type DocumentFormats = (typeof supportedDocumentFormats)[number];
+
+declare const domain: "deriv.com" | "deriv.me" | "deriv.be";
+
+declare const domainAppId: {
+    readonly "deriv.app": "16929";
+    readonly "app.deriv.com": "16929";
+    readonly "staging-app.deriv.com": "16303";
+    readonly "app.deriv.me": "1411";
+    readonly "staging-app.deriv.me": "1411";
+    readonly "app.deriv.be": "30767";
+    readonly "staging-app.deriv.be": "31186";
+    readonly "binary.com": "1";
+    readonly "test-app.deriv.com": "51072";
+    readonly "p2p.deriv.com": "61859";
+    readonly "p2p.deriv.be": "71265";
+    readonly "p2p.deriv.me": "71263";
+    readonly "staging-p2p.deriv.com": "62019";
+    readonly "api.deriv.com": "36544";
+    readonly "staging-api.deriv.com": "36545";
+    readonly "smarttrader.deriv.com": "22168";
+    readonly "staging-smarttrader.deriv.com": "22169";
+    readonly "staging-dbot.deriv.com": "29934";
+    readonly "staging-dbot.deriv.me": "29934";
+    readonly "staging-dbot.deriv.be": "29934";
+    readonly "dbot.deriv.com": "65555";
+    readonly "dbot.deriv.be": "65556";
+    readonly "dbot.deriv.me": "65557";
+};
+
+declare const environments: {
+    readonly real: "green.derivws.com";
+    readonly demo: "blue.derivws.com";
+};
+
+/**
+ * Filters and removes specified search parameters from the current URL.
+ * This function modifies the current URL's query string by removing the specified search parameters and then updates the history state.
+ *
+ * @param {string[]} searchParamsToRemove - An array of search parameter keys to remove from the current URL.
+ */
+declare const filterSearchParams: (searchParamsToRemove: string[]) => void;
+
+/**
+ * Formats a given number into a monetary format that is human-readable, with options to customize
+ * the currency, number of decimal places, and locale.
+ * Priority of options: decimalPlaces -> currency -> default value(2)
+ *
+ * @param {number} number - The numeric value to be formatted as a monetary amount.
+ * @param {FormatMoneyOptions} [options] - Optional configuration for formatting the money value, including:
+ *   - `currency`: A `Currency` specifying the currency code to format the number with. Defaults to "USD".
+ *   - `decimalPlaces`: The number of decimal places to display in the formatted string. If not specified,
+ *                      defaults to 2 decimal places.
+ *   - `locale`: The locale string to use for formatting the number, affecting the currency symbol position,
+ *               thousand separator, and decimal point. Defaults to "en-US".
+ *
+ * @returns {string} A string representing the formatted monetary value. If an error occurs during formatting,
+ *                   the function will catch the exception and return the original number as a string.
+ *
+ * @example
+ * // Formats a number as USD with default locale and decimal places
+ * formatMoney(1234.56);
+ * // => "1,234.56"
+ *
+ * @example
+ * // Formats a number as EUR with custom locale and decimal places
+ * formatMoney(1234.56, { currency: 'EUR', locale: 'de-DE', decimalPlaces: 1 });
+ * // => "1.234,6"
+ */
+declare const formatMoney: (number: number, options?: FormatMoneyOptions) => string;
+
+declare type FormatMoneyOptions = {
+    currency?: Currency;
+    decimalPlaces?: number;
+    locale?: string;
+};
+
+declare namespace FormatUtils {
+    export {
+        formatMoney,
+        getFormattedDateString,
+        getFormattedTimeString,
+        getAdjustedDate,
+        parseCryptoLongcode
+    }
+}
+export { FormatUtils }
+
+/**
+ * Turn binary into array of chunks
+ *
+ * @param {binary} Uint8Array - Uint8Array to be chunked.
+ * @returns {Uint8Array[]} Array of Uint8Array chunks
+ */
+declare const generateChunks: (binary: Uint8Array, { chunkSize }: {
+    chunkSize?: number | undefined;
+}) => Uint8Array<ArrayBuffer>[];
+
+/**
+ * Retrieves the active login ID from either localStorage or the URL query parameters.
+ *
+ * This function first attempts to get the active login ID from localStorage using a predefined key from `LocalStorageConstants`.
+ * If not found in localStorage, it then tries to retrieve the login ID from the URL query parameters, specifically looking for `acct1`.
+ *
+ * @returns {string | null} The active login ID if available, otherwise `null`.
+ */
+declare const getActiveLoginid: () => string | null;
+
+/**
+ * Calculates a new date by adjusting the current date by a specified amount of days or years.
+ * To be used for setting min and max date for date pickers, expiry dates, etc.
+ *
+ * @param {number} amount - The number of days or years to adjust the date by.
+ * @param {"days" | "years"} type - Specifies whether to adjust the date by days or years.
+ * @param {"add" | "subtract"} operation - Specifies whether to add or subtract the amount from the current date.
+ *
+ * @returns {Date} A new Date object representing the adjusted date.
+ *
+ * @example
+ * // Returns a Date object 5 days in the future
+ * getAdjustedDate(5, "days", "add");
+ *
+ * @example
+ * // Returns a Date object 2 years in the past
+ * getAdjustedDate(2, "years", "subtract");
+ *
+ * @example
+ * // Returns a Date object 10 days in the past
+ * getAdjustedDate(10, "days", "subtract");
+ */
+declare const getAdjustedDate: (amount: number, type?: "days" | "years", operation?: "add" | "subtract") => Date;
+
+/**
+ * Retrieves the application ID (app_id) from localStorage or based on the current domain.
+ *
+ * This function first tries to obtain the app_id from localStorage using a key specified in `LocalStorageConstants`.
+ * If not found, it checks a mapping defined in `AppIDConstants` to find an app_id associated with the current domain.
+ * If no domain-specific app_id is found, it defaults to "36300" which is the localhost app id.
+ *
+ * @returns {string} The application ID.
+ */
+declare const getAppId: () => string;
+
+/**
+ * It returns the domain name of a brand's website from a configuration object called brandConfig.
+ *
+ * @returns {string} Returns the domain name of a brand's website.
+ */
+declare const getBrandWebsiteName: () => "Deriv.com";
+
+/**
+ * Fetches the country information based on Cloudflare's trace data or a fallback from cookies.
+ * This function attempts to retrieve the country location by first fetching trace data from Cloudflare
+ * and then falling back to the location stored in the cookies if the fetch fails.
+ *
+ * @returns {Promise<string>} A Promise that resolves to a string representing the country code in lowercase.
+ *                            Returns an empty string if no country data is available or if an error occurs.
+ *
+ * @example
+ * // Returns the country code in lowercase based on Cloudflare's trace data or cookies.
+ * getCountry().then(country => console.log(country));
+ */
+declare const getCountry: () => Promise<string>;
+
+/**
+ * Retrieves the default active account from a list of login information.
+ * The default account is determined by finding the first account with a login ID that starts with "VR".
+ * If no such account is found, the first account in the list is returned.
+ *
+ * @param {LoginInfo[]} loginInfo - An array of login information.
+ * @returns {LoginInfo} The default active account based on the specified criteria. If the list is empty, `undefined` is returned.
+ */
+declare const getDefaultActiveAccount: (loginInfo?: LoginInfo[]) => LoginInfo | undefined;
+
+/**
+ * Generates a static URL for the deriv.com project based on the provided parameters.
+ * This function is necessary because deriv.com URLs differ from those used in app.deriv.com
+ *
+ * @param {string} path - The path to be appended to the base URL.
+ * @param {DerivStaticURLOptions} [options] - Optional configuration for customising the Deriv Static URL, including:
+ *   - `isDocument`: Specifies whether the path represents a document.
+ *   - `isEU`: Specifies whether the URL should be generated for the EU production environment.
+ *
+ * @returns {string} Returns the formatted static URL.
+ */
+declare const getDerivStaticURL: (path: string, options?: DerivStaticURLOptions) => string;
+
+/**
+ * Determines the environment type based on the login ID.
+ *
+ * This function checks if the provided login ID starts with 'VR' which is the loginid prefix for virtual accounts. All others that do not match this
+ * is considered to be real accounts.
+ *
+ * @param {string | null} loginid - The login ID to evaluate.
+ * @returns {"real" | "demo"} The environment type as either 'real' or 'demo'.
+ */
+declare const getEnvironmentFromLoginid: (loginid: string | null) => "real" | "demo";
+
+/**
+ * Converts and formats a given date input into a specified string format without usage of external libraries such as moment.js or date-fns.
+ *
+ * @param {Date | number | string} dateInput - The date to be formatted.
+ *   - Can be a Date object, Unix timestamp, or date string.
+ * @param {GetFormattedDateStringOptions} [options] - Optional configuration for date formatting, including:
+ *   - `dateOptions`: Intl.DateTimeFormatOptions to customize date formatting.
+ *   - `format`: The desired output format. Supported formats: 'YYYY-MM-DD', 'DD-MM-YYYY', 'DD MMM YYYY', 'MMM DD YYYY'.
+ *   - `unix`: If true, treats numeric input as a Unix timestamp.
+ *
+ * @returns {string} A formatted date string according to the specified format.
+ *
+ * @example
+ * // Returns date in 'YYYY-MM-DD' format
+ * getFormattedDateString(new Date('2023-05-15'));
+ * // => "2023-05-15"
+ *
+ * @example
+ * // Returns date in 'DD MMM YYYY' format
+ * getFormattedDateString('2023-05-15', { format: 'DD MMM YYYY' });
+ * // => "15 May 2023"
+ *
+ * @example
+ * // Returns date in 'MMM DD YYYY' format with Unix timestamp
+ * getFormattedDateString(1684159800, { format: 'MMM DD YYYY', unix: true });
+ * // => "May 15 2023"
+ */
+declare const getFormattedDateString: (dateInput: Date | number | string, options?: GetFormattedDateStringOptions) => string;
+
+declare type GetFormattedDateStringOptions = {
+    dateOptions?: Intl.DateTimeFormatOptions;
+    format?: "DD MMM YYYY" | "DD-MM-YYYY" | "MMM DD YYYY" | "YYYY-MM-DD";
+    unix?: boolean;
+};
+
+/**
+ * Converts and formats a given date input into a time string in 'HH:mm:ss GMT' format without usage of external libraries such as moment.js or date-fns.
+ *
+ * @param {Date | number | string} dateInput - The date to be formatted.
+ *   - Can be a Date object, Unix timestamp, or date string.
+ * @param {boolean} [unix=false] - If true, treats the numeric input as a Unix timestamp.
+ *
+ * @returns {string} A formatted time string in 'HH:mm:ss GMT' format.
+ *
+ * @example
+ * getFormattedTimeString(new Date('2023-05-15T14:30:00Z'));
+ * // => "14:30:00 GMT"
+ *
+ * @example
+ * getFormattedTimeString(1684159800, true);
+ * // => "14:30:00 GMT"
+ */
+declare const getFormattedTimeString: (dateInput: Date | number | string, unix?: boolean) => string;
+
+/**
+ * This function will check whether the landing company is available in our brand configuration
+ *
+ * @param {LandingCompanies} landingCompany - landingCompany will be the string and we will check if its available in legal entities.
+ * @returns {string} Returns name of landing company.
+ */
+declare const getLegalLandingCompany: (landingCompany: LandingCompanies) => "Deriv (FX) Ltd" | "Deriv Investments (Europe) Limited" | "Deriv (SVG) LLC" | "Deriv (V) Ltd";
+
+/**
+ * Extracts the login information from thxe URL's query parameters.
+ * This function parses the window's current URL search parameters looking for account, token, and currency information.
+ * It constructs an array of partially formed `LoginInfo` objects and filters out any entries that do not have all required properties.
+ * It also returns a list of parameter keys that are related to account information and can be deleted.
+ *
+ * @returns {{loginInfo: LoginInfo[], paramsToDelete: string[]}} An object containing an array of `LoginInfo` objects and an array of parameter keys to delete.
+ */
+declare const getLoginInfoFromURL: () => {
+    loginInfo: LoginInfo[];
+    paramsToDelete: string[];
+};
+
+/**
+ * Constructs the OAuth URL with query parameters for language, app_id, and brand.
+ * The language is retrieved from local storage or defaults to "EN" if not set. The app_id and brand are obtained from constants.
+ *
+ * @returns {string} The constructed OAuth URL.
+ */
+declare const getOauthURL: () => string;
+
+/**
+ * This function will check the allowed domain and then it will return configuration data.
+ *
+ * @param {Platforms} platformKey - platformKey will be the key of our platforms.
+ *
+ * @returns {Object} Returns allowed platform name.
+ */
+declare const getPlatformName: (platformKey: Platforms) => "Deriv Trader" | "Deriv Bot" | "Deriv MT5" | "Deriv cTrader" | "Deriv X" | "SmartTrader" | "Binary Bot" | "Deriv GO";
+
+/**
+ * Extracts query parameters from the URL by parsing the current window's URL search parameters for the specified key.
+ * It returns the query parameters associated with the given key.
+ *
+ * @param {QueryParameters} key - The query parameter we want. (you can see all of them in the URLConstants.queryParameters)
+ * @returns {string | null} A string containing query parameter associated with the given key.
+ */
+declare const getQueryParameter: (key: QueryParameters) => string | null;
+
+/**
+ * Determines the server URL based on the active login ID.
+ * It first attempts to retrieve the server URL from local storage. If not found, it uses the active login ID to determine the server URL from predefined environments.
+ *
+ * @returns {string} The determined server URL.
+ */
+declare const getServerURL: () => string;
+
+/**
+ * Retrieves a value from localStorage, providing type safety and parsing.
+ *
+ * This function attempts to retrieve the value associated with the given key from the browser's localStorage.
+ * It ensures the key is one of the predefined keys in `LocalStorageConstants` for type safety.
+ * The function automatically parses the stored JSON string back into its original data type `T`.
+ * If the stored value is the string "undefined", it converts this back into the JavaScript `undefined` type.
+ * Similarly, if the value is "null" or actually `null`, it returns `null`. If JSON parsing fails, it returns `null` to indicate an error or incompatible stored value.
+ *
+ * @template T The expected data type of the localStorage value.
+ * @param {TLocalStorageKeys} key - A type-safe key from `LocalStorageConstants`.
+ * @returns {(T | undefined | null)} - The value associated with the key, parsed as type `T`, or `undefined`/`null` to handle special cases or parsing errors.
+ */
+declare const getValue: <T>(key: TLocalStorageKeys) => T | null | undefined;
+
+/**
+ * Constructs the WebSocket URL with query parameters for app_id, language, and brand.
+ * The server URL is determined by calling `getServerURL`, and the language is retrieved from local storage or defaults to "EN" if not set.
+ *
+ * @returns {string} The constructed WebSocket URL.
+ */
+declare const getWebsocketURL: () => string;
+
+/**
+ * Computes the SHA-256 hash of a JavaScript object.
+ * @param {T extends object} object - The object to be hashed.
+ * @returns {Promise<string>} A Promise that resolves to the SHA-256 hash of the input object as a hexadecimal string.
+ * @throws {Error} Throws an error if the hashing operation fails or if the input is not a valid object.
+ */
+declare const hashObject: <T extends object>(object: T) => Promise<string>;
+
+/**
+ * @description
+ * This pattern matches any string that contains a sequence of three uppercase letters followed by a hyphen.
+ * The sequence must be a word on its own (i.e., it must be surrounded by word boundaries).
+ * The 'g' flag is used for global search (to find all matches rather than stopping after the first match), and the 'i' flag is used for case-insensitive search.
+ * @example huaweiDevicesRegex.test("AMN-") // returns true
+ * @example huaweiDevicesRegex.test("ANA-") // returns true
+ * @example huaweiDevicesRegex.test("ANE-") // returns true
+ * Source of list is from: https://gist.github.com/megaacheyounes/e1c7eec5c790e577db602381b8c50bfa
+ */
+declare const huaweiDevicesRegex: RegExp;
+
+declare const i18nLanguage = "i18n_language";
+
+declare interface IExtendedBlob extends Blob {
+    lastModifiedDate?: number;
+    name?: string;
+}
+
+declare namespace ImageUtils {
+    export {
+        numToUint8Array,
+        TFileObject,
+        compressImage,
+        convertToBase64,
+        isSupportedImageFormat,
+        compressImageFile,
+        generateChunks,
+        readFile
+    }
+}
+export { ImageUtils }
+
+/**
+ * This regex will match any official deriv production and testing domain names.
+ * Allowed deriv domains: localhost, binary.sx, binary.com, deriv.com, deriv.be, deriv.me and their subdomains.
+ *
+ * @param {string} domainName - The path to be match with regex.
+ * @returns {string} Returns the boolean whether its valid/allowed URL.
+ */
+declare const isDomainAllowed: (domainName: string) => boolean;
+
+/**
+ * Check if a given filename has a supported image format extension.
+ *
+ * @param {string} filename - The filename to check for a supported image format.
+ * @returns {boolean} True if the filename has a supported image format extension, false otherwise.
+ */
+declare const isSupportedImageFormat: (filename: string) => boolean;
+
+declare type LandingCompanies = keyof typeof landingCompanies;
+
+/** @type {LandingCompanies} */
+declare const landingCompanies: {
+    readonly fx: "Deriv (FX) Ltd";
+    readonly maltainvest: "Deriv Investments (Europe) Limited";
+    readonly svg: "Deriv (SVG) LLC";
+    readonly v: "Deriv (V) Ltd";
+};
+
+declare const lastVerifyEmail = "client.verify_email";
+
+declare namespace LocalStorageConstants {
+    export {
+        activeLoginid,
+        accountList,
+        lastVerifyEmail,
+        configAppId,
+        configServerURL,
+        i18nLanguage,
+        uiTheme,
+        uiShowReportsDrawer,
+        uiExpandAccountSwitcher,
+        traderLayout,
+        p2pArchiveMessage,
+        p2pOrderIds,
+        p2pShowGuide,
+        p2pShowFollowUserGuide
+    }
+}
+export { LocalStorageConstants }
+
+declare namespace LocalStorageUtils {
+    export {
+        getValue,
+        setValue
+    }
+}
+export { LocalStorageUtils }
+
+/**
+ * Defines the structure for account information.
+ * @typedef {Object} LoginInfo@typedef {Object} LoginInfo
+ * @property {string} loginid - The loginid for the account.
+ * @property {string} currency - The currency code for the account.
+ * @property {string} token - The authentication token for the account.
+ */
+declare type LoginInfo = {
+    loginid: string;
+    currency: string;
+    token: string;
+};
+
+/**
+ * Function to merge two objects. An alternate to lodash.merge
+ * @param target - The object to be merged into
+ * @param sources - The objects to merge into target
+ * @returns The merged object
+ */
+declare const merge: <T>(target: T, ...sources: TSources<T>[]) => T;
+
+declare const messagesHints: {
+    /**
+     * Represents the special characters permitted in an address.
+     * @remarks This is to be used in the message of the validation error, to let the user know which characters are permitted.
+     * @example `Special characters permitted: ${ValidationConstants.messagesHints.addressPermittedSpecialCharacters}`
+     */
+    readonly addressPermittedSpecialCharacters: ". , ' : ; ( ) ° @ # / -";
+};
+
+declare namespace MobileDevicesConstants {
+    export {
+        huaweiDevicesRegex
+    }
+}
+export { MobileDevicesConstants }
+
+/**
+ * It uses the User-Agent string and the User-Agent Client Hints API to detects the mobile operating system asynchronously.
+ *
+ * @returns {Promise<string>} Returns a promise that resolves to the name of the detected mobile OS.
+ */
+declare const mobileOSDetectAsync: () => Promise<"Windows Phone" | "huawei" | "Android" | "iOS" | "unknown">;
+
+/**
+ * Takes a 'URL path' as input and removes certain characters from the beginning and end of the path.
+ *
+ * Removes the following:
+ * - Any leading forward slash (/) at the beginning of the path.
+ * - Any trailing forward slash (/) at the end of the path.
+ * - Any characters that are not alphanumeric, hyphen, underscore, dot, forward slash, parentheses, or hash symbol.
+ *
+ * @param {string} path - The URL path that needs to be normalized.
+ * @returns {string} Returns the formatted path without the specified characters.
+ */
+declare const normalizePath: (path: string) => string;
+
+/**
+ * Get Uint8Array from number
+ *
+ * @param {num} number - The number to convert to Uint8Array.
+ * @returns {Uint8Array} Uint8Array
+ */
+declare function numToUint8Array(num: number, arraySize?: number): Uint8Array<ArrayBuffer>;
+
+declare namespace ObjectUtils {
+    export {
+        sortObjectByKeys,
+        hashObject,
+        merge
+    }
+}
+export { ObjectUtils }
+
+declare namespace OSDetectionUtils {
+    export {
+        mobileOSDetectAsync
+    }
+}
+export { OSDetectionUtils }
+
+declare const p2pArchiveMessage = "should_not_show_auto_archive_message_again";
+
+declare const p2pOrderIds = "order_ids";
+
+declare const p2pShowFollowUserGuide = "should_show_p2p_follow_user_guide";
+
+declare const p2pShowGuide = "should_show_p2p_guide";
+
+/**
+ * Parses a cryptocurrency longcode string to extract address hash and blockchain hash.
+ *
+ * @param {string} longcode - The cryptocurrency longcode string to parse.
+ *
+ * @returns {Object} An object containing:
+ *   - addressHash: The extracted address hash.
+ *   - blockchainHash: The extracted blockchain hash.
+ *   - splitLongcode: An array of the longcode split by commas.
+ *
+ * @example
+ * parseCryptoLongcode("address: abc123def456ghi789jkl, transaction: xyz123abc456def789ghi")
+ * =>
+ * {
+ *   addressHash: "abc123def456ghi789jkl",
+ *   blockchainHash: "xyz123abc456def789ghi",
+ *   splitLongcode: ["address: abc123def456ghi789jkl", "transaction: xyz123abc456def789ghi"]
+ * }
+ */
+declare const parseCryptoLongcode: (longcode: string) => {
+    addressHash: string | undefined;
+    blockchainHash: string | undefined;
+    splitLongcode: string[];
+};
+
+declare const patterns: {
+    /**
+     * @regex /^[\p{L}\p{Nd}\s'’.,:;()\\x{b0}@#/-]{0,70}$/u
+     * @description
+     * This pattern matches any string with no more than 70 characters, can contain letters, numbers, spaces, and any of the following special characters: '’.,:;()@#/-.
+     * @example ValidationConstants.patterns.address.test("123 Main St.")
+     * @example ValidationConstants.patterns.address.test("Apt. 123")
+     * @example ValidationConstants.patterns.address.test("123 Main St. Apt. 123")
+     **/
+    readonly address: RegExp;
+    /**
+     * @regex /^\p{L}[\p{L}\s'.-]{0,49}$/u
+     * @description This pattern matches any string with no more than 50 characters.
+     * @example ValidationConstants.patterns.addressCity.test("Main St.")
+     * @example ValidationConstants.patterns.addressCity.test("Apt.")
+     * @example ValidationConstants.patterns.addressCity.test("Main St. Apt.")
+     **/
+    readonly addressCity: RegExp;
+    /**
+     * @regex /^[\p{L}\p{Nd}\s'.,-;]{0,100}$/u
+     * @description This pattern matches any string that contains up to 100 characters composed of Unicode letters, Unicode digits, whitespace characters, apostrophes, periods, commas, hyphens, and semicolons ( '.,-;).
+     * @example ValidationConstants.patterns.addressState.test("New York")
+     * @example ValidationConstants.patterns.addressState.test("Québec")
+     **/
+    readonly addressState: RegExp;
+    /**
+     * @regex /^(?=.{1,20}$)[+-]?[0-9]+\.?[0-9]*$/
+     * @description This pattern matches any string with 0-9 characters (numeric values. i.e. both integers and floats), and may contain a '+' or '-' sign.
+     * @example ValidationConstants.patterns.barrier.test("123")
+     * @example ValidationConstants.patterns.barrier.test("123.45")
+     * @example ValidationConstants.patterns.barrier.test("-123")
+     * @example ValidationConstants.patterns.barrier.test("-123.45")
+     * @example ValidationConstants.patterns.barrier.test("+123")
+     * @example ValidationConstants.patterns.barrier.test("+123.45")
+     */
+    readonly barrier: RegExp;
+    /**
+     * @regex /^\d*(\.\d+)?$/
+     * @description This pattern matches any string that contains only numeric values, and may contain a decimal point.
+     * @example ValidationConstants.patterns.decimal.test("123")
+     * @example ValidationConstants.patterns.decimal.test("123.45")
+     */
+    readonly decimal: RegExp;
+    /**
+     * @regex /^\d+$/
+     * @description This pattern matches any string that contains only numeric values.
+     * @example ValidationConstants.patterns.integer.test("123")
+     * @example ValidationConstants.patterns.integer.test("12345")
+     */
+    readonly integer: RegExp;
+    /**
+     * @regex /p[.\s]+o[.\s]+box/i
+     * @description This pattern matches any string that contains the characters 'p.o.box' or 'p o box'.
+     * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("P.O. Box 1234")
+     * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("p.o. box 1234")
+     * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("P O Box 1234")
+     * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("p o box 1234")
+     */
+    readonly postalOfficeBoxNumber: RegExp;
+    /**
+     * @regex /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,63}$/
+     * @description This pattern matches any string with 2-63 characters, and contains aplhanumeric characters, an '@' sign, and may also contain any of these characters '+,-._'.
+     * @example ValidationConstants.patterns.email.test("doe@meme.me")
+     * **/
+    readonly email: RegExp;
+    /**
+     * @regex /^(?=.*[a-z])(?=.*\d)(?=.*[A-Z])[!-~]{8,25}$/
+     * @description This pattern matches any string that contains 8-25 characters that include; at least one lowercase letter, at least one digit, at least one uppercase letter, and only printable ASCII characters (from '!' to '~')
+     * @example ValidationConstants.patterns.password.test("Password1!")
+     **/
+    readonly password: RegExp;
+    /**
+     * @regex /^(?=.*[a-z])(?=.*[0-9])(?=.*[A-Z])[ -~]{6,50}$/
+     * @description This pattern matches any string that contains 6-50 characters that include; at least one lowercase letter, at least one digit, at least one uppercase letter, and only printable ASCII characters (from '!' to '~')
+     * @example ValidationConstants.patterns.affilliatePassword.test("Password1")
+     **/
+    readonly affilliatePassword: RegExp;
+    /**
+     * @regex /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{1,255}$/
+     * @description This pattern matches any string with 1-255 characters, and contains aplhanumeric characters, an '@' sign, and may also contain any of these characters '+,-._'.
+     * @example ValidationConstants.patterns.paymentAgentEmail.test("doe@meme.us")
+     **/
+    readonly paymentAgentEmail: RegExp;
+    /**
+     * @regex /^([A-Za-z0-9][A-Za-z0-9\s-]{0,20})?$/
+     * @description This pattern matches any string with no more than 20 characters and may not contain '+'.
+     * @example ValidationConstants.patterns.postalCode.test("123")
+     * @example ValidationConstants.patterns.postalCode.test("123-456")
+     **/
+    readonly postalCode: RegExp;
+    /**
+     * @regex /^(?!^$|\s+)[A-Za-z0-9.\/\s-]{0,25}$/
+     * @description This pattern matches any string with 0-25 characters, and may contain alphanumeric characters (both uppercase and lowercase), and any of these characters'./-', and or sapce characters
+     * @example ValidationConstants.patterns.taxIdentificationNumber.test("123")
+     **/
+    readonly taxIdentificationNumber: RegExp;
+    /**
+     * @regex /^\+((-|\s)*[0-9]){9,20}$/
+     * @description This pattern matches any string that starts with a '+' character, followed by 9-20 digits, allowing hyphens or spaces.
+     * @example ValidationConstants.patterns.phoneNumber.test("+1234567890")
+     **/
+    readonly phoneNumber: RegExp;
+    /**
+     * @regex /(image|application)\/(jpe?g|pdf|png)$/
+     * @description This pattern matches any of the file types jpeg, jpg, pdf, or png.
+     * @example ValidationConstants.patterns.fileType.test("image/jpeg")
+     * @example ValidationConstants.patterns.fileType.test("application/pdf")
+     * @example ValidationConstants.patterns.fileType.test("image/png")
+     * @example ValidationConstants.patterns.fileType.test("image/jpg")
+     **/
+    readonly fileType: RegExp;
+    /**
+     * @regex /(^\d{4})\s(\d{2}X{2})\s(X{4})\s(\d{4}$)/
+     * @description This pattern matches any string that's formatted in the following format: 1234 56XX XXXX 1121.
+     * @example ValidationConstants.patterns.formattedCardNumber.test("1234 56XX XXXX 1121")
+     **/
+    readonly formattedCardNumber: RegExp;
+    /**
+     * @regex /[^\dX\s]/
+     * @description The is pattern matches any string that contains characters that aren't digits, the uppercase letter 'X' and spaces.
+     * @example ValidationConstants.patterns.invalidFormattedCardNumberCharacters.test("9876-5432-1098")
+     * @example ValidationConstants.patterns.invalidFormattedCardNumberCharacters.test("9876 5432 1098")
+     **/
+    readonly invalidFormattedCardNumberCharacters: RegExp;
+    /**
+     * @regex /^(?=.*[a-z])(?=.*[0-9])(?=.*[A-Z])(?=.*[!@#$%^&*()+\-=\[\]{};':\"|,\.<>\?_~])[ -~]{8,16}$/
+     * @description This pattern matches any string that contains 8-16 characters that include; at least one lowercase letter, at least one digit, at least one uppercase letter, and only printable ASCII characters (from '!' to '~')
+     * @example ValidationConstants.patterns.tradingPlatformInvestorPassword.test("Password1!$")
+     **/
+    readonly tradingPlatformInvestorPassword: RegExp;
+    /**
+     * @regex /^[A-Za-z]+([a-zA-Z.' -])*[a-zA-Z.' -]+$/
+     * @description This pattern matches any string that starts with one or more letters (uppercase or lowercase), followed by zero or more occurrences of letters, and any of these characters (.' -) and ends with one or more occurrences of letters, and any of these characters (.' -).
+     * @example ValidationConstants.patterns.letterSymbols.test("John Doe")
+     * @example ValidationConstants.patterns.letterSymbols.test("John-Doe")
+     * @example ValidationConstants.patterns.letterSymbols.test("John O'Doe")
+     */
+    readonly letterSymbols: RegExp;
+    /**
+     * @regex /^(?!.*\s{2,})(?!\s)[\p{L}\s'.-]{1,50}$/u
+     * @description This pattern matches any string that contains 1 to 50 characters, starts and ends with valid characters (letters, whitespace, period, single quote, or hyphen).
+     * @example ValidationConstants.patterns.name.test("John Doe")
+     * @example ValidationConstants.patterns.name.test("John-Doe")
+     * @example ValidationConstants.patterns.name.test("John O'Doe")
+     * @example ValidationConstants.patterns.name.test("John O. Doe")
+     */
+    readonly name: RegExp;
+    /**
+     * @regex /[`~!@#$%^&*)(_=+[}{\]\\/";:?><|]+/
+     * @description This pattern matches any string that contains any of these characters: `~!@#$%^&*)(_=+[}{\]\\/";:?><|
+     * @example ValidationConstants.patterns.general.test("Password1!")
+     */
+    readonly general: RegExp;
+    /**
+     * @regex /[a-z]/
+     * @description This pattern matches any string that contains lowercase letters.
+     * @example ValidationConstants.patterns.lowercase.test("abc")
+     */
+    readonly lowercase: RegExp;
+    /**
+     * @regex /\d/
+     * @description This pattern matches any string that contains digits.
+     * @example ValidationConstants.patterns.number.test("pets123")
+     */
+    readonly number: RegExp;
+    /**
+     * @regex /\W/
+     * @description This pattern matches any string that contains special characters.
+     * @example ValidationConstants.patterns.specialCharacter.test("Password1!")
+     */
+    readonly specialCharacter: RegExp;
+    /**
+     * @regex /[A-Z]/
+     * @description This pattern matches any string that contains uppercase letters.
+     * @example ValidationConstants.patterns.uppercase.test("ABC")
+     */
+    readonly uppercase: RegExp;
+    /**
+     * @regex /^.{8,16}$/
+     * @description This pattern matches any string that contains 8-16 characters.
+     * @example ValidationConstants.patterns.between8and16Characters.test("Password1!")
+     */
+    readonly between8and16Characters: RegExp;
+    /**
+     * @regex /^.{8,25}$/
+     * @description This pattern matches any string that contains 8-25 characters.
+     * @example ValidationConstants.patterns.between8and25Characters.test("Password1!")
+     */
+    readonly between8and25Characters: RegExp;
+};
+
+declare type Platforms = keyof typeof platforms;
+
+/** @type {Platforms} */
+declare const platforms: {
+    readonly trader: "Deriv Trader";
+    readonly dBot: "Deriv Bot";
+    readonly mt5: "Deriv MT5";
+    readonly cTrader: "Deriv cTrader";
+    readonly derivX: "Deriv X";
+    readonly smartTrader: "SmartTrader";
+    readonly bBot: "Binary Bot";
+    readonly go: "Deriv GO";
+};
+
+declare const precision: {
+    readonly AAD: 2;
+    readonly AED: 2;
+    readonly AFN: 2;
+    readonly ALL: 2;
+    readonly AMD: 2;
+    readonly ANG: 2;
+    readonly AOA: 2;
+    readonly ARS: 2;
+    readonly AUD: 2;
+    readonly AWG: 2;
+    readonly AZN: 2;
+    readonly BAM: 2;
+    readonly BBD: 2;
+    readonly BCH: 8;
+    readonly BDT: 2;
+    readonly BGN: 2;
+    readonly BHD: 3;
+    readonly BIF: 0;
+    readonly BMD: 2;
+    readonly BND: 2;
+    readonly BOB: 2;
+    readonly BOV: 2;
+    readonly BRL: 2;
+    readonly BSD: 2;
+    readonly BTC: 8;
+    readonly BTN: 2;
+    readonly BUSD: 2;
+    readonly BWP: 2;
+    readonly BYN: 2;
+    readonly BZD: 2;
+    readonly CAD: 2;
+    readonly CDF: 2;
+    readonly CHE: 2;
+    readonly CHF: 2;
+    readonly CHW: 2;
+    readonly CLF: 4;
+    readonly CLP: 0;
+    readonly CNY: 2;
+    readonly COP: 2;
+    readonly COU: 2;
+    readonly CRC: 2;
+    readonly CUC: 2;
+    readonly CUP: 2;
+    readonly CVE: 2;
+    readonly CZK: 2;
+    readonly DAI: 2;
+    readonly DJF: 0;
+    readonly DKK: 2;
+    readonly DOP: 2;
+    readonly DZD: 2;
+    readonly EGP: 2;
+    readonly ERN: 2;
+    readonly ETB: 2;
+    readonly ETC: 8;
+    readonly ETH: 8;
+    readonly EUR: 2;
+    readonly EURS: 2;
+    readonly eUSDT: 2;
+    readonly FJD: 2;
+    readonly FKP: 2;
+    readonly GBP: 2;
+    readonly GEL: 2;
+    readonly GHS: 2;
+    readonly GIP: 2;
+    readonly GMD: 2;
+    readonly GNF: 0;
+    readonly GTQ: 2;
+    readonly GYD: 2;
+    readonly HKD: 2;
+    readonly HNL: 2;
+    readonly HRK: 2;
+    readonly HTG: 2;
+    readonly HUF: 2;
+    readonly IDK: 0;
+    readonly IDR: 2;
+    readonly ILS: 2;
+    readonly INR: 2;
+    readonly IQD: 3;
+    readonly IRR: 2;
+    readonly ISK: 0;
+    readonly JMD: 2;
+    readonly JOD: 3;
+    readonly JPY: 0;
+    readonly KES: 2;
+    readonly KGS: 2;
+    readonly KHR: 2;
+    readonly KMF: 0;
+    readonly KPW: 2;
+    readonly KRW: 0;
+    readonly KWD: 3;
+    readonly KYD: 2;
+    readonly KZT: 2;
+    readonly LAK: 2;
+    readonly LBP: 2;
+    readonly LKR: 2;
+    readonly LRD: 2;
+    readonly LSL: 2;
+    readonly LTC: 8;
+    readonly LYD: 3;
+    readonly MAD: 2;
+    readonly MDL: 2;
+    readonly MGA: 2;
+    readonly MKD: 2;
+    readonly MMK: 2;
+    readonly MNT: 2;
+    readonly MOP: 2;
+    readonly MRU: 2;
+    readonly MUR: 2;
+    readonly MVR: 2;
+    readonly MWK: 2;
+    readonly MXN: 2;
+    readonly MXV: 2;
+    readonly MYR: 2;
+    readonly MZN: 2;
+    readonly NAD: 2;
+    readonly NGN: 2;
+    readonly NIO: 2;
+    readonly NOK: 2;
+    readonly NPR: 2;
+    readonly NZD: 2;
+    readonly OMR: 3;
+    readonly PAB: 2;
+    readonly PAX: 2;
+    readonly PEN: 2;
+    readonly PGK: 2;
+    readonly PHP: 2;
+    readonly PKR: 2;
+    readonly PLN: 2;
+    readonly PYG: 0;
+    readonly QAR: 2;
+    readonly RON: 2;
+    readonly RSD: 2;
+    readonly RUB: 2;
+    readonly RWF: 0;
+    readonly SAR: 2;
+    readonly SBD: 2;
+    readonly SCR: 2;
+    readonly SDG: 2;
+    readonly SEK: 2;
+    readonly SGD: 2;
+    readonly SHP: 2;
+    readonly SLL: 2;
+    readonly SOS: 2;
+    readonly SRD: 2;
+    readonly SSP: 2;
+    readonly STN: 2;
+    readonly SVC: 2;
+    readonly SYP: 2;
+    readonly SZL: 2;
+    readonly THB: 2;
+    readonly TJS: 2;
+    readonly TMT: 2;
+    readonly TND: 3;
+    readonly TOP: 2;
+    readonly TRY: 2;
+    readonly TTD: 2;
+    readonly TUSD: 2;
+    readonly tUSDT: 2;
+    readonly TWD: 2;
+    readonly TZS: 2;
+    readonly UAH: 2;
+    readonly UGX: 0;
+    readonly USB: 2;
+    readonly USD: 2;
+    readonly USDC: 2;
+    readonly USDK: 2;
+    readonly UST: 2;
+    readonly USN: 2;
+    readonly UYI: 0;
+    readonly UYU: 2;
+    readonly UYW: 4;
+    readonly UZS: 2;
+    readonly VES: 2;
+    readonly VND: 0;
+    readonly VUV: 0;
+    readonly WST: 2;
+    readonly XAF: 0;
+    readonly XCD: 2;
+    readonly XOF: 0;
+    readonly XPF: 0;
+    readonly YER: 2;
+    readonly ZAR: 2;
+    readonly ZMW: 2;
+    readonly ZWL: 2;
+};
+
+declare namespace PromiseUtils {
+    export {
+        createPromise
+    }
+}
+export { PromiseUtils }
+
+declare type QueryParameters = keyof typeof queryParameters;
+
+declare const queryParameters: {
+    readonly lang: "lang";
+    readonly action: "action";
+};
+
+/**
+ * Read a file and return it as modified object with a buffer of the file contents.
+ * @param {IExtendedBlob} file - The file to read.
+ * @returns {Promise<TFileObject>} A Promise that resolves with the file as a TFileObject.
+ *
+ */
+declare const readFile: (file: IExtendedBlob) => Promise<TFileObject | {
+    message: string;
+}>;
+
+/**
+ * Stores a value in localStorage under a specified key.
+ *
+ * Accepts a key from the predefined set in `LocalStorageConstants` to ensure type safety. The value to be stored
+ * is passed as a generic parameter `T`, which allows for any data type. This value is then stringified into JSON
+ * and stored.
+ *
+ * @template T The data type of the value to be stored.
+ * @param {TLocalStorageKeys} key - A type-safe key from `LocalStorageConstants`.
+ * @param {T} data - The data to store, which can be of any type. This will be stringified to JSON.
+ */
+declare const setValue: <T>(key: TLocalStorageKeys, data: T) => void;
+
+declare const smartTraderProduction: "https://smarttrader.deriv.com" | "https://smarttrader.deriv.me" | "https://smarttrader.deriv.be";
+
+declare const smartTraderStaging: "https://staging-smarttrader.deriv.com" | "https://staging-smarttrader.deriv.me" | "https://staging-smarttrader.deriv.be";
+
+/**
+ * Sorts the object key alphabetically.
+ * @param object Key value pair object
+ * @returns Same object with sorted key
+ */
+declare const sortObjectByKeys: <T extends Record<string, any>>(object: T) => T;
+
+declare const supportedDocumentFormats: readonly ["PNG", "JPG", "JPEG", "GIF", "PDF"];
+
+declare const supportedDomains: readonly ["deriv.com", "deriv.be", "deriv.me"];
+
+declare type TBase64Image = {
+    filename: string;
+    src: string;
+};
+
+declare type TCompressImage = TBase64Image & {
+    options?: TCompressImageOption;
+};
+
+declare type TCompressImageOption = {
+    maxWidth?: number;
+    quality?: number;
+};
+
+declare type TFileObject = {
+    filename?: File["name"];
+    buffer: FileReader["result"];
+    fileSize: File["size"];
+};
+
+declare type TLocalStorageKeys = (typeof LocalStorageConstants)[keyof typeof LocalStorageConstants];
+
+declare const traderLayout = "trader.layout";
+
+declare type TSources<T> = {
+    [P in keyof T]?: TSources<T[P]>;
+};
+
+declare const uiExpandAccountSwitcher = "ui.expand_account_switcher";
+
+declare const uiShowReportsDrawer = "ui.show_report_drawer";
+
+declare const uiTheme = "ui.theme";
+
+declare namespace URLConstants {
+    export {
+        deriv,
+        derivMe,
+        derivBe,
+        supportedDomains,
+        baseDomain,
+        domain,
+        binaryBotProduction,
+        binaryBotStaging,
+        derivAppProduction,
+        derivAppStaging,
+        derivComProduction,
+        derivComProductionEU,
+        derivComStaging,
+        derivHost,
+        smartTraderProduction,
+        smartTraderStaging,
+        derivP2pProduction,
+        derivP2pStaging,
+        whatsApp,
+        queryParameters,
+        cloudflareTrace,
+        QueryParameters
+    }
+}
+export { URLConstants }
+
+declare namespace URLUtils {
+    export {
+        LoginInfo,
+        getLoginInfoFromURL,
+        getDefaultActiveAccount,
+        filterSearchParams,
+        getOauthURL,
+        getServerURL,
+        getWebsocketURL,
+        getQueryParameter,
+        normalizePath,
+        getDerivStaticURL,
+        isDomainAllowed
+    }
+}
+export { URLUtils }
+
+declare namespace ValidationConstants {
+    export {
+        messagesHints,
+        patterns
+    }
+}
+export { ValidationConstants }
+
+declare namespace WebSocketUtils {
+    export {
+        getActiveLoginid,
+        getEnvironmentFromLoginid,
+        getAppId
+    }
+}
+export { WebSocketUtils }
+
+declare const whatsApp = "https://wa.me/35699578341";
+
+export { }

@@ -1,0 +1,872 @@
+const P = {
+  real: "green.derivws.com",
+  demo: "blue.derivws.com"
+}, C = {
+  "deriv.app": "16929",
+  "app.deriv.com": "16929",
+  "staging-app.deriv.com": "16303",
+  "app.deriv.me": "1411",
+  "staging-app.deriv.me": "1411",
+  "app.deriv.be": "30767",
+  "staging-app.deriv.be": "31186",
+  "binary.com": "1",
+  "test-app.deriv.com": "51072",
+  "p2p.deriv.com": "61859",
+  "p2p.deriv.be": "71265",
+  "p2p.deriv.me": "71263",
+  "staging-p2p.deriv.com": "62019",
+  "api.deriv.com": "36544",
+  "staging-api.deriv.com": "36545",
+  "smarttrader.deriv.com": "22168",
+  "staging-smarttrader.deriv.com": "22169",
+  "staging-dbot.deriv.com": "29934",
+  "staging-dbot.deriv.me": "29934",
+  "staging-dbot.deriv.be": "29934",
+  "dbot.deriv.com": "65555",
+  "dbot.deriv.be": "65556",
+  "dbot.deriv.me": "65557"
+}, _ = "deriv", Xe = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  appBrand: _,
+  domainAppId: C,
+  environments: P
+}, Symbol.toStringTag, { value: "Module" })), O = {
+  AAD: 2,
+  AED: 2,
+  AFN: 2,
+  ALL: 2,
+  AMD: 2,
+  ANG: 2,
+  AOA: 2,
+  ARS: 2,
+  AUD: 2,
+  AWG: 2,
+  AZN: 2,
+  BAM: 2,
+  BBD: 2,
+  BCH: 8,
+  BDT: 2,
+  BGN: 2,
+  BHD: 3,
+  BIF: 0,
+  BMD: 2,
+  BND: 2,
+  BOB: 2,
+  BOV: 2,
+  BRL: 2,
+  BSD: 2,
+  BTC: 8,
+  BTN: 2,
+  BUSD: 2,
+  BWP: 2,
+  BYN: 2,
+  BZD: 2,
+  CAD: 2,
+  CDF: 2,
+  CHE: 2,
+  CHF: 2,
+  CHW: 2,
+  CLF: 4,
+  CLP: 0,
+  CNY: 2,
+  COP: 2,
+  COU: 2,
+  CRC: 2,
+  CUC: 2,
+  CUP: 2,
+  CVE: 2,
+  CZK: 2,
+  DAI: 2,
+  DJF: 0,
+  DKK: 2,
+  DOP: 2,
+  DZD: 2,
+  EGP: 2,
+  ERN: 2,
+  ETB: 2,
+  ETC: 8,
+  ETH: 8,
+  EUR: 2,
+  EURS: 2,
+  eUSDT: 2,
+  FJD: 2,
+  FKP: 2,
+  GBP: 2,
+  GEL: 2,
+  GHS: 2,
+  GIP: 2,
+  GMD: 2,
+  GNF: 0,
+  GTQ: 2,
+  GYD: 2,
+  HKD: 2,
+  HNL: 2,
+  HRK: 2,
+  HTG: 2,
+  HUF: 2,
+  IDK: 0,
+  IDR: 2,
+  ILS: 2,
+  INR: 2,
+  IQD: 3,
+  IRR: 2,
+  ISK: 0,
+  JMD: 2,
+  JOD: 3,
+  JPY: 0,
+  KES: 2,
+  KGS: 2,
+  KHR: 2,
+  KMF: 0,
+  KPW: 2,
+  KRW: 0,
+  KWD: 3,
+  KYD: 2,
+  KZT: 2,
+  LAK: 2,
+  LBP: 2,
+  LKR: 2,
+  LRD: 2,
+  LSL: 2,
+  LTC: 8,
+  LYD: 3,
+  MAD: 2,
+  MDL: 2,
+  MGA: 2,
+  MKD: 2,
+  MMK: 2,
+  MNT: 2,
+  MOP: 2,
+  MRU: 2,
+  MUR: 2,
+  MVR: 2,
+  MWK: 2,
+  MXN: 2,
+  MXV: 2,
+  MYR: 2,
+  MZN: 2,
+  NAD: 2,
+  NGN: 2,
+  NIO: 2,
+  NOK: 2,
+  NPR: 2,
+  NZD: 2,
+  OMR: 3,
+  PAB: 2,
+  PAX: 2,
+  PEN: 2,
+  PGK: 2,
+  PHP: 2,
+  PKR: 2,
+  PLN: 2,
+  PYG: 0,
+  QAR: 2,
+  RON: 2,
+  RSD: 2,
+  RUB: 2,
+  RWF: 0,
+  SAR: 2,
+  SBD: 2,
+  SCR: 2,
+  SDG: 2,
+  SEK: 2,
+  SGD: 2,
+  SHP: 2,
+  SLL: 2,
+  SOS: 2,
+  SRD: 2,
+  SSP: 2,
+  STN: 2,
+  SVC: 2,
+  SYP: 2,
+  SZL: 2,
+  THB: 2,
+  TJS: 2,
+  TMT: 2,
+  TND: 3,
+  TOP: 2,
+  TRY: 2,
+  TTD: 2,
+  TUSD: 2,
+  tUSDT: 2,
+  TWD: 2,
+  TZS: 2,
+  UAH: 2,
+  UGX: 0,
+  USB: 2,
+  USD: 2,
+  USDC: 2,
+  USDK: 2,
+  UST: 2,
+  USN: 2,
+  UYI: 0,
+  UYU: 2,
+  UYW: 4,
+  UZS: 2,
+  VES: 2,
+  VND: 0,
+  VUV: 0,
+  WST: 2,
+  XAF: 0,
+  XCD: 2,
+  XOF: 0,
+  XPF: 0,
+  YER: 2,
+  ZAR: 2,
+  ZMW: 2,
+  ZWL: 2
+}, Qe = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  precision: O
+}, Symbol.toStringTag, { value: "Module" })), M = ["PNG", "JPG", "JPEG", "GIF", "PDF"], qe = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  supportedDocumentFormats: M
+}, Symbol.toStringTag, { value: "Module" })), T = "client.active_loginid", Q = "client.account_list", q = "client.verify_email", R = "config.app_id", U = "config.server_url", h = "i18n_language", ee = "ui.theme", te = "ui.show_report_drawer", re = "ui.expand_account_switcher", ne = "trader.layout", oe = "should_not_show_auto_archive_message_again", ae = "order_ids", se = "should_show_p2p_guide", ie = "should_show_p2p_follow_user_guide", et = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  accountList: Q,
+  activeLoginid: T,
+  configAppId: R,
+  configServerURL: U,
+  i18nLanguage: h,
+  lastVerifyEmail: q,
+  p2pArchiveMessage: oe,
+  p2pOrderIds: ae,
+  p2pShowFollowUserGuide: ie,
+  p2pShowGuide: se,
+  traderLayout: ne,
+  uiExpandAccountSwitcher: re,
+  uiShowReportsDrawer: te,
+  uiTheme: ee
+}, Symbol.toStringTag, { value: "Module" })), y = "deriv.com", N = "deriv.me", $ = "deriv.be", E = [y, $, N], A = typeof window < "u" && window.location.hostname.split("app.")[1], d = E.includes(A) ? A : y, ce = `https://bot.${d}`, de = `https://staging-bot.${d}`, le = `https://app.${d}`, ue = `https://staging-app.${d}`, B = `https://${d}`, j = `https://eu.${d}`, ge = `https://staging.${d}`, pe = d, me = `https://smarttrader.${d}`, fe = `https://staging-smarttrader.${d}`, he = `https://p2p.${d}`, Se = `https://staging-p2p.${d}`, Ae = "https://wa.me/35699578341", De = {
+  lang: "lang",
+  action: "action"
+}, I = "https://www.cloudflare.com/cdn-cgi/trace", tt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  baseDomain: A,
+  binaryBotProduction: ce,
+  binaryBotStaging: de,
+  cloudflareTrace: I,
+  deriv: y,
+  derivAppProduction: le,
+  derivAppStaging: ue,
+  derivBe: $,
+  derivComProduction: B,
+  derivComProductionEU: j,
+  derivComStaging: ge,
+  derivHost: pe,
+  derivMe: N,
+  derivP2pProduction: he,
+  derivP2pStaging: Se,
+  domain: d,
+  queryParameters: De,
+  smartTraderProduction: me,
+  smartTraderStaging: fe,
+  supportedDomains: E,
+  whatsApp: Ae
+}, Symbol.toStringTag, { value: "Module" })), ve = {
+  /**
+   * Represents the special characters permitted in an address.
+   * @remarks This is to be used in the message of the validation error, to let the user know which characters are permitted.
+   * @example `Special characters permitted: ${ValidationConstants.messagesHints.addressPermittedSpecialCharacters}`
+   */
+  addressPermittedSpecialCharacters: ". , ' : ; ( ) ° @ # / -"
+}, _e = {
+  /**
+   * @regex /^[\p{L}\p{Nd}\s'’.,:;()\\x{b0}@#/-]{0,70}$/u
+   * @description
+   * This pattern matches any string with no more than 70 characters, can contain letters, numbers, spaces, and any of the following special characters: '’.,:;()@#/-.
+   * @example ValidationConstants.patterns.address.test("123 Main St.")
+   * @example ValidationConstants.patterns.address.test("Apt. 123")
+   * @example ValidationConstants.patterns.address.test("123 Main St. Apt. 123")
+   **/
+  address: /^[\p{L}\p{Nd}\s'’.,:;()\\x{b0}@#/-]{0,70}$/u,
+  /**
+   * @regex /^\p{L}[\p{L}\s'.-]{0,49}$/u
+   * @description This pattern matches any string with no more than 50 characters.
+   * @example ValidationConstants.patterns.addressCity.test("Main St.")
+   * @example ValidationConstants.patterns.addressCity.test("Apt.")
+   * @example ValidationConstants.patterns.addressCity.test("Main St. Apt.")
+   **/
+  addressCity: new RegExp("^\\p{L}[\\p{L}\\s'.-]{0,49}$", "u"),
+  /**
+   * @regex /^[\p{L}\p{Nd}\s'.,-;]{0,100}$/u
+   * @description This pattern matches any string that contains up to 100 characters composed of Unicode letters, Unicode digits, whitespace characters, apostrophes, periods, commas, hyphens, and semicolons ( '.,-;).
+   * @example ValidationConstants.patterns.addressState.test("New York")
+   * @example ValidationConstants.patterns.addressState.test("Québec")
+   **/
+  addressState: /^[\p{L}\p{Nd}\s'.,;\-\[\]\(\)]{0,100}$/u,
+  /**
+   * @regex /^(?=.{1,20}$)[+-]?[0-9]+\.?[0-9]*$/
+   * @description This pattern matches any string with 0-9 characters (numeric values. i.e. both integers and floats), and may contain a '+' or '-' sign.
+   * @example ValidationConstants.patterns.barrier.test("123")
+   * @example ValidationConstants.patterns.barrier.test("123.45")
+   * @example ValidationConstants.patterns.barrier.test("-123")
+   * @example ValidationConstants.patterns.barrier.test("-123.45")
+   * @example ValidationConstants.patterns.barrier.test("+123")
+   * @example ValidationConstants.patterns.barrier.test("+123.45")
+   */
+  barrier: /^(?=.{1,20}$)[+-]?[0-9]+\.?[0-9]*$/,
+  /**
+   * @regex /^\d*(\.\d+)?$/
+   * @description This pattern matches any string that contains only numeric values, and may contain a decimal point.
+   * @example ValidationConstants.patterns.decimal.test("123")
+   * @example ValidationConstants.patterns.decimal.test("123.45")
+   */
+  decimal: /^\d*(\.\d+)?$/,
+  /**
+   * @regex /^\d+$/
+   * @description This pattern matches any string that contains only numeric values.
+   * @example ValidationConstants.patterns.integer.test("123")
+   * @example ValidationConstants.patterns.integer.test("12345")
+   */
+  integer: /^\d+$/,
+  /**
+   * @regex /p[.\s]+o[.\s]+box/i
+   * @description This pattern matches any string that contains the characters 'p.o.box' or 'p o box'.
+   * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("P.O. Box 1234")
+   * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("p.o. box 1234")
+   * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("P O Box 1234")
+   * @example ValidationConstants.patterns.postalOfficeBoxNumber.test("p o box 1234")
+   */
+  postalOfficeBoxNumber: /p[.\s]+o[.\s]+box/i,
+  /**
+   * @regex /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,63}$/
+   * @description This pattern matches any string with 2-63 characters, and contains aplhanumeric characters, an '@' sign, and may also contain any of these characters '+,-._'.
+   * @example ValidationConstants.patterns.email.test("doe@meme.me")
+   * **/
+  email: /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,63}$/,
+  /**
+   * @regex /^(?=.*[a-z])(?=.*\d)(?=.*[A-Z])[!-~]{8,25}$/
+   * @description This pattern matches any string that contains 8-25 characters that include; at least one lowercase letter, at least one digit, at least one uppercase letter, and only printable ASCII characters (from '!' to '~')
+   * @example ValidationConstants.patterns.password.test("Password1!")
+   **/
+  password: /^(?=.*[a-z])(?=.*\d)(?=.*[A-Z])[!-~]{8,25}$/,
+  /**
+   * @regex /^(?=.*[a-z])(?=.*[0-9])(?=.*[A-Z])[ -~]{6,50}$/
+   * @description This pattern matches any string that contains 6-50 characters that include; at least one lowercase letter, at least one digit, at least one uppercase letter, and only printable ASCII characters (from '!' to '~')
+   * @example ValidationConstants.patterns.affilliatePassword.test("Password1")
+   **/
+  affilliatePassword: /^(?=.*[a-z])(?=.*[0-9])(?=.*[A-Z])[ -~]{6,50}$/,
+  /**
+   * @regex /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{1,255}$/
+   * @description This pattern matches any string with 1-255 characters, and contains aplhanumeric characters, an '@' sign, and may also contain any of these characters '+,-._'.
+   * @example ValidationConstants.patterns.paymentAgentEmail.test("doe@meme.us")
+   **/
+  paymentAgentEmail: /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{1,255}$/,
+  /**
+   * @regex /^([A-Za-z0-9][A-Za-z0-9\s-]{0,20})?$/
+   * @description This pattern matches any string with no more than 20 characters and may not contain '+'.
+   * @example ValidationConstants.patterns.postalCode.test("123")
+   * @example ValidationConstants.patterns.postalCode.test("123-456")
+   **/
+  postalCode: /^([A-Za-z0-9][A-Za-z0-9\s-]{0,20})?$/,
+  /**
+   * @regex /^(?!^$|\s+)[A-Za-z0-9.\/\s-]{0,25}$/
+   * @description This pattern matches any string with 0-25 characters, and may contain alphanumeric characters (both uppercase and lowercase), and any of these characters'./-', and or sapce characters
+   * @example ValidationConstants.patterns.taxIdentificationNumber.test("123")
+   **/
+  taxIdentificationNumber: /^(?!^$|\s+)[A-Za-z0-9.\/\s-]{0,25}$/,
+  /**
+   * @regex /^\+((-|\s)*[0-9]){9,20}$/
+   * @description This pattern matches any string that starts with a '+' character, followed by 9-20 digits, allowing hyphens or spaces.
+   * @example ValidationConstants.patterns.phoneNumber.test("+1234567890")
+   **/
+  phoneNumber: /^\+((-|\s)*[0-9]){9,20}$/,
+  /**
+   * @regex /(image|application)\/(jpe?g|pdf|png)$/
+   * @description This pattern matches any of the file types jpeg, jpg, pdf, or png.
+   * @example ValidationConstants.patterns.fileType.test("image/jpeg")
+   * @example ValidationConstants.patterns.fileType.test("application/pdf")
+   * @example ValidationConstants.patterns.fileType.test("image/png")
+   * @example ValidationConstants.patterns.fileType.test("image/jpg")
+   **/
+  fileType: /(image|application)\/(jpe?g|pdf|png)$/,
+  /**
+   * @regex /(^\d{4})\s(\d{2}X{2})\s(X{4})\s(\d{4}$)/
+   * @description This pattern matches any string that's formatted in the following format: 1234 56XX XXXX 1121.
+   * @example ValidationConstants.patterns.formattedCardNumber.test("1234 56XX XXXX 1121")
+   **/
+  formattedCardNumber: /(^\d{4})\s(\d{2}X{2})\s(X{4})\s(\d{4}$)/,
+  /**
+   * @regex /[^\dX\s]/
+   * @description The is pattern matches any string that contains characters that aren't digits, the uppercase letter 'X' and spaces.
+   * @example ValidationConstants.patterns.invalidFormattedCardNumberCharacters.test("9876-5432-1098")
+   * @example ValidationConstants.patterns.invalidFormattedCardNumberCharacters.test("9876 5432 1098")
+   **/
+  invalidFormattedCardNumberCharacters: /[^\dX\s]/,
+  /**
+   * @regex /^(?=.*[a-z])(?=.*[0-9])(?=.*[A-Z])(?=.*[!@#$%^&*()+\-=\[\]{};':\"|,\.<>\?_~])[ -~]{8,16}$/
+   * @description This pattern matches any string that contains 8-16 characters that include; at least one lowercase letter, at least one digit, at least one uppercase letter, and only printable ASCII characters (from '!' to '~')
+   * @example ValidationConstants.patterns.tradingPlatformInvestorPassword.test("Password1!$")
+   **/
+  tradingPlatformInvestorPassword: /^(?=.*[a-z])(?=.*[0-9])(?=.*[A-Z])(?=.*[!@#$%^&*()+\-=\[\]{};':\"|,\.<>\?_~])[ -~]{8,16}$/,
+  /**
+   * @regex /^[A-Za-z]+([a-zA-Z.' -])*[a-zA-Z.' -]+$/
+   * @description This pattern matches any string that starts with one or more letters (uppercase or lowercase), followed by zero or more occurrences of letters, and any of these characters (.' -) and ends with one or more occurrences of letters, and any of these characters (.' -).
+   * @example ValidationConstants.patterns.letterSymbols.test("John Doe")
+   * @example ValidationConstants.patterns.letterSymbols.test("John-Doe")
+   * @example ValidationConstants.patterns.letterSymbols.test("John O'Doe")
+   */
+  letterSymbols: /^[A-Za-z]+([a-zA-Z.' -])*[a-zA-Z.' -]+$/,
+  /**
+   * @regex /^(?!.*\s{2,})(?!\s)[\p{L}\s'.-]{1,50}$/u
+   * @description This pattern matches any string that contains 1 to 50 characters, starts and ends with valid characters (letters, whitespace, period, single quote, or hyphen).
+   * @example ValidationConstants.patterns.name.test("John Doe")
+   * @example ValidationConstants.patterns.name.test("John-Doe")
+   * @example ValidationConstants.patterns.name.test("John O'Doe")
+   * @example ValidationConstants.patterns.name.test("John O. Doe")
+   */
+  name: /^(?!.*\s{2,})(?!\s)[\p{L}\s'.-]{1,50}$/u,
+  /**
+   * @regex /[`~!@#$%^&*)(_=+[}{\]\\/";:?><|]+/
+   * @description This pattern matches any string that contains any of these characters: `~!@#$%^&*)(_=+[}{\]\\/";:?><|
+   * @example ValidationConstants.patterns.general.test("Password1!")
+   */
+  general: /[`~!@#$%^&*)(_=+[}{\]\\/";:?><|]+/,
+  /**
+   * @regex /[a-z]/
+   * @description This pattern matches any string that contains lowercase letters.
+   * @example ValidationConstants.patterns.lowercase.test("abc")
+   */
+  lowercase: /[a-z]/,
+  /**
+   * @regex /\d/
+   * @description This pattern matches any string that contains digits.
+   * @example ValidationConstants.patterns.number.test("pets123")
+   */
+  number: /\d/,
+  /**
+   * @regex /\W/
+   * @description This pattern matches any string that contains special characters.
+   * @example ValidationConstants.patterns.specialCharacter.test("Password1!")
+   */
+  specialCharacter: /\W/,
+  /**
+   * @regex /[A-Z]/
+   * @description This pattern matches any string that contains uppercase letters.
+   * @example ValidationConstants.patterns.uppercase.test("ABC")
+   */
+  uppercase: /[A-Z]/,
+  /**
+   * @regex /^.{8,16}$/
+   * @description This pattern matches any string that contains 8-16 characters.
+   * @example ValidationConstants.patterns.between8and16Characters.test("Password1!")
+   */
+  between8and16Characters: /^.{8,16}$/,
+  /**
+   * @regex /^.{8,25}$/
+   * @description This pattern matches any string that contains 8-25 characters.
+   * @example ValidationConstants.patterns.between8and25Characters.test("Password1!")
+   */
+  between8and25Characters: /^.{8,25}$/
+}, rt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  messagesHints: ve,
+  patterns: _e
+}, Symbol.toStringTag, { value: "Module" })), F = {
+  brandName: "Deriv",
+  domainName: "Deriv.com"
+}, G = {
+  fx: "Deriv (FX) Ltd",
+  maltainvest: "Deriv Investments (Europe) Limited",
+  svg: "Deriv (SVG) LLC",
+  v: "Deriv (V) Ltd"
+}, Y = {
+  trader: "Deriv Trader",
+  dBot: "Deriv Bot",
+  mt5: "Deriv MT5",
+  cTrader: "Deriv cTrader",
+  derivX: "Deriv X",
+  smartTrader: "SmartTrader",
+  bBot: "Binary Bot",
+  go: "Deriv GO"
+}, nt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  brandConfig: F,
+  landingCompanies: G,
+  platforms: Y
+}, Symbol.toStringTag, { value: "Module" })), z = /(ALP-|AMN-|ANA-|ANE-|ANG-|AQM-|ARS-|ART-|ATU-|BAC-|BLA-|BRQ-|CAG-|CAM-|CAN-|CAZ-|CDL-|CDY-|CLT-|CRO-|CUN-|DIG-|DRA-|DUA-|DUB-|DVC-|ELE-|ELS-|EML-|EVA-|EVR-|FIG-|FLA-|FRL-|GLK-|HMA-|HW-|HWI-|INE-|JAT-|JEF-|JER-|JKM-|JNY-|JSC-|LDN-|LIO-|LON-|LUA-|LYA-|LYO-|MAR-|MED-|MHA-|MLA-|MRD-|MYA-|NCE-|NEO-|NOH-|NOP-|OCE-|PAR-|PIC-|POT-|PPA-|PRA-|RNE-|SEA-|SLA-|SNE-|SPN-|STK-|TAH-|TAS-|TET-|TRT-|VCE-|VIE-|VKY-|VNS-|VOG-|VTR-|WAS-|WKG-|WLZ-|JAD-|MLD-|RTE-|NAM-|NEN-|BAL-|JLN-|YAL-|MGA-|FGD-|XYAO-|BON-|ALN-|ALT-|BRA-|DBY2-|STG-|MAO-|LEM-|GOA-|FOA-|MNA-|LNA-)/, ot = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  huaweiDevicesRegex: z
+}, Symbol.toStringTag, { value: "Module" })), ye = (e, t) => {
+  try {
+    const { locale: r = "en-US", currency: n, decimalPlaces: o } = t || {}, c = O[n ?? "USD"], a = o || c;
+    return new Intl.NumberFormat(r, {
+      minimumFractionDigits: a,
+      maximumFractionDigits: a
+    }).format(e);
+  } catch {
+    return e.toString();
+  }
+}, be = (e, t) => {
+  let r;
+  const {
+    dateOptions: n = { day: "2-digit", month: "2-digit", year: "numeric" },
+    format: o = "YYYY-MM-DD",
+    unix: c = !1
+  } = t || {}, a = { ...n };
+  if (typeof e == "number" && c)
+    r = new Date(e * 1e3);
+  else if (typeof e == "string" || e instanceof Date) {
+    if (r = new Date(e), isNaN(r.getTime()))
+      throw new Error("Invalid date input");
+  } else
+    throw new Error("Invalid date input");
+  switch (o) {
+    case "DD MMM YYYY":
+      a.day = "2-digit", a.month = "short", a.year = "numeric";
+      break;
+    case "MMM DD YYYY":
+      return a.day = "2-digit", a.month = "short", a.year = "numeric", r.toLocaleDateString("en-GB", a).replace(/(\d{2}) (\w{3}) (\d{4})/, "$2 $1 $3");
+    case "DD-MM-YYYY":
+      return a.day = "2-digit", a.month = "2-digit", a.year = "numeric", r.toLocaleDateString("en-GB", a).replace(/(\d{2})\/(\d{2})\/(\d{4})/, "$1-$2-$3");
+    default:
+      a.year = "numeric", a.month = "2-digit", a.day = "2-digit";
+      break;
+  }
+  const s = r.toLocaleDateString("en-GB", a).replace(/(\d{2}) (\w{3,4}) (\d{4})/, (i, u, l, p) => `${u} ${l.slice(0, 3)} ${p}`);
+  return o === "YYYY-MM-DD" ? s.replace(/(\d{2})\/(\d{2})\/(\d{4})/, "$3-$2-$1") : s;
+}, we = (e, t = !1) => {
+  let r;
+  if (typeof e == "number" && t)
+    r = new Date(e * 1e3);
+  else if (typeof e == "string" || e instanceof Date) {
+    if (r = new Date(e), isNaN(r.getTime()))
+      throw new Error("Invalid date input");
+  } else
+    throw new Error("Invalid date input");
+  return `${r.getUTCHours().toString().padStart(2, "0")}:${r.getUTCMinutes().toString().padStart(2, "0")}:${r.getUTCSeconds().toString().padStart(2, "0")} GMT`;
+}, Le = (e, t = "days", r = "add") => {
+  if (e < 0) throw new Error("Amount must be a positive number.");
+  const n = /* @__PURE__ */ new Date(), o = r === "add" ? e : -e;
+  return t === "years" ? n.setFullYear(n.getFullYear() + o) : t === "days" && n.setDate(n.getDate() + o), n;
+}, Pe = (e) => {
+  const t = e.split(/,\s/), n = /:\s([0-9a-zA-Z]+.{25,28})/gm.exec(t[0])?.[1], c = /:\s([0-9a-zA-Z]+.{25,34})/gm.exec(t[1])?.[1];
+  return { addressHash: n, blockchainHash: c, splitLongcode: t };
+}, at = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  formatMoney: ye,
+  getAdjustedDate: Le,
+  getFormattedDateString: be,
+  getFormattedTimeString: we,
+  parseCryptoLongcode: Pe
+}, Symbol.toStringTag, { value: "Module" })), w = 2560, Ce = 0.9, Oe = 4, H = ({ src: e, filename: t, options: r }) => {
+  const { maxWidth: n = w, quality: o = Ce } = r || {};
+  return new Promise((c, a) => {
+    const s = new Image();
+    s.src = e, s.onload = () => {
+      const i = document.createElement("canvas"), u = i.getContext("2d");
+      if (!u || !(u instanceof CanvasRenderingContext2D))
+        return a(new Error("Failed to get 2D context"));
+      if (s.naturalWidth > n) {
+        const l = w, p = l / s.naturalWidth;
+        i.width = l, i.height = s.naturalHeight * p;
+      } else
+        i.width = s.naturalWidth, i.height = s.naturalHeight;
+      u.fillStyle = "transparent", u.fillRect(0, 0, i.width, i.height), u.save(), u.drawImage(s, 0, 0, i.width, i.height), i.toBlob(
+        (l) => {
+          if (!l) return;
+          const p = t.replace(/\.[^/.]+$/, ".jpg"), S = new Blob([l], { type: "image/jpeg" });
+          S.lastModifiedDate = Date.now(), S.name = p, c(S);
+        },
+        "image/jpeg",
+        o
+      );
+    };
+  });
+}, Z = (e) => new Promise((t) => {
+  const r = new FileReader();
+  r.readAsDataURL(e), r.onloadend = () => {
+    t({
+      src: r.result?.toString() || "",
+      filename: e.name
+    });
+  };
+}), x = (e) => e ? M.some(
+  (t) => e.toUpperCase().endsWith(t)
+) : !1, Me = (e) => new Promise((t) => {
+  x(e.name) ? Z(e).then((r) => {
+    H(r).then(t);
+  }) : t(e);
+});
+function Te(e, t = Oe) {
+  const r = new Uint8Array(t);
+  return new DataView(r.buffer).setUint32(0, e), r;
+}
+const Re = (e, {
+  chunkSize: t = 16384
+  /* 16KB */
+}) => {
+  const r = [];
+  for (let n = 0; n < e.length; n++) {
+    const o = e[n];
+    n % t === 0 ? r.push([o]) : r[r.length - 1].push(o);
+  }
+  return r.map((n) => new Uint8Array(n)).concat(new Uint8Array([]));
+}, Ue = (e) => {
+  const t = new FileReader();
+  return new Promise((r) => {
+    t.onload = () => {
+      const n = {
+        filename: e.name,
+        buffer: t.result,
+        fileSize: e.size
+      };
+      r(n);
+    }, t.onerror = () => {
+      r({
+        message: `Unable to read file ${e.name}`
+      });
+    }, t.readAsArrayBuffer(e);
+  });
+}, st = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  compressImage: H,
+  compressImageFile: Me,
+  convertToBase64: Z,
+  generateChunks: Re,
+  isSupportedImageFormat: x,
+  numToUint8Array: Te,
+  readFile: Ue
+}, Symbol.toStringTag, { value: "Module" })), g = (e) => {
+  const t = localStorage.getItem(e);
+  if (t !== "undefined") {
+    if (t === null || t === "null") return null;
+    try {
+      return JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+}, Ne = (e, t) => {
+  localStorage.setItem(e, JSON.stringify(t));
+}, it = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  getValue: g,
+  setValue: Ne
+}, Symbol.toStringTag, { value: "Module" })), K = (e) => Object.keys(e).sort().reduce((t, r) => (t[r] = e[r], t), {}), $e = async (e) => {
+  const t = new TextEncoder().encode(JSON.stringify(K(e))), r = await crypto.subtle.digest("SHA-256", t);
+  return Array.from(new Uint8Array(r)).map((c) => ("00" + c.toString(16)).slice(-2)).join("");
+}, W = (e, t) => Array.isArray(e) && Array.isArray(t) ? t.map((r, n) => W(e[n], r)) : typeof e == "object" && e !== null && typeof t == "object" && t !== null ? k(e, t) : t, k = (e, ...t) => {
+  for (const r of t)
+    for (const n in r)
+      r[n] === null || r[n] === void 0 || (e[n] = W(e[n], r[n]));
+  return e;
+}, ct = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  hashObject: $e,
+  merge: k,
+  sortObjectByKeys: K
+}, Symbol.toStringTag, { value: "Module" }));
+function Ee() {
+  let e, t;
+  return {
+    promise: new Promise((n, o) => {
+      e = n, t = o;
+    }),
+    resolve: e,
+    reject: t
+  };
+}
+const dt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  createPromise: Ee
+}, Symbol.toStringTag, { value: "Module" })), V = () => {
+  const t = new URLSearchParams(window.location.search).get("acct1");
+  return g(T) || t;
+}, J = (e) => e && !/^VR/.test(e) ? "real" : "demo", b = () => {
+  const e = g(R);
+  if (e) return e;
+  const t = window.location.hostname, r = C[t];
+  return r || "36300";
+}, lt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  getActiveLoginid: V,
+  getAppId: b,
+  getEnvironmentFromLoginid: J
+}, Symbol.toStringTag, { value: "Module" })), Be = () => {
+  const e = [], t = [], r = new URLSearchParams(window.location.search);
+  for (const [o, c] of r.entries()) {
+    const a = o.match(/^acct(\d+)/), s = o.match(/^token(\d+)/), i = o.match(/^cur(\d+)/);
+    a && (e[+a[1] - 1] = {
+      ...e[+a[1] - 1] || {},
+      loginid: c
+    }), s && (e[+s[1] - 1] = {
+      ...e[+s[1] - 1] || {},
+      token: c
+    }), i && (e[+i[1] - 1] = {
+      ...e[+i[1] - 1] || {},
+      currency: c
+    }), (/acct/.test(o) || /token/.test(o) || /cur/.test(o)) && t.push(o);
+  }
+  return { loginInfo: e.filter(
+    (o) => ["loginid", "token", "currency"].every((c) => Object.keys(o).includes(c))
+  ), paramsToDelete: t };
+}, je = (e) => {
+  if (e?.length)
+    return e.find((t) => /^VR/.test(t.loginid)) || e[0];
+}, Ie = (e) => {
+  const t = new URLSearchParams(window.location.search);
+  e.forEach((n) => t.delete(n));
+  const r = `${window.location.pathname}${t.toString() ? `?${t.toString()}` : ""}`;
+  window.history.pushState(null, "", r);
+}, Fe = () => {
+  const e = g(h) ?? "EN";
+  return `https://oauth.deriv.com/oauth2/authorize?app_id=${b()}&l=${e}&brand=${_}`;
+}, X = () => {
+  const e = g(U);
+  if (e) return e;
+  const t = V();
+  return P[J(t)];
+}, Ge = () => {
+  const e = X(), t = g(h) ?? "EN";
+  return `wss://${e}/websockets/v3?app_id=${b()}&l=${t}&brand=${_}`;
+}, Ye = (e) => new URLSearchParams(window.location.search).get(e), D = (e) => e.replace(/(^\/|\/$|[^a-zA-Z0-9-_./()#])/g, ""), ze = (e, t) => {
+  const r = t?.isEU ? j : B;
+  let n = g(h)?.toLowerCase() ?? "en";
+  return n = n === "en" ? "" : `/${n.replace("_", "-")}`, t?.isDocument ? `${r}/${D(e)}` : `${r}${n}/${D(e)}`;
+}, He = (e) => /^(((.*)\.)?(localhost:8443|pages.dev|binary\.(sx|com)|deriv.(com|me|be|dev)))$/.test(e), ut = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  filterSearchParams: Ie,
+  getDefaultActiveAccount: je,
+  getDerivStaticURL: ze,
+  getLoginInfoFromURL: Be,
+  getOauthURL: Fe,
+  getQueryParameter: Ye,
+  getServerURL: X,
+  getWebsocketURL: Ge,
+  isDomainAllowed: He,
+  normalizePath: D
+}, Symbol.toStringTag, { value: "Module" })), Ze = (e) => G[e], xe = () => F.domainName, Ke = (e) => Y[e], gt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  getBrandWebsiteName: xe,
+  getLegalLandingCompany: Ze,
+  getPlatformName: Ke
+}, Symbol.toStringTag, { value: "Module" })), L = (e) => z.test(e), We = async () => {
+  const e = window, t = navigator, r = t.userAgent ?? e.opera ?? "";
+  if (/windows phone/i.test(r))
+    return "Windows Phone";
+  if (/android/i.test(r)) {
+    if (t.userAgentData) {
+      const n = await t.userAgentData.getHighEntropyValues(["model"]);
+      if (L(n?.model || ""))
+        return "huawei";
+    } else if (L(r) || /huawei/i.test(r))
+      return "huawei";
+    return "Android";
+  }
+  return /iPad|iPhone|iPod/.test(r) && !e.MSStream ? "iOS" : "unknown";
+}, pt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  mobileOSDetectAsync: We
+}, Symbol.toStringTag, { value: "Module" }));
+/*! js-cookie v3.0.5 | MIT */
+function m(e) {
+  for (var t = 1; t < arguments.length; t++) {
+    var r = arguments[t];
+    for (var n in r)
+      e[n] = r[n];
+  }
+  return e;
+}
+var ke = {
+  read: function(e) {
+    return e[0] === '"' && (e = e.slice(1, -1)), e.replace(/(%[\dA-F]{2})+/gi, decodeURIComponent);
+  },
+  write: function(e) {
+    return encodeURIComponent(e).replace(
+      /%(2[346BF]|3[AC-F]|40|5[BDE]|60|7[BCD])/g,
+      decodeURIComponent
+    );
+  }
+};
+function v(e, t) {
+  function r(o, c, a) {
+    if (!(typeof document > "u")) {
+      a = m({}, t, a), typeof a.expires == "number" && (a.expires = new Date(Date.now() + a.expires * 864e5)), a.expires && (a.expires = a.expires.toUTCString()), o = encodeURIComponent(o).replace(/%(2[346B]|5E|60|7C)/g, decodeURIComponent).replace(/[()]/g, escape);
+      var s = "";
+      for (var i in a)
+        a[i] && (s += "; " + i, a[i] !== !0 && (s += "=" + a[i].split(";")[0]));
+      return document.cookie = o + "=" + e.write(c, o) + s;
+    }
+  }
+  function n(o) {
+    if (!(typeof document > "u" || arguments.length && !o)) {
+      for (var c = document.cookie ? document.cookie.split("; ") : [], a = {}, s = 0; s < c.length; s++) {
+        var i = c[s].split("="), u = i.slice(1).join("=");
+        try {
+          var l = decodeURIComponent(i[0]);
+          if (a[l] = e.read(u, l), o === l)
+            break;
+        } catch {
+        }
+      }
+      return o ? a[o] : a;
+    }
+  }
+  return Object.create(
+    {
+      set: r,
+      get: n,
+      remove: function(o, c) {
+        r(
+          o,
+          "",
+          m({}, c, {
+            expires: -1
+          })
+        );
+      },
+      withAttributes: function(o) {
+        return v(this.converter, m({}, this.attributes, o));
+      },
+      withConverter: function(o) {
+        return v(m({}, this.converter, o), this.attributes);
+      }
+    },
+    {
+      attributes: { value: Object.freeze(t) },
+      converter: { value: Object.freeze(e) }
+    }
+  );
+}
+var Ve = v(ke, { path: "/" });
+let f = null;
+const Je = async () => {
+  if (f) return f;
+  const e = JSON.parse(Ve.get("website_status") || "{}")?.clients_country;
+  return f = (async () => {
+    try {
+      const t = await fetch(I).catch(() => null);
+      if (!t) return e || "";
+      const r = await t.text().catch(() => "");
+      return r ? Object.fromEntries(r.split(`
+`).map((o) => o.split("=", 2))).loc?.toLowerCase() || e || "" : e || "";
+    } catch {
+      return e || "";
+    }
+  })(), f;
+}, mt = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  getCountry: Je
+}, Symbol.toStringTag, { value: "Module" }));
+export {
+  Xe as AppIDConstants,
+  nt as BrandConstants,
+  gt as BrandUtils,
+  mt as CountryUtils,
+  Qe as CurrencyConstants,
+  qe as DocumentConstants,
+  at as FormatUtils,
+  st as ImageUtils,
+  et as LocalStorageConstants,
+  it as LocalStorageUtils,
+  ot as MobileDevicesConstants,
+  pt as OSDetectionUtils,
+  ct as ObjectUtils,
+  dt as PromiseUtils,
+  tt as URLConstants,
+  ut as URLUtils,
+  rt as ValidationConstants,
+  lt as WebSocketUtils
+};
