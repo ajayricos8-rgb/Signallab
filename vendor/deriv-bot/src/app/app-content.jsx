@@ -23,6 +23,7 @@ import initDatadog from '@/utils/datadog';
 import initHotjar from '@/utils/hotjar';
 import { setSmartChartsPublicPath } from '@deriv/deriv-charts';
 import { connectSignalLabBridge } from '@/services/signallab-feed';
+import { markWorkspaceMounted, reportWorkspaceError } from '@/services/signallab-host';
 import { ThemeProvider } from '@deriv-com/quill-ui';
 import { localize } from '@deriv-com/translations';
 import Audio from '../components/audio';
@@ -34,9 +35,13 @@ import './app.scss';
 import 'react-toastify/dist/ReactToastify.css';
 import '../components/bot-notification/bot-notification.scss';
 
+/** How long a live Deriv account may delay the first paint of the workspace. */
+const BOOT_DEADLINE_MS = 6_000;
+
 const AppContent = observer(() => {
     const [is_api_initialized, setIsApiInitialized] = React.useState(false);
     const [is_loading, setIsLoading] = React.useState(true);
+    const [boot_deadline_reached, setBootDeadlineReached] = React.useState(false);
     const [is_eu_error_loading, setIsEuErrorLoading] = React.useState(true);
     const [offline_timeout, setOfflineTimeout] = React.useState(null);
     const store = useStore();
@@ -51,15 +56,38 @@ const AppContent = observer(() => {
     const { connectionStatus } = useApiBase();
     const { initTrackJS } = useTrackjs();
 
+    // The shell's bridge is installed from `main.tsx`; this keeps the call when
+    // app-content is mounted on its own (tests, standalone builds).
     useEffect(() => {
         connectSignalLabBridge();
     }, []);
 
-    useEffect(() => {
-        if ((!isOnline || !is_loading) && window.parent !== window) {
-            window.parent.postMessage({ source: 'signal-lab-dbot', type: 'ready' }, window.location.origin);
-        }
-    }, [isOnline, is_loading]);
+    // A Deriv socket that never opens must not hold the workspace behind a
+    // loader. The builder, the blocks and the Signal Lab data bridge all work
+    // from what the shell already shares, so give the live account a short head
+    // start and then render the dashboard anyway.
+    React.useEffect(() => {
+        if (!is_loading || boot_deadline_reached) return;
+        const timer = window.setTimeout(() => {
+            if (!app.dbot_store) init();
+            setBootDeadlineReached(true);
+        }, BOOT_DEADLINE_MS);
+        return () => window.clearTimeout(timer);
+    }, [is_loading, boot_deadline_reached, app.dbot_store]);
+
+    // `ready` means "the builder is on screen": announce it once the dashboard
+    // has actually been committed, not while a loader is up.
+    React.useEffect(() => {
+        if (common?.error) return;
+        if (!is_loading || boot_deadline_reached || !isOnline) markWorkspaceMounted();
+    }, [is_loading, boot_deadline_reached, isOnline, common?.error]);
+
+    // A hard error has no UI of its own to show here: tell the shell instead of
+    // leaving it on "Connecting workspace" until its own timeout fires.
+    React.useEffect(() => {
+        if (!common?.error) return;
+        reportWorkspaceError(common.error.message || common.error.header || 'DBot stopped with an error.');
+    }, [common?.error]);
 
     initTrackJS(client.loginid);
 
@@ -314,7 +342,7 @@ const AppContent = observer(() => {
         );
     }
 
-    return is_loading ? (
+    return is_loading && !boot_deadline_reached ? (
         <ChunkLoader message={getLoadingMessage()} />
     ) : (
         <AuthLoadingWrapper>

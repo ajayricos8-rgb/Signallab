@@ -227,6 +227,19 @@ const AppWrapper = observer(() => {
         [active_tab]
     );
 
+    // The Signal Lab shell drives the workspace tabs (its `navigate` message).
+    // Listening here keeps the frame free of shell imports and leaves the
+    // tab strip working exactly as before.
+    React.useEffect(() => {
+        const onHostNavigate = (event: Event) => {
+            const detail = (event as CustomEvent<string>).detail;
+            if (detail === 'builder') handleTabChange(DBOT_TABS.BOT_BUILDER);
+            else if (detail === 'chart') handleTabChange(DBOT_TABS.CHART);
+        };
+        window.addEventListener('signal-lab:navigate', onHostNavigate);
+        return () => window.removeEventListener('signal-lab:navigate', onHostNavigate);
+    }, [handleTabChange]);
+
     const { isOAuth2Enabled } = useOauth2();
     const handleLoginGeneration = async () => {
         if (!isOAuth2Enabled) {

@@ -34,6 +34,36 @@ const SuspenseWrapper = ({ children }: { children: React.ReactNode }) => {
     return <Suspense fallback={<ChunkLoader message={getLoadingMessage()} />}>{children}</Suspense>;
 };
 
+/**
+ * DBot runs as a same-origin sub-application of Signal Lab, i.e. the iframe
+ * loads `/dbot/index.html`. React Router matches on `window.location.pathname`,
+ * and this app only defines routes at the root, so `/dbot/` (let alone
+ * `/dbot/index.html`) matched nothing and the workspace rendered React Router's
+ * default 404: nothing mounted, no `ready` reached the shell, and the host gave
+ * up with "DBot did not become ready".
+ *
+ * The base is the sub-application path baked in by the build (`/dbot` here), and
+ * the document name is stripped so the router sees `/dbot/`. The route tree then
+ * matches whether DBot is served at `/`, `/dbot/` or `/dbot/index.html`.
+ */
+const configured_base = `/${(process.env.DBOT_BASE_PATH || '/').replace(/^\/+|\/+$/g, '')}`.replace(/^\/$/, '');
+const served_under_base =
+    configured_base === '' ||
+    window.location.pathname === configured_base ||
+    window.location.pathname.startsWith(`${configured_base}/`);
+
+const basename = served_under_base ? configured_base || '/' : '/';
+
+// `/dbot/index.html` is the document, not a route: drop the file name so the
+// router sees `/dbot/`. Deeper paths (e.g. `/dbot/callback`) are left alone.
+if (served_under_base && /(^|\/)index\.html?$/i.test(window.location.pathname)) {
+    window.history.replaceState(
+        null,
+        '',
+        `${configured_base}/${window.location.search}${window.location.hash}`
+    );
+}
+
 const router = createBrowserRouter(
     createRoutesFromElements(
         <Route
@@ -56,7 +86,8 @@ const router = createBrowserRouter(
             <Route path='endpoint' element={<Endpoint />} />
             <Route path='callback' element={<CallbackPage />} />
         </Route>
-    )
+    ),
+    { basename }
 );
 
 function App() {

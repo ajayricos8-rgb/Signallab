@@ -26,6 +26,8 @@ const CONFIRM_TIMEOUT_MS = 25_000;
 const FEED_INTERVAL_MS = 1_000;
 /** A frame that never says hello is a broken bundle, not a slow one. */
 const BOOT_TIMEOUT_MS = 30_000;
+/** How often the shell re-asks the frame for `ready` while it boots. */
+const HELLO_RETRY_MS = 2_000;
 const RETRY_BASE_MS = 6_000;
 const RETRY_CAP_MS = 18_000;
 
@@ -129,6 +131,9 @@ export function useWorkspaceEngine({
   const [link, setLink] = useState<LinkSnapshot>(IDLE_LINK);
   const [autoLink, setAutoLink] = useState(true);
   const [autoPaused, setAutoPaused] = useState(false);
+
+  /** One automatic reload per boot before the host reports a dead frame. */
+  const autoReloaded = useRef(false);
 
   const runtime = useRef<Runtime>({
     ready: false,
@@ -289,6 +294,7 @@ export function useWorkspaceEngine({
         }
         case 'ready': {
           runtime.current.ready = true;
+          autoReloaded.current = false;
           setReady(true);
           setWorkspaceError('');
           setNotice((current) => (current.startsWith('DBot ') ? '' : current));
@@ -422,16 +428,16 @@ export function useWorkspaceEngine({
     return () => window.removeEventListener('message', handleMessage);
   }, [clearSharedAccount, failAutoLink, forgetGrant, post, sendSnapshot, setLinkState]);
 
-  // A frame that never reports ready is broken. Say so instead of leaving the
-  // host on "Connecting workspace" forever.
+  // The frame answers `hello` with `ready` once its builder has painted. A
+  // single hello can be missed (lazy chunks, a cached frame that mounts before
+  // the listener, a slow first paint), so keep asking until it answers instead
+  // of turning a late frame into "DBot did not become ready".
   useEffect(() => {
-    if (!frameLoaded || ready || workspaceError) return;
-    const timer = window.setTimeout(() => {
-      setWorkspaceError('DBot did not become ready. The workspace bundle may not have loaded correctly.');
-      setNotice('DBot did not become ready. Reload the workspace to try again.');
-    }, BOOT_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [frameLoaded, ready, workspaceError]);
+    if (!frameLoaded || ready) return;
+    const ask = () => post(hostHello());
+    const timer = window.setInterval(ask, HELLO_RETRY_MS);
+    return () => window.clearInterval(timer);
+  }, [frameLoaded, ready, post]);
 
   // A grant belongs to one exact account. Switching or disconnecting in
   // Settings revokes it and stops the bot rather than quietly trading another.
@@ -530,6 +536,24 @@ export function useWorkspaceEngine({
     setFrameRevision((revision) => revision + 1);
     setNotice('Reloading the DBot workspace…');
   }, []);
+
+  // A silent frame gets one clean retry before the host reports a failure: a
+  // chunk that failed to fetch (flaky network, a deploy mid-session) is fixed by
+  // loading the bundle again, and that is worth one automatic attempt.
+  useEffect(() => {
+    if (!frameLoaded || ready || workspaceError) return;
+    const timer = window.setTimeout(() => {
+      if (!autoReloaded.current) {
+        autoReloaded.current = true;
+        reload();
+        setNotice('The DBot workspace did not answer, so it was reloaded once.');
+        return;
+      }
+      setWorkspaceError('DBot did not become ready. The workspace bundle may not have loaded correctly.');
+      setNotice('DBot did not become ready. Reload the workspace to try again.');
+    }, BOOT_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [frameLoaded, ready, workspaceError, reload]);
 
   const showTab = useCallback((next: SpaceView) => {
     if ((next === 'builder' || next === 'chart') && runtime.current.ready) post(hostNavigate(next));
