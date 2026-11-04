@@ -1,0 +1,74 @@
+{
+    "name": "@deriv-com/utils",
+    "private": false,
+    "version": "0.0.51",
+    "description": "A utility library for Deriv web apps.",
+    "author": "deriv",
+    "homepage": "https://deriv.com",
+    "keywords": [
+        "deriv",
+        "utils"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/deriv-com/deriv-utils.git"
+    },
+    "bugs": {
+        "url": "https://github.com/deriv-com/deriv-utils/issues"
+    },
+    "type": "module",
+    "main": "./dist/deriv-utils.umd.cjs",
+    "module": "./dist/deriv-utils.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/deriv-utils.js",
+            "require": "./dist/deriv-utils.umd.cjs"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc && vite build",
+        "rebuild": "rm -rf ./dist && npm run build",
+        "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+        "prettier": "prettier --write . --config ./.prettierrc",
+        "prepare": "husky",
+        "test:vitest": "vitest",
+        "test:dev": "vitest watch",
+        "test:coverage": "vitest run --coverage.enabled",
+        "test": "npm run lint && npm run prettier && npm run test:coverage",
+        "prepublishOnly": "npm run test:vitest",
+        "prepublish": "npm run rebuild && npm run test",
+        "commitlint": "commitlint --edit"
+    },
+    "devDependencies": {
+        "@commitlint/cli": "^19.2.1",
+        "@commitlint/config-conventional": "^19.1.0",
+        "@semantic-release/changelog": "^6.0.3",
+        "@semantic-release/github": "^10.0.2",
+        "@semantic-release/npm": "^12.0.0",
+        "@semantic-release/release-notes-generator": "^13.0.0",
+        "@types/js-cookie": "^3.0.6",
+        "@types/node": "^20.11.18",
+        "@typescript-eslint/eslint-plugin": "^6.21.0",
+        "@vitest/coverage-istanbul": "^3.2.4",
+        "@vitest/coverage-v8": "^3.2.4",
+        "eslint": "^8.57.0",
+        "eslint-config-prettier": "^9.1.0",
+        "eslint-config-standard-with-typescript": "^43.0.1",
+        "eslint-plugin-import": "^2.29.1",
+        "eslint-plugin-n": "^16.6.2",
+        "eslint-plugin-promise": "^6.1.1",
+        "happy-dom": "^20.0.0",
+        "husky": "^9.0.11",
+        "js-cookie": "^3.0.5",
+        "prettier": "3.2.5",
+        "typescript": "^5.3.3",
+        "vite": "^7.0.6",
+        "vite-plugin-dts": "^4.5.4",
+        "vitest": "^3.2.4"
+    }
+}

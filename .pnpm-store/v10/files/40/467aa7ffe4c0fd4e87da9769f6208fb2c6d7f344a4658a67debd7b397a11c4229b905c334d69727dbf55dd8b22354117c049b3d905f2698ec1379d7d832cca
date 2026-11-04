@@ -1,0 +1,129 @@
+import { useContext as P, useState as $, useRef as w, useEffect as x } from "react";
+import { I as k, R as A } from "./jsx-runtime-oIKL5WiM.js";
+import { g as E, b as F } from "./i18nInstance-D3STmr24.js";
+function j() {
+  if (console && console.warn) {
+    for (var n = arguments.length, e = new Array(n), a = 0; a < n; a++)
+      e[a] = arguments[a];
+    typeof e[0] == "string" && (e[0] = `react-i18next:: ${e[0]}`), console.warn(...e);
+  }
+}
+const T = {};
+function I() {
+  for (var n = arguments.length, e = new Array(n), a = 0; a < n; a++)
+    e[a] = arguments[a];
+  typeof e[0] == "string" && T[e[0]] || (typeof e[0] == "string" && (T[e[0]] = /* @__PURE__ */ new Date()), j(...e));
+}
+const z = (n, e) => () => {
+  if (n.isInitialized)
+    e();
+  else {
+    const a = () => {
+      setTimeout(() => {
+        n.off("initialized", a);
+      }, 0), e();
+    };
+    n.on("initialized", a);
+  }
+};
+function v(n, e, a) {
+  n.loadNamespaces(e, z(n, a));
+}
+function R(n, e, a, f) {
+  typeof a == "string" && (a = [a]), a.forEach((o) => {
+    n.options.ns.indexOf(o) < 0 && n.options.ns.push(o);
+  }), n.loadLanguages(e, z(n, f));
+}
+function U(n, e) {
+  let a = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : {};
+  const f = e.languages[0], o = e.options ? e.options.fallbackLng : !1, t = e.languages[e.languages.length - 1];
+  if (f.toLowerCase() === "cimode") return !0;
+  const g = (y, b) => {
+    const r = e.services.backendConnector.state[`${y}|${b}`];
+    return r === -1 || r === 2;
+  };
+  return a.bindI18n && a.bindI18n.indexOf("languageChanging") > -1 && e.services.backendConnector.backend && e.isLanguageChangingTo && !g(e.isLanguageChangingTo, n) ? !1 : !!(e.hasResourceBundle(f, n) || !e.services.backendConnector.backend || e.options.resources && !e.options.partialBundledLanguages || g(f, n) && (!o || g(t, n)));
+}
+function B(n, e) {
+  let a = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : {};
+  return !e.languages || !e.languages.length ? (I("i18n.languages were undefined or empty", e.languages), !0) : e.options.ignoreJSONStructure !== void 0 ? e.hasLoadedNamespace(n, {
+    lng: a.lng,
+    precheck: (o, t) => {
+      if (a.bindI18n && a.bindI18n.indexOf("languageChanging") > -1 && o.services.backendConnector.backend && o.isLanguageChangingTo && !t(o.isLanguageChangingTo, n)) return !1;
+    }
+  }) : U(n, e, a);
+}
+function W(n) {
+  return n.displayName || n.name || (typeof n == "string" && n.length > 0 ? n : "Unknown");
+}
+const J = (n, e) => {
+  const a = w();
+  return x(() => {
+    a.current = n;
+  }, [n, e]), a.current;
+};
+function Y(n) {
+  let e = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {};
+  const {
+    i18n: a
+  } = e, {
+    i18n: f,
+    defaultNS: o
+  } = P(k) || {}, t = a || f || E();
+  if (t && !t.reportNamespaces && (t.reportNamespaces = new A()), !t) {
+    I("You will need to pass in an i18next instance by using initReactI18next");
+    const s = (c, i) => typeof i == "string" ? i : i && typeof i == "object" && typeof i.defaultValue == "string" ? i.defaultValue : Array.isArray(c) ? c[c.length - 1] : c, u = [s, {}, !1];
+    return u.t = s, u.i18n = {}, u.ready = !1, u;
+  }
+  t.options.react && t.options.react.wait !== void 0 && I("It seems you are still using the old wait option, you may migrate to the new useSuspense behaviour.");
+  const g = {
+    ...F(),
+    ...t.options.react,
+    ...e
+  }, {
+    useSuspense: y,
+    keyPrefix: b
+  } = g;
+  let r = o || t.options && t.options.defaultNS;
+  r = typeof r == "string" ? [r] : r || ["translation"], t.reportNamespaces.addUsedNamespaces && t.reportNamespaces.addUsedNamespaces(r);
+  const l = (t.isInitialized || t.initializedStoreOnce) && r.every((s) => B(s, t, g));
+  function p() {
+    return t.getFixedT(e.lng || null, g.nsMode === "fallback" ? r : r[0], b);
+  }
+  const [L, m] = $(p);
+  let h = r.join();
+  e.lng && (h = `${e.lng}${h}`);
+  const S = J(h), d = w(!0);
+  x(() => {
+    const {
+      bindI18n: s,
+      bindI18nStore: u
+    } = g;
+    d.current = !0, !l && !y && (e.lng ? R(t, e.lng, r, () => {
+      d.current && m(p);
+    }) : v(t, r, () => {
+      d.current && m(p);
+    })), l && S && S !== h && d.current && m(p);
+    function c() {
+      d.current && m(p);
+    }
+    return s && t && t.on(s, c), u && t && t.store.on(u, c), () => {
+      d.current = !1, s && t && s.split(" ").forEach((i) => t.off(i, c)), u && t && u.split(" ").forEach((i) => t.store.off(i, c));
+    };
+  }, [t, h]);
+  const C = w(!0);
+  x(() => {
+    d.current && !C.current && m(p), C.current = !1;
+  }, [t, b]);
+  const N = [L, t, l];
+  if (N.t = L, N.i18n = t, N.ready = l, l || !l && !y) return N;
+  throw new Promise((s) => {
+    e.lng ? R(t, e.lng, r, () => s()) : v(t, r, () => s());
+  });
+}
+export {
+  j as a,
+  W as g,
+  Y as u,
+  I as w
+};

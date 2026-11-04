@@ -54,6 +54,7 @@ export type FrameMessage =
   | { type: 'bot-loaded'; name: string; runAfterLoad: boolean }
   | { type: 'feed-subscribe' }
   | { type: 'quick-strategy-open' }
+  | { type: 'login-request' }
   | { type: 'active-tab'; tab: number }
   | { type: 'account-connected'; accountId: string; grantId: number }
   | { type: 'account-disconnected'; grantId: number; connectionLost: boolean }
@@ -113,6 +114,8 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return { type: 'feed-subscribe' };
     case 'quick-strategy-open':
       return { type: 'quick-strategy-open' };
+    case 'login-request':
+      return { type: 'login-request' };
     case 'workspace-error':
       return {
         type: 'workspace-error',

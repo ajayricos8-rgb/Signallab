@@ -1,0 +1,34 @@
+import { i as a, c as o } from "../crc32-BeCcwohL.js";
+import c from "./otasdk.js";
+import { getInitialLanguage as l } from "./lang-utils.js";
+import { s as u, a as f } from "../i18nInstance-D3STmr24.js";
+const m = {
+  type: "3rdParty",
+  init(t) {
+    u(t.options.react), f(t);
+  }
+}, g = ({ useSuspense: t, enableDebug: e }) => ({
+  react: {
+    hashTransKey(n) {
+      return o.str(n);
+    },
+    useSuspense: t
+  },
+  debug: e,
+  initImmediate: !0,
+  fallbackLng: "EN",
+  interpolation: {
+    escapeValue: !1
+  }
+});
+function y({
+  cdnUrl: t,
+  useSuspense: e = !0,
+  enableDebug: n = !1
+}) {
+  const i = new c(t), s = l(), r = g({ useSuspense: e, enableDebug: n });
+  return a.use(i).use(m).init({ ...r, lng: s }), a;
+}
+export {
+  y as default
+};

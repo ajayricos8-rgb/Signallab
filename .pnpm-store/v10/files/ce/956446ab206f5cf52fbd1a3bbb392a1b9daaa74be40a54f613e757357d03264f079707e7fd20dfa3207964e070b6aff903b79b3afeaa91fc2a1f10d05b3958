@@ -1,0 +1,11 @@
+import { i18n } from 'i18next';
+type TLocalizeProps = {
+    i18n_default_text: string;
+    values?: object;
+    components?: JSX.Element[];
+    options?: Record<string, unknown>;
+    shouldUnescape?: boolean;
+    i18n?: i18n;
+};
+declare const Localize: React.ComponentType<TLocalizeProps>;
+export default Localize;

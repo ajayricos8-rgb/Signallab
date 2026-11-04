@@ -1,0 +1,10 @@
+import { i as a, c as e } from "../crc32-BeCcwohL.js";
+function c(t, r) {
+  return t ? a.t(e.str(t).toString(), {
+    defaultValue: t,
+    ...r
+  }) : "";
+}
+export {
+  c as default
+};

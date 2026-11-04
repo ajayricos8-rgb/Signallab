@@ -1,0 +1,4 @@
+import { default as e } from "./use-translations.js";
+export {
+  e as useTranslations
+};
