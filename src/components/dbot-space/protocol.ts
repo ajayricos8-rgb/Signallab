@@ -49,6 +49,10 @@ export type LinkSnapshot = {
 
 /** Everything the frame is allowed to say to the shell. */
 export type FrameMessage =
+  // The workspace document itself is running. `ready` is the later promise that
+  // the builder has painted; `alive` only says the bundle reached the browser,
+  // which is what tells a slow boot apart from a document that never loaded.
+  | { type: 'alive'; build: string }
   | { type: 'ready' }
   | { type: 'workspace-error'; message: string }
   | { type: 'block-registry'; blocks: WorkspaceBlockInfo[]; aiRuntimeRegistered: boolean }
@@ -110,6 +114,8 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
   const raw = asRecord(data);
   if (!raw || raw.source !== FRAME_SOURCE || typeof raw.type !== 'string') return null;
   switch (raw.type) {
+    case 'alive':
+      return { type: 'alive', build: boundedText(raw.build, 80) };
     case 'ready':
       return { type: 'ready' };
     case 'feed-subscribe':

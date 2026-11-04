@@ -4,11 +4,12 @@ import { readFile } from 'node:fs/promises';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-const [pkg, app, panel, engine, dbotApp, dbotContent, dbotRoot, builder, host, recovery, routeError] = await Promise.all([
+const [pkg, app, panel, engine, shellMain, dbotApp, dbotContent, dbotRoot, builder, host, recovery, routeError] = await Promise.all([
   read('../../../package.json'),
   read('../../../src/App.tsx'),
   read('../../../src/components/dbot-space/workspace-panel.tsx'),
   read('../../../src/components/dbot-space/engine.ts'),
+  read('../../../src/main.tsx'),
   read('../../../vendor/deriv-bot/src/app/App.tsx'),
   read('../../../vendor/deriv-bot/src/app/app-content.jsx'),
   read('../../../vendor/deriv-bot/src/app/app-root.tsx'),
@@ -23,7 +24,12 @@ test('DBot builds before dev/production and is the initial host tab', () => {
   assert.match(pkg, /"build:app":\s*"node scripts\/build-dbot\.mjs && vite build/);
   assert.match(app, /useState<WorkspaceTab>\('dbot-space'\)/);
   assert.match(app, /const \[dbotMounted\] = useState\(true\)/);
-  assert.match(panel, /src=\{`\$\{import\.meta\.env\.BASE_URL\}dbot\/index\.html#bot_builder`\}/);
+  // The frame URL carries the reload counter, so a reload can never be answered
+  // from a cached copy of an older workspace document.
+  assert.match(
+    panel,
+    /src=\{`\$\{import\.meta\.env\.BASE_URL\}dbot\/index\.html\?v=\$\{frameRevision\}#bot_builder`\}/,
+  );
 });
 
 test('the workspace is a sub-application route, not the host root', () => {
@@ -51,6 +57,24 @@ test('a stale chunk recovers instead of ending on a stack trace', () => {
   // A frame that fails after `ready` must lose the ready flag, so the shell's
   // overlay and its Reload button come back.
   assert.match(engine, /case 'workspace-error': \{[\s\S]{0,400}?setReady\(false\)/);
+});
+
+test('a workspace document that never loads is reported, not looped', () => {
+  // `alive` is posted from the frame before React exists, so the shell can tell
+  // "still booting" from "this document never ran DBot" — a stale cached copy
+  // or a host shell served in place of the frame. The second case gets a short
+  // leash and a reload with a fresh URL instead of another silent 30s cycle.
+  assert.match(host, /post\(\{ type: 'alive', build: loadedBuild\(\) \}\)/);
+  assert.match(host, /BOOT_WATCHDOG_MS/);
+  assert.match(engine, /case 'alive': \{/);
+  assert.match(engine, /DOCUMENT_TIMEOUT_MS = 12_000/);
+  assert.match(engine, /const silent = !frameAlive\.current;/);
+  assert.match(engine, /A cached copy may be blocking it/);
+  // The user's own Reload must get its automatic retry back.
+  assert.match(engine, /reload: retryWorkspace,/);
+  // A stale root-scoped service worker from an early build is dropped on boot.
+  assert.match(shellMain, /getRegistrations\(\)/);
+  assert.match(shellMain, /unregister\(\)/);
 });
 
 test('the iframe shows startup progress and DBot announces readiness after boot', () => {
