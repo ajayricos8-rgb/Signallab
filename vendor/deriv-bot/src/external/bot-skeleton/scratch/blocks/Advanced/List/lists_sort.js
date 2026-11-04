@@ -87,7 +87,7 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.lists_sort = block => {
             };
 
             return function(a, b) {
-                return compareFuncs[type](a, b) * direction;
+                return compareFuncs[type](a, b) * direction; 
             }
         }`,
         ]

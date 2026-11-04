@@ -90,7 +90,7 @@ export default class AppStore {
         // When isSingleLoggingIn is true, we don't want to show the EU error message
         const is_tmb_enabled = window.is_tmb_enabled === true;
         const isSingleLoggingIn =
-            /\/callback$/.test(window.location.pathname) ||
+            window.location.pathname === '/callback' ||
             (Cookies.get('logged_state') === 'true' &&
                 !is_tmb_enabled &&
                 Object.keys(JSON.parse(localStorage.getItem('accountsList') || '{}')).length === 0);

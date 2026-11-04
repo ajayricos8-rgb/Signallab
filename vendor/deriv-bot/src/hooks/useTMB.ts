@@ -51,7 +51,7 @@ const useTMB = (): UseTMBReturn => {
     }
 
     // const isEndpointPage = useMemo(() => window.location.pathname.includes('endpoint'), []);
-    const isCallbackPage = useMemo(() => /\/callback$/.test(window.location.pathname), []);
+    const isCallbackPage = useMemo(() => window.location.pathname === '/callback', []);
     const domains = useMemo(
         () => ['deriv.com', 'deriv.dev', 'binary.sx', 'pages.dev', 'localhost', 'deriv.be', 'deriv.me'],
         []
@@ -324,8 +324,8 @@ const useTMB = (): UseTMBReturn => {
             localStorage.removeItem('clientAccounts');
             localStorage.removeItem('accountsList');
             // Go to logged out version of the app instead of redirecting to OAuth.
-            // Embedded, a reload is also a restart of the whole workspace: clear
-            // the session and let the app re-render logged out instead.
+            // Embedded, clearing the session is enough: a reload restarts the
+            // whole workspace.
             if (!isEmbeddedWorkspace()) window.location.reload();
         } catch (error) {
             // eslint-disable-next-line no-console

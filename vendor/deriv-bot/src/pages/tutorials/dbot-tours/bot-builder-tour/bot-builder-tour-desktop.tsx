@@ -1,23 +1,19 @@
 import React from 'react';
 import { observer } from 'mobx-react-lite';
 import { useStore } from '@/hooks/useStore';
-import { isEmbeddedWorkspace } from '@/services/embed';
 import { getSetting } from '@/utils/settings';
 import ReactJoyrideWrapper from '../common/react-joyride-wrapper';
 import TourEndDialog from '../common/tour-end-dialog';
 import TourStartDialog from '../common/tour-start-dialog';
 import { BOT_BUILDER_TOUR } from '../tour-content';
 import { useTourHandler } from '../useTourHandler';
+import { isEmbeddedWorkspace } from '@/services/embed';
 
 const BotBuilderTourDesktop = observer(() => {
     const { is_close_tour, is_finished, handleJoyrideCallback, setIsCloseTour } = useTourHandler();
     const { dashboard, load_modal } = useStore();
     const { active_tab, active_tour, setActiveTour, setTourDialogVisibility } = dashboard;
     const { is_load_modal_open } = load_modal;
-    // Standalone DBot greets a first-time visitor with the tour dialog. Inside
-    // Signal Lab the workspace is a panel that has to be usable the moment it
-    // paints: a modal backdrop over the builder reads as a frozen workspace, and
-    // it came back on every mount because the token only exists after a tour.
     const token = getSetting('bot_builder_token');
     if (!isEmbeddedWorkspace() && !token && active_tab === 1) setTourDialogVisibility(true);
 

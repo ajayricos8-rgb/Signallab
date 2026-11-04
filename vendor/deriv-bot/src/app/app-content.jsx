@@ -54,24 +54,18 @@ const AppContent = observer(() => {
     const is_subscribed_to_msg_listener = React.useRef(false);
     const msg_listener = React.useRef(null);
     const { connectionStatus } = useApiBase();
-    const { initTrackJS } = useTrackjs();
 
     // The shell's bridge is installed from `main.tsx`; this keeps the call when
     // app-content is mounted on its own (tests, standalone builds).
-    useEffect(() => {
+    React.useEffect(() => {
         connectSignalLabBridge();
     }, []);
 
     // A Deriv socket that never opens must not hold the workspace behind a
-    // loader. The builder, the blocks and the Signal Lab data bridge all work
-    // from what the shell already shares, so give the live account a short head
-    // start and then render the dashboard anyway.
+    // loader: give the live account a short head start, then render anyway.
     React.useEffect(() => {
         if (!is_loading || boot_deadline_reached) return;
         const timer = window.setTimeout(() => {
-            // `init()` talks to stores that may not exist yet when Deriv's
-            // socket never opened; anything it throws must not swallow the
-            // deadline, or the loader below would never lift.
             try {
                 if (!app.dbot_store) init();
             } catch (error) {
@@ -91,11 +85,12 @@ const AppContent = observer(() => {
     }, [is_loading, boot_deadline_reached, isOnline, common?.error]);
 
     // A hard error has no UI of its own to show here: tell the shell instead of
-    // leaving it on "Connecting workspace" until its own timeout fires.
+    // leaving it on "Connecting workspace".
     React.useEffect(() => {
         if (!common?.error) return;
         reportWorkspaceError(common.error.message || common.error.header || 'DBot stopped with an error.');
     }, [common?.error]);
+    const { initTrackJS } = useTrackjs();
 
     initTrackJS(client.loginid);
 

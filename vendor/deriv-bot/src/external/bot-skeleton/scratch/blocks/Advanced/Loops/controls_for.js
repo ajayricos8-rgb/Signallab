@@ -160,7 +160,7 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.controls_for = block => {
             ${incVar} = -${incVar};
         }
         for (
-           ${variable0} = ${startVar};
+           ${variable0} = ${startVar}; 
            ${incVar} >= 0 ? ${variable0} <= ${endVar} : ${variable0} >= ${endVar};
            ${variable0} += ${incVar}
         ) {

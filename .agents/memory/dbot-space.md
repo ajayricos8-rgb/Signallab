@@ -246,3 +246,47 @@ Verified in headless Chromium: ready at 12 s and flat for 48 s (one document, no
 `/dbot/static/js/async/*` request aborted, the panel ends on the reload card at ~28 s instead of
 cycling; a forced `connect-account` with a dead socket produces `account-error` and **zero reloads**
 (the account module is statically imported, so there is no second chunk to fail).
+
+## Rebuild on the official clone (round four)
+
+The DBot Space builder is no longer a hand-fork. `vendor/deriv-bot` is a clean
+copy of **`deriv-com/bot@master`** (`https://codeload.github.com/deriv-com/bot/tar.gz/refs/heads/master`;
+the repo API reports it private, the tarball downloads fine). The old
+`src/components/dbot-space/{engine,workspace-panel,header,store,bot-store,session-limit-dialog}.tsx`
+shell was deleted with the bot store; `src/components/dbot-ai-copilot.tsx` was left
+untouched (it never imported from that folder).
+
+### What we still add to upstream (all of it is justified, nothing else)
+- `src/services/{embed,chunk-recovery,signallab-account,signallab-feed,signallab-host}.ts`
+  and `src/app/route-error.tsx` — the host channel and the embedded error boundary.
+- `src/main.tsx` — install the host + chunk recovery, and *unregister* service
+  workers when embedded (a root-scoped worker would take over Signal Lab itself).
+- `src/app/App.tsx` — `{ basename, errorElement: <RouteError /> }` plus stripping
+  `/dbot/index.html` from the pathname (without it no route matched, nothing
+  mounted, `ready` never arrived).
+- `src/app/app-root.tsx` — `TMB_CHECK_DEADLINE_MS = 4_000` (a hanging remote
+  config must not hold the loader).
+- `src/app/app-content.jsx` — `BOOT_DEADLINE_MS = 6_000`, `markWorkspaceMounted()`
+  and `reportWorkspaceError()`.
+- Reload gates: `auth-utils.mayReload`, `pwa-utils` controllerchange,
+  `useTMB` logout, `api-base` InvalidToken, and the four tour components.
+- `rsbuild.config.ts` — `output.assetPrefix = base + '/dbot/'`, `DBOT_BASE_PATH`
+  define, `@/services` alias. `index.html` — Signal Lab title + assetBase meta.
+
+### Shell
+`src/components/dbot-space/` is now three files: `index.tsx` (layout + copilot
+mount), `frame-host.ts` (iframe lifecycle, hello retry, `MAX_AUTO_RELOADS = 2`,
+`MAX_FRAME_BOOTS = 3`, `STABLE_RUN_MS = 60_000`, tick/account bridge, automatic
+account link via `createBotSocket`) and `protocol.ts` / `workspace.css`.
+
+### Build
+Root `scripts/build-dbot.mjs` runs `npm run build` in the vendor tree, copies
+`dist` to `public/dbot`, strips the Google-font `@import`s, localises the Quill
+tokens, and rewrites the two SmartCharts `assetBase:"/"` occurrences.
+
+### Verified
+- `npm run build:app` green; `node --test artifacts/deriv-signal-lab/tests/*.test.mjs`
+  → 31/32 (only the pre-existing `parity-runtime-regression` failure).
+- Headless probe against `dist` on :4300 — ready at **8 s**, **1 document, 0
+  reloads over 80 s**, overlay gone, header "DBot Space". Deriv websockets fail
+  in the sandbox (network-restricted) and are expected.
