@@ -1,0 +1,28 @@
+{
+  "name": "signallab",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./dist"
+  },
+  "build": {
+    "command": "if [ -f scripts/cloudflare-build.mjs ]; then node scripts/cloudflare-build.mjs; else node ../../scripts/cloudflare-build.mjs; fi"
+  },
+  "previews": {},
+  "observability": {
+    "enabled": true
+  },
+  "env": {
+    "production": {
+      "name": "signallab",
+      "assets": {
+        "directory": "./dist"
+      },
+      "build": {
+        "command": "if [ -f scripts/cloudflare-build.mjs ]; then node scripts/cloudflare-build.mjs; else node ../../scripts/cloudflare-build.mjs; fi"
+      },
+      "observability": {
+        "enabled": true
+      }
+    }
+  }
+}

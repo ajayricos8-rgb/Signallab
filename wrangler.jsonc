@@ -1,0 +1,28 @@
+{
+  "name": "signallab",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./dist"
+  },
+  "build": {
+    "command": "npm run build:cloudflare"
+  },
+  "previews": {},
+  "observability": {
+    "enabled": true
+  },
+  "env": {
+    "production": {
+      "name": "signallab",
+      "assets": {
+        "directory": "./dist"
+      },
+      "build": {
+        "command": "npm run build:cloudflare"
+      },
+      "observability": {
+        "enabled": true
+      }
+    }
+  }
+}

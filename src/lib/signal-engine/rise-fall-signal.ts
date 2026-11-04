@@ -1,0 +1,1279 @@
+// Always-on Rise/Fall signal layer.
+//
+// Fourteen engines vote on every market and every duration (1–10 ticks,
+// 1–15 minutes): twelve state engines (trend, swing structure, momentum, RSI,
+// MACD, EMA cross, EMA-50, breadth, ROC, regression slope, tick-direction
+// Markov chain, variance-ratio regime), a duration-specific historical drift
+// engine and a logistic-regression meta-model (the "AI" engine) trained on the
+// other engines' replayed scores. Each engine's weight comes from its
+// directional accuracy on a validation slice, and the consensus rule is then
+// replayed on a later held-out slice (backtest) before the live vote.
+import { analyzeRiseFall, type MarketTick, type RiseFallAnalysis } from '../rise-fall-analysis.ts';
+import {
+  confidenceScore, edgeShrinkage, strengthOf, strengthWithConfirmation, summarizeBacktest, tallyVotes,
+  type BacktestSummary, type ConfidenceBreakdown, type EngineVote, type SignalStrength, type VoteTally,
+} from './confidence.ts';
+import { familyBalancedWeights } from './consensus.ts';
+import { analyzeQuoteEntry, epochGapMs, type EntryPlan } from './entry.ts';
+import { buildMasterDecision, type MasterDecision, type MasterSourceInput } from './master-decision.ts';
+import { analyzeQuoteState, fitLevelReversion, levelReversionProbabilityUp, type QuoteMarketState } from './market-state.ts';
+import { synthesizeRiseFallAi, type AiSynthesis } from './ai-synthesis.ts';
+import { pairedImprovementZ, type CalibrationPoint } from './stats.ts';
+import { forecastStandardError, probabilityInterval, reliabilityReport, type ProbabilityInterval, type ReliabilityReport } from './recalibration.ts';
+import { shrinkEdges, type Heterogeneity } from './precision.ts';
+import { confirmRiseFall, type ConfirmationReport, type QuoteConfirmationRow } from './confirmation.ts';
+
+import { createForecastFactory, auditForecastBank, decideResearch } from '../engine-lab/forecast.ts';
+import { buildEngineLabReport } from '../engine-lab/report.ts';
+import { fuseResearch, researchEvidence, type ResearchFusion } from '../engine-lab/fusion.ts';
+import {
+  fuseNeural, neuralEvidence, trainQuoteNeuralModel,
+  type NeuralFusion, type NeuralQuoteForecast,
+} from '../neural/models.ts';
+import type { EngineLabReport, ResearchAudit, ResearchDecision, SettledReturn } from '../engine-lab/types.ts';
+import { applyForge, forgeCandidate, forgeEvidence, forgeVetoed } from '../forge/forge.ts';
+import { describeQuoteContext, quoteContextAt, quoteForgeVector } from '../forge/features.ts';
+import type { ForgeFusion, ForgedModel } from '../forge/types.ts';
+
+export type RiseFallDirection = 'RISE' | 'FALL';
+export type RiseFallHorizon = { unit: 'ticks' | 'minutes'; value: number };
+export type ProgressCallback = (fraction: number, stage: string) => void;
+
+export const RISE_FALL_MIN_TICKS = 600;
+export const RISE_FALL_HORIZONS: RiseFallHorizon[] = [
+  ...Array.from({ length: 10 }, (_, index) => ({ unit: 'ticks' as const, value: index + 1 })),
+  ...Array.from({ length: 15 }, (_, index) => ({ unit: 'minutes' as const, value: index + 1 })),
+];
+
+const INDICATOR_WINDOW = 500;
+const REPLAY_STRIDE = 2;
+const VOTE_THRESHOLD = 0.05;
+const MARKOV_WINDOW = 1_000;
+const DRIFT_WINDOW = 500;
+/**
+ * Pseudo-rows an engine's measured accuracy is shrunk toward 50 % by. Thirty
+ * validation outcomes at 64 % is 55 % of the way to a real edge, not all of it.
+ */
+const ENGINE_ACCURACY_PRIOR_ROWS = 40;
+
+/**
+ * Keep the feed's newest quote for each epoch, then restore chronological
+ * order. This makes all engines see the same unique observations even when a
+ * caller supplies a replay with out-of-order or duplicated ticks.
+ */
+export function normalizeRiseFallTicks(ticks: readonly MarketTick[]): MarketTick[] {
+  const byEpoch = new Map<number, MarketTick>();
+  for (const tick of ticks) {
+    if (!Number.isFinite(tick.epoch) || !Number.isFinite(tick.quote) || tick.epoch <= 0 || tick.quote <= 0) continue;
+    byEpoch.set(tick.epoch, tick);
+  }
+  return [...byEpoch.values()].sort((left, right) => left.epoch - right.epoch);
+}
+
+/** Validate and de-duplicate user-provided model durations before any fit. */
+export function resolveRiseFallHorizons(horizons?: readonly RiseFallHorizon[]): RiseFallHorizon[] {
+  if (!horizons?.length) return [...RISE_FALL_HORIZONS];
+  const unique = new Map<string, RiseFallHorizon>();
+  for (const horizon of horizons) {
+    const validTicks = horizon?.unit === 'ticks' && Number.isInteger(horizon.value) && horizon.value >= 1 && horizon.value <= 10;
+    const validMinutes = horizon?.unit === 'minutes' && Number.isInteger(horizon.value) && horizon.value >= 1 && horizon.value <= 15;
+    if (!validTicks && !validMinutes) throw new Error('Rise/Fall durations must be 1–10 ticks or 1–15 minutes.');
+    unique.set(`${horizon.unit}:${horizon.value}`, { unit: horizon.unit, value: horizon.value });
+  }
+  return [...unique.values()];
+}
+
+export type RiseFallHorizonSignal = {
+  horizon: RiseFallHorizon;
+  direction: RiseFallDirection;
+  /** Weighted consensus score from -1 (fall) to 1 (rise). */
+  consensusScore: number;
+  /** Meta-model probability of a rise, when it could be trained. */
+  aiProbability: number | null;
+  /** Validated win-probability estimate for the signalled direction. */
+  winEstimate: number;
+  /** Win probability with no edge (half of the non-flat outcomes). */
+  fairProbability: number;
+  votes: EngineVote[];
+  tally: VoteTally;
+  backtest: BacktestSummary;
+  validationSkill: number | null;
+  /** Paired z-score of that skill against the fair-rate baseline. */
+  validationZ: number | null;
+  confidence: number;
+  breakdown: ConfidenceBreakdown;
+  strength: SignalStrength;
+  researchDecision: ResearchDecision;
+  /** What the research library's own forecast contributed to `winEstimate`. */
+  research: ResearchFusion;
+  /** Layer 7: the embedded neural model's view of this duration and what it did. */
+  neural: NeuralFusion;
+  /**
+   * Layer 8: the forged model — engines, AI and calculations learnt into one
+   * network trained on this duration's replayed rows — and what it did to this
+   * call: confirmed it, trimmed it or vetoed the entry.
+   */
+  forge: ForgeFusion;
+  historical: { sample: number; rise: number; fall: number; unchanged: number };
+  /**
+   * How precisely this win estimate is known, and how far the precision layer
+   * moved it. `interval` is a 95% band for the true win rate behind
+   * `winEstimate`, measured out of sample.
+   */
+  precision: {
+    standardError: number | null;
+    interval: ProbabilityInterval | null;
+    reliability: ReliabilityReport;
+    /** Fraction of the confirmed edge the precision layer kept (1 = untouched). */
+    shrinkFactor: number;
+    /** Probability points removed as the winner's curse of ranking the durations. */
+    selectionDebitPts: number;
+    /** z-score of the edge against its own standard error. */
+    edgeZ: number | null;
+  };
+  /** When and at what price this signal should be traded. */
+  entry: EntryPlan;
+  /**
+   * Layer 6: the engines, AI, calculations and entry fused into one decision
+   * with one measured validity window. This is what the UI leads with and what
+   * the bot's entry window is capped by.
+   */
+  master: MasterDecision;
+  /**
+   * Layer 1 (analysis engines) and layer 3 (out-of-sample confirmation) behind
+   * this duration. Exposed so the tools can show every engine by its own work.
+   */
+  deep: {
+    /** The market-level analysis state lives once on the result; each duration
+     * carries only its own confirmation report. */
+    confirmation: ConfirmationReport;
+  };
+};
+
+export type RiseFallMarketAnalysis = {
+  kind: 'rise-fall';
+  symbol: string;
+  name: string;
+  sample: number;
+  lastQuote: number | null;
+  lastEpoch: number | null;
+  fresh: boolean;
+  dataQuality: number;
+  engineCount: number;
+  best: RiseFallHorizonSignal;
+  horizons: RiseFallHorizonSignal[];
+  analysis: RiseFallAnalysis;
+  /** Layer 1: the full analysis-engine panel for this market. */
+  state: QuoteMarketState;
+  /** Layer 5: quant measurement engines synthesised into one AI verdict. */
+  aiSynthesis: AiSynthesis;
+  /**
+   * Layer 7: the embedded, free neural model for the best duration's horizon,
+   * trained on this market's own prices. Null when the history is too short.
+   */
+  neural: Omit<NeuralQuoteForecast, 'replay'> | null;
+  /**
+   * Layer 8: the forged model behind the winning duration. One network, trained
+   * in this run from the engines, the AI layers, the calculations and the Deriv
+   * knowledge base, used for the analysis, the prediction and the entry.
+   */
+  forge: ForgedModel | null;
+  /** Cross-duration precision fit for this scan (heterogeneity of the pool). */
+  precisionFit: { candidates: number; tau: number; standoutThreshold: number; standouts: number; heterogeneous: boolean } & Heterogeneity;
+  /** Number of analysis engines that ran (separate from the 14 prediction engines). */
+  analysisEngineCount: number;
+  engineLab: EngineLabReport;
+  notes: string[];
+  durationMs: number;
+};
+
+export type RiseFallMarketInput = {
+  symbol: string;
+  name: string;
+  ticks: readonly MarketTick[];
+  fresh: boolean;
+  horizons?: readonly RiseFallHorizon[];
+  /** Markets competing in the same scan (for the selection penalty). */
+  marketsInScan?: number;
+  /** Optional verified digits for contextual digit engines, never guessed from quote formatting. */
+  digitTicks?: readonly { epoch: number; digit: number }[];
+  settlements?: readonly SettledReturn[];
+  settlementCurrency?: string;
+};
+
+type EngineDef = { id: string; label: string; family: string };
+
+export type PurgedReplayRow = { origin: number; exit: number; label: number | null };
+export type PurgedReplaySplit<T extends PurgedReplayRow> = { training: T[]; validation: T[]; holdout: T[] };
+
+/**
+ * Chronological 50/25/25 replay split with horizon-aware purging. A training
+ * label must settle before validation begins, and a validation label must settle
+ * before holdout begins; otherwise future price movement can leak across a
+ * split even though the prediction origin itself is earlier.
+ */
+export function splitPurgedReplay<T extends PurgedReplayRow>(
+  rows: readonly T[],
+  trainingBoundary: number,
+  holdoutBoundary: number,
+): PurgedReplaySplit<T> {
+  if (!Number.isFinite(trainingBoundary) || !Number.isFinite(holdoutBoundary) || holdoutBoundary <= trainingBoundary) {
+    throw new Error('Replay boundaries must be finite and strictly increasing.');
+  }
+  const labelled = rows.filter((row) => row.label !== null && Number.isFinite(row.label) && Number.isFinite(row.origin) && Number.isFinite(row.exit) && row.exit >= row.origin);
+  return {
+    training: labelled.filter((row) => row.origin < trainingBoundary && row.exit < trainingBoundary),
+    validation: labelled.filter((row) => row.origin >= trainingBoundary && row.origin < holdoutBoundary && row.exit < holdoutBoundary),
+    holdout: labelled.filter((row) => row.origin >= holdoutBoundary),
+  };
+}
+
+/** Select outcome intervals that do not reuse any return increments. */
+export function selectNonOverlappingOutcomes<T extends Pick<PurgedReplayRow, 'origin' | 'exit'>>(rows: readonly T[]): T[] {
+  const ordered = rows
+    .filter((row) => Number.isFinite(row.origin) && Number.isFinite(row.exit) && row.exit > row.origin)
+    .slice()
+    .sort((left, right) => left.origin - right.origin || left.exit - right.exit);
+  const selected: T[] = [];
+  let lastExit = Number.NEGATIVE_INFINITY;
+  for (const row of ordered) {
+    if (row.origin < lastExit) continue;
+    selected.push(row);
+    lastExit = row.exit;
+  }
+  return selected;
+}
+
+/** Count independent outcome intervals. */
+export function countNonOverlappingOutcomes(rows: readonly Pick<PurgedReplayRow, 'origin' | 'exit'>[]): number {
+  return selectNonOverlappingOutcomes(rows).length;
+}
+
+export const RISE_FALL_ENGINES: EngineDef[] = [
+  { id: 'trend', label: 'Multi-window trend · 20–500 ticks', family: 'trend' },
+  { id: 'dow', label: 'Dow swing structure · HH/HL vs LH/LL', family: 'structure' },
+  { id: 'momentum', label: 'Momentum composite · RSI / EMA / MACD', family: 'momentum' },
+  { id: 'rsi', label: 'RSI-14 momentum', family: 'momentum' },
+  { id: 'macd', label: 'MACD histogram · 12 / 26 / 9', family: 'momentum' },
+  { id: 'ema-cross', label: 'EMA 9 / 21 crossover', family: 'trend' },
+  { id: 'ema50', label: 'Price vs EMA-50', family: 'trend' },
+  { id: 'breadth', label: '100-tick up / down breadth', family: 'structure' },
+  { id: 'roc', label: 'ROC-20 · volatility normalized', family: 'momentum' },
+  { id: 'regression', label: 'Linear-regression slope · 60 ticks', family: 'statistical' },
+  { id: 'markov', label: 'Tick-direction Markov chain · orders 1–3', family: 'statistical' },
+  { id: 'variance-ratio', label: 'Variance-ratio regime · Lo–MacKinlay', family: 'statistical' },
+  { id: 'level-reversion', label: 'AR(1) level pull · OU equilibrium', family: 'statistical' },
+  { id: 'drift', label: 'Historical drift at this duration', family: 'statistical' },
+  { id: 'ai', label: 'AI meta-model · logistic regression on all engines', family: 'ml' },
+];
+const STATE_ENGINE_COUNT = 13;
+const DRIFT_INDEX = 13;
+const AI_INDEX = 14;
+
+const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+const sign = (value: number) => (value > 0 ? 1 : value < 0 ? -1 : 0);
+
+export function formatRiseFallHorizon(horizon: RiseFallHorizon): string {
+  const unit = horizon.unit === 'ticks' ? (horizon.value === 1 ? 'tick' : 'ticks') : (horizon.value === 1 ? 'minute' : 'minutes');
+  return `${horizon.value} ${unit}`;
+}
+
+/** Median milliseconds between ticks, used to convert minute durations to ticks. */
+function averageTickSpacingMs(epochs: readonly number[]): number {
+  const gaps: number[] = [];
+  const from = Math.max(1, epochs.length - 501);
+  for (let index = from; index < epochs.length; index += 1) {
+    const gap = epochGapMs(epochs[index - 1], epochs[index]);
+    if (Number.isFinite(gap) && gap > 0) gaps.push(gap);
+  }
+  if (!gaps.length) return 1_000;
+  gaps.sort((left, right) => left - right);
+  return gaps[Math.floor(gaps.length / 2)];
+}
+
+function regressionScore(prices: readonly number[]): number | null {
+  const window = prices.slice(-60);
+  const n = window.length;
+  if (n < 20) return null;
+  const meanX = (n - 1) / 2;
+  const meanY = window.reduce((sum, value) => sum + value, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  for (let index = 0; index < n; index += 1) { sxy += (index - meanX) * (window[index] - meanY); sxx += (index - meanX) ** 2; }
+  const slope = sxx > 0 ? sxy / sxx : 0;
+  let moveSq = 0;
+  for (let index = 1; index < n; index += 1) moveSq += (window[index] - window[index - 1]) ** 2;
+  const tickDeviation = Math.sqrt(moveSq / (n - 1));
+  if (!(tickDeviation > 0)) return 0;
+  // Regression-implied move over the window relative to a random walk's scale.
+  return Math.tanh((slope * n) / (tickDeviation * Math.sqrt(n)) / 2);
+}
+
+function varianceRatioScore(prices: readonly number[]): number | null {
+  const window = prices.slice(-301);
+  if (window.length < 120) return null;
+  const q = 10;
+  const returns: number[] = [];
+  for (let index = 1; index < window.length; index += 1) returns.push(window[index] - window[index - 1]);
+  const mu = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance1 = returns.reduce((sum, value) => sum + (value - mu) ** 2, 0) / returns.length;
+  if (!(variance1 > 0)) return 0;
+  let varianceQ = 0;
+  let count = 0;
+  for (let index = q; index < window.length; index += 1) { varianceQ += (window[index] - window[index - q] - q * mu) ** 2; count += 1; }
+  const ratio = varianceQ / count / (q * variance1);
+  const deviation = ratio - 1;
+  if (Math.abs(deviation) < 0.08) return 0;
+  const recent = window.at(-1)! - window[Math.max(0, window.length - 21)];
+  // Ratio above one = persistent increments (follow); below one = mean reverting (fade).
+  return sign(recent) * clamp(deviation * 2, -1, 1);
+}
+
+function directionOf(prices: readonly number[], index: number): number {
+  return sign(prices[index] - prices[index - 1]);
+}
+
+/** Sliding-window tick-direction Markov chain (orders 3 → 1 back-off). */
+class DirectionMarkov {
+  private counts3 = new Float64Array(27 * 2);
+  private counts1 = new Float64Array(3 * 2);
+  private start = 0;
+  private end = 0;
+  private readonly prices: readonly number[];
+  constructor(prices: readonly number[]) { this.prices = prices; }
+  private key(index: number, order: number): number {
+    let key = 0;
+    for (let offset = order - 1; offset >= 0; offset -= 1) key = key * 3 + (directionOf(this.prices, index - offset) + 1);
+    return key;
+  }
+  private apply(target: number, delta: number) {
+    // Transition: context ending at target - 1 → direction at target.
+    const next = directionOf(this.prices, target);
+    if (next === 0) return;
+    const slot = next > 0 ? 0 : 1;
+    if (target - 3 >= 1) this.counts3[this.key(target - 1, 3) * 2 + slot] += delta;
+    if (target - 1 >= 1) this.counts1[this.key(target - 1, 1) * 2 + slot] += delta;
+  }
+  /** Advance the window so it covers transitions ending in (origin - MARKOV_WINDOW, origin]. */
+  advance(origin: number) {
+    const desiredStart = Math.max(2, origin - MARKOV_WINDOW + 1);
+    while (this.end <= origin) { if (this.end >= 2) this.apply(this.end, 1); this.end += 1; }
+    while (this.start < desiredStart) { if (this.start >= 2 && this.start < this.end) this.apply(this.start, -1); this.start += 1; }
+  }
+  score(origin: number): number | null {
+    if (origin < 4) return null;
+    const k3 = this.key(origin, 3) * 2;
+    let up = this.counts3[k3];
+    let down = this.counts3[k3 + 1];
+    if (up + down < 25) {
+      const k1 = this.key(origin, 1) * 2;
+      up = this.counts1[k1];
+      down = this.counts1[k1 + 1];
+    }
+    if (up + down < 25) return null;
+    const probability = (up + 1) / (up + down + 2);
+    return clamp((probability - 0.5) * 5, -1, 1);
+  }
+}
+
+/**
+ * Directional score from the level-reversion fit: fade a price that sits far
+ * from its fitted equilibrium, follow it when the fit says the level is a unit
+ * root (no score at all). The magnitude saturates by 2σ and is scaled by how
+ * conclusively the unit-root test was rejected, so a thin fit cannot shout.
+ */
+function levelReversionScore(prices: readonly number[]): number | null {
+  const model = fitLevelReversion(prices);
+  if (!model || !model.significant) return null;
+  if (Math.abs(model.displacementZ) < 0.15) return null;
+  const certainty = clamp((Math.abs(model.tStatistic) - 3.5) / 2.5, 0.15, 1);
+  return clamp(-Math.tanh(model.displacementZ / 1.5) * certainty, -1, 1);
+}
+
+function stateScores(analysis: RiseFallAnalysis, prices: readonly number[], markov: number | null): Array<number | null> {
+  const average = analysis.averageTickMove14;
+  const hasMove = average !== null && average > 0;
+  return [
+    analysis.tickCount >= 20 ? analysis.trendScore : null,
+    analysis.tickCount >= 50 ? analysis.dowScore : null,
+    analysis.tickCount >= 34 ? analysis.momentumScore : null,
+    analysis.rsi14 === null ? null : clamp((analysis.rsi14 - 50) / 35, -1, 1),
+    analysis.macdHistogram === null || !hasMove ? null : Math.tanh(analysis.macdHistogram / (average! * 5)),
+    analysis.ema9 === null || analysis.ema21 === null || !hasMove ? null : Math.tanh((analysis.ema9 - analysis.ema21) / (average! * 4)),
+    analysis.ema50 === null ? null : analysis.ema50Score,
+    analysis.tickCount >= 100 ? analysis.breadthScore : null,
+    analysis.roc20 === null ? null : analysis.rocScore,
+    regressionScore(prices),
+    markov,
+    varianceRatioScore(prices),
+    levelReversionScore(prices),
+  ];
+}
+
+function exitIndices(epochs: readonly number[], horizon: RiseFallHorizon): Int32Array {
+  const n = epochs.length;
+  const exits = new Int32Array(n).fill(-1);
+  if (horizon.unit === 'ticks') {
+    for (let start = 0; start + horizon.value < n; start += 1) exits[start] = start + horizon.value;
+    return exits;
+  }
+  const duration = horizon.value * 60;
+  let exit = 0;
+  for (let start = 0; start < n; start += 1) {
+    if (exit <= start) exit = start + 1;
+    const target = epochs[start] + duration;
+    while (exit < n && epochs[exit] < target) exit += 1;
+    if (exit >= n) break;
+    exits[start] = exit;
+  }
+  return exits;
+}
+
+/** Ridge-regularized logistic regression fitted by Newton / IRLS steps. */
+function fitLogistic(rows: readonly number[][], labels: readonly number[], ridge = 2): ((row: number[]) => number) | null {
+  if (rows.length < 120 || labels.length !== rows.length || !rows[0]?.length) return null;
+  const width = rows[0].length;
+  if (rows.some((row) => row.length !== width || row.some((value) => !Number.isFinite(value)))
+    || labels.some((label) => label !== 0 && label !== 1)) return null;
+  const positives = labels.reduce((total, label) => total + label, 0);
+  if (positives < 10 || rows.length - positives < 10) return null;
+  const means = Array.from({ length: width }, (_, j) => rows.reduce((sum, row) => sum + row[j], 0) / rows.length);
+  const deviations = Array.from({ length: width }, (_, j) => Math.sqrt(rows.reduce((sum, row) => sum + (row[j] - means[j]) ** 2, 0) / rows.length) || 1);
+  const standardize = (row: readonly number[]) => [1, ...row.map((value, j) => (value - means[j]) / deviations[j])];
+  const x = rows.map(standardize);
+  const size = width + 1;
+  let beta = Array<number>(size).fill(0);
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const hessian = Array.from({ length: size }, (_, row) => Array.from({ length: size + 1 }, (_, column) => (row === column && row > 0 ? ridge : row === column ? 1e-6 : 0)));
+    for (let row = 1; row < size; row += 1) hessian[row][size] = -ridge * beta[row];
+    x.forEach((features, index) => {
+      let logit = 0;
+      for (let j = 0; j < size; j += 1) logit += beta[j] * features[j];
+      const p = 1 / (1 + Math.exp(-clamp(logit, -30, 30)));
+      const weight = Math.max(1e-4, p * (1 - p));
+      const residual = labels[index] - p;
+      for (let j = 0; j < size; j += 1) {
+        hessian[j][size] += features[j] * residual;
+        for (let k = 0; k < size; k += 1) hessian[j][k] += weight * features[j] * features[k];
+      }
+    });
+    // Solve H · step = gradient with partial pivoting.
+    for (let column = 0; column < size; column += 1) {
+      let pivot = column;
+      for (let row = column + 1; row < size; row += 1) if (Math.abs(hessian[row][column]) > Math.abs(hessian[pivot][column])) pivot = row;
+      [hessian[column], hessian[pivot]] = [hessian[pivot], hessian[column]];
+      const divisor = hessian[column][column];
+      if (Math.abs(divisor) < 1e-12) continue;
+      for (let k = column; k <= size; k += 1) hessian[column][k] /= divisor;
+      for (let row = 0; row < size; row += 1) {
+        if (row === column) continue;
+        const factor = hessian[row][column];
+        for (let k = column; k <= size; k += 1) hessian[row][k] -= factor * hessian[column][k];
+      }
+    }
+    const step = hessian.map((row) => (Number.isFinite(row[size]) ? row[size] : 0));
+    beta = beta.map((value, j) => clamp(value + step[j], -20, 20));
+    if (step.every((value) => Math.abs(value) < 1e-6)) break;
+  }
+  return (row: number[]) => {
+    const features = standardize(row);
+    let logit = 0;
+    for (let j = 0; j < size; j += 1) logit += beta[j] * features[j];
+    return 1 / (1 + Math.exp(-clamp(logit, -30, 30)));
+  };
+}
+
+function dataQuality(sample: number, fresh: boolean): number {
+  return (0.85 + 0.15 * clamp((sample - RISE_FALL_MIN_TICKS) / 1_400, 0, 1)) * (fresh ? 1 : 0.85);
+}
+
+/** Full multi-duration analysis for one market. */
+export function analyzeRiseFallMarket(input: RiseFallMarketInput, onProgress?: ProgressCallback): RiseFallMarketAnalysis {
+  const started = Date.now();
+  const ticks = normalizeRiseFallTicks(input.ticks);
+  if (ticks.length < RISE_FALL_MIN_TICKS) throw new Error(`${input.name} has ${ticks.length} valid unique ticks; ${RISE_FALL_MIN_TICKS} are needed.`);
+  const prices = ticks.map((tick) => tick.quote);
+  const epochs = ticks.map((tick) => tick.epoch);
+  const n = ticks.length;
+  const horizons = resolveRiseFallHorizons(input.horizons);
+  // Layer 1 runs once per market: the analysis engines measure structure, then
+  // every duration's prediction engines and confirmation model build on it.
+  const state = analyzeQuoteState(prices, epochs);
+  const aiSynthesis = synthesizeRiseFallAi(prices);
+  onProgress?.(0.02, 'Replaying 12 indicator engines over recent history');
+
+  // 1. Replay every state engine at past origins (no look-ahead: each origin
+  //    sees only ticks up to and including itself).
+  const firstOrigin = Math.min(n - 1, INDICATOR_WINDOW + 20);
+  const origins: number[] = [];
+  for (let origin = firstOrigin; origin < n - 1; origin += REPLAY_STRIDE) origins.push(origin);
+  const markov = new DirectionMarkov(prices);
+  const replayScores: Array<Array<number | null>> = [];
+  origins.forEach((origin, index) => {
+    markov.advance(origin);
+    const windowTicks = ticks.slice(Math.max(0, origin - INDICATOR_WINDOW + 1), origin + 1);
+    const windowPrices = prices.slice(Math.max(0, origin - INDICATOR_WINDOW + 1), origin + 1);
+    replayScores.push(stateScores(analyzeRiseFall(windowTicks, 5), windowPrices, markov.score(origin)));
+    if (index % 60 === 0) onProgress?.(0.02 + 0.38 * (index / Math.max(1, origins.length)), 'Replaying 12 indicator engines over recent history');
+  });
+  markov.advance(n - 1);
+  const liveAnalysis = analyzeRiseFall(ticks.slice(-INDICATOR_WINDOW), 5);
+  const liveState = stateScores(liveAnalysis, prices.slice(-INDICATOR_WINDOW), markov.score(n - 1));
+  const quality = dataQuality(n, input.fresh);
+  const tickSpacingMs = averageTickSpacingMs(epochs);
+
+  const researchFactory = createForecastFactory(ticks, 'quote');
+  const researchAudits = new Map<string, ResearchAudit>();
+  // 2. Evaluate every duration.
+  const drafts = horizons.map((horizon, horizonIndex) => {
+    if (horizonIndex % 3 === 0) onProgress?.(0.4 + 0.55 * (horizonIndex / horizons.length), `Training the AI meta-model and backtesting ${formatRiseFallHorizon(horizon)}`);
+    const exits = exitIndices(epochs, horizon);
+    const outcome = (start: number) => exits[start] < 0 ? null : sign(prices[exits[start]] - prices[start]);
+    // Prefix sums of completed outcomes for the drift engine.
+    const risePrefix = new Int32Array(n + 1);
+    const fallPrefix = new Int32Array(n + 1);
+    for (let start = 0; start < n; start += 1) {
+      const result = outcome(start);
+      risePrefix[start + 1] = risePrefix[start] + (result === 1 ? 1 : 0);
+      fallPrefix[start + 1] = fallPrefix[start] + (result === -1 ? 1 : 0);
+    }
+    let lastCompleted = -1;
+    const driftAt = (origin: number) => {
+      // Starts whose exit tick is already known at this origin. Call this only
+      // in chronological order; random-access Forge replay uses the pure helper
+      // below so later rows cannot move the rolling cursor backwards.
+      while (lastCompleted + 1 < n && exits[lastCompleted + 1] >= 0 && exits[lastCompleted + 1] <= origin) lastCompleted += 1;
+      if (lastCompleted < 0) return null;
+      const from = Math.max(0, lastCompleted - DRIFT_WINDOW + 1);
+      const rise = risePrefix[lastCompleted + 1] - risePrefix[from];
+      const fall = fallPrefix[lastCompleted + 1] - fallPrefix[from];
+      return rise + fall >= 30 ? (rise - fall) / (rise + fall) : null;
+    };
+    const settledOutcomesAt = (origin: number): number[] => {
+      const settled: number[] = [];
+      // Search by start index, but admit a label only once its exit is visible
+      // at this origin. This is deliberately independent of `lastCompleted`.
+      for (let start = Math.min(origin, n - 1); start >= 0 && settled.length < DRIFT_WINDOW; start -= 1) {
+        if (exits[start] < 0 || exits[start] > origin) continue;
+        const label = outcome(start);
+        if (label !== null) settled.push(label);
+      }
+      return settled;
+    };
+    const causalDriftAt = (origin: number): number | null => {
+      const settled = settledOutcomesAt(origin);
+      const rise = settled.filter((label) => label === 1).length;
+      const fall = settled.filter((label) => label === -1).length;
+      return rise + fall >= 30 ? (rise - fall) / (rise + fall) : null;
+    };
+    const causalFlatRateAt = (origin: number): number => {
+      const settled = settledOutcomesAt(origin);
+      return settled.length ? settled.filter((label) => label === 0).length / settled.length : 0;
+    };
+    const rows = origins.map((origin, index) => ({
+      origin,
+      exit: exits[origin],
+      scores: [...replayScores[index], driftAt(origin)],
+      label: outcome(origin),
+    }));
+    const liveDrift = driftAt(n - 1);
+    const replaySpan = Math.max(1, n - firstOrigin - 1);
+    const trainingBoundary = firstOrigin + Math.floor(replaySpan * 0.5);
+    const holdoutBoundary = firstOrigin + Math.floor(replaySpan * 0.75);
+    const { training: setA, validation: setB, holdout: setC } = splitPurgedReplay(rows, trainingBoundary, holdoutBoundary);
+
+    // 3. AI meta-model: logistic regression on all replayed engine scores.
+    const features = (scores: Array<number | null>) => scores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => value ?? 0);
+    const trainRows = selectNonOverlappingOutcomes(setA).filter((row) => row.label !== 0);
+    const model = fitLogistic(trainRows.map((row) => features(row.scores)), trainRows.map((row) => (row.label === 1 ? 1 : 0)));
+    const aiScore = (scores: Array<number | null>) => (model ? 2 * (model(features(scores)) - 0.5) : null);
+    const withAi = (scores: Array<number | null>) => [...scores, aiScore(scores)];
+
+    // 4. Engine weights from independent directional outcomes in validation
+    // slice B, not the overlapping replay rows themselves.
+    const independentValidationRows = selectNonOverlappingOutcomes(setB);
+    const accuracy = RISE_FALL_ENGINES.map((_, engine) => {
+      let hits = 0;
+      let total = 0;
+      for (const row of independentValidationRows) {
+        const score = engine === AI_INDEX ? aiScore(row.scores) : row.scores[engine];
+        if (score === null || Math.abs(score) <= VOTE_THRESHOLD) continue;
+        total += 1;
+        if (sign(score) === row.label) hits += 1;
+      }
+      return { hits, total, rate: total >= 20 ? hits / total : null };
+    });
+    // Log-odds style weighting: coin-flip engines fade, consistently right ones
+    // lead. The measured rate is first shrunk toward 50% by its own sample size
+    // (James–Stein on a binomial proportion): a 64% hit rate on 30 outcomes is
+    // evidence, not proof, and treating it as proof is how a lucky engine takes
+    // over the vote. The level-reversion engine is the one exception, and not by
+    // fiat: when its unit-root test has fired it has already cleared a t-bar of
+    // 3.5 on 500+ ticks, so its reliability floor is set by that test rather
+    // than by thirty noisy replay rows.
+    const levelIndex = RISE_FALL_ENGINES.findIndex((engine) => engine.id === 'level-reversion');
+    const levelValidated = levelIndex >= 0 && state.levelReversion !== null && state.levelReversion.significant;
+    const factors = accuracy.map((item, index) => {
+      if (item.rate === null) return levelValidated && index === levelIndex ? 2.5 : 1;
+      const shrink = item.total / (item.total + ENGINE_ACCURACY_PRIOR_ROWS);
+      const shrunk = 0.5 + (item.rate - 0.5) * shrink;
+      const factor = clamp(Math.exp(8 * (shrunk - 0.5)), 0.3, 3);
+      return levelValidated && index === levelIndex ? Math.max(factor, 2.5) : factor;
+    });
+    const consensus = (scores: Array<number | null>) => {
+      const weights = familyBalancedWeights(RISE_FALL_ENGINES.map((engine, index) => ({
+        family: engine.family,
+        reliability: factors[index],
+        available: scores[index] !== null,
+      })));
+      const score = scores.reduce<number>((total, value, index) => total + (value === null ? 0 : weights[index] * value), 0);
+      return { score, weights };
+    };
+
+    // 5. Backtest the consensus rule on the later held-out slice C, separately
+    //    per direction: a live RISE is judged only by past RISE calls.
+    const fired = { rise: 0, fall: 0 };
+    const firedRows: { rise: typeof setC; fall: typeof setC } = { rise: [], fall: [] };
+    const independentHoldoutOrigins = new Set(selectNonOverlappingOutcomes(setC).map((row) => row.origin));
+    const wins = { rise: 0, fall: 0 };
+    const calibrationRows: QuoteConfirmationRow[] = [];
+    let flats = 0;
+    let aiLoss = 0;
+    let fairLoss = 0;
+    let aiRows = 0;
+    // Brier skill of the 15-engine consensus on its own, measured on the same
+    // independent holdout rows as the AI meta-model. Layer 6 needs this to
+    // price the engine vote separately from the meta-model that reweights it.
+    let engineLoss = 0;
+    let engineFairLoss = 0;
+    let engineRows = 0;
+    const aiErrors: number[] = [];
+    const fairErrors: number[] = [];
+    for (const row of setC) {
+      if (row.label === 0) flats += 1;
+      const scores = withAi(row.scores);
+      const score = consensus(scores).score;
+      if (score > 0.02) { fired.rise += 1; firedRows.rise.push(row); if (row.label === 1) wins.rise += 1; }
+      else if (score < -0.02) { fired.fall += 1; firedRows.fall.push(row); if (row.label === -1) wins.fall += 1; }
+      const ai = scores[AI_INDEX];
+      if (independentHoldoutOrigins.has(row.origin) && ai !== null && row.label !== 0) {
+        const p = 0.5 + ai / 2;
+        const y = row.label === 1 ? 1 : 0;
+        aiLoss += (p - y) ** 2;
+        fairLoss += 0.25;
+        aiErrors.push((p - y) ** 2);
+        fairErrors.push(0.25);
+        aiRows += 1;
+        calibrationRows.push({ ai: p, score, won: (row.label === 1 ? 1 : 0) as 0 | 1 });
+        // Engine-only consensus (the AI member is excluded from this score, so
+        // the two sources are not literally the same number).
+        const engineScore = consensus(row.scores).score;
+        const engineRise = clamp(0.5 + engineScore / 2, 0.01, 0.99);
+        engineLoss += (engineRise - y) ** 2;
+        engineFairLoss += (0.5 - y) ** 2;
+        engineRows += 1;
+      }
+    }
+    const flatRate = setC.length ? flats / setC.length : 0;
+    const fair = 0.5 * (1 - flatRate);
+    // Count non-overlapping outcome intervals directly from their observed exit
+    // ticks. This is more reliable than converting elapsed minutes with an
+    // average tick rate, especially when the feed has irregular gaps.
+    const independentOutcomes = countNonOverlappingOutcomes(setC);
+    const reliability = clamp(independentOutcomes / 40, 0, 1);
+    const rawSkill = aiRows >= 30 && fairLoss > 0 ? 1 - aiLoss / fairLoss : null;
+    const validationSkill = rawSkill === null ? null : rawSkill * reliability;
+    // The same paired test the calibration uses: is the meta-model's per-row
+    // Brier loss actually lower than the coin-flip baseline? Without this a
+    // thin positive skill on a random walk would be trusted at face value.
+    const validationZ = aiErrors.length >= 30 ? pairedImprovementZ(fairErrors, aiErrors) : null;
+    // The engine consensus gets its own out-of-sample skill, measured on the
+    // same independent rows as the AI meta-model so Layer 6 can price the two
+    // sources on the same scale without counting the same fit twice.
+    const engineSkill = engineRows >= 30 && engineFairLoss > 0 ? 1 - engineLoss / engineFairLoss : null;
+
+    // 6. Live vote, then layer 3 confirmation. Family budgets prevent
+    //    correlated indicators from outvoting independent evidence just
+    //    because that family has more models.
+    const liveScores = withAi([...liveState, liveDrift]);
+    const liveConsensus = consensus(liveScores);
+    const consensusScore = liveConsensus.score;
+    const consensusDirection = (consensusScore !== 0 ? sign(consensusScore) : sign(liveAnalysis.trendScore) || 1) as 1 | -1;
+    const aiProbability = liveScores[AI_INDEX] === null ? null : 0.5 + (liveScores[AI_INDEX] as number) / 2;
+    // The meta-model's probability goes to the confirmation layer at full size.
+    // It used to be pre-shrunk here by an ad-hoc trust factor, confirmation then
+    // shrank it again when it could not confirm it, and the precision layer
+    // shrinks a third time — three answers to the same question, multiplied
+    // together, which understated every real edge. Calibration now fixes the
+    // MAPPING, the precision layer decides how much of the edge survives its own
+    // measurement error and the selection, and the confidence score reports how
+    // much evidence stands behind it. The demonstrable-skill test survives as a
+    // wider error bar (see `standardError` below), not as a silent rescale.
+    const aiForConfirmation = aiProbability;
+    const buildVotes = (directionForVotes: 1 | -1): EngineVote[] => RISE_FALL_ENGINES.map((engine, index) => {
+      const score = liveScores[index];
+      const vote = score === null ? 'abstain' : Math.abs(score) <= VOTE_THRESHOLD ? 'neutral' : sign(score) === directionForVotes ? 'agree' : 'against';
+      const measured = accuracy[index];
+      return {
+        id: engine.id, label: engine.label, family: engine.family, vote,
+        value: score === null ? null : score * directionForVotes,
+        weight: score === null ? 0 : liveConsensus.weights[index],
+        skill: measured.rate === null ? null : measured.rate - 0.5,
+        note: measured.rate === null ? 'Too few validation outcomes to measure accuracy' : `Validation accuracy ${(measured.rate * 100).toFixed(1)}% on ${measured.total} outcomes`,
+      };
+    });
+    const provisionalVotes = buildVotes(consensusDirection);
+    const provisionalTally = tallyVotes(provisionalVotes);
+    const provisionalSide = consensusDirection > 0 ? 'rise' : 'fall';
+    const provisionalCalls = countNonOverlappingOutcomes(firedRows[provisionalSide]);
+    const provisionalBacktest = summarizeBacktest(wins[provisionalSide], fired[provisionalSide], fair, provisionalCalls);
+
+    // Confirmation: calibrate the AI probability on held-out, non-overlapping
+    // outcomes, try a logistic stack, and let the validated analysis prior move
+    // the result by at most two points. Direction is only overridden by a
+    // validated model that disagrees materially.
+    // The analysis prior is measured at a reference five-tick horizon; re-price
+    // it analytically at THIS duration's exit so a 1-minute contract is not
+    // told the odds of a 5-tick move. The reversion fit supplies the exact
+    // horizon term (it decays geometrically), the drift term is unchanged.
+    const horizonTicks = horizon.unit === 'ticks'
+      ? Math.max(1, Math.round(horizon.value))
+      : Math.max(1, Math.round((horizon.value * 60_000) / Math.max(1, tickSpacingMs)));
+    const reversionUp = levelReversionProbabilityUp(state.levelReversion, horizonTicks);
+    const horizonPriorRise = state.prior === null
+      ? null
+      : reversionUp === null
+        ? state.prior
+        : clamp((state.prior + reversionUp) / 2, 0.3, 0.7);
+    const confirmation = confirmRiseFall({
+      aiProbability: aiForConfirmation,
+      statePriorProbability: horizonPriorRise,
+      holdout: calibrationRows,
+      consensusDirection,
+      consensusScore,
+      state,
+      tally: provisionalTally,
+      backtest: provisionalBacktest,
+      validationSkill,
+      flatRate,
+      selectionPool: horizons.length * Math.max(1, input.marketsInScan ?? 1),
+    });
+    const directionSign = confirmation.direction;
+    const direction: RiseFallDirection = directionSign > 0 ? 'RISE' : 'FALL';
+    const votes = directionSign === consensusDirection ? provisionalVotes : buildVotes(directionSign);
+    const tally = directionSign === consensusDirection ? provisionalTally : tallyVotes(votes);
+    const aiForDirectionConditional = aiProbability === null ? null : directionSign > 0 ? aiProbability : 1 - aiProbability;
+    // The meta-model estimates direction conditional on a move; a binary
+    // Rise/Fall contract loses on a flat settle, so express its evidence on the
+    // same unconditional payout scale as `fair` and the published probability.
+    const aiForDirection = aiForDirectionConditional === null ? null : (1 - flatRate) * aiForDirectionConditional;
+    let winEstimate = confirmation.winProbability;
+    const side = direction === 'RISE' ? 'rise' : 'fall';
+    const independentCalls = countNonOverlappingOutcomes(firedRows[side]);
+    const backtest = summarizeBacktest(wins[side], fired[side], fair, independentCalls);
+    // If confirmation flipped the direction, keep the report's engine counts in
+    // step with the direction it actually chose.
+    if (directionSign !== consensusDirection) {
+      confirmation.engines = { agreeing: tally.agreeing, total: tally.total, weightedAgreement: tally.weightedAgreement };
+      confirmation.decisive = confirmation.decisive && backtest.sample >= 10;
+    }
+    const researchBank = researchFactory(horizon, setC.map((row) => row.origin));
+    const riseResearchAudit = auditForecastBank(researchBank, { family: 'rise-fall', direction: 'RISE' }, fair, horizons.length * Math.max(1, input.marketsInScan ?? 1));
+    const fallResearchAudit = auditForecastBank(researchBank, { family: 'rise-fall', direction: 'FALL' }, fair, horizons.length * Math.max(1, input.marketsInScan ?? 1));
+    const audit = directionSign > 0 ? riseResearchAudit : fallResearchAudit;
+    const researchReplayByDirection = {
+      rise: new Map((riseResearchAudit.replay ?? []).map((row) => [row.origin, row.probability] as [number, number])),
+      fall: new Map((fallResearchAudit.replay ?? []).map((row) => [row.origin, row.probability] as [number, number])),
+    };
+    researchAudits.set(`${horizon.unit}:${horizon.value}`, audit);
+    const researchDecision = decideResearch({ audit, fresh: input.fresh, probability: winEstimate, fair,
+      confirmed: confirmation.decisive, independentSample: backtest.effectiveSample });
+    if (researchDecision.edgeMultiplier < 1) {
+      winEstimate = fair + researchDecision.edgeMultiplier * (winEstimate - fair);
+      confirmation.probability = winEstimate;
+      confirmation.winProbability = winEstimate;
+      const conditionalWin = winEstimate / Math.max(0.001, 1 - flatRate);
+      confirmation.probabilityRise = directionSign > 0 ? conditionalWin : 1 - conditionalWin;
+      confirmation.edgePts = 100 * (winEstimate - fair);
+      confirmation.status = 'contradicted';
+      confirmation.decisive = false;
+      confirmation.reasons.push('The independent research ensemble validated a contrary estimate; the master guard reduced the remaining edge by 75%.');
+    }
+    // Layer 4: the research library stops being a side report. Its validated
+    // ensemble is folded into the win estimate every tool ranks, confirms,
+    // plans an entry for and trades — a validated ensemble can raise it, an
+    // unvalidated one can only pull it down.
+    const fused = fuseResearch({ audit, probability: winEstimate, fair });
+    const research = fused.fusion;
+    if (research.weight > 0) {
+      winEstimate = fused.probability;
+      confirmation.probability = winEstimate;
+      confirmation.winProbability = winEstimate;
+      const conditionalWin = winEstimate / Math.max(0.001, 1 - flatRate);
+      confirmation.probabilityRise = directionSign > 0 ? conditionalWin : 1 - conditionalWin;
+      confirmation.edgePts = 100 * (winEstimate - fair);
+      confirmation.reasons.push(`Analysis, prediction and entry: ${research.note}`);
+    }
+    // Report the latest 500 completed outcomes (not 500 start ticks) so the
+    // historical panel uses comparable sample sizes across every duration.
+    const recent = { sample: 0, rise: 0, fall: 0, unchanged: 0 };
+    for (let start = n - 1; start >= 0 && recent.sample < DRIFT_WINDOW; start -= 1) {
+      const result = outcome(start);
+      if (result === null) continue;
+      recent.sample += 1;
+      if (result > 0) recent.rise += 1; else if (result < 0) recent.fall += 1; else recent.unchanged += 1;
+    }
+    const holdoutPoints: CalibrationPoint[] = calibrationRows.map((row) => ({ probability: row.ai, won: row.won }));
+    const measuredError = forecastStandardError(holdoutPoints);
+    // Two parts, as in the digit panel: the sampling variance of the estimate
+    // plus the model's measured miscalibration out of fold. The AI meta-model
+    // can be tightly clustered and still badly wrong, and pricing only the
+    // variance is what let an overconfident estimate publish a large edge.
+    // The miscalibration term is only charged to a model that has NOT proven
+    // itself out of sample. A model that beat the no-edge rate on held-out rows
+    // with a paired z above 2 has already demonstrated that its numbers track
+    // the frequencies, so charging it a miscalibration penalty measured on the
+    // same rows would double-count — and, with a thin holdout, penalise the
+    // honest model for the noise in its own reliability bins.
+    const skillProven = (validationZ ?? 0) >= 2 && (validationSkill ?? 0) > 0;
+    const miscalibration = skillProven ? null : confirmation.calibration.residualMiscalibration;
+    const standardError = measuredError === null && miscalibration === null
+      ? null
+      : Math.hypot(
+        (measuredError ?? 0) / clamp(edgeShrinkage(validationSkill, validationZ), 0.3, 1),
+        miscalibration ?? 0,
+      );
+    // Layer 7: the embedded neural direction model for THIS horizon. It sees
+    // the same prices and settles on the same exit tick as the indicator
+    // engines, so its forecast is directly comparable to the win estimate.
+    const neuralModel = trainQuoteNeuralModel(prices, exits, { horizonTicks });
+    const neuralProbability = neuralModel
+      ? (1 - flatRate) * (directionSign > 0 ? neuralModel.probabilityUp : 1 - neuralModel.probabilityUp)
+      : null;
+    const neuralReplayByOrigin = new Map<number, number>(neuralModel?.replay.map((row) => [
+      row.origin,
+      row.probabilityUp,
+    ]) ?? []);
+    // -------------------------------------------------------------------------
+    // Layer 8 — forge ONE model out of everything measured for this duration.
+    //
+    // Every replay row carries the engines' scores, the meta-model's view, the
+    // drift baseline and the market's own causal price structure. Each row is
+    // oriented toward the direction that rule actually called, so the model
+    // learns "when this analysis fires, how often is it right?" rather than a
+    // direction-agnostic average. The forged probability is then read for the
+    // live direction.
+    // -------------------------------------------------------------------------
+    const forgeRows = setC
+      // Keep flat settlements: a binary contract loses those, so omitting them
+      // would teach Forge a friendlier payout distribution than Deriv settles.
+      .map((row) => {
+        const rowScores = withAi(row.scores);
+        const consensusRow = consensus(rowScores);
+        const orientation = sign(consensusRow.score);
+        if (orientation === 0 || row.label === null) return null;
+        const rowFlatRate = causalFlatRateAt(row.origin);
+        const rowContractScale = 1 - rowFlatRate;
+        const rowFair = 0.5 * rowContractScale;
+        const drift = causalDriftAt(row.origin);
+        const priorRise = drift === null ? 0.5 : clamp(0.5 + drift / 2, 0.3, 0.7);
+        const aiScore = rowScores[AI_INDEX];
+        const aiProbability = aiScore === null
+          ? null
+          : clamp(rowContractScale * (0.5 + (aiScore * orientation) / 2), 0.001, 0.999);
+        const researchProbability = (orientation > 0 ? researchReplayByDirection.rise : researchReplayByDirection.fall).get(row.origin) ?? null;
+        const neuralConditional = neuralReplayByOrigin.get(row.origin);
+        const neuralProbabilityAtOrigin = neuralConditional === undefined
+          ? null
+          : clamp(rowContractScale * (orientation > 0 ? neuralConditional : 1 - neuralConditional), 0.001, 0.999);
+        const teacher = clamp(rowContractScale * (0.5 + (consensusRow.score * orientation) / 2), 0.001, 0.999);
+        const settledEarlierHoldout = setC.filter((candidate) => candidate.exit <= row.origin).length;
+        const rowValues = rowScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => value === null
+          ? null
+          : clamp(rowContractScale * (0.5 + (value * orientation) / 2), 0.001, 0.999));
+        return {
+          features: quoteForgeVector({
+            prices,
+            origin: row.origin,
+            teacherProbability: teacher,
+            engineValues: rowValues,
+            engineWeights: consensusRow.weights.slice(0, STATE_ENGINE_COUNT + 1),
+            baselineProbability: rowFair,
+            priorProbability: rowContractScale * (orientation > 0 ? priorRise : 1 - priorRise),
+            aiProbability,
+            researchProbability,
+            neuralProbability: neuralProbabilityAtOrigin,
+            fair: rowFair,
+            agreeing: rowScores.filter((value) => value !== null && value * orientation > VOTE_THRESHOLD).length,
+            against: rowScores.filter((value) => value !== null && value * orientation < -VOTE_THRESHOLD).length,
+            voting: rowScores.filter((value) => value !== null).length,
+            sample: setA.length + setB.length + settledEarlierHoldout,
+            horizonTicks,
+            priorSkill: null,
+            tickSpacingMs: state.tickSpacingMs,
+            dataQuality: quality,
+            symbol: input.symbol,
+            name: input.name,
+          }),
+          label: (row.label === orientation ? 1 : 0) as 0 | 1,
+          teacher,
+          origin: row.origin,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+    const liveDriftNow = causalDriftAt(n - 1);
+    const livePriorRise = liveDriftNow === null ? 0.5 : clamp(0.5 + liveDriftNow / 2, 0.3, 0.7);
+    const liveContractScale = 1 - flatRate;
+    const liveForgeTeacher = clamp(liveContractScale * (0.5 + (consensusScore * directionSign) / 2), 0.001, 0.999);
+    const forgeLive = quoteForgeVector({
+      prices,
+      origin: n - 1,
+      teacherProbability: liveForgeTeacher,
+      engineValues: liveScores.slice(0, STATE_ENGINE_COUNT + 1).map((value) => (value === null ? null : clamp(liveContractScale * (0.5 + (value * directionSign) / 2), 0.001, 0.999))),
+      engineWeights: liveConsensus.weights.slice(0, STATE_ENGINE_COUNT + 1),
+      baselineProbability: fair,
+      priorProbability: liveContractScale * (directionSign > 0 ? livePriorRise : 1 - livePriorRise),
+      aiProbability: aiForDirection,
+      researchProbability: audit.probability,
+      neuralProbability,
+      fair,
+      agreeing: tally.agreeing,
+      against: tally.against,
+      voting: tally.voting,
+      sample: setA.length + setB.length + setC.length,
+      horizonTicks,
+      priorSkill: null,
+      tickSpacingMs: state.tickSpacingMs,
+      dataQuality: quality,
+      symbol: input.symbol,
+      name: input.name,
+    });
+    const forge = forgeRows.length >= 160
+      ? forgeCandidate({
+        family: 'rise-fall',
+        label: `${direction} · ${formatRiseFallHorizon(horizon)}`,
+        fair,
+        rows: forgeRows,
+        liveFeatures: forgeLive,
+        liveTeacherProbability: liveForgeTeacher,
+        dataQuality: quality,
+        horizonTicks,
+        contextSummary: describeQuoteContext(quoteContextAt(prices, n - 1)),
+        inputs: [
+          `${RISE_FALL_ENGINES.length}-engine directional votes and measured weights`,
+          'chronologically trained AI meta-model probability on the selected direction',
+          'independent research forecast replayed at the same untouched holdout origins',
+          'horizon-matched neural holdout probabilities, scaled for binary flat-loss outcomes',
+          'causal drift, fair-rate, sample-maturity and edge-to-noise calculations',
+          'Deriv binary-contract payout and entry rules from the knowledge syllabus; actual live payout is checked separately',
+        ],
+        teachers: [
+          'Engine-plus-AI directional consensus converted to the no-flat contract probability',
+        ],
+        symbol: input.symbol,
+        name: input.name,
+        selectionPool: horizons.length * Math.max(1, input.marketsInScan ?? 1),
+      })
+      : null;
+    // Evidence sources for Layer 6, each expressed as P(this direction) with
+    // its own measured out-of-sample skill and independent sample.
+    const engineRiseLive = clamp(0.5 + consensusScore / 2, 0.01, 0.99);
+    const sources: MasterSourceInput[] = [
+      {
+        id: 'engines',
+        label: `${RISE_FALL_ENGINES.length}-engine consensus`,
+        probability: directionSign > 0 ? engineRiseLive : 1 - engineRiseLive,
+        skill: engineSkill,
+        sample: engineRows,
+        detail: `Skill-weighted vote of ${RISE_FALL_ENGINES.length} state, drift and meta engines, scored on ${engineRows} independent holdout outcomes.`,
+      },
+      {
+        id: 'ai',
+        label: 'AI meta-model',
+        probability: aiForDirection,
+        skill: validationSkill,
+        sample: aiRows,
+        familyCredit: 0.6,
+        detail: `Logistic meta-model fitted on the other engines' replayed scores (${aiRows} held-out outcomes).`,
+      },
+      {
+        id: 'analysis',
+        label: 'Analysis engines',
+        probability: horizonPriorRise === null ? null : directionSign > 0 ? horizonPriorRise : 1 - horizonPriorRise,
+        skill: state.priorBacktest.skill,
+        sample: state.priorBacktest.sample,
+        detail: state.prior === null
+          ? 'The analysis prior did not survive its own backtest, so it has no vote.'
+          : `${state.regime} conditions, predictability ${(100 * state.predictability).toFixed(0)}%.`,
+      },
+      {
+        id: 'research',
+        label: 'Analysis, prediction and entry',
+        probability: research.probability,
+        skill: research.skill,
+        sample: research.sample,
+        familyCredit: 0.8,
+        detail: research.note,
+      },
+      {
+        id: 'neural',
+        label: neuralModel ? `Neural model · ${neuralModel.model.parameters} params` : 'Neural model',
+        probability: neuralProbability,
+        // Zero weight unless the network beat the coin flip out of sample.
+        skill: neuralModel?.metrics.validated ? neuralModel.metrics.brierSkill : null,
+        sample: neuralModel?.metrics.holdoutRows ?? 0,
+        familyCredit: 0.6,
+        detail: neuralModel
+          ? `${neuralModel.model.id} ${neuralModel.model.version}, trained locally for this horizon: ${neuralModel.note}`
+          : 'The embedded neural model could not be fitted for this horizon.',
+      },
+      ...(forge ? [{
+        id: 'forge' as const,
+        label: `Forged model · ${forge.card.parameters} params`,
+        probability: forge.probability,
+        skill: forge.validated ? forge.skill : null,
+        sample: forge.sample,
+        familyCredit: 0.55,
+        detail: `${forge.card.id} ${forge.card.version} against ${forge.card.knowledgeVersion} knowledge: ${forge.note}`,
+      }] : []),
+    ];
+    return {
+      horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, consensusDirection,
+      votes, tally, backtest, validationSkill, validationZ, flatRate, fair, research, researchDecision,
+      confirmation, sources,
+      entryInputs: { prices, epochs, rows: firedRows[side].map((row) => ({ origin: row.origin, exit: row.exit })), exits, liveAverageMove: liveAnalysis.averageTickMove14 },
+      neuralModel, neuralProbability, neuralWeight: neuralModel?.weight ?? 0, neuralMetrics: neuralModel?.metrics ?? null, forge,
+      horizonQuality: quality * clamp(0.6 + 0.4 * reliability, 0.6, 1),
+      winEstimate, standardError, reliabilityReportValue: reliabilityReport(holdoutPoints), holdoutPoints,
+      recent, exits,
+    };
+  });
+
+  // ---------------------------------------------------------------------------
+  // PHASE 2 — precision: winner's-curse correction across every duration.
+  // ---------------------------------------------------------------------------
+  const estimates = drafts.map((draft) => ({ edge: draft.winEstimate - draft.fair, standardError: draft.standardError ?? 0.05 }));
+  // With fewer than three durations τ² is unidentifiable; the specified prior is
+  // only used when the analysis layer independently validated an edge on this
+  // market, so a thin scan of a structureless market still collapses to fair.
+  const precisionFit = shrinkEdges(estimates, { independentEdge: state.prior !== null });
+
+  const finalize = (draft: (typeof drafts)[number], shrinkFactor: number, selectionDebit: number): RiseFallHorizonSignal => {
+    const { horizon, directionSign, direction, consensusScore, aiProbability, aiForDirection, votes, tally, backtest,
+      validationSkill, validationZ, flatRate, fair, research, researchDecision, confirmation, entryInputs, horizonQuality,
+      standardError, holdoutPoints, recent, sources } = draft;
+    let winEstimate = clamp(fair + shrinkFactor * (draft.winEstimate - fair) - selectionDebit, 0.001, 0.999);
+    // Layer 7: the embedded neural model's forecast is folded into the
+    // published win estimate under the same rule as the research library — a
+    // weighted second opinion, with zero weight until it validates.
+    const neuralFused = fuseNeural({
+      probability: winEstimate,
+      fair,
+      neuralProbability: draft.neuralProbability,
+      weight: draft.neuralWeight,
+      metrics: draft.neuralMetrics,
+    });
+    const neuralFusion = neuralFused.fusion;
+    if (neuralFusion.weight > 0) winEstimate = clamp(neuralFused.probability, 0.001, 0.999);
+    // Layer 8 speaks last: the forged model saw the engines, the AI layers, the
+    // calculations and the market knowledge at once. It can confirm the call,
+    // trim it, or veto the entry — it never places an order.
+    const forgeFused = applyForge({ published: winEstimate, fair, model: draft.forge, standardError });
+    const forgeFusion = forgeFused.fusion;
+    winEstimate = clamp(forgeFused.probability, 0.001, 0.999);
+    if (forgeFusion.decision !== 'inert' || forgeFusion.stance !== 'neutral') {
+      confirmation.reasons.push(`Forged model: ${forgeFusion.note}`);
+    }
+    if (Math.abs(winEstimate - draft.winEstimate) > 1e-9) {
+      confirmation.probability = winEstimate;
+      confirmation.winProbability = winEstimate;
+      const conditionalWin = winEstimate / Math.max(0.001, 1 - flatRate);
+      confirmation.probabilityRise = directionSign > 0 ? conditionalWin : 1 - conditionalWin;
+      confirmation.edgePts = 100 * (winEstimate - fair);
+    }
+    const interval = probabilityInterval(holdoutPoints, winEstimate);
+    const { confidence: baseConfidence, breakdown } = confidenceScore({
+      weightedAgreement: tally.weightedAgreement,
+      edgeRatio: (winEstimate - fair) / 0.5,
+      backtest,
+      validationSkill,
+      dataQuality: horizonQuality,
+      selectionPool: horizons.length * Math.max(1, input.marketsInScan ?? 1),
+      confirmation: {
+        status: confirmation.status,
+        calibrationSkill: confirmation.calibration.skill,
+        stateAgreement: confirmation.state.agreement,
+        statePredictability: state.predictability,
+        adjustmentPts: confirmation.edgePts - confirmation.edgePtsBefore,
+      },
+      research: researchEvidence(research),
+      neural: neuralEvidence(neuralFusion),
+      forge: forgeEvidence(forgeFusion),
+      precision: { edge: winEstimate - fair, standardError, intervalHalfWidth: interval ? (interval.upper - interval.lower) / 2 : null },
+    });
+    const confidence = Math.max(1, baseConfidence - researchDecision.confidencePenalty);
+    // 7. Entry timing: replay the same fired signals for the price level and
+    //    the wait a trade should use, instead of buying at the signal tick.
+    //    The analysis's own numbers (engine agreement, the AI probability for
+    //    this direction, the confirmed win estimate against the no-edge rate)
+    //    travel with the entry as its evidence.
+    const entry = analyzeQuoteEntry({
+      prices: entryInputs.prices,
+      epochs: entryInputs.epochs,
+      rows: entryInputs.rows,
+      direction: directionSign > 0 ? 1 : -1,
+      averageMove: entryInputs.liveAverageMove,
+      horizonTicks:
+        horizon.unit === 'ticks'
+          ? horizon.value
+          : Math.round((horizon.value * 60_000) / tickSpacingMs),
+      exits: entryInputs.exits,
+      fairRate: fair,
+      signal: {
+        source: 'rise-fall',
+        agreeing: tally.agreeing,
+        total: tally.total,
+        probability: winEstimate,
+        aiProbability: aiForDirection,
+        forge: forgeFusion,
+        confirmation: { status: confirmation.status, edgePts: confirmation.edgePts, decisive: confirmation.decisive },
+      },
+    });
+    // A label is a claim: without a material edge the call is WEAK, however
+    // much confidence the evidence score accumulated.
+    const labelled = strengthWithConfirmation(strengthOf(confidence, tally, backtest), confirmation);
+    const strength = winEstimate - fair < Math.max(0.005, 0.01 * fair) ? 'WEAK' : labelled;
+    // -----------------------------------------------------------------------
+    // Layer 6 — one decision out of engines + AI + calculations + entry.
+    // The validity curve holds the direction fixed and measures what a delayed
+    // entry would have settled as: the same contract, expiring later.
+    // -----------------------------------------------------------------------
+    const master = buildMasterDecision({
+      family: 'rise-fall',
+      label: direction,
+      fair,
+      publishedProbability: winEstimate,
+      publishedStandardError: standardError,
+      publishedConfidence: confidence,
+      strength,
+      sources,
+      validity: {
+        rows: entryInputs.rows,
+        // Delay the ENTRY by `lag` ticks and keep the holding period fixed. The
+        // old version compared the delayed exit against the original origin,
+        // which in a trending market measures the drift accumulated before the
+        // entry rather than the edge a late entrant actually gets. That made a
+        // trend look valid for every delay. Entering at origin+lag and exiting
+        // at exit+lag is the contract a delayed entry really buys.
+        outcome: (row, lag) => {
+          const entryIndex = row.origin + lag;
+          const exitIndex = row.exit + lag;
+          if (exitIndex >= entryInputs.prices.length || entryIndex >= entryInputs.prices.length) return null;
+          const move = entryInputs.prices[exitIndex] - entryInputs.prices[entryIndex];
+          if (move === 0) return 0;
+          return sign(move) === directionSign ? 1 : 0;
+        },
+        fair,
+        maxLag: horizon.unit === 'ticks' ? clamp(horizon.value + 4, 4, 12) : 8,
+      },
+      tickSpacingMs: state.tickSpacingMs,
+      entry,
+      dataQuality: horizonQuality,
+      marketMeasured: state.regime !== 'insufficient',
+      marketRandom: state.regime === 'random',
+      structureStable: state.regime !== 'insufficient',
+      confirmed: confirmation.decisive,
+      // A validated forge that measured this call against itself is what stops
+      // the master certifying the entry.
+      contradicted: confirmation.status === 'contradicted' || forgeVetoed(forgeFusion),
+    });
+    // The bot may not wait longer than the edge was measured to last.
+    const tradeableEntry: EntryPlan = { ...entry, validForTicks: master.validity.ticks };
+    return {
+      horizon, direction, consensusScore, aiProbability, winEstimate, fairProbability: fair, votes, tally, backtest, validationSkill, validationZ,
+      confidence, breakdown, strength, historical: recent, entry: tradeableEntry, master, researchDecision, research, neural: neuralFusion, forge: forgeFusion,
+      precision: {
+        standardError,
+        interval,
+        reliability: draft.reliabilityReportValue,
+        shrinkFactor,
+        selectionDebitPts: selectionDebit * 100,
+        edgeZ: standardError !== null && standardError > 1e-9 ? (winEstimate - fair) / standardError : null,
+      },
+      deep: { confirmation },
+    };
+  };
+
+  // Layer 6 ranks first, exactly as in the digit panel: a decisive, currently
+  // tradeable edge outranks a higher evidence score the master cannot certify.
+  const rank = (list: RiseFallHorizonSignal[]) =>
+    [...list].sort((a, b) =>
+      b.master.priority - a.master.priority
+      || b.confidence - a.confidence
+      || b.master.validity.ticks - a.master.validity.ticks
+      || b.tally.weightedAgreement - a.tally.weightedAgreement
+      || (a.horizon.unit === b.horizon.unit ? a.horizon.value - b.horizon.value : a.horizon.unit === 'ticks' ? -1 : 1));
+  const provisional = rank(drafts.map((draft, index) => finalize(draft, precisionFit.factors[index], 0)));
+  const leader = provisional[0];
+  const leaderIndex = drafts.findIndex((draft) => draft.horizon === leader.horizon);
+  const leaderIsStandout = precisionFit.standouts.some((standout) => standout.index === leaderIndex);
+  const leaderStandardError = leaderIndex >= 0 ? drafts[leaderIndex].standardError : null;
+  // As in the digit panel: a winner that cleared the Šidák-corrected standout
+  // bar has already paid for being chosen from a pool, so the winner's-curse
+  // debit is only charged to a lead that is not individually significant.
+  const selectionDebit = !leaderIsStandout && leaderStandardError !== null
+    ? Math.max(0, Math.min(Math.abs(leader.winEstimate - leader.fairProbability) * 0.35, precisionFit.selectionBiasUnits * leaderStandardError))
+    : 0;
+  const signals = selectionDebit > 1e-9
+    ? rank([finalize(drafts[leaderIndex], precisionFit.factors[leaderIndex], selectionDebit), ...provisional.filter((signal) => signal.horizon !== leader.horizon)])
+    : provisional;
+  const precisionSummary = {
+    ...precisionFit.heterogeneity,
+    candidates: horizons.length,
+    tau: precisionFit.tau,
+    standoutThreshold: precisionFit.standoutThreshold,
+    standouts: precisionFit.standouts.length,
+    heterogeneous: precisionFit.trimmedHeterogeneity.heterogeneous,
+  };
+  const notes: string[] = [];
+  if (!input.fresh) notes.push('Live tick freshness was not confirmed; confidence is reduced.');
+  if (n < 1_500) notes.push(`Only ${n} ticks of history; longer minute durations have little validation data.`);
+  notes.push(`Analysis engines: ${state.regime} — ${state.summary}`);
+  notes.push(`AI synthesis: ${aiSynthesis.verdict}. ${aiSynthesis.consensus.detail}`);
+  const neuralForBest = drafts.find((draft) => draft.horizon.unit === signals[0]?.horizon.unit && draft.horizon.value === signals[0]?.horizon.value)?.neuralModel ?? null;
+  const neuralSummary = neuralForBest ? (({ replay: _replay, ...summary }) => summary)(neuralForBest) : null;
+  notes.push(neuralForBest
+    ? `Neural model: ${neuralForBest.note}`
+    : 'Neural model: the price history is too short to fit the embedded network; every other layer ran unchanged.');
+  if ((signals[0]?.neural.weight ?? 0) > 0) notes.push(`Neural fusion: ${signals[0].neural.note}`);
+  const forgeForBest = drafts.find((draft) => draft.horizon.unit === signals[0]?.horizon.unit && draft.horizon.value === signals[0]?.horizon.value)?.forge ?? null;
+  notes.push(forgeForBest
+    ? `Forged model: ${forgeForBest.note}`
+    : 'Forged model: this duration did not have enough replayed rows to forge a model; every other layer ran unchanged.');
+  if (signals[0] && signals[0].forge.decision !== 'inert') notes.push(`Forge fusion: ${signals[0].forge.note}`);
+  const best = signals[0];
+  if (best?.deep.confirmation.status === 'contradicted') notes.push('Confirmation layer: the analysis engines oppose the best duration; treat it as a contradicted call, not a verified edge.');
+  else if (best?.deep.confirmation.status === 'confirmed') notes.push(`Confirmation layer: ${best.deep.confirmation.reasons.at(-1)}`);
+  onProgress?.(0.98, 'Explaining all 300 registered engines for the selected duration');
+  const digitByEpoch = new Map((input.digitTicks ?? []).map((tick) => [tick.epoch, tick.digit]));
+  const engineLab = buildEngineLabReport({
+    symbol: input.symbol, family: 'rise-fall', ticks: ticks.map((tick) => ({ ...tick, digit: digitByEpoch.get(tick.epoch) })),
+    contract: { family: 'rise-fall', direction: best.direction }, horizon: best.horizon, fresh: input.fresh,
+    audit: researchAudits.get(`${best.horizon.unit}:${best.horizon.value}`)!, decision: best.researchDecision, fusion: best.research,
+    legacy: { probability: best.winEstimate, fair: best.fairProbability, confidence: best.confidence, votes: best.votes,
+      confirmationStatus: best.deep.confirmation.status, confirmed: best.deep.confirmation.decisive, entry: best.entry },
+    candidates: signals.map((signal) => ({ label: `${signal.direction} · ${formatRiseFallHorizon(signal.horizon)}`, probability: signal.winEstimate, fair: signal.fairProbability, confidence: signal.confidence })),
+    settlements: input.settlements, settlementCurrency: input.settlementCurrency,
+  });
+  if (best.research.weight > 0) notes.push(`Analysis, prediction and entry: ${best.research.note}`);
+  notes.push(`Master decision: ${best.master.headline}. ${best.master.entry.instruction}`);
+  if (!best.researchDecision.eligible) notes.push(`Analysis, prediction and entry advisory (the bot still trades this signal): ${best.researchDecision.reasons.join(' ')}`);
+  onProgress?.(1, 'Signal and 300-engine audit ready');
+  return {
+    kind: 'rise-fall', symbol: input.symbol, name: input.name, sample: n,
+    lastQuote: prices.at(-1) ?? null, lastEpoch: epochs.at(-1) ?? null, fresh: input.fresh, dataQuality: quality,
+    engineCount: RISE_FALL_ENGINES.length, best: signals[0], horizons: signals, analysis: liveAnalysis,
+    state, aiSynthesis, neural: neuralSummary, forge: forgeForBest, analysisEngineCount: state.engines.length, engineLab,
+    precisionFit: precisionSummary, notes, durationMs: Date.now() - started,
+  };
+}

@@ -1,0 +1,746 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Step Index 4-Tick Hedge — a small, professional Rise/Fall hedge for Step Index 100.
+
+  THE CONTRACT
+  Step Index 100 (stpRNG), four ticks, strict Rise/Fall (CALL/PUT). A four-tick
+  window on a fixed-step market can finish back at the entry, and a strict
+  Rise/Fall loses that case, so the bot does not pretend the shape is free. It
+  reads the same four-tick horizon the contract settles on, and it prices the
+  decision with the AI pricing engine rather than a moving average.
+
+  THE ANALYSIS
+  The AI pricing block reads the tick list and projects the four-tick settlement
+  distribution. It returns the model's side, its confidence and a ready flag.
+  The bot also prints the market DNA (entropy, Hurst, run structure) and the
+  execution clock on the first tick, and it prints the engine's own reason on
+  every tenth held tick, so a skip is explained with figures rather than a
+  shrug. No martingale, no grid, no averaging down: the stake is fixed and the
+  hedge is a fixed fraction of it.
+
+  THE HEDGE
+  The main leg is the model's side. The cover is the opposite side at
+  "hedge ratio" of the main stake, bought through two hedge blocks because a
+  hedge block names its contracts in fields. The cover is deliberately partial:
+  it caps the swing without turning every cycle into a guaranteed loss. The
+  pair is risk-checked at its combined exposure before either order is sent.
+
+  THE CADENCE
+  "ai cadence" is the hard entry clock: if the model has not found a qualifying
+  read within that many seconds, the bot takes the model's side anyway, so the
+  strategy keeps a measured pace instead of going quiet. At 20 seconds that is
+  at least three entries a minute; when the model is ready sooner, the bot can
+  trade every cycle. The money gates are never bypassed: the cadence only
+  stands aside the quality gate, not the risk gate.
+
+  THE BRAKES
+  "take profit" and "stop loss" measure the session against the equity it
+  started with. The risk block also enforces "max stake", "stake percent" and
+  the remaining loss budget before every entry. When a brake is reached the bot
+  stops opening new cycles; open contracts still settle.
+
+  HONESTY
+  The probabilities are conditional frequencies measured on this market's own
+  ticks, not calibrated odds. A four-tick strict Rise/Fall is a losing shape
+  unless the read is real, and no staking plan changes that. Run it on demo
+  first, keep the base stake small, and read the journal before risking more.
+-->
+<xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">
+  <variables>
+    <variable type="" id="vbase_stake">base stake</variable>
+    <variable type="" id="vstake">stake</variable>
+    <variable type="" id="vhedge_ratio">hedge ratio</variable>
+    <variable type="" id="vhedge_legs">hedge legs</variable>
+    <variable type="" id="vtake_profit">take profit</variable>
+    <variable type="" id="vstop_loss">stop loss</variable>
+    <variable type="" id="vmax_stake">max stake</variable>
+    <variable type="" id="vstake_percent">stake percent</variable>
+    <variable type="" id="vai_duration">ai duration</variable>
+    <variable type="" id="vai_min_confidence">ai min confidence</variable>
+    <variable type="" id="vai_cadence">ai cadence</variable>
+    <variable type="" id="vai_baseline">ai baseline</variable>
+    <variable type="" id="vbaseline_profit">baseline profit</variable>
+    <variable type="" id="vai_decision">ai decision</variable>
+    <variable type="" id="vai_ready">ai ready</variable>
+    <variable type="" id="vai_side">ai side</variable>
+    <variable type="" id="vai_confidence">ai confidence</variable>
+    <variable type="" id="vtick_count">tick count</variable>
+  </variables>
+
+  <block type="trade_definition" id="si4h_trade_def" x="0" y="0">
+    <statement name="TRADE_OPTIONS">
+      <block type="trade_definition_market" id="si4h_market">
+        <field name="MARKET_LIST">volidx</field>
+        <field name="SUBMARKET_LIST">step_index</field>
+        <field name="SYMBOL_LIST">stpRNG</field>
+        <next>
+          <block type="trade_definition_tradetype" id="si4h_tradetype">
+            <field name="TRADETYPECAT_LIST">callput</field>
+            <field name="TRADETYPE_LIST">callput</field>
+            <next>
+              <block type="trade_definition_contracttype" id="si4h_contracttype">
+                <field name="TYPE_LIST">both</field>
+                <next>
+                  <block type="trade_definition_candleinterval" id="si4h_candle">
+                    <field name="CANDLEINTERVAL_LIST">60</field>
+                    <next>
+                      <block type="trade_definition_restartbuysell" id="si4h_restart_buysell">
+                        <field name="TIME_MACHINE_ENABLED">FALSE</field>
+                        <next>
+                          <block type="trade_definition_restartonerror" id="si4h_restart_err">
+                            <field name="RESTARTONERROR">FALSE</field>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+
+    <statement name="INITIALIZATION">
+      <block type="variables_set" id="si4h_init_01">
+        <field name="VAR" id="vbase_stake">base stake</field>
+        <value name="VALUE">
+          <block type="math_number" id="si4h_num_01">
+            <field name="NUM">1</field>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="si4h_init_02">
+            <field name="VAR" id="vstake">stake</field>
+            <value name="VALUE">
+              <block type="variables_get" id="si4h_get_base_01">
+                <field name="VAR" id="vbase_stake">base stake</field>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="si4h_init_03">
+                <field name="VAR" id="vhedge_ratio">hedge ratio</field>
+                <value name="VALUE">
+                  <block type="math_number" id="si4h_num_02">
+                    <field name="NUM">0.35</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="si4h_init_04">
+                    <field name="VAR" id="vhedge_legs">hedge legs</field>
+                    <value name="VALUE">
+                      <block type="math_arithmetic" id="si4h_math_legs">
+                        <field name="OP">ADD</field>
+                        <value name="A">
+                          <block type="math_number" id="si4h_num_03">
+                            <field name="NUM">1</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="si4h_get_ratio_01">
+                            <field name="VAR" id="vhedge_ratio">hedge ratio</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="si4h_init_05">
+                        <field name="VAR" id="vtake_profit">take profit</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="si4h_num_04">
+                            <field name="NUM">10</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="si4h_init_06">
+                            <field name="VAR" id="vstop_loss">stop loss</field>
+                            <value name="VALUE">
+                              <block type="math_number" id="si4h_num_05">
+                                <field name="NUM">10</field>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="si4h_init_07">
+                                <field name="VAR" id="vmax_stake">max stake</field>
+                                <value name="VALUE">
+                                  <block type="math_number" id="si4h_num_06">
+                                    <field name="NUM">2</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="si4h_init_08">
+                                    <field name="VAR" id="vstake_percent">stake percent</field>
+                                    <value name="VALUE">
+                                      <block type="math_number" id="si4h_num_07">
+                                        <field name="NUM">5</field>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="variables_set" id="si4h_init_09">
+                                        <field name="VAR" id="vai_duration">ai duration</field>
+                                        <value name="VALUE">
+                                          <block type="math_number" id="si4h_num_08">
+                                            <field name="NUM">4</field>
+                                          </block>
+                                        </value>
+                                        <next>
+                                          <block type="variables_set" id="si4h_init_10">
+                                            <field name="VAR" id="vai_min_confidence">ai min confidence</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="si4h_num_09">
+                                                <field name="NUM">50</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="si4h_init_11">
+                                                <field name="VAR" id="vai_cadence">ai cadence</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="si4h_num_10">
+                                                    <field name="NUM">20</field>
+                                                  </block>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="si4h_init_12">
+                                                    <field name="VAR" id="vai_baseline">ai baseline</field>
+                                                    <value name="VALUE">
+                                                      <block type="x_session_profit" id="si4h_session_01" />
+                                                    </value>
+                                                    <next>
+                                                      <block type="variables_set" id="si4h_init_13">
+                                                        <field name="VAR" id="vtick_count">tick count</field>
+                                                        <value name="VALUE">
+                                                          <block type="math_number" id="si4h_num_11">
+                                                            <field name="NUM">0</field>
+                                                          </block>
+                                                        </value>
+                                                        <next>
+                                                          <block type="variables_set" id="si4h_init_14">
+                                                            <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                                                            <value name="VALUE">
+                                                              <block type="math_number" id="si4h_num_12">
+                                                                <field name="NUM">0</field>
+                                                              </block>
+                                                            </value>
+                                                            <next>
+                                                              <block type="variables_set" id="si4h_init_15">
+                                                                <field name="VAR" id="vai_ready">ai ready</field>
+                                                                <value name="VALUE">
+                                                                  <block type="math_number" id="si4h_num_13">
+                                                                    <field name="NUM">0</field>
+                                                                  </block>
+                                                                </value>
+                                                                <next>
+                                                                  <block type="variables_set" id="si4h_init_16">
+                                                                    <field name="VAR" id="vai_side">ai side</field>
+                                                                    <value name="VALUE">
+                                                                      <block type="math_number" id="si4h_num_14">
+                                                                        <field name="NUM">0</field>
+                                                                      </block>
+                                                                    </value>
+                                                                    <next>
+                                                                      <block type="variables_set" id="si4h_init_17">
+                                                                        <field name="VAR" id="vai_confidence">ai confidence</field>
+                                                                        <value name="VALUE">
+                                                                          <block type="math_number" id="si4h_num_15">
+                                                                            <field name="NUM">0</field>
+                                                                          </block>
+                                                                        </value>
+                                                                      </block>
+                                                                    </next>
+                                                                  </block>
+                                                                </next>
+                                                              </block>
+                                                            </next>
+                                                          </block>
+                                                        </next>
+                                                      </block>
+                                                    </next>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </next>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+
+    <statement name="SUBMARKET">
+      <block type="trade_definition_tradeoptions" id="si4h_trade_opts">
+        <field name="DURATIONTYPE_LIST">t</field>
+        <field name="CURRENCY_LIST">USD</field>
+        <field name="AMOUNT_LIMITS"></field>
+        <value name="DURATION">
+          <block type="variables_get" id="si4h_get_duration_01">
+            <field name="VAR" id="vai_duration">ai duration</field>
+          </block>
+        </value>
+        <value name="AMOUNT">
+          <block type="variables_get" id="si4h_get_stake_01">
+            <field name="VAR" id="vstake">stake</field>
+          </block>
+        </value>
+      </block>
+    </statement>
+  </block>
+
+  <block type="tick_analysis" id="si4h_tick_analysis" x="0" y="1500">
+    <statement name="TICKANALYSIS_STACK">
+      <block type="variables_set" id="si4h_set_tick_count">
+        <field name="VAR" id="vtick_count">tick count</field>
+        <value name="VALUE">
+          <block type="math_arithmetic" id="si4h_math_tick_add">
+            <field name="OP">ADD</field>
+            <value name="A">
+              <block type="variables_get" id="si4h_get_tick_count">
+                <field name="VAR" id="vtick_count">tick count</field>
+              </block>
+            </value>
+            <value name="B">
+              <block type="math_number" id="si4h_num_16">
+                <field name="NUM">1</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="controls_if" id="si4h_first_tick_if">
+            <value name="IF0">
+              <block type="logic_compare" id="si4h_cmp_first_tick">
+                <field name="OP">EQ</field>
+                <value name="A">
+                  <block type="variables_get" id="si4h_get_tick_count_cmp">
+                    <field name="VAR" id="vtick_count">tick count</field>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="math_number" id="si4h_num_17">
+                    <field name="NUM">1</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="notify" id="si4h_dna_notify">
+                <field name="NOTIFICATION_TYPE">info</field>
+                <field name="NOTIFICATION_SOUND">silent</field>
+                <value name="MESSAGE">
+                  <block type="x_price_dna" id="si4h_dna" />
+                </value>
+                <next>
+                  <block type="notify" id="si4h_clock_notify">
+                    <field name="NOTIFICATION_TYPE">info</field>
+                    <field name="NOTIFICATION_SOUND">silent</field>
+                    <value name="MESSAGE">
+                      <block type="x_price_clock" id="si4h_clock" />
+                    </value>
+                  </block>
+                </next>
+              </block>
+            </statement>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="before_purchase" id="si4h_before" x="0" y="2200">
+    <statement name="BEFOREPURCHASE_STACK">
+      <block type="variables_set" id="si4h_set_decision">
+        <field name="VAR" id="vai_decision">ai decision</field>
+        <value name="VALUE">
+          <block type="x_price_decision" id="si4h_decision">
+            <field name="MODE">rise-fall</field>
+            <field name="REQUIRE">always</field>
+            <value name="LIST">
+              <block type="ticks" id="si4h_ticks" />
+            </value>
+            <value name="HORIZON">
+              <block type="variables_get" id="si4h_get_duration_02">
+                <field name="VAR" id="vai_duration">ai duration</field>
+              </block>
+            </value>
+            <value name="THRESHOLD">
+              <block type="math_number" id="si4h_num_18">
+                <field name="NUM">0</field>
+              </block>
+            </value>
+            <value name="SLIP">
+              <block type="math_number" id="si4h_num_19">
+                <field name="NUM">1</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="si4h_set_ready">
+            <field name="VAR" id="vai_ready">ai ready</field>
+            <value name="VALUE">
+              <block type="x_price_decision_part" id="si4h_ready_part">
+                <field name="PART">ready</field>
+                <value name="PLAN">
+                  <block type="variables_get" id="si4h_get_dec_ready">
+                    <field name="VAR" id="vai_decision">ai decision</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="si4h_set_side">
+                <field name="VAR" id="vai_side">ai side</field>
+                <value name="VALUE">
+                  <block type="x_price_decision_part" id="si4h_side_part">
+                    <field name="PART">side</field>
+                    <value name="PLAN">
+                      <block type="variables_get" id="si4h_get_dec_side">
+                        <field name="VAR" id="vai_decision">ai decision</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="si4h_set_conf">
+                    <field name="VAR" id="vai_confidence">ai confidence</field>
+                    <value name="VALUE">
+                      <block type="x_price_decision_part" id="si4h_conf_part">
+                        <field name="PART">confidence</field>
+                        <value name="PLAN">
+                          <block type="variables_get" id="si4h_get_dec_conf">
+                            <field name="VAR" id="vai_decision">ai decision</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="controls_if" id="si4h_entry_if">
+                        <mutation else="1"></mutation>
+                        <value name="IF0">
+                          <block type="logic_operation" id="si4h_entry_and">
+                            <field name="OP">AND</field>
+                            <value name="A">
+                              <block type="logic_operation" id="si4h_entry_or">
+                                <field name="OP">OR</field>
+                                <value name="A">
+                                  <block type="logic_operation" id="si4h_quality_and">
+                                    <field name="OP">AND</field>
+                                    <value name="A">
+                                      <block type="logic_compare" id="si4h_cmp_ready">
+                                        <field name="OP">EQ</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="si4h_get_ready">
+                                            <field name="VAR" id="vai_ready">ai ready</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="si4h_num_20">
+                                            <field name="NUM">1</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="logic_compare" id="si4h_cmp_conf">
+                                        <field name="OP">GTE</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="si4h_get_conf">
+                                            <field name="VAR" id="vai_confidence">ai confidence</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="variables_get" id="si4h_get_min_conf">
+                                            <field name="VAR" id="vai_min_confidence">ai min confidence</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="logic_operation" id="si4h_cadence_and">
+                                    <field name="OP">AND</field>
+                                    <value name="A">
+                                      <block type="logic_compare" id="si4h_cmp_cadence">
+                                        <field name="OP">EQ</field>
+                                        <value name="A">
+                                          <block type="x_trade_due" id="si4h_trade_due">
+                                            <value name="SECONDS">
+                                              <block type="variables_get" id="si4h_get_cadence">
+                                                <field name="VAR" id="vai_cadence">ai cadence</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="si4h_num_21">
+                                            <field name="NUM">1</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="logic_compare" id="si4h_cmp_warmup">
+                                        <field name="OP">GTE</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="si4h_get_tick_count_warmup">
+                                            <field name="VAR" id="vtick_count">tick count</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="si4h_num_27">
+                                            <field name="NUM">4</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="x_price_risk" id="si4h_risk">
+                                <value name="STAKE">
+                                  <block type="variables_get" id="si4h_get_stake_02">
+                                    <field name="VAR" id="vstake">stake</field>
+                                  </block>
+                                </value>
+                                <value name="LEGS">
+                                  <block type="variables_get" id="si4h_get_legs">
+                                    <field name="VAR" id="vhedge_legs">hedge legs</field>
+                                  </block>
+                                </value>
+                                <value name="BASELINE">
+                                  <block type="variables_get" id="si4h_get_baseline">
+                                    <field name="VAR" id="vai_baseline">ai baseline</field>
+                                  </block>
+                                </value>
+                                <value name="LOSS">
+                                  <block type="variables_get" id="si4h_get_loss">
+                                    <field name="VAR" id="vstop_loss">stop loss</field>
+                                  </block>
+                                </value>
+                                <value name="TARGET">
+                                  <block type="variables_get" id="si4h_get_target">
+                                    <field name="VAR" id="vtake_profit">take profit</field>
+                                  </block>
+                                </value>
+                                <value name="PERCENT">
+                                  <block type="variables_get" id="si4h_get_percent">
+                                    <field name="VAR" id="vstake_percent">stake percent</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <statement name="DO0">
+                          <block type="notify" id="si4h_entry_notify">
+                            <field name="NOTIFICATION_TYPE">success</field>
+                            <field name="NOTIFICATION_SOUND">silent</field>
+                            <value name="MESSAGE">
+                              <block type="text" id="si4h_entry_text">
+                                <field name="TEXT">Step Index 4-tick hedge — model side selected, opposite-side cover placed.</field>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="controls_if" id="si4h_side_if">
+                                <mutation else="1"></mutation>
+                                <value name="IF0">
+                                  <block type="logic_compare" id="si4h_cmp_side">
+                                    <field name="OP">EQ</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="si4h_get_side">
+                                        <field name="VAR" id="vai_side">ai side</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="math_number" id="si4h_num_22">
+                                        <field name="NUM">1</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <statement name="DO0">
+                                  <block type="hedge_purchase" id="si4h_buy_call_hedge">
+                                    <field name="PURCHASE_LIST">CALL</field>
+                                    <field name="HEDGE_LIST">PUT</field>
+                                    <value name="HEDGE_STAKE">
+                                      <block type="variables_get" id="si4h_get_ratio_02">
+                                        <field name="VAR" id="vhedge_ratio">hedge ratio</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </statement>
+                                <statement name="ELSE">
+                                  <block type="hedge_purchase" id="si4h_buy_put_hedge">
+                                    <field name="PURCHASE_LIST">PUT</field>
+                                    <field name="HEDGE_LIST">CALL</field>
+                                    <value name="HEDGE_STAKE">
+                                      <block type="variables_get" id="si4h_get_ratio_03">
+                                        <field name="VAR" id="vhedge_ratio">hedge ratio</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </statement>
+                              </block>
+                            </next>
+                          </block>
+                        </statement>
+                        <statement name="ELSE">
+                          <block type="controls_if" id="si4h_skip_if">
+                            <value name="IF0">
+                              <block type="logic_compare" id="si4h_cmp_skip">
+                                <field name="OP">EQ</field>
+                                <value name="A">
+                                  <block type="math_modulo" id="si4h_skip_mod">
+                                    <value name="DIVIDEND">
+                                      <block type="variables_get" id="si4h_get_tick_count_skip">
+                                        <field name="VAR" id="vtick_count">tick count</field>
+                                      </block>
+                                    </value>
+                                    <value name="DIVISOR">
+                                      <block type="math_number" id="si4h_num_23">
+                                        <field name="NUM">10</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="si4h_num_24">
+                                    <field name="NUM">0</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <statement name="DO0">
+                              <block type="notify" id="si4h_reason_notify">
+                                <field name="NOTIFICATION_TYPE">info</field>
+                                <field name="NOTIFICATION_SOUND">silent</field>
+                                <value name="MESSAGE">
+                                  <block type="x_price_reason" id="si4h_reason" />
+                                </value>
+                              </block>
+                            </statement>
+                            <next>
+                              <block type="x_wait_ticks" id="si4h_wait">
+                                <value name="COUNT">
+                                  <block type="math_number" id="si4h_num_25">
+                                    <field name="NUM">1</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </next>
+                          </block>
+                        </statement>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="after_purchase" id="si4h_after" x="0" y="2900">
+    <statement name="AFTERPURCHASE_STACK">
+      <block type="variables_set" id="si4h_set_baseline_profit">
+        <field name="VAR" id="vbaseline_profit">baseline profit</field>
+        <value name="VALUE">
+          <block type="math_arithmetic" id="si4h_math_baseline">
+            <field name="OP">MINUS</field>
+            <value name="A">
+              <block type="x_session_profit" id="si4h_session_02" />
+            </value>
+            <value name="B">
+              <block type="variables_get" id="si4h_get_baseline_after">
+                <field name="VAR" id="vai_baseline">ai baseline</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="controls_if" id="si4h_brake_if">
+            <mutation else="1"></mutation>
+            <value name="IF0">
+              <block type="logic_operation" id="si4h_brake_or">
+                <field name="OP">OR</field>
+                <value name="A">
+                  <block type="logic_compare" id="si4h_cmp_tp">
+                    <field name="OP">GTE</field>
+                    <value name="A">
+                      <block type="variables_get" id="si4h_get_bp_tp">
+                        <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="variables_get" id="si4h_get_tp">
+                        <field name="VAR" id="vtake_profit">take profit</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="logic_compare" id="si4h_cmp_sl">
+                    <field name="OP">LTE</field>
+                    <value name="A">
+                      <block type="variables_get" id="si4h_get_bp_sl">
+                        <field name="VAR" id="vbaseline_profit">baseline profit</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_arithmetic" id="si4h_math_neg_sl">
+                        <field name="OP">MULTIPLY</field>
+                        <value name="A">
+                          <block type="math_number" id="si4h_num_26">
+                            <field name="NUM">-1</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="si4h_get_sl">
+                            <field name="VAR" id="vstop_loss">stop loss</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="notify" id="si4h_brake_notify">
+                <field name="NOTIFICATION_TYPE">warn</field>
+                <field name="NOTIFICATION_SOUND">silent</field>
+                <value name="MESSAGE">
+                  <block type="text" id="si4h_brake_text">
+                    <field name="TEXT">Step Index 4-tick hedge session brake reached — take profit or stop loss. The bot stops opening new cycles; open contracts have settled.</field>
+                  </block>
+                </value>
+              </block>
+            </statement>
+            <statement name="ELSE">
+              <block type="trade_again" id="si4h_trade_again" />
+            </statement>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+</xml>

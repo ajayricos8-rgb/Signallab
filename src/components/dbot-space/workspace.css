@@ -1,0 +1,283 @@
+/* DBot Space shell.
+ *
+ * The workspace owns the viewport: one full-bleed frame, plus three host
+ * surfaces over it — the docked Signal Lab panel (under the workspace tab bar),
+ * the transient notice toast and the PAT dialog. */
+
+.ws-shell {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: hsl(var(--background));
+}
+
+.ws-frame-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+}
+
+.ws-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+/* ---- docked host panel (Trade history / Settings) ---------------------- */
+.ws-host-panel {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: hsl(var(--background));
+  border-top: 1px solid hsl(var(--border));
+  box-shadow: 0 -18px 40px -32px rgba(2, 6, 23, 0.8);
+}
+
+.ws-host-panel__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+}
+
+.ws-host-panel__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground));
+}
+
+.ws-host-panel__meta {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+}
+
+.ws-host-panel__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-inline-start: auto;
+  padding: 5px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+}
+
+.ws-host-panel__back:hover {
+  border-color: hsl(var(--primary) / 0.5);
+  color: hsl(var(--primary));
+}
+
+.ws-host-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ---- boot overlay ------------------------------------------------------ */
+.ws-frame-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #fff;
+  color: #334155;
+}
+
+.ws-frame-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 420px;
+  text-align: center;
+}
+
+.ws-frame-card h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ws-frame-card p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.ws-frame-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ws-frame-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid #e2e8f0;
+  border-top-color: #0f172a;
+  animation: ws-spin 0.9s linear infinite;
+}
+
+@keyframes ws-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- notice toast ------------------------------------------------------ */
+.ws-toast {
+  position: absolute;
+  inset-inline-start: 16px;
+  /* clears the floating theme control in the app shell */
+  bottom: 62px;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(520px, calc(100% - 32px));
+  padding: 9px 11px;
+  border: 1px solid hsl(var(--primary) / 0.3);
+  border-radius: 12px;
+  background: hsl(var(--card));
+  box-shadow: 0 18px 40px -28px rgba(2, 6, 23, 0.85);
+  font-size: 12px;
+  line-height: 1.5;
+  color: hsl(var(--foreground));
+}
+
+.ws-toast__mark {
+  color: hsl(var(--primary));
+  margin-top: 1px;
+  flex: none;
+}
+
+.ws-toast__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-toast__close {
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+.ws-toast__close:hover {
+  color: hsl(var(--foreground));
+}
+
+/* ---- PAT dialog -------------------------------------------------------- */
+.ws-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.ws-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(2px);
+  border: 0;
+}
+
+.ws-modal__card {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: min(86dvh, 720px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 16px;
+  background: hsl(var(--background));
+  box-shadow: 0 32px 80px -40px rgba(2, 6, 23, 0.9);
+}
+
+.ws-modal__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.ws-modal__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  flex: none;
+}
+
+.ws-modal__head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.ws-modal__head p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+
+.ws-modal__close {
+  margin-inline-start: auto;
+  padding: 4px;
+  border-radius: 8px;
+  color: hsl(var(--muted-foreground));
+  flex: none;
+}
+
+.ws-modal__close:hover {
+  color: hsl(var(--foreground));
+}
+
+.ws-modal__note {
+  margin: 10px 0 0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: hsl(var(--muted-foreground));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-frame-spinner {
+    animation: none;
+  }
+}

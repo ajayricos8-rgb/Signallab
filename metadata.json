@@ -1,0 +1,8 @@
+{
+  "name": "Deriv Signal Lab",
+  "description": "Quant signal intelligence, algorithmic strategy lab, and visual bot automation for Deriv markets.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
