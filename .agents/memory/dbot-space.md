@@ -38,6 +38,14 @@ when `window.parent !== window` and unregisters leftovers). It used to register 
 `/`, i.e. it could take over the host app and serve a stale bundle — the classic "the workspace
 bundle did not load correctly".
 
+A second production failure looked like a broken bundle on the deployed Worker: `Unexpected Application
+Error! Loading chunk 776 failed` over the workspace. The file was live (checked with a direct fetch), so
+this is **deploy skew** — a page loaded just before a deploy keeps the older runtime and asks for a chunk
+that only exists in the other version. `services/chunk-recovery.ts` now turns that into one bounded
+reload (20 s window, cleared on a successful mount, so a real 404 falls through to the UI), `App.tsx`
+gives the router a `RouteError` element instead of React Router's raw stack trace, and the shell drops
+`ready` when the frame reports `workspace-error` so the overlay and its Reload button come back.
+
 The account link is real now too: `services/signallab-account.ts` handles `connect-account` (open the
 one-time `wss` URL from `createBotSocket()`, adopt it as `api_base.api`, shape auth data from the
 bridge's account snapshot, one balance subscription, symbols with an 8 s deadline and a fallback to

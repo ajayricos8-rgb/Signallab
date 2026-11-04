@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-const [pkg, app, panel, engine, dbotApp, dbotContent, dbotRoot, builder, host] = await Promise.all([
+const [pkg, app, panel, engine, dbotApp, dbotContent, dbotRoot, builder, host, recovery, routeError] = await Promise.all([
   read('../../../package.json'),
   read('../../../src/App.tsx'),
   read('../../../src/components/dbot-space/workspace-panel.tsx'),
@@ -14,6 +14,8 @@ const [pkg, app, panel, engine, dbotApp, dbotContent, dbotRoot, builder, host] =
   read('../../../vendor/deriv-bot/src/app/app-root.tsx'),
   read('../../../vendor/deriv-bot/src/main.tsx'),
   read('../../../vendor/deriv-bot/src/services/signallab-host.ts'),
+  read('../../../vendor/deriv-bot/src/services/chunk-recovery.ts'),
+  read('../../../vendor/deriv-bot/src/app/route-error.tsx'),
 ]);
 
 test('DBot builds before dev/production and is the initial host tab', () => {
@@ -29,10 +31,26 @@ test('the workspace is a sub-application route, not the host root', () => {
   // matched `/`, nothing mounted, `ready` never arrived and the shell reported
   // "DBot did not become ready". Guard both halves of that fix.
   assert.match(dbotApp, /createBrowserRouter\(/);
-  assert.match(dbotApp, /\{ basename \}/);
+  assert.match(dbotApp, /\{ basename, errorElement: <RouteError \/> \}/);
   assert.ok(dbotApp.includes('index.html'), 'the document name is stripped before the router runs');
   assert.ok(dbotApp.includes('history.replaceState'), 'the pathname is normalised to the sub-application base');
   assert.match(dbotApp, /RouterProvider router=\{router\}/);
+});
+
+test('a stale chunk recovers instead of ending on a stack trace', () => {
+  // A page loaded just before a deploy asks for a chunk that only exists in the
+  // other version; webpack raises ChunkLoadError and React Router used to print
+  // it over the whole workspace. One bounded reload fixes it.
+  assert.match(recovery, /ChunkLoadError/);
+  assert.match(recovery, /recoverFromChunkFailure/);
+  assert.match(recovery, /RETRY_WINDOW_MS/);
+  assert.match(builder, /installChunkRecovery\(\)/);
+  assert.match(host, /clearChunkRecoveryGuard\(\)/);
+  assert.match(routeError, /useRouteError/);
+  assert.match(routeError, /Reload workspace/);
+  // A frame that fails after `ready` must lose the ready flag, so the shell's
+  // overlay and its Reload button come back.
+  assert.match(engine, /case 'workspace-error': \{[\s\S]{0,400}?setReady\(false\)/);
 });
 
 test('the iframe shows startup progress and DBot announces readiness after boot', () => {

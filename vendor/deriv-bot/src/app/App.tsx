@@ -3,6 +3,7 @@ import { lazy, Suspense } from 'react';
 import React from 'react';
 import { createBrowserRouter, createRoutesFromElements, Route, RouterProvider } from 'react-router-dom';
 import ChunkLoader from '@/components/loader/chunk-loader';
+import RouteError from './route-error';
 import RoutePromptDialog from '@/components/route-prompt-dialog';
 import { crypto_currencies_display_order, fiat_currencies_display_order } from '@/components/shared';
 import { useOfflineDetection } from '@/hooks/useOfflineDetection';
@@ -87,7 +88,7 @@ const router = createBrowserRouter(
             <Route path='callback' element={<CallbackPage />} />
         </Route>
     ),
-    { basename }
+    { basename, errorElement: <RouteError /> }
 );
 
 function App() {

@@ -10,6 +10,7 @@
 // `ready` still means "the builder is on screen": it is only announced from
 // `markWorkspaceMounted()`, and a `hello` that arrives earlier is simply not
 // answered — the shell asks again.
+import { clearChunkRecoveryGuard } from './chunk-recovery';
 import { connectSignalLabBridge } from './signallab-feed';
 
 /**
@@ -41,6 +42,8 @@ function post(message: Record<string, unknown>) {
 export function markWorkspaceMounted() {
   const first_paint = !mounted;
   mounted = true;
+  // The workspace booted: a later chunk failure deserves a fresh retry.
+  clearChunkRecoveryGuard();
   post({ type: 'ready' });
   // Ask for Signal Lab's ticks at the same moment the blocks become usable.
   if (first_paint) post({ type: 'feed-subscribe' });

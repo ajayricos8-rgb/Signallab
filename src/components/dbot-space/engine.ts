@@ -270,6 +270,11 @@ export function useWorkspaceEngine({
 
       switch (message.type) {
         case 'workspace-error': {
+          // A frame that failed after saying `ready` is still broken: drop the
+          // ready flag so the panel overlay and its Reload button cover it,
+          // and let the hello retry start the boot timeout again.
+          runtime.current.ready = false;
+          setReady(false);
           setWorkspaceError(message.message);
           setNotice(`DBot could not finish loading: ${message.message} Reload the workspace to try again.`);
           return;
