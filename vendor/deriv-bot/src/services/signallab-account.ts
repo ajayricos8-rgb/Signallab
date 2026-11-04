@@ -191,10 +191,10 @@ function adoptSocket(next: WebSocket, account: LinkedAccount, accountType: 'demo
  * socket cannot answer `active_symbols` in time: the Trade definition block
  * needs a market list, and Signal Lab's markets are the ones it can price.
  */
-function seedSymbolsFromBridge() {
-  if (api_base.has_active_symbols) return;
+export function seedSymbolsFromBridge(): boolean {
+  if (api_base.has_active_symbols) return true;
   const markets = getSignalLabMarkets();
-  if (!markets.length) return;
+  if (!markets.length) return false;
   api_base.active_symbols = markets.map((market) => ({
     symbol: market.symbol,
     display_name: market.name,
@@ -217,7 +217,7 @@ function seedSymbolsFromBridge() {
   try {
     const active_symbols = (ApiHelpers.instance as unknown as { active_symbols?: Record<string, unknown> })
       ?.active_symbols;
-    if (!active_symbols) return;
+    if (!active_symbols) return api_base.has_active_symbols;
     active_symbols.active_symbols = api_base.active_symbols;
     active_symbols.is_initialised = true;
     (active_symbols.init_promise as { resolve?: () => void } | undefined)?.resolve?.();
@@ -225,6 +225,7 @@ function seedSymbolsFromBridge() {
   } catch {
     // The builder recomputes its own list when it mounts.
   }
+  return api_base.has_active_symbols;
 }
 
 async function loadSymbols() {

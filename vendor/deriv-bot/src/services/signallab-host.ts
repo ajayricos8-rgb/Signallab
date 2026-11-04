@@ -11,13 +11,15 @@
 // `markWorkspaceMounted()`, and a `hello` that arrives earlier is simply not
 // answered — the shell asks again.
 import { clearChunkRecoveryGuard } from './chunk-recovery';
+// The account link is part of this bundle on purpose. It used to be a dynamic
+// import, which made "link the Signal Lab account" depend on a second chunk
+// arriving after the workspace had already painted; whenever that chunk was
+// stale or missing the shell showed "The workspace could not load the account
+// link" over a perfectly usable builder. Its API-layer imports are the same
+// modules the app graph already pulls in, so making it static costs nothing at
+// boot and removes a failure mode entirely.
+import { connectSignalLabAccount, disconnectSignalLabAccount, seedSymbolsFromBridge } from './signallab-account';
 import { connectSignalLabBridge } from './signallab-feed';
-
-/**
- * The account link pulls in DBot's whole API layer, so it is loaded on demand:
- * boot must never wait on it, and the handshake module stays testable on its own.
- */
-const loadAccountModule = () => import('./signallab-account');
 
 /** Tag on every message the shell posts into the frame. */
 const HOST_SOURCE = 'signal-lab';
@@ -101,18 +103,16 @@ function handleAccountConnect(message: HostMessage) {
     return;
   }
   const account_type = message.accountType === 'real' || message.accountType === 'demo' ? message.accountType : null;
-  void loadAccountModule()
-    .then((account) => account.connectSignalLabAccount({
-      grantId: grant_id,
-      accountId: account_id,
-      url,
-      accountType: account_type,
-    }))
-    .catch(() => post({
-      type: 'account-error',
-      grantId: grant_id,
-      message: 'The workspace could not load the account link. Reload the workspace to try again.',
-    }));
+  void connectSignalLabAccount({
+    grantId: grant_id,
+    accountId: account_id,
+    url,
+    accountType: account_type,
+  }).catch(() => post({
+    type: 'account-error',
+    grantId: grant_id,
+    message: 'The workspace could not link this account. Reload the workspace to try again.',
+  }));
 }
 
 function handleHostMessage(event: MessageEvent) {
@@ -133,15 +133,37 @@ function handleHostMessage(event: MessageEvent) {
       handleAccountConnect(message);
       return;
     case 'disconnect-account':
-      void loadAccountModule()
-        .then((account) => account.disconnectSignalLabAccount())
-        .catch(() => undefined);
+      disconnectSignalLabAccount();
       return;
     default:
       // `load-bot`, `quick-strategy` and `clear-analysis` have no handler here
       // yet; ignoring them keeps the workspace usable instead of throwing.
       return;
   }
+}
+
+/**
+ * Hand the Trade definition block the markets Signal Lab already prices.
+ *
+ * Without a symbol list every market dropdown in the builder reads "Not
+ * available" and the workspace looks broken even though it painted fine. The
+ * list comes from the shared tick bridge, so it does not need an account link or
+ * Deriv's socket — but the bridge fills up over the first seconds after boot, so
+ * this retries briefly instead of giving up on the first empty snapshot.
+ */
+function seedWorkspaceSymbols() {
+  let attempts = 0;
+  const attempt = () => {
+    attempts += 1;
+    let seeded = false;
+    try {
+      seeded = seedSymbolsFromBridge();
+    } catch {
+      seeded = false;
+    }
+    if (!seeded && attempts < 30) window.setTimeout(attempt, 1_000);
+  };
+  window.setTimeout(attempt, 0);
 }
 
 /**
@@ -167,4 +189,5 @@ export function installSignalLabHost() {
   // Ticks are the workspace's only data source: subscribe before the builder
   // mounts so Signal Lab blocks have a cache to read on their first run.
   connectSignalLabBridge();
+  seedWorkspaceSymbols();
 }

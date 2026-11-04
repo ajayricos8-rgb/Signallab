@@ -38,6 +38,19 @@ test('webpack, ESM and script-tag chunk failures are all recognised', () => {
   assert.equal(recovery.isChunkLoadFailure('boom'), false);
 });
 
+test('a blocked third-party script is never mistaken for a chunk', () => {
+  // Ad blockers routinely kill analytics and survey tags. Treating one of those
+  // as a stale chunk reloaded the workspace over and over, which is what made a
+  // perfectly loaded builder restart itself.
+  const script_event = (src) => ({ target: { tagName: 'SCRIPT', src } });
+  assert.equal(recovery.isScriptChunkFailure(script_event('https://www.googletagmanager.com/gtm.js?id=GTM-123')), false);
+  assert.equal(recovery.isScriptChunkFailure(script_event('https://survey.survicate.com/workspaces/x/web_surveys.js')), false);
+  assert.equal(recovery.isScriptChunkFailure(script_event('https://cdn.example.com/anything.js')), false);
+  assert.equal(recovery.isScriptChunkFailure(script_event('https://signal-lab.test/dbot/static/js/async/776.99ea02af.js')), true);
+  assert.equal(recovery.isScriptChunkFailure(script_event('/dbot/static/js/index.abc123.js')), true);
+  assert.equal(recovery.isScriptChunkFailure(script_event('')), false);
+});
+
 test('a chunk failure reloads the frame exactly once inside the retry window', () => {
   store.clear();
   reloads = 0;

@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import ProgressBarTracker from '@/components/shared_ui/progress-bar-tracker';
 import Text from '@/components/shared_ui/text';
 import { useStore } from '@/hooks/useStore';
+import { isEmbeddedWorkspace } from '@/services/embed';
 import { getSetting } from '@/utils/settings';
 import { LegacyClose1pxIcon } from '@deriv/quill-icons/Legacy';
 import { localize } from '@deriv-com/translations';
@@ -47,7 +48,7 @@ const OnboardingTourMobile = observer(() => {
     React.useEffect(() => {
         const checkTokenForTour = () => {
             const token = getSetting('onboard_tour_token');
-            if (!token && active_tab === 0) {
+            if (!isEmbeddedWorkspace() && !token && active_tab === 0) {
                 setActiveTour('onboarding');
             }
         };
