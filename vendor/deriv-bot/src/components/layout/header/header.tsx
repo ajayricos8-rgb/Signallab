@@ -10,6 +10,9 @@ import { useFirebaseCountriesConfig } from '@/hooks/firebase/useFirebaseCountrie
 import { useApiBase } from '@/hooks/useApiBase';
 import { useStore } from '@/hooks/useStore';
 import useTMB from '@/hooks/useTMB';
+import { isEmbeddedWorkspace } from '@/services/embed';
+import { requestHostLogin } from '@/services/signallab-host';
+import SignalLabAccountBar from '@/components/signal-lab-account-bar/signal-lab-account-bar';
 import { clearAuthData, handleOidcAuthFailure } from '@/utils/auth-utils';
 import { StandaloneCircleUserRegularIcon } from '@deriv/quill-icons/Standalone';
 import { requestOidcAuthentication } from '@deriv-com/auth-client';
@@ -138,6 +141,14 @@ const AppHeader = observer(({ isAuthenticating }: TAppHeaderProps) => {
                     <Button
                         tertiary
                         onClick={async () => {
+                            // Inside Signal Lab the operator is already one click
+                            // from a PAT session: the shell opens its connection
+                            // dialog instead of sending the frame through OAuth,
+                            // which cannot complete in an iframe.
+                            if (isEmbeddedWorkspace()) {
+                                requestHostLogin();
+                                return;
+                            }
                             clearAuthData(false);
                             const getQueryParams = new URLSearchParams(window.location.search);
                             const currency = getQueryParams.get('account') ?? '';
@@ -176,14 +187,16 @@ const AppHeader = observer(({ isAuthenticating }: TAppHeaderProps) => {
                     >
                         <Localize i18n_default_text='Log in' />
                     </Button>
-                    <Button
-                        primary
-                        onClick={() => {
-                            window.open(standalone_routes.signup);
-                        }}
-                    >
-                        <Localize i18n_default_text='Sign up' />
-                    </Button>
+                    {!isEmbeddedWorkspace() && (
+                        <Button
+                            primary
+                            onClick={() => {
+                                window.open(standalone_routes.signup);
+                            }}
+                        >
+                            <Localize i18n_default_text='Sign up' />
+                        </Button>
+                    )}
                 </div>
             );
         }
@@ -221,6 +234,7 @@ const AppHeader = observer(({ isAuthenticating }: TAppHeaderProps) => {
             </Wrapper>
             <Wrapper variant='right'>
                 {!isDesktop && <PWAInstallButton variant='primary' size='medium' />}
+                <SignalLabAccountBar />
                 {renderAccountSection()}
             </Wrapper>
             {/* <PWAInstallModalTest /> */}

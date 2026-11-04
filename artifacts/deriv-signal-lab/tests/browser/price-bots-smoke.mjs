@@ -1,6 +1,12 @@
 // Mocked browser integration test. Start Signal Lab first, then run:
 //   pnpm test:dbot:browser
 // Deriv REST and WebSockets are intercepted; no real orders can be placed.
+//
+// The preset store this file used to exercise was removed with the old DBot
+// Space builder (the workspace is now the cloned upstream app, and strategies
+// reach the canvas through the AI copilot). What remains is the wiring that is
+// still ours: the workspace boots in its iframe behind the shell, the Signal Lab
+// tabs sit in its tab bar, and the PAT dialog connects the account.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 
@@ -95,94 +101,44 @@ async function mockDeriv(page) {
   return { authSockets, dialogs, setDialogAction: action => { dialogAction = action; }, holdProposals: () => { holdProposals = true; } };
 }
 
-async function openWorkspace(page, mobile = false) {
+async function openWorkspace(page) {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.getByTestId(mobile ? 'tab-dbot-space' : 'button-dbot-space-nav').click();
-  await page.getByTestId('dbot-workspace-status').getByText('Workspace ready').waitFor({ timeout: 60_000 });
+  // The workspace is the app: no shell navigation, no tab to click first.
+  await page.getByTestId('dbot-space').waitFor({ timeout: 60_000 });
   const bot = page.frames().find(frame => frame.url().includes('/dbot/'));
   assert.ok(bot, 'the bundled Deriv application must load in an iframe');
-  await bot.getByText('Trade parameters', { exact: false }).first().waitFor({ timeout: 20_000 });
+  await bot.getByText('Trade parameters', { exact: false }).first().waitFor({ timeout: 60_000 });
   return bot;
 }
 
-
 try {
-  const presets = [
-    ['HIGH_LOW_TICK_SNIPER','tick', 'highlowticks', 'x_tick_decision_purchase'],
-    ['RISE_FALL_ENSEMBLE','rise', 'callput', 'purchase'],
-    ['STEP_MARKOV_HEDGE','step-hedge', 'callput', 'hedge_purchase'],
-  ];
-  for (const [id, mode, family, buy] of presets) {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
-    await mockDeriv(page);
-    const bot = await openWorkspace(page);
-    await page.getByTestId('button-settings-nav').click();
-    await page.getByTestId('deriv-pat-input').fill('test-only-token');
-    await page.getByTestId('button-deriv-connect').click();
-    await page.getByTestId('deriv-connection-status').getByText('Connected').first().waitFor({ timeout: 20_000 });
-    await page.getByTestId('button-dbot-space-nav').click();
-    await page.getByTestId('dbot-account-status').getByText(/Auto-linked/).waitFor({ timeout: 30_000 });
-    console.log('Loading preset', id);
-    await page.getByTestId('dbot-view-store').click();
-    await page.getByTestId(`dbot-use-${id}`).click();
-    await page.getByTestId('dbot-notice').getByText(/is on the canvas/i).waitFor({ timeout: 20_000 }).catch(async e => { console.log('notice:', await page.getByTestId('dbot-notice').innerText()); throw e; });
-    await page.waitForTimeout(1000);
-    const result = await bot.evaluate(() => {
-      const ws = window.Blockly.derivWorkspace;
-      const blocks = ws.getAllBlocks(false);
-      const trade = blocks.find(b => b.type === 'trade_definition_tradetype');
-      const decision = blocks.find(b => b.type === 'x_price_decision');
-      const market = blocks.find(b => b.type === 'trade_definition_market');
-      const code = window.Blockly.JavaScript.javascriptGenerator.workspaceToCode(ws);
-      return { types: blocks.map(b => b.type), family: trade?.getFieldValue('TRADETYPE_LIST'),
-        mode: decision?.getFieldValue('MODE'), symbol: market?.getFieldValue('SYMBOL_LIST'), code };
-    });
-    assert.equal(result.mode, mode, `${id}: decision mode`);
-    assert.equal(result.family, family, `${id}: contract family`);
-    assert.ok(result.types.includes(buy), `${id}: purchase block exists`);
-    assert.ok(result.types.includes('x_price_risk'), `${id}: risk gate exists`);
-    assert.match(result.code, /Bot.priceDecision\(/, `${id}: generated analysis call`);
-    if (mode === 'tick') assert.match(result.code, /Bot.purchaseTickDecision\(/);
-    if (mode === 'step-hedge') {
-      assert.equal(result.symbol, 'stpRNG');
-      // The Markov hedge buys the model's side as the main leg, so both
-      // directions exist in the generated code: a single block would always
-      // lean Rise whatever the chain said.
-      assert.match(result.code, /Bot.purchaseHedge\('CALL', 'PUT'/);
-      assert.match(result.code, /Bot.purchaseHedge\('PUT', 'CALL'/);
-      assert.match(result.code, /Bot.priceMarkov\(/, 'the chain read reaches the engine');
-      assert.ok(result.types.includes('x_price_markov_part'), 'the strategy gates on the chain');
-    }
-    // The websocket mock rejects every buy. Running verifies request shape,
-    // without allowing any order to reach Deriv.
-    const beforeBuys = requests.filter(request => request.buy).length;
-    await bot.locator('#db-animation__run-button:visible').last().click();
-    // The models need 256 quotes plus a measured lean before they will buy, and
-    // they now explain every skip instead of forcing a trade. The mocked market
-    // is a deterministic cycle, so a stronger instant trend plus a longer
-    // ceiling keeps this a wiring test rather than a market test.
-    const until = Date.now() + 45000;
-    while (requests.filter(request => request.buy).length === beforeBuys && Date.now() < until) await page.waitForTimeout(250);
-    const buys = requests.filter(request => request.buy).slice(beforeBuys);
-    assert.ok(buys.length > 0, `${id}: expected a mocked buy attempt`);
-    const params = buys[0].parameters;
-    if (mode === 'tick') {
-      assert.ok(['TICKHIGH','TICKLOW'].includes(params.contract_type));
-      assert.ok(params.selected_tick >= 1 && params.selected_tick <= 5);
-      assert.equal(params.duration, 5);
-    } else {
-      assert.ok(['CALL','PUT'].includes(params.contract_type));
-      // The contract length is the one the strategy ships: five ticks for the
-      // ensemble presets, four for the Markov hedge, and always the horizon the
-      // models replay.
-      assert.equal(params.duration, mode === 'step-hedge' ? 4 : 5);
-    }
-    if (mode === 'step-hedge') assert.deepEqual(new Set(buys.map(b => b.parameters.contract_type)), new Set(['CALL','PUT']));
-    await page.close();
-  }
-  assert.equal(requests.some(request => request.sell), false, 'mocked test does not sell');
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+  await mockDeriv(page);
+  const bot = await openWorkspace(page);
+
+  // The Signal Lab tabs live in the workspace tab bar, next to Tutorials.
+  assert.ok(await bot.locator('#id-tutorials').count(), 'Tutorials tab');
+  assert.ok(await bot.locator('#id-signal-lab-history').count(), 'Trade history tab');
+  assert.ok(await bot.locator('#id-signal-lab-settings').count(), 'Settings tab');
+
+  // Settings tab → the shell docks the PAT panel under the tab bar.
+  await bot.locator('#id-signal-lab-settings').click();
+  await page.getByTestId('dbot-host-panel-settings').waitFor({ timeout: 20_000 });
+  await page.getByTestId('deriv-pat-input').fill('test-only-token');
+  await page.getByTestId('button-deriv-connect').click();
+  await page.getByTestId('deriv-connection-status').getByText('Connected').first().waitFor({ timeout: 20_000 });
+
+  // Connected: the workspace header shows the Demo/Real switch and the balance.
+  await bot.locator('[data-testid="signal-lab-account-bar"]').waitFor({ timeout: 20_000 });
+  assert.ok(await bot.locator('[data-testid="signal-lab-balance"]').count(), 'balance beside the toggle');
+
+  // Back to the builder; the canvas is usable again.
+  await page.getByTestId('dbot-host-panel-back').click();
+  await bot.getByText('Trade parameters', { exact: false }).first().waitFor({ timeout: 20_000 });
+
+  await page.close();
   assert.deepEqual(errors, [], 'no uncaught browser errors');
-  console.log('Price bot smoke: all three presets loaded and generated code with mocked, rejected orders.');
+  console.log('DBot smoke: workspace boots in its frame, Signal Lab tabs dock, PAT connect links the account.');
 } finally {
   for (const timer of timers) clearInterval(timer);
   await browser.close();

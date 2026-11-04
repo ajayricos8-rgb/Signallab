@@ -67,7 +67,22 @@ export type FrameMessage =
   | { type: 'account-disconnected'; grantId: number; connectionLost: boolean }
   | { type: 'account-error'; grantId: number; message: string }
   | { type: 'request-otp'; requestId: number; accountId: string }
+  // The workspace grew Signal Lab tabs (Trade history, Settings) next to its own.
+  // `view` is `null` when one of DBot's own tabs is active again.
+  | { type: 'host-view'; view: HostView }
+  // Where the workspace's own tab bar ends, so the shell can dock a host panel
+  // directly underneath it instead of guessing a height.
+  | { type: 'tabs-geometry'; bottom: number }
+  // The workspace's Log in button, answered by the shell's PAT dialog: the
+  // operator signs in once, at the top, and the workspace adopts the account.
+  | { type: 'login-request' }
+  // The Demo/Real toggle in the workspace header.
+  | { type: 'account-mode'; mode: AccountMode }
   | { type: 'error'; message: string };
+
+/** Host-owned panels that live inside the workspace frame's tab bar. */
+export type HostView = 'history' | 'settings' | null;
+export type AccountMode = 'real' | 'demo';
 
 export type LinkInput = {
   link: LinkSnapshot;
@@ -181,6 +196,21 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       const requestId = finiteNumber(raw.requestId);
       const accountId = boundedText(raw.accountId, ACCOUNT_LIMIT);
       return requestId === null || !accountId ? null : { type: 'request-otp', requestId, accountId };
+    }
+    case 'host-view': {
+      const view = raw.view;
+      if (view !== null && view !== 'history' && view !== 'settings') return null;
+      return { type: 'host-view', view };
+    }
+    case 'tabs-geometry': {
+      const bottom = finiteNumber(raw.bottom);
+      return bottom === null || bottom < 0 || bottom > 4000 ? null : { type: 'tabs-geometry', bottom };
+    }
+    case 'login-request':
+      return { type: 'login-request' };
+    case 'account-mode': {
+      const mode = raw.mode;
+      return mode === 'real' || mode === 'demo' ? { type: 'account-mode', mode } : null;
     }
     case 'error':
       return { type: 'error', message: boundedText(raw.message, MESSAGE_LIMIT) || 'DBot could not complete that action.' };
