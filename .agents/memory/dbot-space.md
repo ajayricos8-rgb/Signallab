@@ -212,3 +212,20 @@ Verified with headless Chromium (`@sparticuz/chromium` + `puppeteer-core`, libs 
 network at all, and a missing `dbot/index.html` ends on the reload card after ~28 s instead of
 spinning. jsdom is useless here — it cannot resolve `import()`, so every lazy route hangs forever
 and looks exactly like this bug.
+
+**Why the workspace "stuck" right after loading (fixed):** `chunk-recovery` treated *any* failed
+`<script>` whose URL ended in `.js` as a stale chunk. An ad blocker killing Google Tag Manager or the
+Survicate survey tag therefore reloaded the whole workspace — the builder appeared, then reset to
+"Connecting workspace" a second or two later, and a second blocked tag did it again. The predicate now
+requires the workspace's **own** origin and `/static/js/` path (`isScriptChunkFailure` is exported and
+pinned by `dbot-chunk-recovery.test.mjs`). Two more things that made the panel look frozen: DBot's
+first-run tour dialogs (`bot-builder-tour` / `onboarding-tour`) force `setTourDialogVisibility(true)`
+on every render while `*_token` is unset, putting a dimming backdrop over the builder — suppressed via
+`services/embed.ts` (`isEmbeddedWorkspace()`) on both desktop and mobile tours; and the account link
+was a lazy chunk, so a chunk that failed to arrive produced "The workspace could not load the account
+link" over a working builder — it is a static import now. The Trade definition block also gets the
+shared markets seeded at boot (`seedSymbolsFromBridge`) instead of only after an account link, so the
+market dropdowns do not read "Not available" in an unlinked workspace.
+Verified with headless Chromium (probe kept outside the repo: `npm i --prefix /tmp/probe
+@sparticuz/chromium puppeteer-core`, AL2023 libs from `al2023.tar.br`, `LD_LIBRARY_PATH`): ready at
+8 s, **stable for 48 s**, one document load, no tour dialog, 121 Blockly nodes on screen.

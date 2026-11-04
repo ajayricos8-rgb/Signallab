@@ -90,12 +90,28 @@ export function clearChunkRecoveryGuard() {
   }
 }
 
-function isScriptChunkFailure(event: Event): boolean {
+/**
+ * Only the workspace's own bundle counts as a chunk.
+ *
+ * This used to accept any `<script>` whose URL looked like `.js`, which meant a
+ * blocked third-party script — Google Tag Manager, the Survicate survey widget,
+ * any analytics tag — reloaded the whole workspace. That is the one failure an
+ * ad blocker guarantees, and it turned a working builder into a page that kept
+ * restarting itself. A chunk from this app always shares the document's origin
+ * and lives under its `static/js` folder.
+ */
+export function isScriptChunkFailure(event: Event): boolean {
   const target = event.target as HTMLScriptElement | null;
-  return !!target
-    && typeof target.tagName === 'string'
-    && target.tagName.toUpperCase() === 'SCRIPT'
-    && /\/static\/js\/|\.js(\?|$)/.test(target.src || '');
+  if (!target || typeof target.tagName !== 'string' || target.tagName.toUpperCase() !== 'SCRIPT') return false;
+  const src = target.src || '';
+  if (!src) return false;
+  try {
+    const url = new URL(src, window.location.origin);
+    if (url.origin !== window.location.origin) return false;
+    return /\/static\/js\//.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 /**
