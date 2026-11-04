@@ -82,6 +82,31 @@ export function reportWorkspaceError(message: string) {
   post({ type: 'workspace-error', message: String(message || 'DBot stopped with an error.').slice(0, 400) });
 }
 
+/** A Signal Lab tab (Trade history, Settings) became active inside the frame. */
+export function postHostView(view: 'history' | 'settings' | null) {
+  post({ type: 'host-view', view });
+}
+
+/**
+ * Where the workspace's tab bar ends. The shell docks its own panel exactly
+ * there, so the Signal Lab tabs look like they belong to this tab bar instead of
+ * floating over a guessed offset.
+ */
+export function reportTabsGeometry(bottom: number) {
+  if (!Number.isFinite(bottom)) return;
+  post({ type: 'tabs-geometry', bottom: Math.round(Math.max(0, Math.min(4000, bottom))) });
+}
+
+/** The workspace's Log in button: the shell answers with the PAT dialog. */
+export function requestHostLogin() {
+  post({ type: 'login-request' });
+}
+
+/** The Demo/Real switch in the workspace header. */
+export function requestAccountMode(mode: 'real' | 'demo') {
+  post({ type: 'account-mode', mode });
+}
+
 function switchTab(tab: unknown) {
   if (tab !== 'builder' && tab !== 'chart') return;
   // DBot owns its tab state; the shell asks through a DOM event so this module

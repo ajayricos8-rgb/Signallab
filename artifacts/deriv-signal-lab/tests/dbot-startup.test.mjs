@@ -21,11 +21,13 @@ const [pkg, app, shell, frameHost, shellMain, dbotApp, dbotContent, dbotRoot, bu
   read('../../../vendor/deriv-bot/src/external/bot-skeleton/services/api/api-base.ts'),
 ]);
 
-test('DBot builds before dev/production and is the initial host tab', () => {
+test('DBot builds before dev/production and fills the app', () => {
   assert.match(pkg, /"predev":\s*"node scripts\/build-dbot\.mjs"/);
   assert.match(pkg, /"build:app":\s*"node scripts\/build-dbot\.mjs && vite build/);
-  assert.match(app, /useState<WorkspaceTab>\('dbot-space'\)/);
-  assert.match(app, /const \[dbotMounted\] = useState\(true\)/);
+  // The workspace *is* the app now: no shell navigation to hide it behind.
+  assert.match(app, /<DbotSpace analysisRequest=\{analysisRequest\} \/>/);
+  assert.match(app, /data-testid="workspace-root"/);
+  assert.doesNotMatch(app, /workspaceTabs|bottom-navigation/);
   // The frame URL carries the reload counter, so a reload can never be answered
   // from a cached copy of an older workspace document.
   assert.match(shell, /const WORKSPACE_URL = `\$\{import\.meta\.env\.BASE_URL\}dbot\/index\.html`/);

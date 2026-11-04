@@ -290,3 +290,43 @@ tokens, and rewrites the two SmartCharts `assetBase:"/"` occurrences.
 - Headless probe against `dist` on :4300 — ready at **8 s**, **1 document, 0
   reloads over 80 s**, overlay gone, header "DBot Space". Deriv websockets fail
   in the sandbox (network-restricted) and are expected.
+
+## The workspace is the app (round five)
+
+Signal Lab used to be a sidebar + header + bottom tab bar wrapping the workspace.
+It no longer is: `src/App.tsx` renders `<DbotSpace />` at `100dvh` and nothing
+else, with the theme switch as a small floating control.
+
+### Tabs inside the workspace
+`vendor/deriv-bot/src/pages/main/main.tsx` adds two tabs after Tutorials —
+`id-signal-lab-history` and `id-signal-lab-settings` (indexes 4/5 in
+`DBOT_TABS`/`TAB_IDS`). They post `host-view` (`history` | `settings` | `null`)
+and `tabs-geometry` (the tab bar's bottom edge, measured on resize) through
+`src/services/signallab-host.ts`. The shell docks `TradeHistoryPanel` /
+`SettingsPanel` at exactly that offset, so the panels sit under the workspace's
+own tab bar. `window.addEventListener('signal-lab:navigate')` is back in the main
+page, which is what lets the shell's `navigate` message (sent on `ready`, and by
+"Back to workspace") move the frame's tabs.
+
+### Sign-in
+The workspace's **Log in** button is intercepted in
+`src/components/layout/header/header.tsx` when embedded: it posts
+`login-request`, and the shell opens the PAT dialog (`DerivConnectionCard`).
+`Sign up` is hidden there — OAuth cannot complete inside the frame. Once the
+shell session is connected, the existing `connect-account` grant links the frame;
+nobody types a token twice.
+
+### Mode switch + balance
+`src/components/signal-lab-account-bar/` renders in the workspace header: a
+Demo/Real segmented toggle plus the balance, driven by the `signal-lab-account`
+snapshot (never a second source of truth). A click posts `account-mode`; the
+shell selects its first account of that type and re-links — the existing
+disconnect/relink effect does the rest.
+
+### Verified headlessly (dist on :4300)
+ready 8 s, 1 document, 0 reloads over 70 s; both tabs exist beside Tutorials;
+history/settings dock at y=108; Back restores the builder canvas; clicking a DBot
+tab closes the host panel; Log in opens the PAT dialog; a synthetic account
+snapshot renders "Demo | Real | BALANCE USD 1,042.50"; toggling to a type the
+token does not have shows "This token has no demo account to switch to." instead
+of failing. `node --test` → 39/40 (only the pre-existing parity failure).

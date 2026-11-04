@@ -14,7 +14,8 @@ import {
 } from '@/lib/dbot-bridge';
 import {
   hostConnectAccount, hostDisconnectAccount, hostHello, hostLoadBot, hostNavigate,
-  parseFrameMessage, type SharedData, type WorkspaceBlockInfo, type WorkspaceTab,
+  parseFrameMessage, type HostView, type SharedData, type WorkspaceBlockInfo,
+  type WorkspaceTab,
 } from './protocol';
 
 /** How often the shell re-asks a booting frame for `ready`. */
@@ -43,6 +44,12 @@ export function useDbotFrame() {
   const [botRunning, setBotRunning] = useState(false);
   const [blockRegistry, setBlockRegistry] = useState<WorkspaceBlockInfo[]>([]);
   const [shared, setShared] = useState<SharedData>({ markets: 0, ticks: 0 });
+  /** Which Signal Lab panel the workspace's tab bar is showing. */
+  const [hostView, setHostView] = useState<HostView>(null);
+  /** Bottom edge of the workspace tab bar, in iframe viewport pixels. */
+  const [tabsBottom, setTabsBottom] = useState(0);
+  /** Bumped every time the workspace asks for the shell's sign-in dialog. */
+  const [loginRequest, setLoginRequest] = useState(0);
 
   const tradingRef = useRef(trading);
   tradingRef.current = trading;
@@ -129,6 +136,7 @@ export function useDbotFrame() {
     runtime.current.cursor = {};
     runtime.current.accountSent = null;
     setReady(false);
+    setHostView(null);
   }, [frameRevision]);
 
   // ---- messages from the workspace ---------------------------------------
@@ -168,6 +176,29 @@ export function useDbotFrame() {
         case 'bot-status':
           setBotRunning(message.running);
           return;
+        case 'host-view':
+          setHostView(message.view);
+          return;
+        case 'tabs-geometry':
+          setTabsBottom(message.bottom);
+          return;
+        case 'login-request':
+          setLoginRequest((count) => count + 1);
+          return;
+        case 'account-mode': {
+          const mode = message.mode;
+          const accounts = tradingRef.current.accounts;
+          const target = accounts.find((entry) => (
+            mode === 'demo' ? entry.accountType !== 'real' : entry.accountType === 'real'
+          ));
+          if (!target) {
+            setNotice(`This token has no ${mode} account to switch to.`);
+            return;
+          }
+          setNotice(`Switching the workspace to ${mode}…`);
+          void tradingRef.current.selectAccount(target.accountId);
+          return;
+        }
         case 'workspace-error':
           state.ready = false;
           setReady(false);
@@ -269,6 +300,9 @@ export function useDbotFrame() {
   }, []);
 
   const showTab = useCallback((tab: WorkspaceTab) => {
+    // The workspace answers with `host-view: null`, but clearing here keeps the
+    // panel from lingering over the builder for a frame or two.
+    setHostView(null);
     if (runtime.current.ready) post(hostNavigate(tab));
   }, [post]);
 
@@ -282,6 +316,9 @@ export function useDbotFrame() {
     blockRegistry,
     aiRuntimeRegistered: blockRegistry.length > 0,
     shared,
+    hostView,
+    tabsBottom,
+    loginRequest,
     reload,
     showTab,
     loadBot,
@@ -289,6 +326,6 @@ export function useDbotFrame() {
     setNotice,
   }), [
     frameRevision, ready, error, notice, botRunning, blockRegistry, shared,
-    reload, showTab, loadBot,
+    hostView, tabsBottom, loginRequest, reload, showTab, loadBot,
   ]);
 }

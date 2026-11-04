@@ -17,6 +17,8 @@ import { useOauth2 } from '@/hooks/auth/useOauth2';
 import { useApiBase } from '@/hooks/useApiBase';
 import { useStore } from '@/hooks/useStore';
 import useTMB from '@/hooks/useTMB';
+import { isEmbeddedWorkspace } from '@/services/embed';
+import { postHostView, reportTabsGeometry } from '@/services/signallab-host';
 import { handleOidcAuthFailure } from '@/utils/auth-utils';
 import {
     LabelPairedChartLineCaptionRegularIcon,
@@ -212,6 +214,39 @@ const AppWrapper = observer(() => {
         };
     }, [dashboard_strategies, active_tab]);
 
+    /**
+     * The two Signal Lab tabs are host-owned: the shell renders their panel
+     * directly under this tab bar. Announce which one is active (and the tab
+     * bar's height, so the panel docks underneath it rather than floating over
+     * the builder).
+     */
+    useEffect(() => {
+        if (!isEmbeddedWorkspace()) return;
+        if (active_tab === DBOT_TABS.SIGNAL_LAB_HISTORY) postHostView('history');
+        else if (active_tab === DBOT_TABS.SIGNAL_LAB_SETTINGS) postHostView('settings');
+        else postHostView(null);
+    }, [active_tab]);
+
+    useEffect(() => {
+        if (!isEmbeddedWorkspace()) return;
+        const measure = () => {
+            const tabs = document.querySelector('.main__tabs');
+            if (!tabs) return;
+            reportTabsGeometry(tabs.getBoundingClientRect().bottom);
+        };
+        measure();
+        const timer = window.setTimeout(measure, 500);
+        window.addEventListener('resize', measure);
+        const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+        const tabs = document.querySelector('.main__tabs');
+        if (observer && tabs) observer.observe(tabs);
+        return () => {
+            window.clearTimeout(timer);
+            window.removeEventListener('resize', measure);
+            observer?.disconnect();
+        };
+    }, [active_tab]);
+
     const handleTabChange = React.useCallback(
         (tab_index: number) => {
             setActiveTab(tab_index);
@@ -226,6 +261,22 @@ const AppWrapper = observer(() => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
         [active_tab]
     );
+
+    /**
+     * The shell drives the workspace's own tabs (`navigate: builder | chart`).
+     * Without this listener a `hello`/`ready` handshake could not move the frame
+     * off whichever tab it opened on, and the shell's "Back to workspace" would
+     * leave a Signal Lab tab behind.
+     */
+    useEffect(() => {
+        const onNavigate = (event: Event) => {
+            const detail = (event as CustomEvent).detail;
+            if (detail === 'builder') handleTabChange(DBOT_TABS.BOT_BUILDER);
+            else if (detail === 'chart') handleTabChange(DBOT_TABS.CHART);
+        };
+        window.addEventListener('signal-lab:navigate', onNavigate);
+        return () => window.removeEventListener('signal-lab:navigate', onNavigate);
+    }, [handleTabChange]);
 
     const { isOAuth2Enabled } = useOauth2();
     const handleLoginGeneration = async () => {
@@ -349,6 +400,59 @@ const AppWrapper = observer(() => {
                                         <Tutorial handleTabChange={handleTabChange} />
                                     </Suspense>
                                 </div>
+                            </div>
+                            <div
+                                label={
+                                    <>
+                                        <svg
+                                            width='16'
+                                            height='16'
+                                            viewBox='0 0 16 16'
+                                            fill='none'
+                                            aria-hidden='true'
+                                            className='signal-lab-tab__icon'
+                                        >
+                                            <circle cx='8' cy='8' r='6.25' stroke='currentColor' strokeWidth='1.3' />
+                                            <path
+                                                d='M8 4.6V8l2.2 1.4'
+                                                stroke='currentColor'
+                                                strokeWidth='1.3'
+                                                strokeLinecap='round'
+                                            />
+                                        </svg>
+                                        <Localize i18n_default_text='Trade history' />
+                                    </>
+                                }
+                                id='id-signal-lab-history'
+                            >
+                                {/* The shell renders this panel; the frame only hosts the tab. */}
+                                <div className='signal-lab-tab-panel' />
+                            </div>
+                            <div
+                                label={
+                                    <>
+                                        <svg
+                                            width='16'
+                                            height='16'
+                                            viewBox='0 0 16 16'
+                                            fill='none'
+                                            aria-hidden='true'
+                                            className='signal-lab-tab__icon'
+                                        >
+                                            <circle cx='8' cy='8' r='2.1' stroke='currentColor' strokeWidth='1.3' />
+                                            <path
+                                                d='M8 1.9l.9 1.5 1.7-.3.5 1.7 1.6.8-.7 1.6.7 1.6-1.6.8-.5 1.7-1.7-.3L8 14.1l-.9-1.5-1.7.3-.5-1.7-1.6-.8.7-1.6-.7-1.6 1.6-.8.5-1.7 1.7.3z'
+                                                stroke='currentColor'
+                                                strokeWidth='1.1'
+                                                strokeLinejoin='round'
+                                            />
+                                        </svg>
+                                        <Localize i18n_default_text='Settings' />
+                                    </>
+                                }
+                                id='id-signal-lab-settings'
+                            >
+                                <div className='signal-lab-tab-panel' />
                             </div>
                         </Tabs>
                         {!isDesktop && right_tab_shadow && <span className='tabs-shadow tabs-shadow--right' />}{' '}
