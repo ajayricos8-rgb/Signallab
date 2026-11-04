@@ -49,9 +49,8 @@ const AppRoot = () => {
     //
     // The check calls Deriv's remote config. When that request hangs (offline,
     // blocked network, slow proxy) the workspace used to sit on the loader
-    // forever and the Signal Lab shell reported "DBot did not become ready".
-    // Give it a short head start, then boot with the default state: TMB only
-    // changes how a login is routed, never whether the bot builder can render.
+    // forever. Give it a short head start, then boot with the default state:
+    // TMB only changes how a login is routed, never whether the builder renders.
     useEffect(() => {
         let cancelled = false;
         const deadline = setTimeout(() => {
@@ -74,10 +73,6 @@ const AppRoot = () => {
         };
 
         checkTmbStatus();
-        return () => {
-            cancelled = true;
-            clearTimeout(deadline);
-        };
     }, []);
 
     // Initialize API when TMB check is complete with timeout fallback

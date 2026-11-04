@@ -3,13 +3,13 @@ import { observer } from 'mobx-react-lite';
 import ProgressBarTracker from '@/components/shared_ui/progress-bar-tracker';
 import Text from '@/components/shared_ui/text';
 import { useStore } from '@/hooks/useStore';
-import { isEmbeddedWorkspace } from '@/services/embed';
 import { getSetting } from '@/utils/settings';
 import { localize } from '@deriv-com/translations';
 import TourButton from '../common/tour-button';
 import TourStartDialog from '../common/tour-start-dialog';
 import { BOT_BUILDER_MOBILE } from '../tour-content';
 import { highlightLoadModalButton } from '../utils';
+import { isEmbeddedWorkspace } from '@/services/embed';
 
 const BotBuilderTourMobile = observer(() => {
     const { dashboard, load_modal, quick_strategy } = useStore();
@@ -36,7 +36,6 @@ const BotBuilderTourMobile = observer(() => {
         !show_mobile_tour_dialog && highlightLoadModalButton(active_tour, tour_step);
         if (tour_step === 2) toggleTourLoadModal(true);
         else if (active_tour !== '') toggleTourLoadModal(false);
-        // No tour dialog over the embedded workspace: see the desktop twin.
         const token = getSetting('bot_builder_token');
         if (!isEmbeddedWorkspace() && !token && active_tab === 1) {
             if (is_open) {

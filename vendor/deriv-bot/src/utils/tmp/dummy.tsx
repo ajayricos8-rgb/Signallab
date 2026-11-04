@@ -1,40 +1,24 @@
-// Legacy icon compatibility module (restored from deriv-com/bot).
-//
-// Eleven vendored components still import `Icon` from `@/utils/tmp/dummy`, but
-// this file was missing from the repository: the vendored app was never
-// compiled until the Cloudflare/DBot build chain was added, so the unresolved
-// import made every production build fail. The icons themselves live in
-// `public/assets/icons/` and are copied into the built `/dbot/` app, so a
-// relative image URL resolves correctly there.
-import React, { memo, type SyntheticEvent } from 'react';
+import { memo, SyntheticEvent } from 'react';
 
 type TIconComponent = {
     icon: string;
     className?: string;
     onClick?: () => void;
-    size?: number | string;
+    size?: number;
     height?: number | string;
     width?: number | string;
     id?: string;
-    color?: string;
-    custom_color?: string;
-    iconSize?: string;
-    style?: React.CSSProperties;
+    style?: { height?: number | string; width?: number | string };
 };
 
-const IconComponent: React.FC<TIconComponent> = ({ icon, className, onClick, size, height, width, id, style }) => {
-    const onError = (event: SyntheticEvent<HTMLImageElement, Event>) => {
-        (event.target as HTMLImageElement).src = 'assets/icons/IcDashboard.svg';
-    };
-
-    const dimensions = {
-        ...(size !== undefined ? { height: size, width: size } : {}),
-        ...(height !== undefined ? { height } : {}),
-        ...(width !== undefined ? { width } : {}),
+const IconComponent: React.FC<TIconComponent> = ({ icon, ...rest }) => {
+    const onError = (e: SyntheticEvent<HTMLImageElement, Event>) => {
+        // eslint-disable-next-line no-console
+        (e.target as HTMLImageElement).src = 'assets/icons/IcDashboard.svg';
     };
 
     return (
-        <div className={className ? `dummy-icon ${className}` : 'dummy-icon'} onClick={onClick} id={id} style={{ ...dimensions, ...style }}>
+        <div className='dummy-icon' {...rest}>
             <img src={`assets/icons/${icon}.svg`} alt={icon} onError={onError} />
         </div>
     );
@@ -42,6 +26,7 @@ const IconComponent: React.FC<TIconComponent> = ({ icon, className, onClick, siz
 
 export const Icon = memo(IconComponent);
 
-export const IconTradeTypes = ({ children }: { children?: React.ReactNode }) => (
-    <div className='dummy-IconTradeTypes'>{children}</div>
-);
+export const IconTradeTypes = ({ children }) => {
+    // Simulate scrollbars
+    return <div className='dummy-IconTradeTypes'>{children}</div>;
+};

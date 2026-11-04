@@ -170,9 +170,8 @@ class APIBase {
             if (error) {
                 if (error.code === 'InvalidToken') {
                     const is_tmb_enabled = window.is_tmb_enabled === true;
-                    // Inside Signal Lab a stale DBot token must not start an OAuth
-                    // journey or a reload: the shell owns the session. Drop the
-                    // token and keep the builder up.
+                    // Inside Signal Lab the shell owns the session: a stale DBot
+                    // token must not start an OAuth journey or a reload.
                     if (!isEmbeddedWorkspace() && Cookies.get('logged_state') === 'true' && !is_tmb_enabled) {
                         globalObserver.emit('InvalidToken', { error });
                     } else {

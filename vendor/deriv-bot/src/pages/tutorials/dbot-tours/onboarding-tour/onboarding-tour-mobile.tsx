@@ -4,12 +4,12 @@ import { observer } from 'mobx-react-lite';
 import ProgressBarTracker from '@/components/shared_ui/progress-bar-tracker';
 import Text from '@/components/shared_ui/text';
 import { useStore } from '@/hooks/useStore';
-import { isEmbeddedWorkspace } from '@/services/embed';
 import { getSetting } from '@/utils/settings';
 import { LegacyClose1pxIcon } from '@deriv/quill-icons/Legacy';
 import { localize } from '@deriv-com/translations';
 import TourButton from '../common/tour-button';
 import { DBOT_ONBOARDING_MOBILE, TMobileTourConfig } from '../tour-content';
+import { isEmbeddedWorkspace } from '@/services/embed';
 
 const default_tour_data = {
     content: [],

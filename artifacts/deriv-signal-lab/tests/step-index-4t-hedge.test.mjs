@@ -2,17 +2,16 @@
 //
 // The bot is a Blockly document, so the test reads the XML rather than
 // executing it: the contract, the horizon, the hedge legs and the cadence are
-// the four things that must not drift. The store registration is pinned too,
-// because a preset that is not imported is not in the bot store.
+// the four things that must not drift. The Signal Lab bot store was removed with
+// the old DBot Space builder, so only the document itself is pinned here: it is
+// still the reference strategy the AI copilot's hedge family is modelled on.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const xmlPath = new URL('../../../src/lib/bot-store/bots/step-index-4t-hedge.xml', import.meta.url);
-const storePath = new URL('../../../src/components/dbot-space/bot-store.ts', import.meta.url);
 
 const xml = await readFile(xmlPath, 'utf8');
-const store = await readFile(storePath, 'utf8');
 
 function statement(name) {
   const match = xml.match(new RegExp(`<statement name="${name}">([\\s\\S]*?)</statement>`));
@@ -106,10 +105,7 @@ test('the bot loops after settlement and stops at a session brake', () => {
   assert.match(after, /<block type="trade_again"/);
 });
 
-test('the preset is registered in the bot store', () => {
-  assert.match(store, /import stepIndex4THedgeXml from '@\/lib\/bot-store\/bots\/step-index-4t-hedge\.xml\?raw'/);
-  assert.match(store, /id: 'STEP_INDEX_4T_HEDGE'/);
-  assert.match(store, /name: 'Step Index 4-Tick Hedge AI'/);
-  assert.match(store, /xml: stepIndex4THedgeXml/);
-  assert.match(store, /category: 'AI'/);
+test('the preset document is still the shipped Step Index hedge strategy', () => {
+  assert.match(xml, /Step Index 4-Tick Hedge/);
+  assert.match(xml, /<block type="trade_definition"/);
 });

@@ -89,7 +89,7 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.controls_whileUntil = blo
             } else {
                 ${currentLoopVar}++;
             }
-
+            
             ${branch}
         }\n`;
 };

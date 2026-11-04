@@ -5,13 +5,9 @@ import Cookies from 'js-cookie';
 import { isEmbeddedWorkspace } from '@/services/embed';
 
 /**
- * Reloading is a last resort that only belongs to a standalone app.
- *
- * Inside Signal Lab the workspace is one panel of a larger page: reloading it
- * throws away the operator's screen, drops the adopted account socket and
- * restarts a boot that is about to see the same authentication state — a reload
- * here is a loop, not a recovery. Clearing storage is what actually fixes the
- * state; the next render shows the logged-out workspace.
+ * Reloading belongs to a standalone app. Inside Signal Lab the workspace is one
+ * panel of a larger page: reloading it throws away the operator's screen and
+ * restarts a boot that will see the same state — a loop, not a recovery.
  */
 const mayReload = () => !isEmbeddedWorkspace();
 
@@ -65,6 +61,6 @@ export const handleOidcAuthFailure = (error: any): void => {
         secure: true,
     });
 
-    // Reload the page to show the logged out view — standalone only (see above).
-    if (mayReload()) window.location.reload();
+    // Reload the page to show the logged out view
+    window.location.reload();
 };

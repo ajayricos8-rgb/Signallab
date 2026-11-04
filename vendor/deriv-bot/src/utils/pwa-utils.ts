@@ -85,9 +85,8 @@ class PWAManager {
 
             // Handle controller change (new service worker activated)
             navigator.serviceWorker.addEventListener('controllerchange', () => {
-                // A newly activated worker reloads the page to pick up its cache.
-                // Embedded, that is a restart of a panel inside someone else's
-                // app — and with the shell's own cleanup racing it, a loop.
+                // Embedded, a worker swap must not restart a panel inside
+                // someone else's app.
                 if (!isEmbeddedWorkspace()) window.location.reload();
             });
 
@@ -196,7 +195,7 @@ class PWAManager {
     async updateApp(): Promise<void> {
         if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
             navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
-        } else if (!isEmbeddedWorkspace()) {
+        } else {
             window.location.reload();
         }
     }

@@ -1,12 +1,12 @@
 import React from 'react';
 import { observer } from 'mobx-react-lite';
 import { useStore } from '@/hooks/useStore';
-import { isEmbeddedWorkspace } from '@/services/embed';
 import { getSetting } from '@/utils/settings';
 import ReactJoyrideWrapper from '../common/react-joyride-wrapper';
 import TourStartDialog from '../common/tour-start-dialog';
 import { DBOT_ONBOARDING } from '../tour-content';
 import { useTourHandler } from '../useTourHandler';
+import { isEmbeddedWorkspace } from '@/services/embed';
 
 const OnboardingTourDesktop = observer(() => {
     const { dashboard } = useStore();
@@ -19,8 +19,6 @@ const OnboardingTourDesktop = observer(() => {
         }
     }, [is_close_tour, is_finished, setActiveTour, setIsCloseTour]);
 
-    // No welcome modal over the embedded workspace: the shell owns the first
-    // paint, and a backdrop over the dashboard reads as a frozen panel.
     const token = getSetting('onboard_tour_token');
     if (!isEmbeddedWorkspace() && !token && active_tab === 0) setTourDialogVisibility(true);
 

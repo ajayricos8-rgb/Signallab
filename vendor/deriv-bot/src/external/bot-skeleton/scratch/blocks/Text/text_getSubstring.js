@@ -242,7 +242,7 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.text_getSubstring = block
                 ) {
                     var start = ${getIndex('sequence', where1, 'at1')};
                     var end   = ${getIndex('sequence', where2, 'at2')} + 1;
-
+                    
                     return sequence.slice(start, end);
                 }`,
             ]

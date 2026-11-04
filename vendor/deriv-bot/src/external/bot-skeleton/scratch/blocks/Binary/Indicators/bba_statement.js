@@ -72,10 +72,10 @@ window.Blockly.JavaScript.javascriptGenerator.forBlock.bba_statement = block => 
     const period = block.childValueToCode('period', 'PERIOD');
     const std_dev_up = block.childValueToCode('std_dev_multiplier_up', 'UPMULTIPLIER');
     const std_dev_down = block.childValueToCode('std_dev_multiplier_down', 'DOWNMULTIPLIER');
-    const code = `${var_name} = Bot.bba(${input}, {
-        periods: ${period},
-        stdDevUp: ${std_dev_up},
-        stdDevDown: ${std_dev_down}
+    const code = `${var_name} = Bot.bba(${input}, { 
+        periods: ${period}, 
+        stdDevUp: ${std_dev_up}, 
+        stdDevDown: ${std_dev_down} 
     }, ${bb_result});\n`;
 
     return code;
