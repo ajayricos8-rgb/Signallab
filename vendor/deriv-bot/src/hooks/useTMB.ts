@@ -50,7 +50,7 @@ const useTMB = (): UseTMBReturn => {
     }
 
     // const isEndpointPage = useMemo(() => window.location.pathname.includes('endpoint'), []);
-    const isCallbackPage = useMemo(() => window.location.pathname === '/callback', []);
+    const isCallbackPage = useMemo(() => /\/callback$/.test(window.location.pathname), []);
     const domains = useMemo(
         () => ['deriv.com', 'deriv.dev', 'binary.sx', 'pages.dev', 'localhost', 'deriv.be', 'deriv.me'],
         []

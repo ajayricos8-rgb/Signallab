@@ -31,5 +31,14 @@ the PAT connection and the trading flows are **unchanged**.
 - **A grant belongs to exactly one account.** Switching/disconnecting revokes it;
   three consecutive automatic failures pause retries until the account changes
   or **Link now** is clicked.
+- **`ready` means the builder painted, and the shell asks again.** The frame is served at
+  `/dbot/index.html`, so it owns a router basename and normalises that pathname (a router with only
+  `/` routes matched nothing and looked exactly like a broken bundle). `engine.ts` re-posts `hello`
+  every 2 s until the frame answers, and the frame announces `ready` from `markWorkspaceMounted()`
+  only once the dashboard is committed; Deriv's remote config and socket are deadlines, never gates.
+- **The account link is the frame's job.** `vendor/deriv-bot/src/services/signallab-host.ts` answers
+  `hello`/`navigate`/`connect-account`/`disconnect-account`; `signallab-account.ts` adopts the
+  one-time `wss` URL as `api_base.api` and reports `account-connected` / `account-error` /
+  `account-disconnected`. No token ever enters the frame.
 - **Host test IDs and startup strings stay stable** — the DBot startup, PRO-tab,
   bot-store and browser smoke tests assert on them.

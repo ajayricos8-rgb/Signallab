@@ -11,6 +11,9 @@ import './app-root.scss';
 
 const AppContent = lazy(() => import('./app-content'));
 
+/** How long Deriv's remote config may delay the workspace boot. */
+const TMB_CHECK_DEADLINE_MS = 4_000;
+
 const AppRootLoader = () => {
     return <ChunkLoader message={localize('Loading...')} />;
 };
@@ -42,23 +45,39 @@ const AppRoot = () => {
     const [, setIsTmbEnabled] = useState(false);
     const { isTmbEnabled } = useTMB();
 
-    // Effect to check TMB status - independent of API initialization
+    // Effect to check TMB status - independent of API initialization.
+    //
+    // The check calls Deriv's remote config. When that request hangs (offline,
+    // blocked network, slow proxy) the workspace used to sit on the loader
+    // forever and the Signal Lab shell reported "DBot did not become ready".
+    // Give it a short head start, then boot with the default state: TMB only
+    // changes how a login is routed, never whether the bot builder can render.
     useEffect(() => {
+        let cancelled = false;
+        const deadline = setTimeout(() => {
+            if (!cancelled) setIsTmbCheckComplete(true);
+        }, TMB_CHECK_DEADLINE_MS);
+
         const checkTmbStatus = async () => {
             try {
                 const tmb_status = await isTmbEnabled();
                 const final_status = tmb_status || window.is_tmb_enabled === true;
 
+                if (cancelled) return;
                 setIsTmbEnabled(final_status);
-
-                setIsTmbCheckComplete(true);
             } catch (error) {
                 console.error('TMB check failed:', error);
-                setIsTmbCheckComplete(true);
+            } finally {
+                clearTimeout(deadline);
+                if (!cancelled) setIsTmbCheckComplete(true);
             }
         };
 
         checkTmbStatus();
+        return () => {
+            cancelled = true;
+            clearTimeout(deadline);
+        };
     }, []);
 
     // Initialize API when TMB check is complete with timeout fallback

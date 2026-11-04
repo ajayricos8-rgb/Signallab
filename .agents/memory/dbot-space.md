@@ -11,6 +11,40 @@ three consecutive automatic failures stop the retries until the account changes 
 pressed. **Unlink** is the only manual action and sets `autoLink=false`, which pauses the effect.
 Linking cannot trade on its own — the workspace still needs **Run**.
 
+## Why the workspace said "DBot did not become ready" (2026-11-04)
+
+The iframe is served at `/dbot/index.html`, but `vendor/deriv-bot/src/app/App.tsx` created a
+**browser router with no basename** and only defined routes at `/`. React Router matched nothing,
+`AppRoot`/`AppContent` never mounted, no `ready` postMessage was ever sent, and the shell's 30 s boot
+timeout fired: "DBot did not become ready. The workspace bundle may not have loaded correctly."
+It was not the bundle. `matchRoutes([{path:'/'}], '/dbot/index.html')` is `null`.
+
+Three things now hold it down, and all three are pinned by `tests/dbot-startup.test.mjs`:
+
+1. **Base + pathname.** `process.env.DBOT_BASE_PATH` (baked at build time, `/dbot/`) is the router
+   basename, and a pathname ending in `index.html` is rewritten to the base directory before the
+   router is created. `/`, `/dbot/`, `/dbot/index.html` and `/dbot/callback` all match.
+2. **A real handshake, not one shot.** `services/signallab-host.ts` is installed from `main.tsx`
+   *before* React renders; `engine.ts` re-posts `hello` every 2 s until it hears `ready`, and the
+   frame answers `hello` with `ready` once `markWorkspaceMounted()` ran (i.e. once the builder is on
+   screen). `ready` still means "builder painted", never "bundle started".
+3. **No unbounded remote waits.** Deriv's remote-config "TMB" check is raced with 4 s
+   (`app-root.tsx`) and the dashboard renders after a 6 s boot deadline even if the API socket never
+   opens (`app-content.jsx`) — the ticks, balance and positions all come from Signal Lab anyway. A
+   hard `common.error` is reported to the shell instead of leaving it on a spinner.
+
+Also: the PWA service worker is **never** registered from inside the workspace (`main.tsx` skips it
+when `window.parent !== window` and unregisters leftovers). It used to register `/sw.js` with scope
+`/`, i.e. it could take over the host app and serve a stale bundle — the classic "the workspace
+bundle did not load correctly".
+
+The account link is real now too: `services/signallab-account.ts` handles `connect-account` (open the
+one-time `wss` URL from `createBotSocket()`, adopt it as `api_base.api`, shape auth data from the
+bridge's account snapshot, one balance subscription, symbols with an 8 s deadline and a fallback to
+the bridge's markets), `disconnect-account` and `navigate`. It posts `account-connected` /
+`account-error` / `account-disconnected`, so the shell's link state is driven by the frame instead of
+being assumed.
+
 The data bridge is separate from the account bridge:
 
 - **Ticks.** `lib/dbot-bridge.ts` (`buildBridgeSnapshot` / `buildBridgeUpdate`) turns the shared
