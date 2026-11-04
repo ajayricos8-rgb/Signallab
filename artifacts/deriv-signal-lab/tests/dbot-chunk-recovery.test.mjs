@@ -51,32 +51,54 @@ test('a blocked third-party script is never mistaken for a chunk', () => {
   assert.equal(recovery.isScriptChunkFailure(script_event('')), false);
 });
 
-test('a chunk failure reloads the frame exactly once inside the retry window', () => {
+test('a chunk failure reloads the frame at most twice, then it stops', () => {
+  // Reloading is a bounded recovery, never a restart loop: a workspace that dies
+  // again right after a restart must end on the error boundary instead of
+  // reloading forever (which is exactly what the shell used to do).
   store.clear();
   reloads = 0;
 
   assert.equal(recovery.recoverFromChunkFailure(), true, 'first failure reloads');
   assert.equal(reloads, 1);
-
-  assert.equal(recovery.recoverFromChunkFailure(), false, 'a second failure must not loop');
+  assert.equal(recovery.recoverFromChunkFailure(), false, 'inside the retry window it does not loop');
   assert.equal(reloads, 1);
 
-  // A workspace that booted clears the guard, so a later deploy can recover too.
-  recovery.clearChunkRecoveryGuard();
+  // Past the retry window the second attempt is allowed…
+  store.set('signal-lab:dbot:chunk-reload', String(Date.now() - 60_000));
   assert.equal(recovery.recoverFromChunkFailure(), true);
   assert.equal(reloads, 2);
+
+  // …and then the budget is spent: no third reload, no loop.
+  store.set('signal-lab:dbot:chunk-reload', String(Date.now() - 60_000));
+  assert.equal(recovery.recoverFromChunkFailure(), false);
+  assert.equal(reloads, 2);
+  assert.equal(recovery.isReloadBudgetExhausted(), true);
 });
 
-test('the retry window expires, so a new deploy is recovered again', () => {
+test('a workspace that stays up gets its restarts back', () => {
+  store.clear();
+  reloads = 0;
+  assert.equal(recovery.recoverFromChunkFailure(), true);
+  assert.equal(recovery.isReloadBudgetExhausted(), false, 'one of two used');
+
+  // The workspace has now been up longer than the stable window: mounting
+  // clears the guard and refills the budget, so a later deploy can recover.
+  store.set('signal-lab:dbot:chunk-reloads-at', String(Date.now() - 120_000));
+  recovery.clearChunkRecoveryGuard();
+  assert.equal(recovery.isReloadBudgetExhausted(), false);
+  store.set('signal-lab:dbot:chunk-reload', String(Date.now() - 60_000));
+  assert.equal(recovery.recoverFromChunkFailure(), true);
+  assert.equal(reloads, 2);
+
+  // A mount right after a restart must NOT clear the guard — that is the loop.
   store.clear();
   reloads = 0;
   recovery.clearChunkRecoveryGuard();
   assert.equal(recovery.recoverFromChunkFailure(), true);
-  const first = Number(store.get('signal-lab:dbot:chunk-reload'));
-  assert.ok(first > 0, 'the attempt is timestamped');
-
-  // Simulate a page that has been open for longer than the window.
+  recovery.clearChunkRecoveryGuard();
   store.set('signal-lab:dbot:chunk-reload', String(Date.now() - 60_000));
-  assert.equal(recovery.recoverFromChunkFailure(), true);
-  assert.equal(reloads, 2);
+  assert.equal(recovery.recoverFromChunkFailure(), true, 'second restart still allowed');
+  recovery.clearChunkRecoveryGuard();
+  store.set('signal-lab:dbot:chunk-reload', String(Date.now() - 60_000));
+  assert.equal(recovery.recoverFromChunkFailure(), false, 'budget survives a remount');
 });

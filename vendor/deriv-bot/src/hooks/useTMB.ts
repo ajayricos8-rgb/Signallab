@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isEmbeddedWorkspace } from '@/services/embed';
 import Cookies from 'js-cookie';
 import { generateOAuthURL } from '@/components/shared';
 import { removeCookies } from '@/components/shared/utils/storage/storage';
@@ -322,8 +323,10 @@ const useTMB = (): UseTMBReturn => {
             localStorage.removeItem('active_loginid');
             localStorage.removeItem('clientAccounts');
             localStorage.removeItem('accountsList');
-            // Go to logged out version of the app instead of redirecting to OAuth
-            window.location.reload();
+            // Go to logged out version of the app instead of redirecting to OAuth.
+            // Embedded, a reload is also a restart of the whole workspace: clear
+            // the session and let the app re-render logged out instead.
+            if (!isEmbeddedWorkspace()) window.location.reload();
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Failed to logout:', error);

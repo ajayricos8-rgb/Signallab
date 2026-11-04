@@ -1,6 +1,7 @@
 import Cookies from 'js-cookie';
 import CommonStore from '@/stores/common-store';
 import { TAuthData } from '@/types/api-types';
+import { isEmbeddedWorkspace } from '@/services/embed';
 import { clearAuthData } from '@/utils/auth-utils';
 import { observer as globalObserver } from '../../utils/observer';
 import { doUntilDone, socket_state } from '../tradeEngine/utils/helpers';
@@ -169,7 +170,10 @@ class APIBase {
             if (error) {
                 if (error.code === 'InvalidToken') {
                     const is_tmb_enabled = window.is_tmb_enabled === true;
-                    if (Cookies.get('logged_state') === 'true' && !is_tmb_enabled) {
+                    // Inside Signal Lab a stale DBot token must not start an OAuth
+                    // journey or a reload: the shell owns the session. Drop the
+                    // token and keep the builder up.
+                    if (!isEmbeddedWorkspace() && Cookies.get('logged_state') === 'true' && !is_tmb_enabled) {
                         globalObserver.emit('InvalidToken', { error });
                     } else {
                         clearAuthData();
